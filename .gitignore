@@ -1,0 +1,17 @@
+# Binaries
+bin/
+*.exe
+
+# Go
+vendor/
+
+# Kubebuilder
+testbin/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
