@@ -16,7 +16,7 @@ kind create cluster --config "$SCRIPT_DIR/kind-config.yaml" --wait 60s
 echo "==> Installing CRDs..."
 cd "$ROOT_DIR"
 make manifests
-kubectl apply -f config/crd/bases/
+kubectl apply -k config/crd/
 
 echo "==> Creating kflare-system namespace..."
 kubectl create namespace kflare-system --dry-run=client -o yaml | kubectl apply -f -
@@ -28,7 +28,18 @@ kubectl create secret generic cloudflare-credentials \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> Applying CloudflareAccount CR..."
-CF_ACCOUNT_ID="$CF_ACCOUNT_ID" envsubst < "$SCRIPT_DIR/manifests/cloudflareaccount.yaml" | kubectl apply -f -
+kubectl apply -f - <<EOF
+apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+kind: CloudflareAccount
+metadata:
+  name: my-account
+spec:
+  accountID: "${CF_ACCOUNT_ID}"
+  tokenSecretRef:
+    name: cloudflare-credentials
+    namespace: kflare-system
+    key: CF_API_TOKEN
+EOF
 
 echo ""
 echo "==> Cluster ready. Run the controller with:"

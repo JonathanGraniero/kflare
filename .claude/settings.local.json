@@ -19,7 +19,12 @@
       "Bash(GOROOT=/home/komrix/go-dist/go GOPATH=/home/komrix/go make manifests:*)",
       "Bash(make manifests:*)",
       "Bash(make tidy:*)",
-      "Bash(make build:*)"
+      "Bash(make build:*)",
+      "Bash(chmod +x:*)",
+      "Bash(bash:*)",
+      "Bash(source:*)",
+      "Bash(kubectl:*)",
+      "Bash(apt list:*)"
     ]
   }
 }
