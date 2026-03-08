@@ -1,0 +1,10 @@
+apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+kind: CloudflareAccount
+metadata:
+  name: my-account
+spec:
+  accountID: "${CF_ACCOUNT_ID}"
+  tokenSecretRef:
+    name: cloudflare-credentials
+    namespace: kflare-system
+    key: CF_API_TOKEN
