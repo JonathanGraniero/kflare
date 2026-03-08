@@ -28,7 +28,9 @@
       "Bash(go mod:*)",
       "Bash(GOROOT=/home/komrix/go-dist/go GOPATH=/home/komrix/go /home/komrix/go-dist/go/bin/go mod:*)",
       "Bash(make:*)",
-      "Bash(kind delete:*)"
+      "Bash(kind delete:*)",
+      "Bash(make test:*)",
+      "Bash(GOROOT=/home/komrix/go-dist/go /home/komrix/go-dist/go/bin/go tool:*)"
     ]
   }
 }
