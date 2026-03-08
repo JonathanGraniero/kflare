@@ -19,14 +19,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	"github.com/cloudflare/cloudflare-go"
+
+	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 )
+
+// CloudflareAccountAPI is the subset of the Cloudflare API used by this controller.
+// It is defined as an interface so tests can substitute a fake implementation.
+type CloudflareAccountAPI interface {
+	Account(ctx context.Context, accountID string) (cloudflare.Account, cloudflare.ResultInfo, error)
+}
 
 // CloudflareAccountReconciler reconciles a CloudflareAccount object
 type CloudflareAccountReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// NewCFClient constructs a CloudflareAccountAPI from a raw API token.
+	// Defaults to the real cloudflare-go implementation; overridden in tests.
+	NewCFClient func(token string) (CloudflareAccountAPI, error)
 }
 
 //+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=cloudflareaccounts,verbs=get;list;watch;create;update;patch;delete
@@ -65,8 +75,12 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, r.Status().Update(ctx, account)
 	}
 
-	// Validate credentials by calling the Cloudflare API.
-	cf, err := cloudflare.NewWithAPIToken(string(token))
+	// Build the Cloudflare client.
+	newClient := r.NewCFClient
+	if newClient == nil {
+		newClient = defaultCFClient
+	}
+	cf, err := newClient(string(token))
 	if err != nil {
 		r.setCondition(account, cloudflarev1alpha1.ConditionReady, metav1.ConditionFalse,
 			"InvalidToken", fmt.Sprintf("Failed to create Cloudflare client: %v", err))
@@ -103,4 +117,9 @@ func (r *CloudflareAccountReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.CloudflareAccount{}).
 		Complete(r)
+}
+
+// defaultCFClient wraps cloudflare.NewWithAPIToken to satisfy CloudflareAccountAPI.
+func defaultCFClient(token string) (CloudflareAccountAPI, error) {
+	return cloudflare.NewWithAPIToken(token)
 }
