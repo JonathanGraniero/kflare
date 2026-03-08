@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- cloudflare_v1alpha1_cloudflareaccount.yaml
+#+kubebuilder:scaffold:manifestskustomizesamples

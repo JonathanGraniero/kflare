@@ -1,12 +1,12 @@
-# Cloudflare Kubernetes Operator (cloudflare-operator)
+# kflare — Cloudflare Kubernetes Operator
 
 ## Project Overview
 
-This project implements an **ACK-style (AWS Controllers for Kubernetes) Kubernetes operator for Cloudflare**, enabling fully declarative, GitOps-driven management of Cloudflare resources via Kubernetes CRDs.
+kflare is a production-grade Kubernetes operator for Cloudflare, enabling fully declarative, GitOps-driven management of Cloudflare resources via Kubernetes CRDs.
 
-The goal is to fill a gap in the ecosystem: existing community projects (adyanth/cloudflare-operator, containeroo/cloudflare-operator, replicatedhq/kubeflare) are narrowly scoped, inconsistently maintained, and none follow ACK-grade conventions. This operator targets production-grade quality with the intent to pursue official or CNCF-adjacent backing.
+The goal is to fill a gap in the ecosystem: existing community projects (adyanth/cloudflare-operator, containeroo/cloudflare-operator, replicatedhq/kubeflare) are narrowly scoped and inconsistently maintained. kflare targets production-grade quality with the intent to pursue official or CNCF-adjacent backing.
 
-**Key differentiator:** Code-generate controllers from the [Cloudflare OpenAPI spec](https://github.com/cloudflare/api-schemas), similar to how ACK generates from AWS service models.
+**Key differentiator:** Code-generate controllers from the [Cloudflare OpenAPI spec](https://github.com/cloudflare/api-schemas), driving broad API coverage with consistent patterns.
 
 ---
 
@@ -35,14 +35,14 @@ cloudflare.k8s.io
 - Cluster-scoped `CloudflareAccount` resource that references the secret
 - Support for external-secrets operator integration
 
-### Reconciler Pattern (ACK-style)
+### Reconciler Pattern
 Every controller follows:
 ```
 Desired State (CRD spec) → Observed State (Cloudflare API) → Delta → Reconcile
 ```
 With:
 - `status.conditions` using standard Kubernetes condition types
-- `status.ackResourceMetadata` equivalent: `status.cloudflareMetadata` (ID, zone ID, timestamps)
+- `status.cloudflareMetadata` (ID, zone ID, timestamps)
 - Finalizer-based deletion protection: `cloudflare.k8s.io/finalizer`
 - `AdoptedResource` CRD for importing pre-existing Cloudflare resources
 - `FieldExport` CRD for piping resource fields into ConfigMaps/Secrets
@@ -63,7 +63,7 @@ With:
 │   ├── rbac/              # RBAC manifests
 │   └── default/           # Kustomize base
 ├── helm/
-│   └── cloudflare-operator/ # Helm chart
+│   └── kflare/            # Helm chart
 ├── generator/             # OpenAPI → CRD/controller codegen tooling
 ├── test/
 │   ├── unit/
@@ -78,7 +78,6 @@ With:
 ## Phased Implementation Plan
 
 ### Phase 1 — Foundation & Scaffolding
-**Duration:** 3–4 weeks  
 **Status:** 🔲 Not started
 
 **Goals:**
@@ -89,7 +88,7 @@ With:
   - Parse `cloudflare/api-schemas` OpenAPI spec
   - Emit Go structs with `+kubebuilder` markers
   - Emit reconciler skeletons
-- [ ] Implement `AdoptedResource` and `FieldExport` CRDs (port ACK pattern)
+- [ ] Implement `AdoptedResource` and `FieldExport` CRDs
 - [ ] Set up CI/CD: GitHub Actions for lint, unit test, CRD validation, e2e
 - [ ] Makefile targets: `generate`, `manifests`, `install`, `run`, `test`, `helm-package`
 - [ ] Base Helm chart with cert-manager webhook support
@@ -102,7 +101,6 @@ With:
 ---
 
 ### Phase 2 — Core Resource Controllers
-**Duration:** 6–8 weeks  
 **Status:** 🔲 Not started
 
 Implement the highest-value resources that most users need immediately.
@@ -118,7 +116,7 @@ Implement the highest-value resources that most users need immediately.
 **Per-controller checklist (apply to each):**
 - [ ] CRD type definition with full spec/status
 - [ ] Reconciler: Create / Update / Delete lifecycle
-- [ ] `status.conditions`: `ACK.ResourceSynced`, `ACK.Terminal`
+- [ ] `status.conditions`: `kflare.ResourceSynced`, `kflare.Terminal`
 - [ ] Drift detection (desired vs. observed diff)
 - [ ] Finalizer registration and cleanup
 - [ ] Unit tests (mocked Cloudflare client)
@@ -132,7 +130,6 @@ Implement the highest-value resources that most users need immediately.
 ---
 
 ### Phase 3 — Expanded API Surface
-**Duration:** 6–8 weeks  
 **Status:** 🔲 Not started
 
 | CRD | Cloudflare Resource |
@@ -158,7 +155,6 @@ Implement the highest-value resources that most users need immediately.
 ---
 
 ### Phase 4 — Ecosystem & Graduation
-**Duration:** 4–6 weeks  
 **Status:** 🔲 Not started
 
 - [ ] Full `FieldExport` implementation (export any CRD field → ConfigMap/Secret)
@@ -189,17 +185,15 @@ Implement the highest-value resources that most users need immediately.
 
 ---
 
-## ACK Conventions to Follow
+## Operator Conventions
 
-This project mirrors ACK patterns closely so contributors from the ACK community find it familiar:
-
-1. **Condition types** — use `ACK.ResourceSynced` and `ACK.Terminal` condition types verbatim
+1. **Condition types** — use `kflare.ResourceSynced` and `kflare.Terminal` condition types
 2. **Status fields** — every CRD status has `conditions []metav1.Condition` and a `cloudflareMetadata` block
 3. **References** — foreign-key relationships use `*Ref` fields (e.g., `zoneRef`, `tunnelRef`) not raw IDs
-4. **AdoptedResource** — allows `kubectl annotate` import of pre-existing CF resources
+4. **AdoptedResource** — allows importing pre-existing Cloudflare resources into management
 5. **FieldExport** — `FieldExport` CR pipes `.status.*` fields into ConfigMaps for cross-namespace consumption
-6. **Deletion policy** — annotation `cloudflare.k8s.io/deletion-policy: retain | delete` controls whether CF resource is deleted on CR deletion
-7. **Terminal errors** — unrecoverable API errors (4xx, invalid config) set `ACK.Terminal=True` and stop requeuing
+6. **Deletion policy** — annotation `cloudflare.k8s.io/deletion-policy: retain | delete` controls whether the Cloudflare resource is deleted on CR deletion
+7. **Terminal errors** — unrecoverable API errors (4xx, invalid config) set `kflare.Terminal=True` and stop requeuing
 
 ---
 
@@ -222,7 +216,7 @@ make test
 make test-e2e
 
 # Build and push controller image
-make docker-build docker-push IMG=ghcr.io/your-org/cloudflare-operator:latest
+make docker-build docker-push IMG=ghcr.io/your-org/kflare:latest
 
 # Package Helm chart
 make helm-package
@@ -246,15 +240,9 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 - **Go SDK:** https://github.com/cloudflare/cloudflare-go
 - **Developer Docs:** https://developers.cloudflare.com/api/
 
-## ACK Reference (for pattern guidance)
-
-- **ACK Runtime:** https://github.com/aws-controllers-k8s/runtime
-- **ACK Code Generator:** https://github.com/aws-controllers-k8s/code-generator
-- **ACK Developer Guide:** https://aws-controllers-k8s.github.io/community/docs/contributor-docs/overview/
-
 ---
 
 ## Current Status
 
-> **Phase 1 in planning.** Repository not yet initialized.
+> **Phase 1 in progress.** Repository initialized, scaffolding underway.
 > Last updated: March 2026

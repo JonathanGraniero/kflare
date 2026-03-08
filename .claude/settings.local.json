@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//mnt/c/Users/**)",
+      "Bash(gh:*)",
+      "Bash(git:*)",
+      "Bash(mkdir:*)",
+      "Bash(curl:*)",
+      "Bash(export:*)",
+      "Bash(rm:*)",
+      "Bash(GOROOT=\"$HOME/go-dist/go\" GOPATH=\"$HOME/go\" PATH=\"$HOME/go-dist/go/bin:$HOME/go/bin:$HOME/.local/bin:$PATH\" go get:*)",
+      "Bash(~/go-dist/go/bin/go get:*)",
+      "Bash(GOPROXY=https://proxy.golang.org,direct ~/go-dist/go/bin/go get:*)",
+      "Bash(GOPROXY=https://proxy.golang.org,direct GONOSUMCHECK=* GONOSUMDB=* GOFLAGS=-insecure ~/go-dist/go/bin/go get:*)",
+      "Bash(GOPROXY=https://proxy.golang.org,direct GONOSUMDB=* GOINSECURE=* ~/go-dist/go/bin/go get:*)",
+      "Bash(GOROOT=\"$HOME/go-dist/go\" GOPATH=\"$HOME/go\" GOPROXY=https://proxy.golang.org,direct GONOSUMDB=* GOINSECURE=* \"$HOME/go-dist/go/bin/go\" get:*)",
+      "Bash(GOROOT=/home/komrix/go-dist/go GOPATH=/home/komrix/go GOPROXY=https://proxy.golang.org,direct GONOSUMDB='*' GOINSECURE='*' /home/komrix/go-dist/go/bin/go get:*)",
+      "Bash(GOROOT=/home/komrix/go-dist/go GONOSUMDB='*' /home/komrix/go-dist/go/bin/go env:*)",
+      "Bash(GOROOT=/home/komrix/go-dist/go GOPATH=/home/komrix/go make manifests:*)",
+      "Bash(make manifests:*)",
+      "Bash(make tidy:*)",
+      "Bash(make build:*)"
+    ]
+  }
+}
