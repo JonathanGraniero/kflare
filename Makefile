@@ -52,6 +52,12 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	@# Stamp the api-approved annotation required by k8s.io protected groups (envtest + kubectl apply)
+	@for f in config/crd/bases/*.yaml; do \
+		if ! grep -q "api-approved.kubernetes.io" "$$f"; then \
+			sed -i 's|annotations:|annotations:\n    api-approved.kubernetes.io: unapproved|' "$$f"; \
+		fi; \
+	done
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
