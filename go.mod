@@ -10,7 +10,10 @@ require (
 	sigs.k8s.io/controller-runtime v0.17.0
 )
 
-require golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e // indirect
+require (
+	github.com/evanphx/json-patch v4.12.0+incompatible // indirect
+	golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e // indirect
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
