@@ -1,4 +1,4 @@
-# kflare
+# kflare <!-- CI test -->
 
 kflare is a Kubernetes operator for Cloudflare. It lets you manage Cloudflare resources — DNS zones, records, tunnels, Workers, and more — declaratively using Kubernetes custom resources, enabling full GitOps-driven infrastructure management.
 
