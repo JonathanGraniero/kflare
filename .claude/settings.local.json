@@ -24,7 +24,11 @@
       "Bash(bash:*)",
       "Bash(source:*)",
       "Bash(kubectl:*)",
-      "Bash(apt list:*)"
+      "Bash(apt list:*)",
+      "Bash(go mod:*)",
+      "Bash(GOROOT=/home/komrix/go-dist/go GOPATH=/home/komrix/go /home/komrix/go-dist/go/bin/go mod:*)",
+      "Bash(make:*)",
+      "Bash(kind delete:*)"
     ]
   }
 }
