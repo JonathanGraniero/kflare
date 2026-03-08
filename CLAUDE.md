@@ -107,54 +107,181 @@ With:
 ### Phase 2 — Core Resource Controllers
 **Status:** 🔲 Not started
 
-Implement the highest-value resources that most users need immediately.
+Each feature below is developed on its own branch and merged independently once tested.
+Branch naming convention: `feat/<name>` (e.g. `feat/shared-client`, `feat/zone-controller`)
 
-| CRD | Cloudflare Resource | API Coverage |
-|-----|-------------------|--------------|
-| `Zone` | DNS Zone management | Create, Read, Update, Delete + settings |
-| `DNSRecord` | DNS record CRUD | A, AAAA, CNAME, MX, TXT, SRV, CAA |
-| `Tunnel` | Cloudflare Tunnel lifecycle | Create named tunnel, manage credentials secret |
-| `TunnelConfiguration` | Tunnel ingress routing | Map hostnames/services to tunnel |
-| `WorkerScript` | Workers deployment | Upload, bind routes, env vars |
+---
 
-**Per-controller checklist (apply to each):**
-- [ ] CRD type definition with full spec/status
-- [ ] Reconciler: Create / Update / Delete lifecycle
-- [ ] `status.conditions`: `kflare.ResourceSynced`, `kflare.Terminal`
-- [ ] Drift detection (desired vs. observed diff)
-- [ ] Finalizer registration and cleanup
-- [ ] Unit tests (mocked Cloudflare client)
-- [ ] e2e test with real API (behind `//go:build e2e` tag)
-- [ ] Example manifests in `config/samples/`
+#### Branch: `feat/shared-client`
+**Depends on:** main (Phase 1)
+**Merges into:** main (before any controller branch starts)
 
-**Notes:**
-- `Zone` is the root resource — most others reference it via `zoneRef`
-- `Tunnel` creates a credentials secret in Cloudflare; store locally in K8s Secret and reference via `tunnelCredentialsSecretRef`
+Shared infrastructure that all Phase 2 controllers will use. Build this first.
+
+- [ ] `pkg/cloudflare/client.go` — thin wrapper around cloudflare-go SDK
+  - Constructor that accepts an API token string
+  - Exposes typed methods per resource (DNS, Zone, Tunnel, Workers)
+  - Returns structured errors that controllers can classify as terminal vs retryable
+- [ ] `pkg/reconciler/base.go` — shared reconciler helpers
+  - `SetCondition()` helper (wraps `meta.SetStatusCondition`)
+  - `IsTerminalError()` classifier
+  - Finalizer add/remove helpers
+- [ ] Unit tests for client error classification
+
+**Test locally:** `make test` — no cluster needed
+
+---
+
+#### Branch: `feat/ci`
+**Depends on:** main (can be done anytime)
+**Merges into:** main
+
+- [ ] `.github/workflows/ci.yml`
+  - `go build ./...`
+  - `go vet ./...`
+  - `make manifests` + diff check (ensures generated files are committed)
+  - `make test`
+- [ ] `.github/workflows/e2e.yml` (manual trigger only, requires secrets)
+  - `CF_API_TOKEN`, `CF_ACCOUNT_ID` as GitHub Actions secrets
+  - Spins up kind cluster, runs `//go:build e2e` tests
+
+**Test locally:** push branch and verify Actions run green
+
+---
+
+#### Branch: `feat/zone-controller`
+**Depends on:** `feat/shared-client`
+**Merges into:** main
+
+`Zone` is the root resource — every other resource references it via `zoneRef`.
+
+- [ ] `api/v1alpha1/zone_types.go`
+  - `spec`: `name` (domain), `accountRef`, `plan` (free/pro/business), `settings`
+  - `status.conditions`, `status.cloudflareMetadata` (zone ID, name servers, status)
+- [ ] `internal/controller/zone_controller.go`
+  - Create / read / update / delete lifecycle
+  - Drift detection on zone settings
+  - Finalizer: `cloudflare.k8s.io/finalizer`
+  - Deletion policy annotation: `retain | delete`
+- [ ] Unit tests (mocked CF client)
+- [ ] `config/samples/zone.yaml`
+- [ ] Local test: apply sample, verify zone appears in Cloudflare dashboard
+
+**Test locally:**
+```sh
+kubectl apply -f config/samples/zone.yaml
+kubectl get zone -o yaml   # check Ready condition + cloudflareMetadata.zoneID
+```
+
+---
+
+#### Branch: `feat/dns-record-controller`
+**Depends on:** `feat/zone-controller`
+**Merges into:** main
+
+- [ ] `api/v1alpha1/dnsrecord_types.go`
+  - `spec`: `zoneRef`, `name`, `type` (A/AAAA/CNAME/MX/TXT/SRV/CAA), `content`, `ttl`, `proxied`
+  - `status.conditions`, `status.cloudflareMetadata` (record ID)
+- [ ] `internal/controller/dnsrecord_controller.go`
+  - Create / update / delete lifecycle
+  - Drift detection (content, TTL, proxied)
+  - Watches parent `Zone` — requeues records if zone becomes unready
+  - Finalizer + deletion policy
+- [ ] Unit tests
+- [ ] `config/samples/dnsrecord_a.yaml`, `dnsrecord_cname.yaml`
+- [ ] Local test: apply A record, verify it appears in Cloudflare DNS dashboard
+
+**Test locally:**
+```sh
+kubectl apply -f config/samples/dnsrecord_a.yaml
+kubectl get dnsrecord -o yaml   # check Ready + record ID
+```
+
+---
+
+#### Branch: `feat/tunnel-controller`
+**Depends on:** `feat/shared-client`
+**Merges into:** main (independent of zone controller)
+
+- [ ] `api/v1alpha1/tunnel_types.go`
+  - `spec`: `name`, `accountRef`, `credentialsSecretRef` (where to store the tunnel token)
+  - `status.conditions`, `status.cloudflareMetadata` (tunnel ID, tunnel token secret name)
+- [ ] `internal/controller/tunnel_controller.go`
+  - Creates named tunnel via CF API
+  - Stores tunnel credentials in a K8s Secret (referenced by `credentialsSecretRef`)
+  - Finalizer: deletes tunnel on CR deletion (unless `retain`)
+- [ ] Unit tests
+- [ ] `config/samples/tunnel.yaml`
+
+**Test locally:**
+```sh
+kubectl apply -f config/samples/tunnel.yaml
+kubectl get tunnel -o yaml          # check tunnel ID in status
+kubectl get secret -n kflare-system  # verify credentials secret was created
+```
+
+---
+
+#### Branch: `feat/tunnel-configuration-controller`
+**Depends on:** `feat/tunnel-controller`
+**Merges into:** main
+
+- [ ] `api/v1alpha1/tunnelconfiguration_types.go`
+  - `spec`: `tunnelRef`, `ingress[]` (hostname → service mappings)
+  - `status.conditions`
+- [ ] `internal/controller/tunnelconfiguration_controller.go`
+  - Pushes ingress config to CF API via tunnel configuration endpoint
+  - Drift detection on ingress rules
+- [ ] Unit tests
+- [ ] `config/samples/tunnelconfiguration.yaml`
+
+**Test locally:**
+```sh
+kubectl apply -f config/samples/tunnelconfiguration.yaml
+# Verify routing config visible in Cloudflare Zero Trust dashboard → Tunnels
+```
+
+---
+
+#### Branch: `feat/worker-script-controller`
+**Depends on:** `feat/shared-client`
+**Merges into:** main (independent of zone/tunnel)
+**Note:** Requires a separate CF API token with Workers permissions
+
+- [ ] `api/v1alpha1/workerscript_types.go`
+  - `spec`: `accountRef`, `scriptName`, `scriptContent` or `scriptConfigMapRef`, `bindings[]`, `routes[]`
+  - `status.conditions`, `status.cloudflareMetadata` (script etag, deployment ID)
+- [ ] `internal/controller/workerscript_controller.go`
+  - Upload script content via Workers API
+  - Manage route bindings
+  - Drift detection on script content (etag comparison)
+- [ ] Unit tests
+- [ ] `config/samples/workerscript.yaml`
 
 ---
 
 ### Phase 3 — Expanded API Surface
 **Status:** 🔲 Not started
 
-| CRD | Cloudflare Resource |
-|-----|-------------------|
-| `AccessApplication` | Zero Trust Access app |
-| `AccessPolicy` | Zero Trust policy rules |
-| `AccessGroup` | Zero Trust identity groups |
-| `FirewallRule` | Firewall / WAF rules |
-| `WAFPackage` | WAF package configuration |
-| `PageRule` | Page rules (cache, redirects) |
-| `R2Bucket` | R2 object storage bucket |
-| `KVNamespace` | Workers KV namespace |
-| `LoadBalancer` | Load balancer + pools |
-| `HealthCheck` | Origin health checks |
-| `RateLimit` | Rate limiting rules |
-| `ManagedTransform` | Transform Rules (managed) |
+Same branch-per-feature pattern as Phase 2. Planned branches:
+
+| Branch | CRD(s) | Depends on |
+|--------|--------|------------|
+| `feat/health-check-controller` | `HealthCheck` | shared-client |
+| `feat/load-balancer-controller` | `LoadBalancer` | health-check-controller |
+| `feat/rate-limit-controller` | `RateLimit` | zone-controller |
+| `feat/firewall-rule-controller` | `FirewallRule` | zone-controller |
+| `feat/page-rule-controller` | `PageRule` | zone-controller |
+| `feat/r2-bucket-controller` | `R2Bucket` | shared-client |
+| `feat/kv-namespace-controller` | `KVNamespace` | shared-client |
+| `feat/zero-trust-controllers` | `AccessApplication`, `AccessPolicy`, `AccessGroup` | shared-client |
+| `feat/waf-controller` | `WAFPackage` | zone-controller |
+| `feat/managed-transform-controller` | `ManagedTransform` | zone-controller |
 
 **Notes:**
-- Zero Trust resources require `Account`-scoped (not Zone-scoped) API tokens
-- R2 and KV are account-level resources — no `zoneRef` needed
-- `LoadBalancer` depends on `HealthCheck` — implement health checks first
+- Zero Trust resources require `Account`-scoped (not Zone-scoped) API tokens — separate CF token needed
+- R2 and KV are account-level — no `zoneRef`
+- `LoadBalancer` depends on `HealthCheck` — do health checks first
 
 ---
 
@@ -248,5 +375,6 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 
 ## Current Status
 
-> **Phase 1 core complete.** Kubebuilder scaffolded, `CloudflareAccount` CRD and controller live and validated against real Cloudflare API. Local kind cluster running. Moving to Phase 2 (Zone + DNSRecord controllers).
+> **Phase 1 core complete. Starting Phase 2.**
+> Next branch: `feat/shared-client` — build `pkg/cloudflare/client.go` and `pkg/reconciler/base.go` before any controller work begins.
 > Last updated: March 2026
