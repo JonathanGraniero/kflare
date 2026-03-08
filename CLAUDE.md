@@ -78,25 +78,29 @@ With:
 ## Phased Implementation Plan
 
 ### Phase 1 — Foundation & Scaffolding
-**Status:** 🔲 Not started
+**Status:** 🔶 Partial — core done, deferred items moved to later phases
 
 **Goals:**
-- [ ] Initialize repo with kubebuilder scaffolding
-- [ ] Set up API group `cloudflare.k8s.io` with versioning strategy (`v1alpha1` → `v1beta1` → `v1`)
-- [ ] Implement `CloudflareAccount` cluster-scoped credential controller
-- [ ] Build OpenAPI-to-CRD generator skeleton (`generator/` package)
-  - Parse `cloudflare/api-schemas` OpenAPI spec
-  - Emit Go structs with `+kubebuilder` markers
-  - Emit reconciler skeletons
-- [ ] Implement `AdoptedResource` and `FieldExport` CRDs
-- [ ] Set up CI/CD: GitHub Actions for lint, unit test, CRD validation, e2e
-- [ ] Makefile targets: `generate`, `manifests`, `install`, `run`, `test`, `helm-package`
-- [ ] Base Helm chart with cert-manager webhook support
+- [x] Initialize repo with kubebuilder scaffolding (`kubebuilder init --domain cloudflare.k8s.io`)
+- [x] Set up API group with versioning strategy starting at `v1alpha1`
+- [x] Implement `CloudflareAccount` cluster-scoped credential controller
+  - Reads token from a referenced Secret
+  - Calls `cf.Account()` to validate credentials on reconcile
+  - Sets `Ready` condition and `accountName` in status
+  - Tested live against real Cloudflare account ✅
+- [x] Makefile targets: `generate`, `manifests`, `build`, `run`, `test` (kubebuilder-generated)
+- [x] Local dev environment: `local/setup.sh`, `local/teardown.sh`, kind cluster config
+- [ ] `pkg/cloudflare/client.go` — shared CF client wrapper (deferred: will build alongside Phase 2 controllers)
+- [ ] `pkg/reconciler/base.go` — shared reconciler interface (deferred: will extract once pattern is established across 2+ controllers)
+- [ ] OpenAPI-to-CRD generator skeleton (`generator/` package) — deferred to later
+- [ ] `AdoptedResource` and `FieldExport` CRDs — deferred to Phase 4
+- [ ] GitHub Actions CI — deferred, will add before Phase 2 merge
+- [ ] Base Helm chart — deferred to Phase 4
 
-**Key files to establish early:**
-- `pkg/reconciler/base.go` — shared reconciler interface all controllers embed
-- `pkg/cloudflare/client.go` — thin wrapper around `cloudflare-go` SDK
-- `apis/v1alpha1/groupversion_info.go`
+**Actual file layout (differs from original plan):**
+- `api/v1alpha1/` (not `apis/`) — kubebuilder convention
+- `internal/controller/` (not `pkg/reconciler/`) — kubebuilder convention
+- API group resolved to `cloudflare.cloudflare.k8s.io` (group=`cloudflare` + domain=`cloudflare.k8s.io`)
 
 ---
 
@@ -244,5 +248,5 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 
 ## Current Status
 
-> **Phase 1 in progress.** Repository initialized, scaffolding underway.
+> **Phase 1 core complete.** Kubebuilder scaffolded, `CloudflareAccount` CRD and controller live and validated against real Cloudflare API. Local kind cluster running. Moving to Phase 2 (Zone + DNSRecord controllers).
 > Last updated: March 2026
