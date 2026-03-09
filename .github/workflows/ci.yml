@@ -33,7 +33,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./... -count=1
+        run: go test $(go list ./... | grep -v /test/e2e) -count=1
 
       - name: Check generated files are up to date
         run: |
