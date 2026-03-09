@@ -38,3 +38,29 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - zones
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - zones/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - zones/status
+  verbs:
+  - get
+  - patch
+  - update

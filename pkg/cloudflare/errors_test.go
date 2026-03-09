@@ -15,17 +15,43 @@ import (
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 )
 
-// newCFError is a test helper that constructs a cloudflare.Error with the
-// given ErrorType and StatusCode using cloudflare-go's public constructors.
-func newCFError(t ErrorType, statusCode int) *cf.Error {
-	return &cf.Error{
-		Type:       cf.ErrorType(t),
-		StatusCode: statusCode,
-	}
+// ptrAuthN returns a *cf.AuthenticationError as an error, matching what the
+// cloudflare-go HTTP layer returns for HTTP 403 responses.
+func ptrAuthN(e *cf.Error) error {
+	v := cf.NewAuthenticationError(e)
+	return &v
 }
 
-// ErrorType mirrors cf.ErrorType to keep test helper readable.
-type ErrorType = string
+// ptrAuthZ returns a *cf.AuthorizationError as an error, matching what the
+// cloudflare-go HTTP layer returns for HTTP 401 responses.
+func ptrAuthZ(e *cf.Error) error {
+	v := cf.NewAuthorizationError(e)
+	return &v
+}
+
+// ptrNotFound returns a *cf.NotFoundError as an error.
+func ptrNotFound(e *cf.Error) error {
+	v := cf.NewNotFoundError(e)
+	return &v
+}
+
+// ptrRequest returns a *cf.RequestError as an error.
+func ptrRequest(e *cf.Error) error {
+	v := cf.NewRequestError(e)
+	return &v
+}
+
+// ptrRateLimit returns a *cf.RatelimitError as an error.
+func ptrRateLimit(e *cf.Error) error {
+	v := cf.NewRatelimitError(e)
+	return &v
+}
+
+// ptrService returns a *cf.ServiceError as an error.
+func ptrService(e *cf.Error) error {
+	v := cf.NewServiceError(e)
+	return &v
+}
 
 func TestIsTerminalError(t *testing.T) {
 	tests := []struct {
@@ -39,33 +65,37 @@ func TestIsTerminalError(t *testing.T) {
 			terminal: false,
 		},
 		{
-			name:     "AuthenticationError (401) is terminal",
-			err:      cf.NewAuthenticationError(&cf.Error{StatusCode: 401, Type: cf.ErrorTypeAuthentication}),
+			// cloudflare-go returns *AuthenticationError for HTTP 403 Forbidden
+			// (insufficient token permissions).
+			name:     "AuthenticationError (403) is terminal",
+			err:      ptrAuthN(&cf.Error{StatusCode: 403, Type: cf.ErrorTypeAuthentication}),
 			terminal: true,
 		},
 		{
-			name:     "AuthorizationError (403) is terminal",
-			err:      cf.NewAuthorizationError(&cf.Error{StatusCode: 403, Type: cf.ErrorTypeAuthorization}),
+			// cloudflare-go returns *AuthorizationError for HTTP 401 Unauthorized
+			// (bad or revoked token).
+			name:     "AuthorizationError (401) is terminal",
+			err:      ptrAuthZ(&cf.Error{StatusCode: 401, Type: cf.ErrorTypeAuthorization}),
 			terminal: true,
 		},
 		{
 			name:     "NotFoundError (404) is terminal",
-			err:      cf.NewNotFoundError(&cf.Error{StatusCode: 404, Type: cf.ErrorTypeNotFound}),
+			err:      ptrNotFound(&cf.Error{StatusCode: 404, Type: cf.ErrorTypeNotFound}),
 			terminal: true,
 		},
 		{
 			name:     "RequestError (400) is terminal",
-			err:      cf.NewRequestError(&cf.Error{StatusCode: 400, Type: cf.ErrorTypeRequest}),
+			err:      ptrRequest(&cf.Error{StatusCode: 400, Type: cf.ErrorTypeRequest}),
 			terminal: true,
 		},
 		{
 			name:     "RatelimitError (429) is NOT terminal (retryable)",
-			err:      cf.NewRatelimitError(&cf.Error{StatusCode: 429, Type: cf.ErrorTypeRateLimit}),
+			err:      ptrRateLimit(&cf.Error{StatusCode: 429, Type: cf.ErrorTypeRateLimit}),
 			terminal: false,
 		},
 		{
 			name:     "ServiceError (500) is NOT terminal (retryable)",
-			err:      cf.NewServiceError(&cf.Error{StatusCode: 500, Type: cf.ErrorTypeService}),
+			err:      ptrService(&cf.Error{StatusCode: 500, Type: cf.ErrorTypeService}),
 			terminal: false,
 		},
 		{
@@ -75,12 +105,12 @@ func TestIsTerminalError(t *testing.T) {
 		},
 		{
 			name:     "wrapped AuthenticationError is terminal",
-			err:      errors.Join(errors.New("outer"), cf.NewAuthenticationError(&cf.Error{StatusCode: 401, Type: cf.ErrorTypeAuthentication})),
+			err:      errors.Join(errors.New("outer"), ptrAuthN(&cf.Error{StatusCode: 403, Type: cf.ErrorTypeAuthentication})),
 			terminal: true,
 		},
 		{
 			name:     "wrapped RequestError is terminal",
-			err:      errors.Join(errors.New("outer"), cf.NewRequestError(&cf.Error{StatusCode: 422, Type: cf.ErrorTypeRequest})),
+			err:      errors.Join(errors.New("outer"), ptrRequest(&cf.Error{StatusCode: 422, Type: cf.ErrorTypeRequest})),
 			terminal: true,
 		},
 	}
@@ -102,9 +132,9 @@ func TestIsNotFound(t *testing.T) {
 		found bool
 	}{
 		{"nil", nil, false},
-		{"NotFoundError", cf.NewNotFoundError(&cf.Error{StatusCode: 404, Type: cf.ErrorTypeNotFound}), true},
-		{"AuthenticationError", cf.NewAuthenticationError(&cf.Error{StatusCode: 401, Type: cf.ErrorTypeAuthentication}), false},
-		{"RequestError", cf.NewRequestError(&cf.Error{StatusCode: 400, Type: cf.ErrorTypeRequest}), false},
+		{"NotFoundError", ptrNotFound(&cf.Error{StatusCode: 404, Type: cf.ErrorTypeNotFound}), true},
+		{"AuthenticationError", ptrAuthN(&cf.Error{StatusCode: 403, Type: cf.ErrorTypeAuthentication}), false},
+		{"RequestError", ptrRequest(&cf.Error{StatusCode: 400, Type: cf.ErrorTypeRequest}), false},
 		{"plain error", errors.New("not found"), false},
 	}
 
@@ -125,9 +155,9 @@ func TestIsRateLimit(t *testing.T) {
 		rateLimit bool
 	}{
 		{"nil", nil, false},
-		{"RatelimitError", cf.NewRatelimitError(&cf.Error{StatusCode: 429, Type: cf.ErrorTypeRateLimit}), true},
-		{"AuthenticationError", cf.NewAuthenticationError(&cf.Error{StatusCode: 401, Type: cf.ErrorTypeAuthentication}), false},
-		{"ServiceError", cf.NewServiceError(&cf.Error{StatusCode: 500, Type: cf.ErrorTypeService}), false},
+		{"RatelimitError", ptrRateLimit(&cf.Error{StatusCode: 429, Type: cf.ErrorTypeRateLimit}), true},
+		{"AuthenticationError", ptrAuthN(&cf.Error{StatusCode: 403, Type: cf.ErrorTypeAuthentication}), false},
+		{"ServiceError", ptrService(&cf.Error{StatusCode: 500, Type: cf.ErrorTypeService}), false},
 		{"plain error", errors.New("too many requests"), false},
 	}
 
