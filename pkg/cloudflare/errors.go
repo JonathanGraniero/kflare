@@ -22,19 +22,24 @@ import (
 // Retryable errors (rate limits, 5xx service errors, transient network
 // failures) return false, allowing the controller-runtime back-off queue to
 // retry naturally.
+//
+// Note: cloudflare-go returns pointer types (*AuthenticationError, etc.) from
+// its HTTP layer, so errors.As targets must use pointer types to match.
 func IsTerminalError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// 401 Unauthorized — bad or revoked token.
-	var authErr cf.AuthenticationError
+	// HTTP 403 Forbidden — token lacks the required scope/permission.
+	// cloudflare-go counterintuitively names this AuthenticationError.
+	var authErr *cf.AuthenticationError
 	if errors.As(err, &authErr) {
 		return true
 	}
 
-	// 403 Forbidden — token exists but lacks the required scope.
-	var authzErr cf.AuthorizationError
+	// HTTP 401 Unauthorized — bad or revoked token.
+	// cloudflare-go counterintuitively names this AuthorizationError.
+	var authzErr *cf.AuthorizationError
 	if errors.As(err, &authzErr) {
 		return true
 	}
@@ -43,13 +48,13 @@ func IsTerminalError(err error) bool {
 	// Controllers should treat this as terminal when fetching a known resource;
 	// the create path may recover from it, so callers can check IsNotFound
 	// separately when that distinction matters.
-	var notFoundErr cf.NotFoundError
+	var notFoundErr *cf.NotFoundError
 	if errors.As(err, &notFoundErr) {
 		return true
 	}
 
 	// 4xx RequestError — bad payload, unsupported operation, etc.
-	var reqErr cf.RequestError
+	var reqErr *cf.RequestError
 	if errors.As(err, &reqErr) {
 		return true
 	}
@@ -63,7 +68,7 @@ func IsTerminalError(err error) bool {
 // This is useful in reconcilers that need to distinguish "resource missing"
 // from other terminal errors (e.g. to create the resource instead of failing).
 func IsNotFound(err error) bool {
-	var notFoundErr cf.NotFoundError
+	var notFoundErr *cf.NotFoundError
 	return errors.As(err, &notFoundErr)
 }
 
@@ -71,6 +76,6 @@ func IsNotFound(err error) bool {
 // Controllers can inspect this to apply custom back-off logic, though
 // controller-runtime's default exponential back-off is usually sufficient.
 func IsRateLimit(err error) bool {
-	var rlErr cf.RatelimitError
+	var rlErr *cf.RatelimitError
 	return errors.As(err, &rlErr)
 }

@@ -4,3 +4,10 @@ metadata:
   name: cloudflareaccounts.cloudflare.cloudflare.k8s.io
   annotations:
     api-approved.kubernetes.io: unapproved
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: zones.cloudflare.cloudflare.k8s.io
+  annotations:
+    api-approved.kubernetes.io: unapproved

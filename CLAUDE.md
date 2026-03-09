@@ -90,7 +90,7 @@ With:
 ## Phased Implementation Plan
 
 ### Phase 1 — Foundation & Scaffolding
-**Status:** 🔶 Partial — core done, deferred items moved to later phases
+**Status:** ✅ Complete
 
 **Goals:**
 - [x] Initialize repo with kubebuilder scaffolding (`kubebuilder init --domain cloudflare.k8s.io`)
@@ -104,10 +104,6 @@ With:
 - [x] Local dev environment: `local/setup.sh`, `local/teardown.sh`, kind cluster config
 - [x] `pkg/cloudflare/client.go` — shared CF client wrapper (completed in `feat/shared-client`)
 - [x] `pkg/reconciler/base.go` — shared reconciler helpers (completed in `feat/shared-client`)
-- [ ] OpenAPI-to-CRD generator skeleton (`generator/` package) — deferred to later
-- [ ] `AdoptedResource` and `FieldExport` CRDs — deferred to Phase 4
-- [ ] GitHub Actions CI — deferred, will add before Phase 2 merge
-- [ ] Base Helm chart — deferred to Phase 4
 
 **Actual file layout (differs from original plan):**
 - `api/v1alpha1/` (not `apis/`) — kubebuilder convention
@@ -117,7 +113,7 @@ With:
 ---
 
 ### Phase 2 — Core Resource Controllers
-**Status:** 🔲 Not started
+**Status:** 🔶 In progress — `feat/shared-client` and `feat/zone-controller` complete, remaining branches not started
 
 Each feature below is developed on its own branch and merged independently once tested.
 Branch naming convention: `feat/<name>` (e.g. `feat/shared-client`, `feat/zone-controller`)
@@ -171,25 +167,35 @@ Shared infrastructure that all Phase 2 controllers will use.
 #### Branch: `feat/zone-controller`
 **Depends on:** `feat/shared-client`
 **Merges into:** main
+**Status:** ✅ Complete
 
 `Zone` is the root resource — every other resource references it via `zoneRef`.
 
-- [ ] `api/v1alpha1/zone_types.go`
-  - `spec`: `name` (domain), `accountRef`, `plan` (free/pro/business), `settings`
+- [x] `api/v1alpha1/zone_types.go`
+  - `spec`: `name` (domain), `accountRef`, `plan` (free/pro/business), `type` (full/partial)
   - `status.conditions`, `status.cloudflareMetadata` (zone ID, name servers, status)
-- [ ] `internal/controller/zone_controller.go`
+- [x] `internal/controller/zone_controller.go`
   - Create / read / update / delete lifecycle
-  - Drift detection on zone settings
+  - Drift detection on zone type
   - Finalizer: `cloudflare.k8s.io/finalizer`
   - Deletion policy annotation: `retain | delete`
-- [ ] Unit tests (mocked CF client)
-- [ ] `config/samples/zone.yaml`
-- [ ] Local test: apply sample, verify zone appears in Cloudflare dashboard
+  - Watch on CloudflareAccount → re-triggers zones when account heals
+- [x] Unit tests (mocked CF client, 96.2% coverage)
+- [x] `config/samples/cloudflare_v1alpha1_zone.yaml`
+- [x] Bug fix: `pkg/cloudflare/errors.go` — `errors.As` targets must use pointer types
+
+**Zone-specific design notes:**
+- `ZoneAPI` interface: `CreateZone/ZoneDetails/ListZones/DeleteZone/EditZone` (all on `*cf.API`)
+- `*cfpkg.Client` satisfies `ZoneAPI` because it embeds `*cf.API`
+- List→adopt pre-existing zones before creating new ones
+- Get→NotFound path recreates externally-deleted zones
+- cloudflare-go returns pointer error types (`*AuthenticationError` etc.) from its HTTP layer;
+  `errors.As` targets must be pointer types too — see `pkg/cloudflare/errors.go` comments
 
 **Test locally:**
 ```sh
-kubectl apply -f config/samples/zone.yaml
-kubectl get zone -o yaml   # check Ready condition + cloudflareMetadata.zoneID
+kubectl apply -f config/samples/cloudflare_v1alpha1_zone.yaml
+kubectl get zone example-zone -o yaml   # check Ready condition + cloudflareMetadata.zoneID
 ```
 
 ---
@@ -302,6 +308,9 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
 - R2 and KV are account-level — no `zoneRef`
 - `LoadBalancer` depends on `HealthCheck` — do health checks first
 
+**Also in Phase 3:**
+- [ ] OpenAPI-to-CRD generator skeleton (`generator/` package) — parses the [Cloudflare OpenAPI spec](https://github.com/cloudflare/api-schemas) to generate CRD type definitions and reconciler skeletons; intended to accelerate the long tail of resources beyond what is hand-written in Phase 2
+
 ---
 
 ### Phase 4 — Ecosystem & Graduation
@@ -320,18 +329,6 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
 - [ ] Engage Cloudflare developer relations for official backing
 - [ ] CNCF landscape submission
 
----
-
-## Total Timeline
-
-| Phase | Duration | Cumulative |
-|-------|----------|------------|
-| Phase 1: Foundation | 3–4 weeks | 4 weeks |
-| Phase 2: Core Controllers | 6–8 weeks | 12 weeks |
-| Phase 3: Expanded Surface | 6–8 weeks | 20 weeks |
-| Phase 4: Ecosystem | 4–6 weeks | 26 weeks |
-| **Total (solo)** | **~5–6 months** | |
-| **Total (2–3 contributors)** | **~3–4 months** | |
 
 ---
 
@@ -394,7 +391,7 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 
 ## Current Status
 
-> **Phase 1 complete. Phase 2 `feat/shared-client` complete.**
-> Next branch: `feat/ci` (GitHub Actions) or `feat/zone-controller` — can proceed in parallel.
-> `feat/zone-controller` depends on `feat/shared-client` (now done). `feat/ci` is independent.
+> **Phase 1 complete. Phase 2 `feat/shared-client` and `feat/zone-controller` complete.**
+> Next branch: `feat/ci` (GitHub Actions) or `feat/dns-record-controller`.
+> `feat/dns-record-controller` depends on `feat/zone-controller` (now done). `feat/ci` is independent.
 > Last updated: March 2026

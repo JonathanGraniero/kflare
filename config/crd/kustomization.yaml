@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/cloudflare.cloudflare.k8s.io_cloudflareaccounts.yaml
+- bases/cloudflare.cloudflare.k8s.io_zones.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -16,3 +16,9 @@ testbin/
 # Env
 .env
 CLAUDE.md
+
+# Coverage
+*.out
+
+# Claude Code
+.claude/
