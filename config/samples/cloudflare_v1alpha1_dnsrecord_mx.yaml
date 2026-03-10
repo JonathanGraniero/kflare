@@ -1,0 +1,15 @@
+apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+kind: DNSRecord
+metadata:
+  name: mx-record
+  namespace: kflare-system
+  annotations:
+    cloudflare.k8s.io/deletion-policy: retain
+spec:
+  zoneRef:
+    name: example-zone  # must reference an existing Zone CR in the same namespace
+  name: example.com
+  type: MX
+  content: mail.example.com
+  priority: 10
+  ttl: 300
