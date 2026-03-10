@@ -10,6 +10,18 @@ The goal is to fill a gap in the ecosystem: existing community projects (adyanth
 
 ---
 
+## Code Quality Standards
+
+This is a **public, production-grade repository**. Every line of code must meet production standards — no hacks, no test shortcuts, no stubs.
+
+- **No shortcut implementations:** If a function needs real logic, write real logic. Do not write placeholder implementations that satisfy tests without being correct.
+- **Tests must reflect real behaviour:** Tests exist to verify correctness, not to inflate coverage metrics. Fake/mock objects must faithfully represent the contracts they replace.
+- **Readability over cleverness:** Code will be read by contributors unfamiliar with the codebase. Prefer explicit, well-documented patterns.
+- **Consistent patterns across controllers:** Each new controller must follow the same structure as existing ones. Extract shared logic into `pkg/` before duplicating it.
+- **Test coverage target:** Aim for ≥95% meaningful coverage on all `pkg/` and `internal/controller/` packages. `cmd/` and generated files are excluded.
+
+---
+
 ## Architecture & Key Decisions
 
 ### API Group
@@ -78,7 +90,7 @@ With:
 ## Phased Implementation Plan
 
 ### Phase 1 — Foundation & Scaffolding
-**Status:** 🔶 Partial — core done, deferred items moved to later phases
+**Status:** ✅ Complete
 
 **Goals:**
 - [x] Initialize repo with kubebuilder scaffolding (`kubebuilder init --domain cloudflare.k8s.io`)
@@ -90,12 +102,8 @@ With:
   - Tested live against real Cloudflare account ✅
 - [x] Makefile targets: `generate`, `manifests`, `build`, `run`, `test` (kubebuilder-generated)
 - [x] Local dev environment: `local/setup.sh`, `local/teardown.sh`, kind cluster config
-- [ ] `pkg/cloudflare/client.go` — shared CF client wrapper (deferred: will build alongside Phase 2 controllers)
-- [ ] `pkg/reconciler/base.go` — shared reconciler interface (deferred: will extract once pattern is established across 2+ controllers)
-- [ ] OpenAPI-to-CRD generator skeleton (`generator/` package) — deferred to later
-- [ ] `AdoptedResource` and `FieldExport` CRDs — deferred to Phase 4
-- [ ] GitHub Actions CI — deferred, will add before Phase 2 merge
-- [ ] Base Helm chart — deferred to Phase 4
+- [x] `pkg/cloudflare/client.go` — shared CF client wrapper (completed in `feat/shared-client`)
+- [x] `pkg/reconciler/base.go` — shared reconciler helpers (completed in `feat/shared-client`)
 
 **Actual file layout (differs from original plan):**
 - `api/v1alpha1/` (not `apis/`) — kubebuilder convention
@@ -105,7 +113,7 @@ With:
 ---
 
 ### Phase 2 — Core Resource Controllers
-**Status:** 🔲 Not started
+**Status:** 🔶 In progress — `feat/shared-client` and `feat/zone-controller` complete, remaining branches not started
 
 Each feature below is developed on its own branch and merged independently once tested.
 Branch naming convention: `feat/<name>` (e.g. `feat/shared-client`, `feat/zone-controller`)
@@ -115,18 +123,25 @@ Branch naming convention: `feat/<name>` (e.g. `feat/shared-client`, `feat/zone-c
 #### Branch: `feat/shared-client`
 **Depends on:** main (Phase 1)
 **Merges into:** main (before any controller branch starts)
+**Status:** ✅ Complete
 
-Shared infrastructure that all Phase 2 controllers will use. Build this first.
+Shared infrastructure that all Phase 2 controllers will use.
 
-- [ ] `pkg/cloudflare/client.go` — thin wrapper around cloudflare-go SDK
-  - Constructor that accepts an API token string
-  - Exposes typed methods per resource (DNS, Zone, Tunnel, Workers)
-  - Returns structured errors that controllers can classify as terminal vs retryable
-- [ ] `pkg/reconciler/base.go` — shared reconciler helpers
-  - `SetCondition()` helper (wraps `meta.SetStatusCondition`)
-  - `IsTerminalError()` classifier
-  - Finalizer add/remove helpers
-- [ ] Unit tests for client error classification
+- [x] `pkg/cloudflare/client.go` — thin wrapper around cloudflare-go SDK
+  - `New(token string) (*Client, error)` constructor
+  - `*Client` embeds `*cloudflare.API` — satisfies any narrow per-controller interface automatically
+  - Production implementation; tests inject fakes via narrow interfaces
+- [x] `pkg/cloudflare/errors.go` — error classification
+  - `IsTerminalError(err)` — true for 401/403/404/4xx (stop requeuing)
+  - `IsNotFound(err)` — true for 404 specifically
+  - `IsRateLimit(err)` — true for 429 (apply back-off)
+- [x] `pkg/reconciler/base.go` — shared reconciler helpers
+  - `SetCondition()` — wraps `meta.SetStatusCondition`, always sets `ObservedGeneration`
+  - `EnsureFinalizer()` / `RemoveFinalizer()` — idempotent finalizer lifecycle
+  - `Finalizer` constant — `"cloudflare.k8s.io/finalizer"`
+- [x] Unit tests — 100% coverage on both packages; controller updated to use shared helpers
+
+**Design note:** Each controller declares its own narrow interface (e.g. `CloudflareAccountAPI`) for testability. `*cfpkg.Client` satisfies all such interfaces because it embeds `*cloudflare.API`.
 
 **Test locally:** `make test` — no cluster needed
 
@@ -152,25 +167,35 @@ Shared infrastructure that all Phase 2 controllers will use. Build this first.
 #### Branch: `feat/zone-controller`
 **Depends on:** `feat/shared-client`
 **Merges into:** main
+**Status:** ✅ Complete
 
 `Zone` is the root resource — every other resource references it via `zoneRef`.
 
-- [ ] `api/v1alpha1/zone_types.go`
-  - `spec`: `name` (domain), `accountRef`, `plan` (free/pro/business), `settings`
+- [x] `api/v1alpha1/zone_types.go`
+  - `spec`: `name` (domain), `accountRef`, `plan` (free/pro/business), `type` (full/partial)
   - `status.conditions`, `status.cloudflareMetadata` (zone ID, name servers, status)
-- [ ] `internal/controller/zone_controller.go`
+- [x] `internal/controller/zone_controller.go`
   - Create / read / update / delete lifecycle
-  - Drift detection on zone settings
+  - Drift detection on zone type
   - Finalizer: `cloudflare.k8s.io/finalizer`
   - Deletion policy annotation: `retain | delete`
-- [ ] Unit tests (mocked CF client)
-- [ ] `config/samples/zone.yaml`
-- [ ] Local test: apply sample, verify zone appears in Cloudflare dashboard
+  - Watch on CloudflareAccount → re-triggers zones when account heals
+- [x] Unit tests (mocked CF client, 96.2% coverage)
+- [x] `config/samples/cloudflare_v1alpha1_zone.yaml`
+- [x] Bug fix: `pkg/cloudflare/errors.go` — `errors.As` targets must use pointer types
+
+**Zone-specific design notes:**
+- `ZoneAPI` interface: `CreateZone/ZoneDetails/ListZones/DeleteZone/EditZone` (all on `*cf.API`)
+- `*cfpkg.Client` satisfies `ZoneAPI` because it embeds `*cf.API`
+- List→adopt pre-existing zones before creating new ones
+- Get→NotFound path recreates externally-deleted zones
+- cloudflare-go returns pointer error types (`*AuthenticationError` etc.) from its HTTP layer;
+  `errors.As` targets must be pointer types too — see `pkg/cloudflare/errors.go` comments
 
 **Test locally:**
 ```sh
-kubectl apply -f config/samples/zone.yaml
-kubectl get zone -o yaml   # check Ready condition + cloudflareMetadata.zoneID
+kubectl apply -f config/samples/cloudflare_v1alpha1_zone.yaml
+kubectl get zone example-zone -o yaml   # check Ready condition + cloudflareMetadata.zoneID
 ```
 
 ---
@@ -283,6 +308,9 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
 - R2 and KV are account-level — no `zoneRef`
 - `LoadBalancer` depends on `HealthCheck` — do health checks first
 
+**Also in Phase 3:**
+- [ ] OpenAPI-to-CRD generator skeleton (`generator/` package) — parses the [Cloudflare OpenAPI spec](https://github.com/cloudflare/api-schemas) to generate CRD type definitions and reconciler skeletons; intended to accelerate the long tail of resources beyond what is hand-written in Phase 2
+
 ---
 
 ### Phase 4 — Ecosystem & Graduation
@@ -301,18 +329,6 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
 - [ ] Engage Cloudflare developer relations for official backing
 - [ ] CNCF landscape submission
 
----
-
-## Total Timeline
-
-| Phase | Duration | Cumulative |
-|-------|----------|------------|
-| Phase 1: Foundation | 3–4 weeks | 4 weeks |
-| Phase 2: Core Controllers | 6–8 weeks | 12 weeks |
-| Phase 3: Expanded Surface | 6–8 weeks | 20 weeks |
-| Phase 4: Ecosystem | 4–6 weeks | 26 weeks |
-| **Total (solo)** | **~5–6 months** | |
-| **Total (2–3 contributors)** | **~3–4 months** | |
 
 ---
 
@@ -375,6 +391,7 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 
 ## Current Status
 
-> **Phase 1 core complete. Starting Phase 2.**
-> Next branch: `feat/shared-client` — build `pkg/cloudflare/client.go` and `pkg/reconciler/base.go` before any controller work begins.
+> **Phase 1 complete. Phase 2 `feat/shared-client` and `feat/zone-controller` complete.**
+> Next branch: `feat/ci` (GitHub Actions) or `feat/dns-record-controller`.
+> `feat/dns-record-controller` depends on `feat/zone-controller` (now done). `feat/ci` is independent.
 > Last updated: March 2026
