@@ -32,8 +32,15 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Download envtest binaries
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+          setup-envtest use 1.29.0 --bin-dir ./bin/k8s
+
       - name: Test
-        run: go test ./... -count=1
+        run: |
+          export KUBEBUILDER_ASSETS=$(setup-envtest use 1.29.0 --bin-dir ./bin/k8s -p path)
+          go test $(go list ./... | grep -v /test/e2e) -count=1
 
       - name: Check generated files are up to date
         run: |
