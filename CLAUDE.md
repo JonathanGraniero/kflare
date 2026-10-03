@@ -113,7 +113,7 @@ With:
 ---
 
 ### Phase 2 — Core Resource Controllers
-**Status:** 🔶 In progress — everything except `feat/tunnel-configuration-controller` complete
+**Status:** ✅ Complete
 
 Each feature below is developed on its own branch and merged independently once tested.
 Branch naming convention: `feat/<name>` (e.g. `feat/shared-client`, `feat/zone-controller`)
@@ -280,20 +280,34 @@ kubectl get secret example-tunnel-token -o yaml  # TUNNEL_TOKEN for cloudflared
 #### Branch: `feat/tunnel-configuration-controller`
 **Depends on:** `feat/tunnel-controller`
 **Merges into:** main
+**Status:** ✅ Complete
 
-- [ ] `api/v1alpha1/tunnelconfiguration_types.go`
-  - `spec`: `tunnelRef`, `ingress[]` (hostname → service mappings)
-  - `status.conditions`
-- [ ] `internal/controller/tunnelconfiguration_controller.go`
-  - Pushes ingress config to CF API via tunnel configuration endpoint
-  - Drift detection on ingress rules
-- [ ] Unit tests
-- [ ] `config/samples/tunnelconfiguration.yaml`
+- [x] `api/v1alpha1/tunnelconfiguration_types.go`
+  - `spec`: `tunnelRef` (immutable, same namespace), `ingress[]` (hostname, path, service, originRequest subset), `defaultService` (default `http_status:404`)
+  - `status.conditions`, `status.cloudflareMetadata` (tunnel ID last written, config version)
+- [x] `internal/controller/tunnelconfiguration_controller.go`
+  - Get config → compare → Put only on drift; kflare owns the whole configuration
+  - Appends `defaultService` as the catch-all rule Cloudflare requires
+  - Oldest TunnelConfiguration per Tunnel owns it; others report `TunnelAlreadyConfigured` and retry every minute
+  - Finalizer: resets the tunnel to the catch-all rule (unless `retain`); skipped when the Tunnel resource is gone
+  - Watches Tunnels → requeues configurations when a Tunnel becomes ready or is recreated
+- [x] Unit tests (95.9% package coverage)
+- [x] `config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml`
+
+**TunnelConfiguration-specific design notes:**
+- `TunnelConfigurationAPI` interface: `GetTunnelConfiguration/UpdateTunnelConfiguration` (account-scoped `rc`)
+- Cloudflare rejects a config whose last rule has a hostname or path, and rejects an empty rule list (verified live)
+- Cloudflare returns the config exactly as written plus `warp-routing: {enabled: false}` and an empty top-level
+  `originRequest`; both count as "unchanged" (verified live — an idle reconcile does not bump the version)
+- `originRequest` timeouts are not exposed: cloudflare-go v0.89 `TunnelDuration` marshals float seconds but only
+  unmarshals integers
+- Each hostname still needs a proxied CNAME to `<tunnelID>.cfargotunnel.com` (use a `DNSRecord`)
+- Drift is only corrected when something triggers a reconcile (spec change, Tunnel change, resync period)
 
 **Test locally:**
 ```sh
-kubectl apply -f config/samples/tunnelconfiguration.yaml
-# Verify routing config visible in Cloudflare Zero Trust dashboard → Tunnels
+kubectl apply -f config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml
+kubectl get tunnelconfiguration -o yaml   # check Ready + cloudflareMetadata.version
 ```
 
 ---
@@ -445,6 +459,6 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 
 ## Current Status
 
-> **Phase 1 complete. Phase 2 complete except `feat/tunnel-configuration-controller`.**
-> Next branch: `feat/tunnel-configuration-controller`, then a `WorkerRoute` CRD.
+> **Phase 1 and Phase 2 complete.**
+> Next branch: a `WorkerRoute` CRD (`zoneRef` + `pattern` + `workerScriptRef`), then Phase 3.
 > Last updated: October 2026
