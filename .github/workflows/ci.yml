@@ -10,6 +10,9 @@ jobs:
   build:
     name: Build & Test
     runs-on: ubuntu-latest
+    env:
+      # Fail instead of silently downloading a newer Go when a tool needs one.
+      GOTOOLCHAIN: local
 
     steps:
       - name: Checkout
@@ -29,20 +32,9 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Download envtest binaries
-        run: |
-          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-          setup-envtest use 1.29.0 --bin-dir ./bin/k8s
-
+      # Runs manifests, generate, fmt and vet first, then the unit and envtest suites.
       - name: Test
-        run: |
-          export KUBEBUILDER_ASSETS=$(setup-envtest use 1.29.0 --bin-dir ./bin/k8s -p path)
-          go test $(go list ./... | grep -v /test/e2e) -count=1
+        run: make test
 
-      - name: Check generated files are up to date
-        run: |
-          make manifests generate
-          git diff --exit-code
+      - name: Check generated and formatted files are committed
+        run: git diff --exit-code

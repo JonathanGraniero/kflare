@@ -1,9 +1,3 @@
-
-# Use Go 1.22 installed in home directory
-export GOROOT := $(HOME)/go-dist/go
-export GOPATH := $(HOME)/go
-export PATH := $(GOROOT)/bin:$(GOPATH)/bin:$(PATH)
-
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
@@ -53,7 +47,6 @@ help: ## Display this help.
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 	@# Stamp the api-approved annotation required by k8s.io protected groups (envtest + kubectl apply)
-
 	@for f in config/crd/bases/*.yaml; do \
 		if ! grep -q "api-approved.kubernetes.io" "$$f"; then \
 			sed -i 's|annotations:|annotations:\n    api-approved.kubernetes.io: unapproved|' "$$f"; \
@@ -177,7 +170,9 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.3.0
 CONTROLLER_TOOLS_VERSION ?= v0.14.0
-ENVTEST_VERSION ?= latest
+# setup-envtest is only tagged from v0.24, which needs a newer Go than go.mod targets.
+# release-0.19 builds with Go 1.22 and downloads binaries from the GitHub release index.
+ENVTEST_VERSION ?= release-0.19
 GOLANGCI_LINT_VERSION ?= v1.54.2
 
 .PHONY: kustomize
