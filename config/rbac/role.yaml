@@ -71,6 +71,32 @@ rules:
 - apiGroups:
   - cloudflare.cloudflare.k8s.io
   resources:
+  - tunnelconfigurations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - tunnelconfigurations/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - tunnelconfigurations/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
   - tunnels
   verbs:
   - create

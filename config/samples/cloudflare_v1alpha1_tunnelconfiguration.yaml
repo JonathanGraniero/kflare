@@ -1,0 +1,21 @@
+apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+kind: TunnelConfiguration
+metadata:
+  name: example-tunnel-config
+  namespace: default
+spec:
+  # The Tunnel (same namespace) whose ingress rules this resource owns.
+  tunnelRef:
+    name: example-tunnel
+  # Each hostname also needs a proxied CNAME record pointing at
+  # <tunnelID>.cfargotunnel.com (see the Tunnel's status for the ID).
+  ingress:
+    - hostname: app.example.com
+      service: http://my-app.default.svc.cluster.local:80
+    - hostname: api.example.com
+      path: ^/v1/
+      service: https://my-api.default.svc.cluster.local:443
+      originRequest:
+        originServerName: api.example.com
+  # Requests that match no rule. Defaults to http_status:404.
+  defaultService: http_status:404
