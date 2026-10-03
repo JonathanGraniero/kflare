@@ -113,7 +113,7 @@ With:
 ---
 
 ### Phase 2 — Core Resource Controllers
-**Status:** 🔶 In progress — `feat/shared-client` and `feat/zone-controller` complete, remaining branches not started
+**Status:** 🔶 In progress — `feat/shared-client`, `feat/ci`, `feat/zone-controller`, `feat/dns-record-controller` and `feat/tunnel-controller` complete
 
 Each feature below is developed on its own branch and merged independently once tested.
 Branch naming convention: `feat/<name>` (e.g. `feat/shared-client`, `feat/zone-controller`)
@@ -150,13 +150,14 @@ Shared infrastructure that all Phase 2 controllers will use.
 #### Branch: `feat/ci`
 **Depends on:** main (can be done anytime)
 **Merges into:** main
+**Status:** ✅ Complete
 
-- [ ] `.github/workflows/ci.yml`
-  - `go build ./...`
-  - `go vet ./...`
-  - `make manifests` + diff check (ensures generated files are committed)
-  - `make test`
-- [ ] `.github/workflows/e2e.yml` (manual trigger only, requires secrets)
+- [x] `.github/workflows/ci.yml`
+  - `go mod tidy` check, `go build ./...`
+  - `make test` (runs manifests, generate, fmt, vet, unit and envtest suites)
+  - `git diff --exit-code` afterwards (ensures generated and formatted files are committed)
+  - `GOTOOLCHAIN=local`; `ENVTEST_VERSION` pinned to `release-0.19` (tagged setup-envtest releases need a newer Go)
+- [x] `.github/workflows/e2e.yml` (manual trigger only, requires secrets)
   - `CF_API_TOKEN`, `CF_ACCOUNT_ID` as GitHub Actions secrets
   - Spins up kind cluster, runs `//go:build e2e` tests
 
@@ -238,22 +239,40 @@ kubectl get dnsrecord -o yaml   # check Ready + cloudflareMetadata.recordID
 #### Branch: `feat/tunnel-controller`
 **Depends on:** `feat/shared-client`
 **Merges into:** main (independent of zone controller)
+**Status:** ✅ Complete
 
-- [ ] `api/v1alpha1/tunnel_types.go`
-  - `spec`: `name`, `accountRef`, `credentialsSecretRef` (where to store the tunnel token)
-  - `status.conditions`, `status.cloudflareMetadata` (tunnel ID, tunnel token secret name)
-- [ ] `internal/controller/tunnel_controller.go`
-  - Creates named tunnel via CF API
-  - Stores tunnel credentials in a K8s Secret (referenced by `credentialsSecretRef`)
-  - Finalizer: deletes tunnel on CR deletion (unless `retain`)
-- [ ] Unit tests
-- [ ] `config/samples/tunnel.yaml`
+- [x] `api/v1alpha1/tunnel_types.go`
+  - `spec`: `name` (immutable), `accountRef` (immutable), `credentialsSecretRef.name` (Secret in the Tunnel's namespace)
+  - `status.conditions`, `status.cloudflareMetadata` (tunnel ID, health), `status.credentialsSecretName`
+- [x] `internal/controller/tunnel_controller.go`
+  - Get by status ID → List→adopt by name → Create (remotely managed, `config_src=cloudflare`)
+  - Recreates tunnels deleted outside kflare (404, or `deleted_at` set)
+  - Writes the tunnel token to an owned Secret under `TUNNEL_TOKEN`; refuses to touch a Secret it does not own
+  - Deletes the old Secret when `credentialsSecretRef` changes
+  - Finalizer: removes connections (disconnecting any running cloudflared) and deletes the tunnel (unless `retain`)
+  - Watches owned Secrets and CloudflareAccounts
+- [x] `internal/controller/credentials.go` — shared account → Secret → token resolution
+- [x] Unit tests (95.8% package coverage)
+- [x] `config/samples/cloudflare_v1alpha1_tunnel.yaml`
+
+**Tunnel-specific design notes:**
+- `TunnelAPI` interface: `CreateTunnel/GetTunnel/ListTunnels/GetTunnelToken/CleanupTunnelConnections/DeleteTunnel`
+- `rc` is `cloudflare.AccountIdentifier(accountID)` — account-scoped
+- cloudflare-go v0.89 `UpdateTunnel` omits the tunnel ID from the request path, so renames are impossible;
+  `spec.name` and `spec.accountRef` are immutable via CEL (`self == oldSelf`)
+- `CreateTunnel` requires a secret client-side; the controller sends 32 random bytes (base64) and never stores them
+- Deletion calls `CleanupTunnelConnections` first, which drops even active connectors, then `DeleteTunnel`;
+  a running cloudflared is disconnected immediately (verified live)
+- `GetTunnel` on a deleted tunnel returns success with `deleted_at` set, not 404 (verified live)
+- Credential and Secret-conflict failures requeue after 1 minute (the API token Secret is not watched)
+- Needs an API token with the account-level **Cloudflare Tunnel: Edit** permission
+- Follow-up: move the zone and DNS record controllers onto `resolveAccountToken`
 
 **Test locally:**
 ```sh
-kubectl apply -f config/samples/tunnel.yaml
-kubectl get tunnel -o yaml          # check tunnel ID in status
-kubectl get secret -n kflare-system  # verify credentials secret was created
+kubectl apply -f config/samples/cloudflare_v1alpha1_tunnel.yaml
+kubectl get tunnel example-tunnel -o yaml        # check Ready + cloudflareMetadata.tunnelID
+kubectl get secret example-tunnel-token -o yaml  # TUNNEL_TOKEN for cloudflared
 ```
 
 ---
@@ -402,6 +421,6 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 
 ## Current Status
 
-> **Phase 1 complete. Phase 2 `feat/shared-client`, `feat/zone-controller`, and `feat/dns-record-controller` complete.**
-> Next branch: `feat/tunnel-controller` (independent of zone/DNS) or `feat/ci` (GitHub Actions, independent).
-> Last updated: March 2026
+> **Phase 1 complete. Phase 2 `feat/shared-client`, `feat/ci`, `feat/zone-controller`, `feat/dns-record-controller`, and `feat/tunnel-controller` complete.**
+> Next branch: `feat/tunnel-configuration-controller` (needs the Tunnel controller) or `feat/worker-script-controller` (independent).
+> Last updated: October 2026

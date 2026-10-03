@@ -4,6 +4,8 @@
 resources:
 - bases/cloudflare.cloudflare.k8s.io_cloudflareaccounts.yaml
 - bases/cloudflare.cloudflare.k8s.io_zones.yaml
+- bases/cloudflare.cloudflare.k8s.io_dnsrecords.yaml
+- bases/cloudflare.cloudflare.k8s.io_tunnels.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 patches:

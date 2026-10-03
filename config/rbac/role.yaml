@@ -9,8 +9,12 @@ rules:
   resources:
   - secrets
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - cloudflare.cloudflare.k8s.io
@@ -60,6 +64,32 @@ rules:
   - cloudflare.cloudflare.k8s.io
   resources:
   - dnsrecords/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - tunnels
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - tunnels/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - tunnels/status
   verbs:
   - get
   - patch
