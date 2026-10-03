@@ -7,6 +7,14 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - create
@@ -90,6 +98,32 @@ rules:
   - cloudflare.cloudflare.k8s.io
   resources:
   - tunnels/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - workerscripts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - workerscripts/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - cloudflare.cloudflare.k8s.io
+  resources:
+  - workerscripts/status
   verbs:
   - get
   - patch

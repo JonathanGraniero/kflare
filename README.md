@@ -21,9 +21,10 @@ Early development. Phase 1 (foundation) is complete and Phase 2 (core resources)
 - `Zone` — creates or adopts a DNS zone and reports its name servers and activation status
 - `DNSRecord` — manages a record in a `Zone`, correcting drift in content, TTL, proxying, priority, comment, tags and structured data
 - `Tunnel` — creates or adopts a remotely-managed Cloudflare Tunnel and writes its token to a Secret under `TUNNEL_TOKEN`, ready for `cloudflared tunnel run` (see [the sample](config/samples/cloudflare_v1alpha1_tunnel.yaml))
+- `WorkerScript` — uploads a Worker from inline code or a ConfigMap, with plain text, secret (from a Kubernetes Secret), KV and R2 bindings, and re-uploads it when it is changed outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_workerscript.yaml))
 
 **Coming in Phase 2:**
-- `TunnelConfiguration`, `WorkerScript`
+- `TunnelConfiguration`
 
 ## Prerequisites
 
@@ -32,6 +33,7 @@ Early development. Phase 1 (foundation) is complete and Phase 2 (core resources)
 - kind (for local development)
 - A Cloudflare account and API token with **Edit zone DNS** permissions
   - `Tunnel` also needs the account-level **Cloudflare Tunnel: Edit** permission
+  - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission
 
 ## Local Development
 
