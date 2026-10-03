@@ -14,7 +14,7 @@ Instead of clicking through the Cloudflare dashboard or scripting API calls, you
 
 ## Status
 
-Early development. Phase 1 (foundation) is complete and Phase 2 (core resources) is in progress. See [CLAUDE.md](./CLAUDE.md) for the full phased implementation plan.
+Early development. Phase 1 (foundation) and Phase 2 (core resources) are complete. See [CLAUDE.md](./CLAUDE.md) for the full phased implementation plan.
 
 **Currently implemented:**
 - `CloudflareAccount` — cluster-scoped credential store, validates your API token against the Cloudflare API on reconcile
@@ -22,9 +22,10 @@ Early development. Phase 1 (foundation) is complete and Phase 2 (core resources)
 - `DNSRecord` — manages a record in a `Zone`, correcting drift in content, TTL, proxying, priority, comment, tags and structured data
 - `Tunnel` — creates or adopts a remotely-managed Cloudflare Tunnel and writes its token to a Secret under `TUNNEL_TOKEN`, ready for `cloudflared tunnel run` (see [the sample](config/samples/cloudflare_v1alpha1_tunnel.yaml))
 - `TunnelConfiguration` — owns a Tunnel's ingress rules (hostname → service), pushes them to Cloudflare and reverts changes made outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml))
+- `WorkerScript` — uploads a Worker from inline code or a ConfigMap, with plain text, secret (from a Kubernetes Secret), KV and R2 bindings, and re-uploads it when it is changed outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_workerscript.yaml))
 
-**Coming in Phase 2:**
-- `WorkerScript`
+**Planned next:**
+- `WorkerRoute` — routes a zone URL pattern to a `WorkerScript`
 
 ## Prerequisites
 
@@ -33,6 +34,7 @@ Early development. Phase 1 (foundation) is complete and Phase 2 (core resources)
 - kind (for local development)
 - A Cloudflare account and API token with **Edit zone DNS** permissions
   - `Tunnel` also needs the account-level **Cloudflare Tunnel: Edit** permission
+  - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission
 
 ## Local Development
 

@@ -113,7 +113,7 @@ With:
 ---
 
 ### Phase 2 — Core Resource Controllers
-**Status:** 🔶 In progress — everything except `feat/worker-script-controller` complete
+**Status:** ✅ Complete
 
 Each feature below is developed on its own branch and merged independently once tested.
 Branch naming convention: `feat/<name>` (e.g. `feat/shared-client`, `feat/zone-controller`)
@@ -315,17 +315,41 @@ kubectl get tunnelconfiguration -o yaml   # check Ready + cloudflareMetadata.ver
 #### Branch: `feat/worker-script-controller`
 **Depends on:** `feat/shared-client`
 **Merges into:** main (independent of zone/tunnel)
-**Note:** Requires a separate CF API token with Workers permissions
+**Status:** ✅ Complete
 
-- [ ] `api/v1alpha1/workerscript_types.go`
-  - `spec`: `accountRef`, `scriptName`, `scriptContent` or `scriptConfigMapRef`, `bindings[]`, `routes[]`
-  - `status.conditions`, `status.cloudflareMetadata` (script etag, deployment ID)
-- [ ] `internal/controller/workerscript_controller.go`
-  - Upload script content via Workers API
-  - Manage route bindings
-  - Drift detection on script content (etag comparison)
-- [ ] Unit tests
-- [ ] `config/samples/workerscript.yaml`
+- [x] `api/v1alpha1/workerscript_types.go`
+  - `spec`: `name` (immutable), `accountRef` (immutable), exactly one of `script` / `scriptConfigMapRef {name, key}`,
+    `format` (`module` default, or `serviceWorker`), `compatibilityDate`, `compatibilityFlags`,
+    `bindings[]` (exactly one of `plainText`, `secretKeyRef {name, key}`, `kvNamespaceID`, `r2BucketName`)
+  - `status.conditions`, `status.cloudflareMetadata` (etag, modifiedOn at full precision), `status.appliedHash`
+- [x] `internal/controller/workerscript_controller.go`
+  - Uploads when the desired-state hash changes, when the Worker is missing, or when Cloudflare's `modified_on`
+    differs from kflare's last upload
+  - Watches ConfigMaps (script source), Secrets (secret bindings) and CloudflareAccounts
+  - Finalizer: deletes the Worker (unless `retain`); a Worker kflare never uploaded is left alone
+- [x] Unit tests (96.4% package coverage)
+- [x] `config/samples/cloudflare_v1alpha1_workerscript.yaml`
+
+**WorkerScript-specific design notes:**
+- `WorkerScriptAPI` interface: `UploadWorker/ListWorkers/DeleteWorker` (account-level `rc` required)
+- Cloudflare's etag hashes the code only: it stays the same for an identical re-upload *and* for a binding-only
+  change, so it cannot detect drift (verified live). `modified_on` changes on every upload and matches between the
+  upload response and `ListWorkers`, so it is the drift signal
+- `modified_on` has microsecond precision; it is stored as an RFC 3339 string because `metav1.Time` truncates
+  to seconds and would never match
+- The hash covers script, format, compatibility settings and bindings; secret bindings contribute the Secret's
+  UID/resourceVersion, never the value
+- Any change made outside kflare triggers one re-upload, including toggling the workers.dev subdomain (verified
+  live); the re-upload keeps the subdomain enabled
+- Routes are not part of WorkerScript: they are zone-level resources with their own IDs. Planned as a separate
+  `WorkerRoute` CRD (`zoneRef` + `pattern` + `workerScriptRef`) following the Zone → DNSRecord pattern
+
+**Test locally:**
+```sh
+kubectl create secret generic example-worker-secrets --from-literal=api-key=...
+kubectl apply -f config/samples/cloudflare_v1alpha1_workerscript.yaml
+kubectl get workerscript example-worker -o yaml   # check Ready + cloudflareMetadata.modifiedOn
+```
 
 ---
 
@@ -435,6 +459,6 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 
 ## Current Status
 
-> **Phase 1 complete. Phase 2 complete except `feat/worker-script-controller`.**
-> Next branch: `feat/worker-script-controller`.
+> **Phase 1 and Phase 2 complete.**
+> Next branch: a `WorkerRoute` CRD (`zoneRef` + `pattern` + `workerScriptRef`), then Phase 3.
 > Last updated: October 2026
