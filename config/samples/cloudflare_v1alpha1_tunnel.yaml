@@ -1,0 +1,16 @@
+apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+kind: Tunnel
+metadata:
+  name: example-tunnel
+  namespace: default
+  annotations:
+    # Keep the tunnel in Cloudflare when this resource is deleted.
+    # Remove the annotation to delete it from Cloudflare too.
+    cloudflare.k8s.io/deletion-policy: retain
+spec:
+  name: example-tunnel
+  accountRef:
+    name: my-account
+  # kflare writes the tunnel token to this Secret under TUNNEL_TOKEN.
+  credentialsSecretRef:
+    name: example-tunnel-token
