@@ -1,0 +1,15 @@
+apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+kind: DNSRecord
+metadata:
+  name: www-a-record
+  namespace: kflare-system
+  annotations:
+    cloudflare.k8s.io/deletion-policy: retain
+spec:
+  zoneRef:
+    name: example-zone  # must reference an existing Zone CR in the same namespace
+  name: www.example.com
+  type: A
+  content: "1.2.3.4"
+  ttl: 1        # 1 = automatic TTL
+  proxied: true

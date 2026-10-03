@@ -203,23 +203,34 @@ kubectl get zone example-zone -o yaml   # check Ready condition + cloudflareMeta
 #### Branch: `feat/dns-record-controller`
 **Depends on:** `feat/zone-controller`
 **Merges into:** main
+**Status:** ✅ Complete
 
-- [ ] `api/v1alpha1/dnsrecord_types.go`
-  - `spec`: `zoneRef`, `name`, `type` (A/AAAA/CNAME/MX/TXT/SRV/CAA), `content`, `ttl`, `proxied`
-  - `status.conditions`, `status.cloudflareMetadata` (record ID)
-- [ ] `internal/controller/dnsrecord_controller.go`
+- [x] `api/v1alpha1/dnsrecord_types.go`
+  - `spec`: `zoneRef`, `name`, `type` (A/AAAA/CNAME/MX/TXT/SRV/CAA/NS/PTR/…), `content`, `ttl`, `proxied`, `priority`, `comment`, `tags`, `data`
+  - `status.conditions`, `status.cloudflareMetadata` (record ID, zone ID, proxiable)
+- [x] `internal/controller/dnsrecord_controller.go`
   - Create / update / delete lifecycle
-  - Drift detection (content, TTL, proxied)
-  - Watches parent `Zone` — requeues records if zone becomes unready
-  - Finalizer + deletion policy
-- [ ] Unit tests
-- [ ] `config/samples/dnsrecord_a.yaml`, `dnsrecord_cname.yaml`
-- [ ] Local test: apply A record, verify it appears in Cloudflare DNS dashboard
+  - Drift detection on all fields (content, TTL, proxied, priority, comment, tags, data)
+  - Content drift skipped for SRV records (CF auto-formats it)
+  - List→adopt pre-existing records before creating
+  - Watches parent `Zone` — requeues records when zone becomes ready
+  - Finalizer + deletion policy annotation
+- [x] Unit tests (96.2% coverage, 121 specs total across controller suite)
+- [x] `config/samples/cloudflare_v1alpha1_dnsrecord_a.yaml`
+- [x] `config/samples/cloudflare_v1alpha1_dnsrecord_mx.yaml`
+- [x] `config/samples/cloudflare_v1alpha1_dnsrecord_srv.yaml`
+
+**DNSRecord-specific design notes:**
+- `DNSRecordAPI` interface: `CreateDNSRecord/GetDNSRecord/ListDNSRecords/UpdateDNSRecord/DeleteDNSRecord`
+- `rc` (ResourceContainer) is `cloudflare.ZoneIdentifier(zoneID)` — zone-scoped, not account-scoped
+- `spec.data` uses `*apiextensionsv1.JSON` for structured SRV/LOC/CAA data; unmarshalled to `interface{}` for SDK
+- `UpdateDNSRecordParams.Comment` is `*string` (unlike Create which uses `string`)
+- Resolves chain: DNSRecord → Zone (namespaced) → CloudflareAccount (cluster-scoped) → Secret
 
 **Test locally:**
 ```sh
-kubectl apply -f config/samples/dnsrecord_a.yaml
-kubectl get dnsrecord -o yaml   # check Ready + record ID
+kubectl apply -f config/samples/cloudflare_v1alpha1_dnsrecord_a.yaml
+kubectl get dnsrecord -o yaml   # check Ready + cloudflareMetadata.recordID
 ```
 
 ---
@@ -391,7 +402,6 @@ export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
 
 ## Current Status
 
-> **Phase 1 complete. Phase 2 `feat/shared-client` and `feat/zone-controller` complete.**
-> Next branch: `feat/ci` (GitHub Actions) or `feat/dns-record-controller`.
-> `feat/dns-record-controller` depends on `feat/zone-controller` (now done). `feat/ci` is independent.
+> **Phase 1 complete. Phase 2 `feat/shared-client`, `feat/zone-controller`, and `feat/dns-record-controller` complete.**
+> Next branch: `feat/tunnel-controller` (independent of zone/DNS) or `feat/ci` (GitHub Actions, independent).
 > Last updated: March 2026

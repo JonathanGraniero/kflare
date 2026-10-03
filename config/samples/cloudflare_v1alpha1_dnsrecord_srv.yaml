@@ -1,0 +1,23 @@
+apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+kind: DNSRecord
+metadata:
+  name: srv-record
+  namespace: kflare-system
+  annotations:
+    cloudflare.k8s.io/deletion-policy: retain
+spec:
+  zoneRef:
+    name: example-zone  # must reference an existing Zone CR in the same namespace
+  name: _http._tcp.example.com
+  type: SRV
+  ttl: 300
+  # SRV records use the data field instead of content.
+  # The structure matches the Cloudflare API schema for SRV records.
+  data:
+    name: _http._tcp
+    proto: _tcp
+    service: _http
+    target: app.example.com
+    port: 8080
+    weight: 1
+    priority: 10
