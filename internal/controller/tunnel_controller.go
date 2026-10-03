@@ -317,12 +317,12 @@ func (r *TunnelReconciler) handleCFError(ctx context.Context, tunnel *cloudflare
 }
 
 // reconcileDelete handles the deletion lifecycle: unless the retain policy is
-// set, it clears the tunnel's inactive connections and deletes the tunnel
-// from Cloudflare, then removes the finalizer. The credentials Secret is
+// set, it removes the tunnel's connections and deletes the tunnel from
+// Cloudflare, then removes the finalizer. The credentials Secret is
 // garbage-collected through its owner reference in either case.
 //
-// Cloudflare refuses to delete a tunnel that still has active connectors, so
-// deletion keeps retrying until cloudflared is stopped.
+// Removing the connections disconnects any cloudflared still running with
+// this tunnel's token, so deletion does not wait for connectors to stop.
 func (r *TunnelReconciler) reconcileDelete(ctx context.Context, tunnel *cloudflarev1alpha1.Tunnel) (ctrl.Result, error) {
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(tunnel, reconciler.Finalizer) {

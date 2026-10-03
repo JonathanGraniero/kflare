@@ -633,14 +633,14 @@ var _ = Describe("Tunnel Controller", func() {
 			expectTunnelGone()
 		})
 
-		It("keeps the finalizer and returns the error when Cloudflare refuses the delete", func() {
+		It("keeps the finalizer and returns the error when the Cloudflare delete fails", func() {
 			readyEnv(nil)
 			setTunnelStatus(fakeTunnelID, credsName)
 			startDeletion()
 
-			fake := &fakeTunnelAPI{deleteErr: errors.New("tunnel has active connections")}
+			fake := &fakeTunnelAPI{deleteErr: errors.New("cloudflare API unavailable")}
 			_, err := reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
-			Expect(err).To(MatchError(ContainSubstring("active connections")))
+			Expect(err).To(MatchError("cloudflare API unavailable"))
 			Expect(getTunnel().Finalizers).To(ContainElement(reconciler.Finalizer))
 		})
 

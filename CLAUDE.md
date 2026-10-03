@@ -249,7 +249,7 @@ kubectl get dnsrecord -o yaml   # check Ready + cloudflareMetadata.recordID
   - Recreates tunnels deleted outside kflare (404, or `deleted_at` set)
   - Writes the tunnel token to an owned Secret under `TUNNEL_TOKEN`; refuses to touch a Secret it does not own
   - Deletes the old Secret when `credentialsSecretRef` changes
-  - Finalizer: cleans up connections and deletes the tunnel (unless `retain`)
+  - Finalizer: removes connections (disconnecting any running cloudflared) and deletes the tunnel (unless `retain`)
   - Watches owned Secrets and CloudflareAccounts
 - [x] `internal/controller/credentials.go` — shared account → Secret → token resolution
 - [x] Unit tests (95.8% package coverage)
@@ -261,7 +261,9 @@ kubectl get dnsrecord -o yaml   # check Ready + cloudflareMetadata.recordID
 - cloudflare-go v0.89 `UpdateTunnel` omits the tunnel ID from the request path, so renames are impossible;
   `spec.name` and `spec.accountRef` are immutable via CEL (`self == oldSelf`)
 - `CreateTunnel` requires a secret client-side; the controller sends 32 random bytes (base64) and never stores them
-- Cloudflare refuses to delete a tunnel with active connectors, so deletion retries until cloudflared stops
+- Deletion calls `CleanupTunnelConnections` first, which drops even active connectors, then `DeleteTunnel`;
+  a running cloudflared is disconnected immediately (verified live)
+- `GetTunnel` on a deleted tunnel returns success with `deleted_at` set, not 404 (verified live)
 - Credential and Secret-conflict failures requeue after 1 minute (the API token Secret is not watched)
 - Needs an API token with the account-level **Cloudflare Tunnel: Edit** permission
 - Follow-up: move the zone and DNS record controllers onto `resolveAccountToken`
