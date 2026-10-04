@@ -154,9 +154,15 @@ Shared infrastructure that all Phase 2 controllers will use.
   - `make test` (runs manifests, generate, fmt, vet, unit and envtest suites)
   - `git diff --exit-code` afterwards (ensures generated and formatted files are committed)
   - `GOTOOLCHAIN=local`; `ENVTEST_VERSION` pinned to `release-0.19` (tagged setup-envtest releases need a newer Go)
-- [x] `.github/workflows/e2e.yml` (manual trigger only)
-  - Deployment smoke test: builds the image, deploys `config/default` to a kind cluster and checks the
-    manager pod runs. It does not call Cloudflare; a live-API e2e suite is still to do
+- [x] `.github/workflows/e2e.yml` (manual trigger only) runs `make test-e2e`:
+  - Deployment smoke test: builds the image, deploys `config/default` to kind, checks the manager pod is
+    ready with no restarts
+  - Live Cloudflare specs (`test/e2e/cloudflare_test.go`, skipped without credentials): account validation,
+    Tunnel + token Secret, TunnelConfiguration, WorkerScript, then deletion verified on the Cloudflare side.
+    With `CF_E2E_ZONE` also Zone adoption (always `retain`) and a DNSRecord, including a check that an idle
+    reconcile does not write to Cloudflare. Everything is named `kflare-e2e-<run>` and cleaned up even on failure
+  - Needs repo secrets `CF_API_TOKEN`, `CF_ACCOUNT_ID` and variable `CF_E2E_ZONE` (`kflare.dev`, the project's
+    own zone, is the test zone)
 - [x] CI also runs `make lint` and `make docker-build` (the Dockerfile copies source directories explicitly)
 
 **Test locally:** push branch and verify Actions run green
@@ -443,7 +449,8 @@ make test
 # Lint (also run in CI)
 make lint
 
-# Deployment smoke test against a kind cluster named $KIND_CLUSTER (default "kind")
+# e2e: deploys to the kind cluster in the current context ($KIND_CLUSTER, default "kind");
+# runs the live Cloudflare specs when CF_API_TOKEN/CF_ACCOUNT_ID (and CF_E2E_ZONE) are set
 make test-e2e
 
 # Build and push controller image
@@ -457,7 +464,7 @@ make docker-build docker-push IMG=ghcr.io/your-org/kflare:latest
 ```bash
 export CF_API_TOKEN=<your-cloudflare-api-token>
 export CF_ACCOUNT_ID=<your-cloudflare-account-id>
-export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
+export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopted with retain, never deleted
 ```
 
 ---

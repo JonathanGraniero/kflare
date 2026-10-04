@@ -30,8 +30,14 @@ jobs:
           config: local/kind-config.yaml
 
       # Builds the manager image, deploys it with config/default and checks
-      # that the manager starts. No Cloudflare credentials are needed.
+      # that the manager starts. With the CF_API_TOKEN and CF_ACCOUNT_ID
+      # secrets set, it then drives the manager against the Cloudflare API;
+      # the CF_E2E_ZONE variable (a zone the token can edit, never deleted)
+      # adds the Zone and DNSRecord specs. Without them those specs skip.
       - name: Run e2e tests
         env:
           KIND_CLUSTER: kflare-e2e
-        run: go test ./test/e2e/ -v -ginkgo.v -timeout 20m
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_E2E_ZONE: ${{ vars.CF_E2E_ZONE }}
+        run: make test-e2e
