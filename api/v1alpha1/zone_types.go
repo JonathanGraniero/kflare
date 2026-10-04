@@ -24,6 +24,8 @@ type ZoneSpec struct {
 	AccountRef corev1.LocalObjectReference `json:"accountRef"`
 
 	// Plan is the billing plan for the zone: free, pro, business, or enterprise.
+	// Not applied yet: kflare does not change a zone's plan, which goes
+	// through Cloudflare billing.
 	// +kubebuilder:validation:Enum=free;pro;business;enterprise
 	// +optional
 	Plan string `json:"plan,omitempty"`

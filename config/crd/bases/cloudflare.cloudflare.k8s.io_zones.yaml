@@ -85,8 +85,10 @@ spec:
                 - message: name is immutable
                   rule: self == oldSelf
               plan:
-                description: 'Plan is the billing plan for the zone: free, pro, business,
-                  or enterprise.'
+                description: |-
+                  Plan is the billing plan for the zone: free, pro, business, or enterprise.
+                  Not applied yet: kflare does not change a zone's plan, which goes
+                  through Cloudflare billing.
                 enum:
                 - free
                 - pro
