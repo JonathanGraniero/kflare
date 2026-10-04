@@ -79,7 +79,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		apiSecretName  = "tc-test-api-token"
 		fakeAcctID     = "acct-tc-123"
 		fakeTunnelID   = "tun-tc-456"
-		deletionPolicy = "cloudflare.k8s.io/deletion-policy"
+		deletionPolicy = "kflare.dev/deletion-policy"
 	)
 
 	ctx := context.Background()

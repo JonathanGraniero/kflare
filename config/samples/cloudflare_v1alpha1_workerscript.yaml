@@ -1,4 +1,4 @@
-apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+apiVersion: kflare.dev/v1alpha1
 kind: WorkerScript
 metadata:
   name: example-worker

@@ -392,3 +392,50 @@ var _ = Describe("driftDetect", func() {
 		Expect(drifted).To(BeFalse())
 	})
 })
+
+var _ = Describe("adoptableRecord", func() {
+	mx := func(id, content string) cf.DNSRecord {
+		return cf.DNSRecord{ID: id, Type: "MX", Name: "example.com", Content: content}
+	}
+	spec := func(content string) *cloudflarev1alpha1.DNSRecord {
+		return &cloudflarev1alpha1.DNSRecord{
+			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "MX", Name: "example.com", Content: content},
+		}
+	}
+	none := map[string]bool{}
+
+	It("prefers the member of a set whose content matches", func() {
+		got, ok := adoptableRecord(spec("mx2.example.com"),
+			[]cf.DNSRecord{mx("1", "mx1.example.com"), mx("2", "mx2.example.com")}, none)
+		Expect(ok).To(BeTrue())
+		Expect(got.ID).To(Equal("2"))
+	})
+
+	It("creates a new member when no record in a set matches", func() {
+		_, ok := adoptableRecord(spec("mx3.example.com"),
+			[]cf.DNSRecord{mx("1", "mx1.example.com"), mx("2", "mx2.example.com")}, none)
+		Expect(ok).To(BeFalse())
+	})
+
+	It("adopts and corrects the only record with the name and type", func() {
+		got, ok := adoptableRecord(spec("mx-new.example.com"), []cf.DNSRecord{mx("1", "mx-old.example.com")}, none)
+		Expect(ok).To(BeTrue())
+		Expect(got.ID).To(Equal("1"))
+	})
+
+	It("never adopts a record another DNSRecord manages, even when it matches", func() {
+		_, ok := adoptableRecord(spec("mx1.example.com"), []cf.DNSRecord{mx("1", "mx1.example.com")},
+			map[string]bool{"1": true})
+		Expect(ok).To(BeFalse())
+	})
+
+	It("matches data-based records on data", func() {
+		srv := &cloudflarev1alpha1.DNSRecord{Spec: cloudflarev1alpha1.DNSRecordSpec{
+			Type: "SRV", Data: &apiextensionsv1.JSON{Raw: []byte(`{"port":443}`)}}}
+		a := cf.DNSRecord{ID: "a", Type: "SRV", Data: map[string]interface{}{"port": float64(80)}}
+		b := cf.DNSRecord{ID: "b", Type: "SRV", Data: map[string]interface{}{"port": float64(443)}}
+		got, ok := adoptableRecord(srv, []cf.DNSRecord{a, b}, none)
+		Expect(ok).To(BeTrue())
+		Expect(got.ID).To(Equal("b"))
+	})
+})

@@ -3,26 +3,31 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    api-approved.kubernetes.io: unapproved
     controller-gen.kubebuilder.io/version: v0.14.0
-  name: workerscripts.cloudflare.cloudflare.k8s.io
+  name: zones.kflare.dev
 spec:
-  group: cloudflare.cloudflare.k8s.io
+  group: kflare.dev
   names:
-    kind: WorkerScript
-    listKind: WorkerScriptList
-    plural: workerscripts
+    kind: Zone
+    listKind: ZoneList
+    plural: zones
     shortNames:
-    - cfworker
-    singular: workerscript
+    - cfzone
+    singular: zone
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.name
-      name: Script
+      name: Domain
       type: string
-    - jsonPath: .status.cloudflareMetadata.modifiedOn
-      name: Modified
+    - jsonPath: .status.cloudflareMetadata.zoneID
+      name: Zone ID
+      type: string
+    - jsonPath: .status.cloudflareMetadata.plan
+      name: Plan
+      type: string
+    - jsonPath: .status.cloudflareMetadata.status
+      name: CF Status
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -34,8 +39,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          WorkerScript is the Schema for the workerscripts API.
-          It represents a Cloudflare Worker script and its bindings.
+          Zone is the Schema for the zones API.
+          It represents a DNS zone managed in Cloudflare.
         properties:
           apiVersion:
             description: |-
@@ -55,11 +60,11 @@ spec:
           metadata:
             type: object
           spec:
-            description: WorkerScriptSpec defines the desired state of WorkerScript.
+            description: ZoneSpec defines the desired state of Zone.
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns this Worker.
+                  AccountRef references the CloudflareAccount that owns this zone.
                   Immutable after creation.
                 properties:
                   name:
@@ -73,147 +78,74 @@ spec:
                 x-kubernetes-validations:
                 - message: accountRef is immutable
                   rule: self == oldSelf
-              bindings:
-                description: |-
-                  Bindings expose values and resources to the Worker as environment
-                  bindings. Names must be unique.
-                items:
-                  description: |-
-                    WorkerBinding exposes one value or resource to the Worker under Name.
-                    Exactly one source must be set.
-                  properties:
-                    kvNamespaceID:
-                      description: KVNamespaceID binds a Workers KV namespace by ID.
-                      minLength: 1
-                      type: string
-                    name:
-                      description: Name of the binding, as seen by the Worker (env.NAME).
-                      pattern: ^[A-Za-z_][A-Za-z0-9_]*$
-                      type: string
-                    plainText:
-                      description: PlainText binds a plain text value.
-                      minLength: 1
-                      type: string
-                    r2BucketName:
-                      description: R2BucketName binds an R2 bucket by name.
-                      minLength: 1
-                      type: string
-                    secretKeyRef:
-                      description: |-
-                        SecretKeyRef binds a secret text value read from a key of a Secret in
-                        the same namespace. The value is sent to Cloudflare and never written
-                        to this resource's status.
-                      properties:
-                        key:
-                          description: Key within the ConfigMap or Secret.
-                          minLength: 1
-                          type: string
-                        name:
-                          description: Name of the ConfigMap or Secret.
-                          minLength: 1
-                          type: string
-                      required:
-                      - key
-                      - name
-                      type: object
-                  required:
-                  - name
-                  type: object
-                  x-kubernetes-validations:
-                  - message: exactly one of plainText, secretKeyRef, kvNamespaceID
-                      or r2BucketName must be set
-                    rule: '[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceID),
-                      has(self.r2BucketName)].filter(x, x).size() == 1'
-                maxItems: 64
-                type: array
-                x-kubernetes-list-map-keys:
-                - name
-                x-kubernetes-list-type: map
-              compatibilityDate:
-                description: CompatibilityDate pins the Workers runtime behaviour
-                  (YYYY-MM-DD).
-                pattern: ^\d{4}-\d{2}-\d{2}$
-                type: string
-              compatibilityFlags:
-                description: CompatibilityFlags enable or disable individual runtime
-                  features.
-                items:
-                  type: string
-                maxItems: 64
-                type: array
-              format:
-                default: module
-                description: 'Format is the script syntax: "module" (ES modules) or
-                  "serviceWorker".'
-                enum:
-                - module
-                - serviceWorker
-                type: string
               name:
-                description: Name is the Worker's script name in Cloudflare. Immutable
-                  after creation.
-                pattern: ^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$
+                description: Name is the domain (e.g. "example.com"). Immutable after
+                  creation.
+                pattern: ^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$
                 type: string
                 x-kubernetes-validations:
                 - message: name is immutable
                   rule: self == oldSelf
-              script:
-                description: Script is the Worker source code. Set either this or
-                  ScriptConfigMapRef.
-                minLength: 1
-                type: string
-              scriptConfigMapRef:
+              plan:
                 description: |-
-                  ScriptConfigMapRef reads the Worker source code from a key of a
-                  ConfigMap in the same namespace. Set either this or Script.
-                properties:
-                  key:
-                    description: Key within the ConfigMap or Secret.
-                    minLength: 1
-                    type: string
-                  name:
-                    description: Name of the ConfigMap or Secret.
-                    minLength: 1
-                    type: string
-                required:
-                - key
-                - name
-                type: object
+                  Plan is the zone's billing plan: free, pro, business, or enterprise.
+                  When unset, kflare leaves the plan alone. When set, kflare subscribes
+                  the zone to it, which bills the account's default payment method.
+                  Enterprise cannot be bought through the API; set it only for a zone
+                  that is already on Enterprise. Downgrades take effect at the end of
+                  the billing period and show up in status.cloudflareMetadata.pendingPlan.
+                enum:
+                - free
+                - pro
+                - business
+                - enterprise
+                type: string
+              type:
+                default: full
+                description: 'Type is the zone type: "full" (Cloudflare manages DNS)
+                  or "partial" (proxy only).'
+                enum:
+                - full
+                - partial
+                type: string
             required:
             - accountRef
             - name
             type: object
-            x-kubernetes-validations:
-            - message: exactly one of script or scriptConfigMapRef must be set
-              rule: has(self.script) != has(self.scriptConfigMapRef)
           status:
-            description: WorkerScriptStatus defines the observed state of WorkerScript.
+            description: ZoneStatus defines the observed state of Zone.
             properties:
-              appliedHash:
-                description: |-
-                  AppliedHash identifies the desired state last uploaded: the script,
-                  format, compatibility settings and bindings. Secret bindings contribute
-                  the Secret's UID and resourceVersion, never its value.
-                type: string
               cloudflareMetadata:
-                description: CloudflareMetadata holds metadata returned by the Cloudflare
-                  API.
+                description: CloudflareMetadata holds identifiers and metadata returned
+                  by the Cloudflare API.
                 properties:
-                  etag:
+                  nameServers:
+                    description: NameServers are the authoritative name servers assigned
+                      by Cloudflare.
+                    items:
+                      type: string
+                    type: array
+                  pendingPlan:
                     description: |-
-                      Etag is Cloudflare's hash of the uploaded code. It does not change when
-                      only bindings or compatibility settings change.
+                      PendingPlan is a plan change Cloudflare has scheduled for the end of
+                      the billing period, such as a downgrade.
                     type: string
-                  modifiedOn:
+                  plan:
+                    description: Plan is the zone's current billing plan (free, pro,
+                      business or enterprise).
+                    type: string
+                  status:
                     description: |-
-                      ModifiedOn is the modification time Cloudflare reported for kflare's
-                      last upload, kept at full precision. A different value on Cloudflare
-                      means the Worker was changed outside kflare.
+                      Status is the zone activation status as reported by Cloudflare
+                      (active, pending, initializing, moved, deactivated).
+                    type: string
+                  zoneID:
+                    description: ZoneID is the Cloudflare zone identifier.
                     type: string
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the Worker state.
+                  of the zone state.
                 items:
                   description: "Condition contains details for one aspect of the current
                     state of this API Resource.\n---\nThis struct is intended for

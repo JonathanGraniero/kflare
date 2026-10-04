@@ -29,7 +29,7 @@ kubectl create secret generic cloudflare-credentials \
 
 echo "==> Applying CloudflareAccount CR..."
 kubectl apply -f - <<EOF
-apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+apiVersion: kflare.dev/v1alpha1
 kind: CloudflareAccount
 metadata:
   name: my-account

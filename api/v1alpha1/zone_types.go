@@ -23,9 +23,12 @@ type ZoneSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="accountRef is immutable"
 	AccountRef corev1.LocalObjectReference `json:"accountRef"`
 
-	// Plan is the billing plan for the zone: free, pro, business, or enterprise.
-	// Not applied yet: kflare does not change a zone's plan, which goes
-	// through Cloudflare billing.
+	// Plan is the zone's billing plan: free, pro, business, or enterprise.
+	// When unset, kflare leaves the plan alone. When set, kflare subscribes
+	// the zone to it, which bills the account's default payment method.
+	// Enterprise cannot be bought through the API; set it only for a zone
+	// that is already on Enterprise. Downgrades take effect at the end of
+	// the billing period and show up in status.cloudflareMetadata.pendingPlan.
 	// +kubebuilder:validation:Enum=free;pro;business;enterprise
 	// +optional
 	Plan string `json:"plan,omitempty"`
@@ -44,6 +47,13 @@ type ZoneCloudflareMetadata struct {
 
 	// NameServers are the authoritative name servers assigned by Cloudflare.
 	NameServers []string `json:"nameServers,omitempty"`
+
+	// Plan is the zone's current billing plan (free, pro, business or enterprise).
+	Plan string `json:"plan,omitempty"`
+
+	// PendingPlan is a plan change Cloudflare has scheduled for the end of
+	// the billing period, such as a downgrade.
+	PendingPlan string `json:"pendingPlan,omitempty"`
 
 	// Status is the zone activation status as reported by Cloudflare
 	// (active, pending, initializing, moved, deactivated).
@@ -66,6 +76,7 @@ type ZoneStatus struct {
 // +kubebuilder:resource:scope=Namespaced,shortName=cfzone
 // +kubebuilder:printcolumn:name="Domain",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Zone ID",type=string,JSONPath=`.status.cloudflareMetadata.zoneID`
+// +kubebuilder:printcolumn:name="Plan",type=string,JSONPath=`.status.cloudflareMetadata.plan`
 // +kubebuilder:printcolumn:name="CF Status",type=string,JSONPath=`.status.cloudflareMetadata.status`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

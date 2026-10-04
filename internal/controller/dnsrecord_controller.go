@@ -16,7 +16,6 @@ import (
 	cf "github.com/cloudflare/cloudflare-go"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -53,10 +52,10 @@ type DNSRecordReconciler struct {
 	NewDNSRecordAPI func(token string) (DNSRecordAPI, error)
 }
 
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=dnsrecords,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=dnsrecords/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=dnsrecords/finalizers,verbs=update
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=zones,verbs=get;list;watch
+//+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords/finalizers,verbs=update
+//+kubebuilder:rbac:groups=kflare.dev,resources=zones,verbs=get;list;watch
 
 func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -88,38 +87,24 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	zoneKey := types.NamespacedName{Name: record.Spec.ZoneRef.Name, Namespace: req.Namespace}
 	if err := r.Get(ctx, zoneKey, zone); err != nil {
 		msg := fmt.Sprintf("Zone %q not found: %v", record.Spec.ZoneRef.Name, err)
-		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "ZoneNotFound", msg, record.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, record)
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, record, "ZoneNotFound", msg)
 	}
 
 	// The zone must be ready (have a zone ID) before we can create records.
 	if !isZoneReady(zone) {
-		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "ZoneNotReady",
-			fmt.Sprintf("Zone %q is not ready", record.Spec.ZoneRef.Name),
-			record.Generation)
-		if statusErr := r.Status().Update(ctx, record); statusErr != nil {
-			return ctrl.Result{}, statusErr
-		}
-		// Return an error so controller-runtime requeues with backoff.
-		return ctrl.Result{}, fmt.Errorf("zone %q is not ready", record.Spec.ZoneRef.Name)
+		// The Zone watch re-triggers this reconcile once the zone is ready.
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, record, "ZoneNotReady",
+			fmt.Sprintf("Zone %q is not ready", record.Spec.ZoneRef.Name))
 	}
 
 	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
 	if credErr != nil {
-		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, credErr.Reason, credErr.Message, record.Generation)
-		return ctrl.Result{RequeueAfter: credentialsRetryInterval}, r.Status().Update(ctx, record)
+		return notReadyRetryAfter(ctx, r.Client, record, credErr)
 	}
 
 	cfAPI, err := r.newDNSRecordAPI(token)
 	if err != nil {
-		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "InvalidToken",
-			fmt.Sprintf("Failed to create Cloudflare client: %v", err),
-			record.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, record)
+		return invalidToken(ctx, r.Client, record, err)
 	}
 
 	return r.syncDNSRecord(ctx, record, zone.Status.CloudflareMetadata.ZoneID, cfAPI)
@@ -141,7 +126,7 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 		got, err := cfAPI.GetDNSRecord(ctx, rc, record.Status.CloudflareMetadata.RecordID)
 		if err != nil {
 			if !cfpkg.IsNotFound(err) {
-				return r.handleDNSCFError(ctx, record, err)
+				return handleCloudflareError(ctx, r.Client, record, err)
 			}
 			// Record was deleted externally — fall through to find or recreate it.
 			logger.Info("DNS record deleted externally, recreating",
@@ -158,11 +143,14 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 			Type: record.Spec.Type,
 		})
 		if listErr != nil {
-			return r.handleDNSCFError(ctx, record, listErr)
+			return handleCloudflareError(ctx, r.Client, record, listErr)
 		}
-		if len(records) > 0 {
-			// Adopt the pre-existing record.
-			cfRecord = records[0]
+		claimed, err := r.claimedRecordIDs(ctx, record)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if existing, ok := adoptableRecord(record, records, claimed); ok {
+			cfRecord = existing
 			logger.Info("Adopted existing DNS record",
 				"name", record.Spec.Name, "type", record.Spec.Type, "recordID", cfRecord.ID)
 		} else {
@@ -173,7 +161,7 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 			}
 			created, createErr := cfAPI.CreateDNSRecord(ctx, rc, params)
 			if createErr != nil {
-				return r.handleDNSCFError(ctx, record, createErr)
+				return handleCloudflareError(ctx, r.Client, record, createErr)
 			}
 			cfRecord = created
 			logger.Info("Created DNS record",
@@ -181,12 +169,18 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 		}
 	}
 
+	// Claim the record before anything else can fail, so no other DNSRecord
+	// adopts it in the meantime.
+	if err := r.claimRecord(ctx, record, cfRecord.ID); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Drift detection: compare desired spec against observed CF state.
 	if drifted, params := driftDetect(record, cfRecord); drifted {
 		params.ID = cfRecord.ID
 		updated, updateErr := cfAPI.UpdateDNSRecord(ctx, rc, params)
 		if updateErr != nil {
-			return r.handleDNSCFError(ctx, record, updateErr)
+			return handleCloudflareError(ctx, r.Client, record, updateErr)
 		}
 		cfRecord = updated
 		logger.Info("Updated DNS record", "recordID", cfRecord.ID)
@@ -196,11 +190,75 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 	record.Status.CloudflareMetadata.RecordID = cfRecord.ID
 	record.Status.CloudflareMetadata.ZoneID = cfRecord.ZoneID
 	record.Status.CloudflareMetadata.Proxiable = cfRecord.Proxiable
-	reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionTrue, "Synced",
-		"DNS record is synced with Cloudflare",
-		record.Generation)
-	return ctrl.Result{}, r.Status().Update(ctx, record)
+	return ctrl.Result{}, updateReady(ctx, r.Client, record, "Synced", "DNS record is synced with Cloudflare")
+}
+
+// claimedRecordIDs returns the Cloudflare record IDs that DNSRecords other
+// than record manage, across all namespaces: two Zone resources in different
+// namespaces can point at the same Cloudflare zone.
+func (r *DNSRecordReconciler) claimedRecordIDs(
+	ctx context.Context,
+	record *cloudflarev1alpha1.DNSRecord,
+) (map[string]bool, error) {
+	list := &cloudflarev1alpha1.DNSRecordList{}
+	if err := r.List(ctx, list, client.HasLabels{cloudflarev1alpha1.DNSRecordIDLabel}); err != nil {
+		return nil, err
+	}
+	claimed := make(map[string]bool, len(list.Items))
+	for _, other := range list.Items {
+		if other.UID != record.UID {
+			claimed[other.Labels[cloudflarev1alpha1.DNSRecordIDLabel]] = true
+		}
+	}
+	return claimed, nil
+}
+
+// adoptableRecord picks the existing Cloudflare record that record should
+// adopt from candidates (same name and type), or returns false when a new
+// record should be created.
+//
+// Records another DNSRecord manages are never adopted. Among the rest, one
+// whose content (or data) already matches is preferred, so DNSRecords for
+// the members of a set (several MX, TXT or A records) each find their own.
+// A record that does not match is only adopted, and corrected, when it is the
+// only record with that name and type, because only then is it clearly the
+// one this DNSRecord describes; otherwise a new record joins the set.
+func adoptableRecord(
+	record *cloudflarev1alpha1.DNSRecord,
+	candidates []cf.DNSRecord,
+	claimed map[string]bool,
+) (cf.DNSRecord, bool) {
+	for _, c := range candidates {
+		if !claimed[c.ID] && recordContentMatches(record, c) {
+			return c, true
+		}
+	}
+	if len(candidates) == 1 && !claimed[candidates[0].ID] {
+		return candidates[0], true
+	}
+	return cf.DNSRecord{}, false
+}
+
+// recordContentMatches reports whether cfRecord holds the value record
+// describes: its data when spec.data is set, otherwise its content.
+func recordContentMatches(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) bool {
+	if record.Spec.Data != nil {
+		return !dataDrifted(record, cfRecord)
+	}
+	return record.Spec.Content == cfRecord.Content
+}
+
+// claimRecord records recordID in record's DNSRecordIDLabel.
+func (r *DNSRecordReconciler) claimRecord(ctx context.Context, record *cloudflarev1alpha1.DNSRecord, recordID string) error {
+	if record.Labels[cloudflarev1alpha1.DNSRecordIDLabel] == recordID {
+		return nil
+	}
+	patch := client.MergeFrom(record.DeepCopy())
+	if record.Labels == nil {
+		record.Labels = map[string]string{}
+	}
+	record.Labels[cloudflarev1alpha1.DNSRecordIDLabel] = recordID
+	return r.Patch(ctx, record, patch)
 }
 
 // automaticTTL is the TTL Cloudflare reports for "automatic". It is also what
@@ -316,26 +374,6 @@ func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (b
 		return false, cf.UpdateDNSRecordParams{}
 	}
 	return true, params
-}
-
-// handleDNSCFError sets the appropriate condition based on whether the error is
-// terminal (stop requeuing) or retryable (let controller-runtime back off).
-func (r *DNSRecordReconciler) handleDNSCFError(ctx context.Context, record *cloudflarev1alpha1.DNSRecord, err error) (ctrl.Result, error) {
-	if cfpkg.IsTerminalError(err) {
-		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TerminalError",
-			fmt.Sprintf("Terminal Cloudflare API error: %v", err),
-			record.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, record)
-	}
-	reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionFalse, "APIError",
-		fmt.Sprintf("Cloudflare API error: %v", err),
-		record.Generation)
-	if statusErr := r.Status().Update(ctx, record); statusErr != nil {
-		return ctrl.Result{}, statusErr
-	}
-	return ctrl.Result{}, err
 }
 
 // reconcileDelete handles the deletion lifecycle: optionally removes the DNS

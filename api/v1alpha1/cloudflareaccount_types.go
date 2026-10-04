@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -45,6 +46,12 @@ type CloudflareAccountStatus struct {
 
 	// AccountName is the name of the Cloudflare account as returned by the API.
 	AccountName string `json:"accountName,omitempty"`
+
+	// ProtectedTokenSecret is the token Secret kflare holds a finalizer on,
+	// so that it cannot be deleted while this account exists. When
+	// spec.tokenSecretRef changes, kflare releases this Secret.
+	// +optional
+	ProtectedTokenSecret *corev1.SecretReference `json:"protectedTokenSecret,omitempty"`
 }
 
 // Condition type constants

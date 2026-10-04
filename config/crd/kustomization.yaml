@@ -2,16 +2,15 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/cloudflare.cloudflare.k8s.io_cloudflareaccounts.yaml
-- bases/cloudflare.cloudflare.k8s.io_zones.yaml
-- bases/cloudflare.cloudflare.k8s.io_dnsrecords.yaml
-- bases/cloudflare.cloudflare.k8s.io_tunnels.yaml
-- bases/cloudflare.cloudflare.k8s.io_tunnelconfigurations.yaml
-- bases/cloudflare.cloudflare.k8s.io_workerscripts.yaml
+- bases/kflare.dev_cloudflareaccounts.yaml
+- bases/kflare.dev_zones.yaml
+- bases/kflare.dev_dnsrecords.yaml
+- bases/kflare.dev_tunnels.yaml
+- bases/kflare.dev_tunnelconfigurations.yaml
+- bases/kflare.dev_workerscripts.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
-patches:
-- path: patches/api-approved-annotation.yaml
+#patches:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
 # patches here are for enabling the conversion webhook for each CRD
 #- path: patches/webhook_in_cloudflareaccounts.yaml

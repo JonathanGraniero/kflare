@@ -117,7 +117,7 @@ var _ = Describe("Tunnel Controller", func() {
 		fakeAcctID     = "acct-tun-123"
 		fakeTunnelID   = "tun-456"
 		fakeTunnelTok  = "tunnel-token-abc"
-		deletionPolicy = "cloudflare.k8s.io/deletion-policy"
+		deletionPolicy = "kflare.dev/deletion-policy"
 	)
 
 	ctx := context.Background()

@@ -24,12 +24,12 @@ const (
 	// Its presence prevents Kubernetes from deleting the object until the
 	// controller has had a chance to clean up the corresponding Cloudflare
 	// resource (unless the deletion-policy annotation says "retain").
-	Finalizer = "cloudflare.k8s.io/finalizer"
+	Finalizer = "kflare.dev/finalizer"
 
 	// DeletionPolicyAnnotation chooses what happens to the Cloudflare resource
 	// when its Kubernetes resource is deleted. Any value other than
 	// DeletionPolicyRetain, including no annotation, deletes it.
-	DeletionPolicyAnnotation = "cloudflare.k8s.io/deletion-policy"
+	DeletionPolicyAnnotation = "kflare.dev/deletion-policy"
 
 	// DeletionPolicyRetain keeps the Cloudflare resource when its Kubernetes
 	// resource is deleted.

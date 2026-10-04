@@ -25,7 +25,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - cloudflareaccounts
   verbs:
@@ -37,13 +37,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - cloudflareaccounts/finalizers
   verbs:
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - cloudflareaccounts/status
   verbs:
@@ -51,7 +51,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - dnsrecords
   verbs:
@@ -63,13 +63,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - dnsrecords/finalizers
   verbs:
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - dnsrecords/status
   verbs:
@@ -77,7 +77,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - tunnelconfigurations
   verbs:
@@ -89,13 +89,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - tunnelconfigurations/finalizers
   verbs:
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - tunnelconfigurations/status
   verbs:
@@ -103,7 +103,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - tunnels
   verbs:
@@ -115,13 +115,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - tunnels/finalizers
   verbs:
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - tunnels/status
   verbs:
@@ -129,7 +129,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - workerscripts
   verbs:
@@ -141,13 +141,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - workerscripts/finalizers
   verbs:
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - workerscripts/status
   verbs:
@@ -155,7 +155,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - zones
   verbs:
@@ -167,13 +167,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - zones/finalizers
   verbs:
   - update
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - zones/status
   verbs:

@@ -108,15 +108,9 @@ var _ = Describe("CloudflareAccount Controller", func() {
 
 	AfterEach(func() {
 		// Clean up the CloudflareAccount CR.
-		acct := &cloudflarev1alpha1.CloudflareAccount{}
-		if err := k8sClient.Get(ctx, accountKey, acct); err == nil {
-			Expect(k8sClient.Delete(ctx, acct)).To(Succeed())
-		}
+		forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, accountKey)
 		// Clean up the Secret.
-		secret := &corev1.Secret{}
-		if err := k8sClient.Get(ctx, secretKey, secret); err == nil {
-			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
-		}
+		forceDelete(ctx, &corev1.Secret{}, secretKey)
 	})
 
 	Describe("Reconcile", func() {

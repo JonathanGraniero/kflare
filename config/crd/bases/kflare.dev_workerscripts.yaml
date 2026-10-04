@@ -3,27 +3,26 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    api-approved.kubernetes.io: unapproved
     controller-gen.kubebuilder.io/version: v0.14.0
-  name: tunnelconfigurations.cloudflare.cloudflare.k8s.io
+  name: workerscripts.kflare.dev
 spec:
-  group: cloudflare.cloudflare.k8s.io
+  group: kflare.dev
   names:
-    kind: TunnelConfiguration
-    listKind: TunnelConfigurationList
-    plural: tunnelconfigurations
+    kind: WorkerScript
+    listKind: WorkerScriptList
+    plural: workerscripts
     shortNames:
-    - cftunnelconfig
-    singular: tunnelconfiguration
+    - cfworker
+    singular: workerscript
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.tunnelRef.name
-      name: Tunnel
+    - jsonPath: .spec.name
+      name: Script
       type: string
-    - jsonPath: .status.cloudflareMetadata.version
-      name: Version
-      type: integer
+    - jsonPath: .status.cloudflareMetadata.modifiedOn
+      name: Modified
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -34,8 +33,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          TunnelConfiguration is the Schema for the tunnelconfigurations API.
-          It owns the complete ingress configuration of one remotely-managed Tunnel.
+          WorkerScript is the Schema for the workerscripts API.
+          It represents a Cloudflare Worker script and its bindings.
         properties:
           apiVersion:
             description: |-
@@ -55,77 +54,12 @@ spec:
           metadata:
             type: object
           spec:
-            description: TunnelConfigurationSpec defines the desired state of TunnelConfiguration.
+            description: WorkerScriptSpec defines the desired state of WorkerScript.
             properties:
-              defaultService:
-                default: http_status:404
+              accountRef:
                 description: |-
-                  DefaultService handles requests that match no ingress rule. kflare
-                  appends it as the final catch-all rule that Cloudflare requires.
-                minLength: 1
-                type: string
-              ingress:
-                description: |-
-                  Ingress maps public hostnames to the services cloudflared forwards them
-                  to. Rules are matched in order; the first match wins.
-                items:
-                  description: |-
-                    TunnelIngressRule routes requests for a hostname (and optionally a path) to
-                    a service reachable from cloudflared.
-                  properties:
-                    hostname:
-                      description: |-
-                        Hostname to match, such as "app.example.com" or "*.example.com".
-                        Requests only reach the tunnel once the hostname has a proxied CNAME
-                        record pointing at <tunnelID>.cfargotunnel.com.
-                      minLength: 1
-                      type: string
-                    originRequest:
-                      description: OriginRequest tunes how cloudflared connects to
-                        the service.
-                      properties:
-                        disableChunkedEncoding:
-                          description: |-
-                            DisableChunkedEncoding turns off chunked transfer encoding, which some
-                            WSGI servers need.
-                          type: boolean
-                        http2Origin:
-                          description: HTTP2Origin makes cloudflared connect to the
-                            origin over HTTP/2.
-                          type: boolean
-                        httpHostHeader:
-                          description: HTTPHostHeader overrides the Host header sent
-                            to the origin.
-                          type: string
-                        noTLSVerify:
-                          description: NoTLSVerify disables verification of the origin's
-                            TLS certificate.
-                          type: boolean
-                        originServerName:
-                          description: OriginServerName is the hostname expected on
-                            the origin's TLS certificate.
-                          type: string
-                      type: object
-                    path:
-                      description: Path is a regular expression matched against the
-                        request path.
-                      type: string
-                    service:
-                      description: |-
-                        Service is where cloudflared sends matching requests, for example
-                        "http://my-service.my-namespace:80", "tcp://db:5432" or "http_status:404".
-                      minLength: 1
-                      type: string
-                  required:
-                  - hostname
-                  - service
-                  type: object
-                minItems: 1
-                type: array
-              tunnelRef:
-                description: |-
-                  TunnelRef references the Tunnel, in the same namespace, whose ingress
-                  rules this resource manages. Immutable after creation.
+                  AccountRef references the CloudflareAccount that owns this Worker.
+                  Immutable after creation.
                 properties:
                   name:
                     description: |-
@@ -136,32 +70,149 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
                 x-kubernetes-validations:
-                - message: tunnelRef is immutable
+                - message: accountRef is immutable
                   rule: self == oldSelf
-            required:
-            - ingress
-            - tunnelRef
-            type: object
-          status:
-            description: TunnelConfigurationStatus defines the observed state of TunnelConfiguration.
-            properties:
-              cloudflareMetadata:
-                description: CloudflareMetadata holds identifiers and metadata returned
-                  by the Cloudflare API.
+              bindings:
+                description: |-
+                  Bindings expose values and resources to the Worker as environment
+                  bindings. Names must be unique.
+                items:
+                  description: |-
+                    WorkerBinding exposes one value or resource to the Worker under Name.
+                    Exactly one source must be set.
+                  properties:
+                    kvNamespaceID:
+                      description: KVNamespaceID binds a Workers KV namespace by ID.
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name of the binding, as seen by the Worker (env.NAME).
+                      pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                      type: string
+                    plainText:
+                      description: PlainText binds a plain text value.
+                      minLength: 1
+                      type: string
+                    r2BucketName:
+                      description: R2BucketName binds an R2 bucket by name.
+                      minLength: 1
+                      type: string
+                    secretKeyRef:
+                      description: |-
+                        SecretKeyRef binds a secret text value read from a key of a Secret in
+                        the same namespace. The value is sent to Cloudflare and never written
+                        to this resource's status.
+                      properties:
+                        key:
+                          description: Key within the ConfigMap or Secret.
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name of the ConfigMap or Secret.
+                          minLength: 1
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of plainText, secretKeyRef, kvNamespaceID
+                      or r2BucketName must be set
+                    rule: '[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceID),
+                      has(self.r2BucketName)].filter(x, x).size() == 1'
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              compatibilityDate:
+                description: CompatibilityDate pins the Workers runtime behaviour
+                  (YYYY-MM-DD).
+                pattern: ^\d{4}-\d{2}-\d{2}$
+                type: string
+              compatibilityFlags:
+                description: CompatibilityFlags enable or disable individual runtime
+                  features.
+                items:
+                  type: string
+                maxItems: 64
+                type: array
+              format:
+                default: module
+                description: 'Format is the script syntax: "module" (ES modules) or
+                  "serviceWorker".'
+                enum:
+                - module
+                - serviceWorker
+                type: string
+              name:
+                description: Name is the Worker's script name in Cloudflare. Immutable
+                  after creation.
+                pattern: ^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$
+                type: string
+                x-kubernetes-validations:
+                - message: name is immutable
+                  rule: self == oldSelf
+              script:
+                description: Script is the Worker source code. Set either this or
+                  ScriptConfigMapRef.
+                minLength: 1
+                type: string
+              scriptConfigMapRef:
+                description: |-
+                  ScriptConfigMapRef reads the Worker source code from a key of a
+                  ConfigMap in the same namespace. Set either this or Script.
                 properties:
-                  tunnelID:
-                    description: TunnelID is the Cloudflare tunnel this configuration
-                      was last written to.
+                  key:
+                    description: Key within the ConfigMap or Secret.
+                    minLength: 1
                     type: string
-                  version:
+                  name:
+                    description: Name of the ConfigMap or Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - key
+                - name
+                type: object
+            required:
+            - accountRef
+            - name
+            type: object
+            x-kubernetes-validations:
+            - message: exactly one of script or scriptConfigMapRef must be set
+              rule: has(self.script) != has(self.scriptConfigMapRef)
+          status:
+            description: WorkerScriptStatus defines the observed state of WorkerScript.
+            properties:
+              appliedHash:
+                description: |-
+                  AppliedHash identifies the desired state last uploaded: the script,
+                  format, compatibility settings and bindings. Secret bindings contribute
+                  the Secret's UID and resourceVersion, never its value.
+                type: string
+              cloudflareMetadata:
+                description: CloudflareMetadata holds metadata returned by the Cloudflare
+                  API.
+                properties:
+                  etag:
                     description: |-
-                      Version is the configuration version Cloudflare reported after the last
-                      sync. cloudflared picks up each new version automatically.
-                    type: integer
+                      Etag is Cloudflare's hash of the uploaded code. It does not change when
+                      only bindings or compatibility settings change.
+                    type: string
+                  modifiedOn:
+                    description: |-
+                      ModifiedOn is the modification time Cloudflare reported for kflare's
+                      last upload, kept at full precision. A different value on Cloudflare
+                      means the Worker was changed outside kflare.
+                    type: string
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the configuration state.
+                  of the Worker state.
                 items:
                   description: "Condition contains details for one aspect of the current
                     state of this API Resource.\n---\nThis struct is intended for

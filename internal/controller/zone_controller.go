@@ -8,10 +8,8 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	cf "github.com/cloudflare/cloudflare-go"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -36,6 +34,18 @@ type ZoneAPI interface {
 	ListZones(ctx context.Context, z ...string) ([]cf.Zone, error)
 	DeleteZone(ctx context.Context, zoneID string) (cf.ZoneID, error)
 	EditZone(ctx context.Context, zoneID string, zoneOpts cf.ZoneOptions) (cf.Zone, error)
+	ZoneSetPlan(ctx context.Context, zoneID string, planType string) error
+	ZoneUpdatePlan(ctx context.Context, zoneID string, planType string) error
+}
+
+// zoneRatePlans maps spec.plan to the rate plan IDs of the zone subscription
+// API. Cloudflare reports the current plan by the spec.plan names
+// (plan.legacy_id).
+var zoneRatePlans = map[string]string{
+	"free":       "CF_FREE",
+	"pro":        "CF_PRO",
+	"business":   "CF_BIZ",
+	"enterprise": "CF_ENT",
 }
 
 // ZoneReconciler reconciles a Zone object.
@@ -48,10 +58,10 @@ type ZoneReconciler struct {
 	NewZoneAPI func(token string) (ZoneAPI, error)
 }
 
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=zones,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=zones/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=zones/finalizers,verbs=update
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=cloudflareaccounts,verbs=get;list;watch
+//+kubebuilder:rbac:groups=kflare.dev,resources=zones,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=kflare.dev,resources=zones/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=kflare.dev,resources=zones/finalizers,verbs=update
+//+kubebuilder:rbac:groups=kflare.dev,resources=cloudflareaccounts,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -81,18 +91,12 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	account, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
 	if credErr != nil {
-		reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, credErr.Reason, credErr.Message, zone.Generation)
-		return ctrl.Result{RequeueAfter: credentialsRetryInterval}, r.Status().Update(ctx, zone)
+		return notReadyRetryAfter(ctx, r.Client, zone, credErr)
 	}
 
 	cfAPI, err := r.newZoneAPI(token)
 	if err != nil {
-		reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "InvalidToken",
-			fmt.Sprintf("Failed to create Cloudflare client: %v", err),
-			zone.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, zone)
+		return invalidToken(ctx, r.Client, zone, err)
 	}
 
 	return r.syncZone(ctx, zone, account, cfAPI)
@@ -113,7 +117,7 @@ func (r *ZoneReconciler) syncZone(
 		got, err := cfAPI.ZoneDetails(ctx, zone.Status.CloudflareMetadata.ZoneID)
 		if err != nil {
 			if !cfpkg.IsNotFound(err) {
-				return r.handleCFError(ctx, zone, err)
+				return handleCloudflareError(ctx, r.Client, zone, err)
 			}
 			// Zone was deleted externally — fall through to find or recreate it.
 			logger.Info("Zone deleted externally, recreating",
@@ -127,7 +131,7 @@ func (r *ZoneReconciler) syncZone(
 	if cfZone.ID == "" {
 		zones, listErr := cfAPI.ListZones(ctx, zone.Spec.Name)
 		if listErr != nil {
-			return r.handleCFError(ctx, zone, listErr)
+			return handleCloudflareError(ctx, r.Client, zone, listErr)
 		}
 		if existing, ok := zoneInAccount(zones, account.Spec.AccountID); ok {
 			// Adopt the pre-existing zone.
@@ -143,7 +147,7 @@ func (r *ZoneReconciler) syncZone(
 				desiredZoneType(zone),
 			)
 			if createErr != nil {
-				return r.handleCFError(ctx, zone, createErr)
+				return handleCloudflareError(ctx, r.Client, zone, createErr)
 			}
 			cfZone = created
 			logger.Info("Created zone", "name", zone.Spec.Name, "zoneID", cfZone.ID)
@@ -154,21 +158,41 @@ func (r *ZoneReconciler) syncZone(
 	if desiredType := desiredZoneType(zone); cfZone.Type != desiredType {
 		updated, editErr := cfAPI.EditZone(ctx, cfZone.ID, cf.ZoneOptions{Type: desiredType})
 		if editErr != nil {
-			return r.handleCFError(ctx, zone, editErr)
+			return handleCloudflareError(ctx, r.Client, zone, editErr)
 		}
 		cfZone = updated
 		logger.Info("Updated zone type", "zoneID", cfZone.ID, "type", desiredType)
+	}
+
+	// Drift detection: plan, only when spec.plan is set.
+	if ratePlan, drifted := zonePlanDrift(zone, cfZone); drifted {
+		// A zone on the free plan has no subscription yet, so it needs one
+		// created; a paid zone's subscription is updated in place.
+		setPlan := cfAPI.ZoneUpdatePlan
+		if !cfZone.Plan.IsSubscribed {
+			setPlan = cfAPI.ZoneSetPlan
+		}
+		if err := setPlan(ctx, cfZone.ID, ratePlan); err != nil {
+			return handleCloudflareError(ctx, r.Client, zone, err)
+		}
+		logger.Info("Changed zone plan", "zoneID", cfZone.ID,
+			"from", cfZone.Plan.LegacyID, "to", zone.Spec.Plan)
+
+		// Read the zone again so status shows the new (or pending) plan.
+		updated, err := cfAPI.ZoneDetails(ctx, cfZone.ID)
+		if err != nil {
+			return handleCloudflareError(ctx, r.Client, zone, err)
+		}
+		cfZone = updated
 	}
 
 	// Sync status from Cloudflare.
 	zone.Status.CloudflareMetadata.ZoneID = cfZone.ID
 	zone.Status.CloudflareMetadata.NameServers = cfZone.NameServers
 	zone.Status.CloudflareMetadata.Status = cfZone.Status
-	reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionTrue, "Synced",
-		"Zone is synced with Cloudflare",
-		zone.Generation)
-	return ctrl.Result{}, r.Status().Update(ctx, zone)
+	zone.Status.CloudflareMetadata.Plan = cfZone.Plan.LegacyID
+	zone.Status.CloudflareMetadata.PendingPlan = cfZone.PlanPending.LegacyID
+	return ctrl.Result{}, updateReady(ctx, r.Client, zone, "Synced", "Zone is synced with Cloudflare")
 }
 
 // zoneInAccount returns the zone owned by accountID. The token may reach
@@ -184,33 +208,23 @@ func zoneInAccount(zones []cf.Zone, accountID string) (cf.Zone, bool) {
 	return cf.Zone{}, false
 }
 
+// zonePlanDrift returns the rate plan to subscribe cfZone to, or false when
+// spec.plan is unset or Cloudflare already has it, either as the current
+// plan or as a change scheduled for the end of the billing period.
+func zonePlanDrift(zone *cloudflarev1alpha1.Zone, cfZone cf.Zone) (string, bool) {
+	desired := zone.Spec.Plan
+	if desired == "" || desired == cfZone.Plan.LegacyID || desired == cfZone.PlanPending.LegacyID {
+		return "", false
+	}
+	return zoneRatePlans[desired], true
+}
+
 // desiredZoneType returns spec.type, or "full" when it is unset.
 func desiredZoneType(zone *cloudflarev1alpha1.Zone) string {
 	if zone.Spec.Type == "" {
 		return "full"
 	}
 	return zone.Spec.Type
-}
-
-// handleCFError sets the appropriate condition based on whether the Cloudflare
-// error is terminal (stop requeuing) or retryable (let controller-runtime
-// back off and retry).
-func (r *ZoneReconciler) handleCFError(ctx context.Context, zone *cloudflarev1alpha1.Zone, err error) (ctrl.Result, error) {
-	if cfpkg.IsTerminalError(err) {
-		reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TerminalError",
-			fmt.Sprintf("Terminal Cloudflare API error: %v", err),
-			zone.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, zone)
-	}
-	reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionFalse, "APIError",
-		fmt.Sprintf("Cloudflare API error: %v", err),
-		zone.Generation)
-	if statusErr := r.Status().Update(ctx, zone); statusErr != nil {
-		return ctrl.Result{}, statusErr
-	}
-	return ctrl.Result{}, err
 }
 
 // reconcileDelete handles the deletion lifecycle: optionally removes the zone

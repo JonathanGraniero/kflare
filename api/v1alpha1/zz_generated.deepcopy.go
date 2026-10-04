@@ -11,6 +11,7 @@ SPDX-License-Identifier: MIT
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -100,6 +101,11 @@ func (in *CloudflareAccountStatus) DeepCopyInto(out *CloudflareAccountStatus) {
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
+	}
+	if in.ProtectedTokenSecret != nil {
+		in, out := &in.ProtectedTokenSecret, &out.ProtectedTokenSecret
+		*out = new(corev1.SecretReference)
+		**out = **in
 	}
 }
 

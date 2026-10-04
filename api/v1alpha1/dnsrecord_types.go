@@ -12,6 +12,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// DNSRecordIDLabel holds the ID of the Cloudflare DNS record a DNSRecord
+// manages. kflare sets it, and never adopts a record that another DNSRecord
+// already carries in this label, so each Cloudflare record has at most one
+// owner. Find the owner of a record with
+// `kubectl get dnsrecords -A -l kflare.dev/record-id=<id>`.
+const DNSRecordIDLabel = "kflare.dev/record-id"
+
 // DNSRecordSpec defines the desired state of DNSRecord.
 type DNSRecordSpec struct {
 	// ZoneRef references the Zone CR (in the same namespace) that owns this record.

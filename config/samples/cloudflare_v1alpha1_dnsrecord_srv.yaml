@@ -1,10 +1,10 @@
-apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+apiVersion: kflare.dev/v1alpha1
 kind: DNSRecord
 metadata:
   name: srv-record
   namespace: default
   annotations:
-    cloudflare.k8s.io/deletion-policy: retain
+    kflare.dev/deletion-policy: retain
 spec:
   zoneRef:
     name: example-zone  # must reference an existing Zone CR in the same namespace

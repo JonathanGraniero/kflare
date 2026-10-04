@@ -3,26 +3,25 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    api-approved.kubernetes.io: unapproved
     controller-gen.kubebuilder.io/version: v0.14.0
-  name: zones.cloudflare.cloudflare.k8s.io
+  name: tunnels.kflare.dev
 spec:
-  group: cloudflare.cloudflare.k8s.io
+  group: kflare.dev
   names:
-    kind: Zone
-    listKind: ZoneList
-    plural: zones
+    kind: Tunnel
+    listKind: TunnelList
+    plural: tunnels
     shortNames:
-    - cfzone
-    singular: zone
+    - cftunnel
+    singular: tunnel
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.name
-      name: Domain
+      name: Tunnel
       type: string
-    - jsonPath: .status.cloudflareMetadata.zoneID
-      name: Zone ID
+    - jsonPath: .status.cloudflareMetadata.tunnelID
+      name: Tunnel ID
       type: string
     - jsonPath: .status.cloudflareMetadata.status
       name: CF Status
@@ -37,8 +36,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Zone is the Schema for the zones API.
-          It represents a DNS zone managed in Cloudflare.
+          Tunnel is the Schema for the tunnels API.
+          It represents a remotely-managed Cloudflare Tunnel and the Secret holding
+          the token a cloudflared connector needs to run it.
         properties:
           apiVersion:
             description: |-
@@ -58,11 +58,11 @@ spec:
           metadata:
             type: object
           spec:
-            description: ZoneSpec defines the desired state of Zone.
+            description: TunnelSpec defines the desired state of Tunnel.
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns this zone.
+                  AccountRef references the CloudflareAccount that owns this tunnel.
                   Immutable after creation.
                 properties:
                   name:
@@ -76,62 +76,55 @@ spec:
                 x-kubernetes-validations:
                 - message: accountRef is immutable
                   rule: self == oldSelf
+              credentialsSecretRef:
+                description: |-
+                  CredentialsSecretRef names the Secret, in the Tunnel's namespace, that
+                  receives the tunnel token under the TUNNEL_TOKEN key. kflare creates the
+                  Secret and owns it, so it is deleted together with the Tunnel. An existing
+                  Secret that kflare does not own is never overwritten.
+                properties:
+                  name:
+                    description: Name of the Secret, in the same namespace as the
+                      Tunnel.
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                required:
+                - name
+                type: object
               name:
-                description: Name is the domain (e.g. "example.com"). Immutable after
+                description: Name is the tunnel name in Cloudflare. Immutable after
                   creation.
-                pattern: ^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$
+                minLength: 1
                 type: string
                 x-kubernetes-validations:
                 - message: name is immutable
                   rule: self == oldSelf
-              plan:
-                description: |-
-                  Plan is the billing plan for the zone: free, pro, business, or enterprise.
-                  Not applied yet: kflare does not change a zone's plan, which goes
-                  through Cloudflare billing.
-                enum:
-                - free
-                - pro
-                - business
-                - enterprise
-                type: string
-              type:
-                default: full
-                description: 'Type is the zone type: "full" (Cloudflare manages DNS)
-                  or "partial" (proxy only).'
-                enum:
-                - full
-                - partial
-                type: string
             required:
             - accountRef
+            - credentialsSecretRef
             - name
             type: object
           status:
-            description: ZoneStatus defines the observed state of Zone.
+            description: TunnelStatus defines the observed state of Tunnel.
             properties:
               cloudflareMetadata:
                 description: CloudflareMetadata holds identifiers and metadata returned
                   by the Cloudflare API.
                 properties:
-                  nameServers:
-                    description: NameServers are the authoritative name servers assigned
-                      by Cloudflare.
-                    items:
-                      type: string
-                    type: array
                   status:
                     description: |-
-                      Status is the zone activation status as reported by Cloudflare
-                      (active, pending, initializing, moved, deactivated).
+                      Status is the tunnel health reported by Cloudflare at the last reconcile
+                      (inactive, degraded, healthy, or down).
                     type: string
-                  zoneID:
-                    description: ZoneID is the Cloudflare zone identifier.
+                  tunnelID:
+                    description: TunnelID is the Cloudflare tunnel identifier (a UUID).
                     type: string
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the zone state.
+                  of the tunnel state.
                 items:
                   description: "Condition contains details for one aspect of the current
                     state of this API Resource.\n---\nThis struct is intended for
@@ -203,6 +196,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialsSecretName:
+                description: |-
+                  CredentialsSecretName is the Secret the token was last written to. When
+                  spec.credentialsSecretRef changes, kflare deletes this Secret after
+                  writing the new one.
+                type: string
             type: object
         type: object
     served: true
