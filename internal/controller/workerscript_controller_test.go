@@ -99,7 +99,7 @@ var _ = Describe("WorkerScript Controller", func() {
 		codeConfigMap  = "ws-test-code"
 		fakeAcctID     = "acct-ws-123"
 		inlineCode     = "export default { fetch() { return new Response('hi'); } };"
-		deletionPolicy = "cloudflare.k8s.io/deletion-policy"
+		deletionPolicy = "kflare.dev/deletion-policy"
 	)
 
 	ctx := context.Background()

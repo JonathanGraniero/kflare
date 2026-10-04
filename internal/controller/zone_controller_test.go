@@ -629,7 +629,7 @@ var _ = Describe("Zone Controller", func() {
 		It("removes the finalizer without calling CF delete when deletion-policy=retain", func() {
 			createAccount(true)
 			createSecret()
-			createZone(map[string]string{"cloudflare.k8s.io/deletion-policy": "retain"})
+			createZone(map[string]string{"kflare.dev/deletion-policy": "retain"})
 			setZoneIDInStatus(fakeZoneID)
 
 			// Add finalizer, then trigger deletion.
@@ -661,7 +661,7 @@ var _ = Describe("Zone Controller", func() {
 		It("calls CF delete and removes the finalizer when deletion-policy=delete", func() {
 			createAccount(true)
 			createSecret()
-			createZone(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createZone(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setZoneIDInStatus(fakeZoneID)
 
 			zone := &cloudflarev1alpha1.Zone{}
@@ -780,7 +780,7 @@ var _ = Describe("Zone Controller", func() {
 
 		It("returns an error from reconcileDelete when account is not found during deletion", func() {
 			// No account created — deletion should fail to resolve credentials.
-			createZone(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createZone(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setZoneIDInStatus(fakeZoneID)
 			zone := &cloudflarev1alpha1.Zone{}
 			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
@@ -798,7 +798,7 @@ var _ = Describe("Zone Controller", func() {
 
 		It("returns an error from reconcileDelete when secret is not found during deletion", func() {
 			createAccount(true) // account exists but no secret
-			createZone(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createZone(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setZoneIDInStatus(fakeZoneID)
 			zone := &cloudflarev1alpha1.Zone{}
 			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
@@ -822,7 +822,7 @@ var _ = Describe("Zone Controller", func() {
 				Data:       map[string][]byte{"WRONG_KEY": []byte(fakeToken)},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
-			createZone(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createZone(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setZoneIDInStatus(fakeZoneID)
 			zone := &cloudflarev1alpha1.Zone{}
 			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
@@ -846,7 +846,7 @@ var _ = Describe("Zone Controller", func() {
 				Data:       map[string][]byte{tokenKey: []byte("")},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
-			createZone(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createZone(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setZoneIDInStatus(fakeZoneID)
 			zone := &cloudflarev1alpha1.Zone{}
 			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
@@ -869,7 +869,7 @@ var _ = Describe("Zone Controller", func() {
 		It("returns an error from reconcileDelete when DeleteZone returns a non-NotFound error", func() {
 			createAccount(true)
 			createSecret()
-			createZone(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createZone(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setZoneIDInStatus(fakeZoneID)
 			zone := &cloudflarev1alpha1.Zone{}
 			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())

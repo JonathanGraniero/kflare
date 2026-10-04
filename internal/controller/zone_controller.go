@@ -58,10 +58,10 @@ type ZoneReconciler struct {
 	NewZoneAPI func(token string) (ZoneAPI, error)
 }
 
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=zones,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=zones/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=zones/finalizers,verbs=update
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=cloudflareaccounts,verbs=get;list;watch
+//+kubebuilder:rbac:groups=kflare.dev,resources=zones,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=kflare.dev,resources=zones/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=kflare.dev,resources=zones/finalizers,verbs=update
+//+kubebuilder:rbac:groups=kflare.dev,resources=cloudflareaccounts,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

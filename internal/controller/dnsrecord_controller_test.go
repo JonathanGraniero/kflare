@@ -914,7 +914,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			createDNSAccount(true)
 			createReadyZone()
 			createDNSSecret()
-			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "retain"})
+			createDNSRecord(map[string]string{"kflare.dev/deletion-policy": "retain"})
 			setRecordIDInStatus(dnsFakeRecordID)
 
 			record := &cloudflarev1alpha1.DNSRecord{}
@@ -943,7 +943,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			createDNSAccount(true)
 			createReadyZone()
 			createDNSSecret()
-			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createDNSRecord(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setRecordIDInStatus(dnsFakeRecordID)
 
 			record := &cloudflarev1alpha1.DNSRecord{}
@@ -987,7 +987,7 @@ var _ = Describe("DNSRecord Controller", func() {
 
 		It("removes the finalizer without calling CF delete when the Zone is already gone", func() {
 			// No zone: it was deleted first, e.g. together with its namespace.
-			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createDNSRecord(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setRecordIDInStatus(dnsFakeRecordID)
 			record := &cloudflarev1alpha1.DNSRecord{}
 			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
@@ -1012,7 +1012,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			createDNSAccount(true)
 			createReadyZone()
 			createDNSSecret()
-			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createDNSRecord(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setRecordIDInStatus(dnsFakeRecordID)
 			record := &cloudflarev1alpha1.DNSRecord{}
 			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
@@ -1096,7 +1096,7 @@ var _ = Describe("DNSRecord Controller", func() {
 		It("returns an error from reconcileDelete when account is not found during deletion", func() {
 			// No account created — zone exists but account was deleted.
 			createReadyZone()
-			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createDNSRecord(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setRecordIDInStatus(dnsFakeRecordID)
 			record := &cloudflarev1alpha1.DNSRecord{}
 			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
@@ -1115,7 +1115,7 @@ var _ = Describe("DNSRecord Controller", func() {
 		It("returns an error from reconcileDelete when secret is not found during deletion", func() {
 			createDNSAccount(true) // account exists but no secret
 			createReadyZone()
-			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createDNSRecord(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setRecordIDInStatus(dnsFakeRecordID)
 			record := &cloudflarev1alpha1.DNSRecord{}
 			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
@@ -1140,7 +1140,7 @@ var _ = Describe("DNSRecord Controller", func() {
 				Data:       map[string][]byte{"WRONG_KEY": []byte(dnsFakeToken)},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
-			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createDNSRecord(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setRecordIDInStatus(dnsFakeRecordID)
 			record := &cloudflarev1alpha1.DNSRecord{}
 			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
@@ -1165,7 +1165,7 @@ var _ = Describe("DNSRecord Controller", func() {
 				Data:       map[string][]byte{dnsTokenKey: []byte("")},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
-			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
+			createDNSRecord(map[string]string{"kflare.dev/deletion-policy": "delete"})
 			setRecordIDInStatus(dnsFakeRecordID)
 			record := &cloudflarev1alpha1.DNSRecord{}
 			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())

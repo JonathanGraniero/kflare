@@ -2,19 +2,58 @@
 # This file is used to track the info used to scaffold your project
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
-domain: cloudflare.k8s.io
+domain: kflare.dev
 layout:
 - go.kubebuilder.io/v4
-projectName: cloudflare-operator
+projectName: kflare
 repo: github.com/JonathanGraniero/kflare
 resources:
 - api:
     crdVersion: v1
+    namespaced: false
+  controller: true
+  domain: kflare.dev
+  kind: CloudflareAccount
+  path: github.com/JonathanGraniero/kflare/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
     namespaced: true
   controller: true
-  domain: cloudflare.k8s.io
-  group: cloudflare
-  kind: CloudflareAccount
+  domain: kflare.dev
+  kind: Zone
+  path: github.com/JonathanGraniero/kflare/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kflare.dev
+  kind: DNSRecord
+  path: github.com/JonathanGraniero/kflare/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kflare.dev
+  kind: Tunnel
+  path: github.com/JonathanGraniero/kflare/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kflare.dev
+  kind: TunnelConfiguration
+  path: github.com/JonathanGraniero/kflare/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kflare.dev
+  kind: WorkerScript
   path: github.com/JonathanGraniero/kflare/api/v1alpha1
   version: v1alpha1
 version: "3"

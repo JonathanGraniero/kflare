@@ -59,11 +59,11 @@ type TunnelConfigurationReconciler struct {
 	NewTunnelConfigurationAPI func(token string) (TunnelConfigurationAPI, error)
 }
 
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=tunnelconfigurations,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=tunnelconfigurations/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=tunnelconfigurations/finalizers,verbs=update
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=tunnels,verbs=get;list;watch
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=cloudflareaccounts,verbs=get;list;watch
+//+kubebuilder:rbac:groups=kflare.dev,resources=tunnelconfigurations,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=kflare.dev,resources=tunnelconfigurations/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=kflare.dev,resources=tunnelconfigurations/finalizers,verbs=update
+//+kubebuilder:rbac:groups=kflare.dev,resources=tunnels,verbs=get;list;watch
+//+kubebuilder:rbac:groups=kflare.dev,resources=cloudflareaccounts,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *TunnelConfigurationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

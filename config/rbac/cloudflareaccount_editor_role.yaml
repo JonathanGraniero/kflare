@@ -12,7 +12,7 @@ metadata:
   name: cloudflareaccount-editor-role
 rules:
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - cloudflareaccounts
   verbs:
@@ -24,7 +24,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cloudflare.cloudflare.k8s.io
+  - kflare.dev
   resources:
   - cloudflareaccounts/status
   verbs:

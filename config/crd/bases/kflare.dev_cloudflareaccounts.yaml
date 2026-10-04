@@ -3,27 +3,26 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    api-approved.kubernetes.io: unapproved
     controller-gen.kubebuilder.io/version: v0.14.0
-  name: tunnelconfigurations.cloudflare.cloudflare.k8s.io
+  name: cloudflareaccounts.kflare.dev
 spec:
-  group: cloudflare.cloudflare.k8s.io
+  group: kflare.dev
   names:
-    kind: TunnelConfiguration
-    listKind: TunnelConfigurationList
-    plural: tunnelconfigurations
+    kind: CloudflareAccount
+    listKind: CloudflareAccountList
+    plural: cloudflareaccounts
     shortNames:
-    - cftunnelconfig
-    singular: tunnelconfiguration
-  scope: Namespaced
+    - cfaccount
+    singular: cloudflareaccount
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.tunnelRef.name
-      name: Tunnel
+    - jsonPath: .spec.accountID
+      name: Account ID
       type: string
-    - jsonPath: .status.cloudflareMetadata.version
-      name: Version
-      type: integer
+    - jsonPath: .status.accountName
+      name: Account Name
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -34,8 +33,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          TunnelConfiguration is the Schema for the tunnelconfigurations API.
-          It owns the complete ingress configuration of one remotely-managed Tunnel.
+          CloudflareAccount is the Schema for the cloudflareaccounts API.
+          It is cluster-scoped and holds credentials for a single Cloudflare account.
         properties:
           apiVersion:
             description: |-
@@ -55,113 +54,43 @@ spec:
           metadata:
             type: object
           spec:
-            description: TunnelConfigurationSpec defines the desired state of TunnelConfiguration.
+            description: CloudflareAccountSpec defines the desired state of CloudflareAccount
             properties:
-              defaultService:
-                default: http_status:404
-                description: |-
-                  DefaultService handles requests that match no ingress rule. kflare
-                  appends it as the final catch-all rule that Cloudflare requires.
-                minLength: 1
+              accountID:
+                description: AccountID is the Cloudflare account ID.
                 type: string
-              ingress:
-                description: |-
-                  Ingress maps public hostnames to the services cloudflared forwards them
-                  to. Rules are matched in order; the first match wins.
-                items:
-                  description: |-
-                    TunnelIngressRule routes requests for a hostname (and optionally a path) to
-                    a service reachable from cloudflared.
-                  properties:
-                    hostname:
-                      description: |-
-                        Hostname to match, such as "app.example.com" or "*.example.com".
-                        Requests only reach the tunnel once the hostname has a proxied CNAME
-                        record pointing at <tunnelID>.cfargotunnel.com.
-                      minLength: 1
-                      type: string
-                    originRequest:
-                      description: OriginRequest tunes how cloudflared connects to
-                        the service.
-                      properties:
-                        disableChunkedEncoding:
-                          description: |-
-                            DisableChunkedEncoding turns off chunked transfer encoding, which some
-                            WSGI servers need.
-                          type: boolean
-                        http2Origin:
-                          description: HTTP2Origin makes cloudflared connect to the
-                            origin over HTTP/2.
-                          type: boolean
-                        httpHostHeader:
-                          description: HTTPHostHeader overrides the Host header sent
-                            to the origin.
-                          type: string
-                        noTLSVerify:
-                          description: NoTLSVerify disables verification of the origin's
-                            TLS certificate.
-                          type: boolean
-                        originServerName:
-                          description: OriginServerName is the hostname expected on
-                            the origin's TLS certificate.
-                          type: string
-                      type: object
-                    path:
-                      description: Path is a regular expression matched against the
-                        request path.
-                      type: string
-                    service:
-                      description: |-
-                        Service is where cloudflared sends matching requests, for example
-                        "http://my-service.my-namespace:80", "tcp://db:5432" or "http_status:404".
-                      minLength: 1
-                      type: string
-                  required:
-                  - hostname
-                  - service
-                  type: object
-                minItems: 1
-                type: array
-              tunnelRef:
-                description: |-
-                  TunnelRef references the Tunnel, in the same namespace, whose ingress
-                  rules this resource manages. Immutable after creation.
+              tokenSecretRef:
+                description: TokenSecretRef references a Secret containing the CF_API_TOKEN
+                  key.
                 properties:
-                  name:
-                    description: |-
-                      Name of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                      TODO: Add other useful fields. apiVersion, kind, uid?
+                  key:
+                    default: CF_API_TOKEN
+                    description: Key within the Secret. Defaults to CF_API_TOKEN.
                     type: string
+                  name:
+                    description: Name of the Secret.
+                    type: string
+                  namespace:
+                    description: Namespace of the Secret.
+                    type: string
+                required:
+                - name
+                - namespace
                 type: object
-                x-kubernetes-map-type: atomic
-                x-kubernetes-validations:
-                - message: tunnelRef is immutable
-                  rule: self == oldSelf
             required:
-            - ingress
-            - tunnelRef
+            - accountID
+            - tokenSecretRef
             type: object
           status:
-            description: TunnelConfigurationStatus defines the observed state of TunnelConfiguration.
+            description: CloudflareAccountStatus defines the observed state of CloudflareAccount
             properties:
-              cloudflareMetadata:
-                description: CloudflareMetadata holds identifiers and metadata returned
-                  by the Cloudflare API.
-                properties:
-                  tunnelID:
-                    description: TunnelID is the Cloudflare tunnel this configuration
-                      was last written to.
-                    type: string
-                  version:
-                    description: |-
-                      Version is the configuration version Cloudflare reported after the last
-                      sync. cloudflared picks up each new version automatically.
-                    type: integer
-                type: object
+              accountName:
+                description: AccountName is the name of the Cloudflare account as
+                  returned by the API.
+                type: string
               conditions:
                 description: Conditions represent the latest available observations
-                  of the configuration state.
+                  of the account state.
                 items:
                   description: "Condition contains details for one aspect of the current
                     state of this API Resource.\n---\nThis struct is intended for
@@ -233,6 +162,22 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              protectedTokenSecret:
+                description: |-
+                  ProtectedTokenSecret is the token Secret kflare holds a finalizer on,
+                  so that it cannot be deleted while this account exists. When
+                  spec.tokenSecretRef changes, kflare releases this Secret.
+                properties:
+                  name:
+                    description: name is unique within a namespace to reference a
+                      secret resource.
+                    type: string
+                  namespace:
+                    description: namespace defines the space within which the secret
+                      name must be unique.
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
             type: object
         type: object
     served: true

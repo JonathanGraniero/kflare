@@ -1,4 +1,4 @@
-apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
+apiVersion: kflare.dev/v1alpha1
 kind: Tunnel
 metadata:
   name: example-tunnel
@@ -6,7 +6,7 @@ metadata:
   annotations:
     # Keep the tunnel in Cloudflare when this resource is deleted.
     # Remove the annotation to delete it from Cloudflare too.
-    cloudflare.k8s.io/deletion-policy: retain
+    kflare.dev/deletion-policy: retain
 spec:
   name: example-tunnel
   accountRef:

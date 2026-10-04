@@ -52,10 +52,10 @@ type DNSRecordReconciler struct {
 	NewDNSRecordAPI func(token string) (DNSRecordAPI, error)
 }
 
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=dnsrecords,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=dnsrecords/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=dnsrecords/finalizers,verbs=update
-//+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=zones,verbs=get;list;watch
+//+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords/finalizers,verbs=update
+//+kubebuilder:rbac:groups=kflare.dev,resources=zones,verbs=get;list;watch
 
 func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)

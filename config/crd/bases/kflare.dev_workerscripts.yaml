@@ -3,29 +3,25 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    api-approved.kubernetes.io: unapproved
     controller-gen.kubebuilder.io/version: v0.14.0
-  name: tunnels.cloudflare.cloudflare.k8s.io
+  name: workerscripts.kflare.dev
 spec:
-  group: cloudflare.cloudflare.k8s.io
+  group: kflare.dev
   names:
-    kind: Tunnel
-    listKind: TunnelList
-    plural: tunnels
+    kind: WorkerScript
+    listKind: WorkerScriptList
+    plural: workerscripts
     shortNames:
-    - cftunnel
-    singular: tunnel
+    - cfworker
+    singular: workerscript
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.name
-      name: Tunnel
+      name: Script
       type: string
-    - jsonPath: .status.cloudflareMetadata.tunnelID
-      name: Tunnel ID
-      type: string
-    - jsonPath: .status.cloudflareMetadata.status
-      name: CF Status
+    - jsonPath: .status.cloudflareMetadata.modifiedOn
+      name: Modified
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -37,9 +33,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Tunnel is the Schema for the tunnels API.
-          It represents a remotely-managed Cloudflare Tunnel and the Secret holding
-          the token a cloudflared connector needs to run it.
+          WorkerScript is the Schema for the workerscripts API.
+          It represents a Cloudflare Worker script and its bindings.
         properties:
           apiVersion:
             description: |-
@@ -59,11 +54,11 @@ spec:
           metadata:
             type: object
           spec:
-            description: TunnelSpec defines the desired state of Tunnel.
+            description: WorkerScriptSpec defines the desired state of WorkerScript.
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns this tunnel.
+                  AccountRef references the CloudflareAccount that owns this Worker.
                   Immutable after creation.
                 properties:
                   name:
@@ -77,55 +72,147 @@ spec:
                 x-kubernetes-validations:
                 - message: accountRef is immutable
                   rule: self == oldSelf
-              credentialsSecretRef:
+              bindings:
                 description: |-
-                  CredentialsSecretRef names the Secret, in the Tunnel's namespace, that
-                  receives the tunnel token under the TUNNEL_TOKEN key. kflare creates the
-                  Secret and owns it, so it is deleted together with the Tunnel. An existing
-                  Secret that kflare does not own is never overwritten.
-                properties:
-                  name:
-                    description: Name of the Secret, in the same namespace as the
-                      Tunnel.
-                    maxLength: 253
-                    minLength: 1
-                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-                    type: string
-                required:
+                  Bindings expose values and resources to the Worker as environment
+                  bindings. Names must be unique.
+                items:
+                  description: |-
+                    WorkerBinding exposes one value or resource to the Worker under Name.
+                    Exactly one source must be set.
+                  properties:
+                    kvNamespaceID:
+                      description: KVNamespaceID binds a Workers KV namespace by ID.
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name of the binding, as seen by the Worker (env.NAME).
+                      pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                      type: string
+                    plainText:
+                      description: PlainText binds a plain text value.
+                      minLength: 1
+                      type: string
+                    r2BucketName:
+                      description: R2BucketName binds an R2 bucket by name.
+                      minLength: 1
+                      type: string
+                    secretKeyRef:
+                      description: |-
+                        SecretKeyRef binds a secret text value read from a key of a Secret in
+                        the same namespace. The value is sent to Cloudflare and never written
+                        to this resource's status.
+                      properties:
+                        key:
+                          description: Key within the ConfigMap or Secret.
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name of the ConfigMap or Secret.
+                          minLength: 1
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of plainText, secretKeyRef, kvNamespaceID
+                      or r2BucketName must be set
+                    rule: '[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceID),
+                      has(self.r2BucketName)].filter(x, x).size() == 1'
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
                 - name
-                type: object
+                x-kubernetes-list-type: map
+              compatibilityDate:
+                description: CompatibilityDate pins the Workers runtime behaviour
+                  (YYYY-MM-DD).
+                pattern: ^\d{4}-\d{2}-\d{2}$
+                type: string
+              compatibilityFlags:
+                description: CompatibilityFlags enable or disable individual runtime
+                  features.
+                items:
+                  type: string
+                maxItems: 64
+                type: array
+              format:
+                default: module
+                description: 'Format is the script syntax: "module" (ES modules) or
+                  "serviceWorker".'
+                enum:
+                - module
+                - serviceWorker
+                type: string
               name:
-                description: Name is the tunnel name in Cloudflare. Immutable after
-                  creation.
-                minLength: 1
+                description: Name is the Worker's script name in Cloudflare. Immutable
+                  after creation.
+                pattern: ^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$
                 type: string
                 x-kubernetes-validations:
                 - message: name is immutable
                   rule: self == oldSelf
+              script:
+                description: Script is the Worker source code. Set either this or
+                  ScriptConfigMapRef.
+                minLength: 1
+                type: string
+              scriptConfigMapRef:
+                description: |-
+                  ScriptConfigMapRef reads the Worker source code from a key of a
+                  ConfigMap in the same namespace. Set either this or Script.
+                properties:
+                  key:
+                    description: Key within the ConfigMap or Secret.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name of the ConfigMap or Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - key
+                - name
+                type: object
             required:
             - accountRef
-            - credentialsSecretRef
             - name
             type: object
+            x-kubernetes-validations:
+            - message: exactly one of script or scriptConfigMapRef must be set
+              rule: has(self.script) != has(self.scriptConfigMapRef)
           status:
-            description: TunnelStatus defines the observed state of Tunnel.
+            description: WorkerScriptStatus defines the observed state of WorkerScript.
             properties:
+              appliedHash:
+                description: |-
+                  AppliedHash identifies the desired state last uploaded: the script,
+                  format, compatibility settings and bindings. Secret bindings contribute
+                  the Secret's UID and resourceVersion, never its value.
+                type: string
               cloudflareMetadata:
-                description: CloudflareMetadata holds identifiers and metadata returned
-                  by the Cloudflare API.
+                description: CloudflareMetadata holds metadata returned by the Cloudflare
+                  API.
                 properties:
-                  status:
+                  etag:
                     description: |-
-                      Status is the tunnel health reported by Cloudflare at the last reconcile
-                      (inactive, degraded, healthy, or down).
+                      Etag is Cloudflare's hash of the uploaded code. It does not change when
+                      only bindings or compatibility settings change.
                     type: string
-                  tunnelID:
-                    description: TunnelID is the Cloudflare tunnel identifier (a UUID).
+                  modifiedOn:
+                    description: |-
+                      ModifiedOn is the modification time Cloudflare reported for kflare's
+                      last upload, kept at full precision. A different value on Cloudflare
+                      means the Worker was changed outside kflare.
                     type: string
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the tunnel state.
+                  of the Worker state.
                 items:
                   description: "Condition contains details for one aspect of the current
                     state of this API Resource.\n---\nThis struct is intended for
@@ -197,12 +284,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              credentialsSecretName:
-                description: |-
-                  CredentialsSecretName is the Secret the token was last written to. When
-                  spec.credentialsSecretRef changes, kflare deletes this Secret after
-                  writing the new one.
-                type: string
             type: object
         type: object
     served: true

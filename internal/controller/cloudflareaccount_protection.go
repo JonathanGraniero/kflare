@@ -41,7 +41,7 @@ import (
 
 // tokenSecretFinalizer protects a CloudflareAccount's token Secret from
 // deletion while an account references it.
-const tokenSecretFinalizer = "cloudflare.k8s.io/token-protection"
+const tokenSecretFinalizer = "kflare.dev/token-protection"
 
 // deletesOnly passes only delete events, which are all a CloudflareAccount
 // needs to hear about its dependents.

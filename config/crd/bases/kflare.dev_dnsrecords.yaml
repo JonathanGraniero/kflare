@@ -3,32 +3,31 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    api-approved.kubernetes.io: unapproved
     controller-gen.kubebuilder.io/version: v0.14.0
-  name: zones.cloudflare.cloudflare.k8s.io
+  name: dnsrecords.kflare.dev
 spec:
-  group: cloudflare.cloudflare.k8s.io
+  group: kflare.dev
   names:
-    kind: Zone
-    listKind: ZoneList
-    plural: zones
+    kind: DNSRecord
+    listKind: DNSRecordList
+    plural: dnsrecords
     shortNames:
-    - cfzone
-    singular: zone
+    - cfrecord
+    singular: dnsrecord
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.name
-      name: Domain
+      name: Record Name
       type: string
-    - jsonPath: .status.cloudflareMetadata.zoneID
-      name: Zone ID
+    - jsonPath: .spec.type
+      name: Type
       type: string
-    - jsonPath: .status.cloudflareMetadata.plan
-      name: Plan
+    - jsonPath: .spec.content
+      name: Content
       type: string
-    - jsonPath: .status.cloudflareMetadata.status
-      name: CF Status
+    - jsonPath: .status.cloudflareMetadata.recordID
+      name: Record ID
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -40,8 +39,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Zone is the Schema for the zones API.
-          It represents a DNS zone managed in Cloudflare.
+          DNSRecord is the Schema for the dnsrecords API.
+          It represents a DNS record within a Cloudflare-managed zone.
         properties:
           apiVersion:
             description: |-
@@ -61,11 +60,87 @@ spec:
           metadata:
             type: object
           spec:
-            description: ZoneSpec defines the desired state of Zone.
+            description: DNSRecordSpec defines the desired state of DNSRecord.
             properties:
-              accountRef:
+              comment:
+                description: Comment is an optional free-text annotation for the record.
+                type: string
+              content:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns this zone.
+                  Content is the DNS record content (e.g. an IP address for A records, a hostname for CNAME/MX).
+                  Omit for record types that use the Data field instead (SRV, LOC, CAA, ...).
+                type: string
+              data:
+                description: |-
+                  Data holds structured record data for types that require it (SRV, LOC, CAA).
+                  The JSON structure must match the Cloudflare API schema for the given record type.
+                  Cloudflare derives the record content from it, so content drift is not
+                  corrected while data is set.
+                x-kubernetes-preserve-unknown-fields: true
+              name:
+                description: Name is the fully-qualified DNS record name (e.g. "www.example.com").
+                  Immutable after creation.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: name is immutable
+                  rule: self == oldSelf
+              priority:
+                description: |-
+                  Priority is the record priority, used for MX, SRV and URI records.
+                  When unset, kflare leaves the priority Cloudflare chose unchanged.
+                type: integer
+              proxied:
+                description: |-
+                  Proxied controls whether Cloudflare proxies traffic through its network for this record.
+                  Only applicable to A, AAAA, and CNAME records. Defaults to false (DNS only).
+                type: boolean
+              tags:
+                description: Tags are optional labels attached to the record in Cloudflare.
+                items:
+                  type: string
+                type: array
+              ttl:
+                description: |-
+                  TTL is the time-to-live in seconds: 1 for automatic (the default), or
+                  30-86400. Cloudflare only accepts values below 60 on Enterprise zones.
+                maximum: 86400
+                minimum: 1
+                type: integer
+                x-kubernetes-validations:
+                - message: ttl must be 1 (automatic) or between 30 and 86400
+                  rule: self == 1 || self >= 30
+              type:
+                description: Type is the DNS record type. Immutable after creation.
+                enum:
+                - A
+                - AAAA
+                - CAA
+                - CERT
+                - CNAME
+                - DNSKEY
+                - DS
+                - HTTPS
+                - LOC
+                - MX
+                - NAPTR
+                - NS
+                - OPENPGPKEY
+                - PTR
+                - SMIMEA
+                - SRV
+                - SSHFP
+                - SVCB
+                - TLSA
+                - TXT
+                - URI
+                type: string
+                x-kubernetes-validations:
+                - message: type is immutable
+                  rule: self == oldSelf
+              zoneRef:
+                description: |-
+                  ZoneRef references the Zone CR (in the same namespace) that owns this record.
                   Immutable after creation.
                 properties:
                   name:
@@ -77,76 +152,35 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
                 x-kubernetes-validations:
-                - message: accountRef is immutable
+                - message: zoneRef is immutable
                   rule: self == oldSelf
-              name:
-                description: Name is the domain (e.g. "example.com"). Immutable after
-                  creation.
-                pattern: ^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$
-                type: string
-                x-kubernetes-validations:
-                - message: name is immutable
-                  rule: self == oldSelf
-              plan:
-                description: |-
-                  Plan is the zone's billing plan: free, pro, business, or enterprise.
-                  When unset, kflare leaves the plan alone. When set, kflare subscribes
-                  the zone to it, which bills the account's default payment method.
-                  Enterprise cannot be bought through the API; set it only for a zone
-                  that is already on Enterprise. Downgrades take effect at the end of
-                  the billing period and show up in status.cloudflareMetadata.pendingPlan.
-                enum:
-                - free
-                - pro
-                - business
-                - enterprise
-                type: string
-              type:
-                default: full
-                description: 'Type is the zone type: "full" (Cloudflare manages DNS)
-                  or "partial" (proxy only).'
-                enum:
-                - full
-                - partial
-                type: string
             required:
-            - accountRef
             - name
+            - type
+            - zoneRef
             type: object
           status:
-            description: ZoneStatus defines the observed state of Zone.
+            description: DNSRecordStatus defines the observed state of DNSRecord.
             properties:
               cloudflareMetadata:
                 description: CloudflareMetadata holds identifiers and metadata returned
                   by the Cloudflare API.
                 properties:
-                  nameServers:
-                    description: NameServers are the authoritative name servers assigned
-                      by Cloudflare.
-                    items:
-                      type: string
-                    type: array
-                  pendingPlan:
-                    description: |-
-                      PendingPlan is a plan change Cloudflare has scheduled for the end of
-                      the billing period, such as a downgrade.
-                    type: string
-                  plan:
-                    description: Plan is the zone's current billing plan (free, pro,
-                      business or enterprise).
-                    type: string
-                  status:
-                    description: |-
-                      Status is the zone activation status as reported by Cloudflare
-                      (active, pending, initializing, moved, deactivated).
+                  proxiable:
+                    description: Proxiable indicates whether this record type supports
+                      Cloudflare proxying.
+                    type: boolean
+                  recordID:
+                    description: RecordID is the Cloudflare DNS record identifier.
                     type: string
                   zoneID:
-                    description: ZoneID is the Cloudflare zone identifier.
+                    description: ZoneID is the Cloudflare zone identifier (denormalized
+                      from the parent Zone status).
                     type: string
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the zone state.
+                  of the DNS record state.
                 items:
                   description: "Condition contains details for one aspect of the current
                     state of this API Resource.\n---\nThis struct is intended for

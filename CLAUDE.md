@@ -26,10 +26,11 @@ This is a **public, production-grade repository**. Every line of code must meet 
 
 ### API Group
 ```
-cloudflare.cloudflare.k8s.io
+kflare.dev
 ```
-kubebuilder combined group `cloudflare` with domain `cloudflare.k8s.io`. `*.k8s.io` is a protected
-group, so every CRD carries `api-approved.kubernetes.io: unapproved` (stamped by `make manifests`).
+`apiVersion: kflare.dev/v1alpha1`. The project owns `kflare.dev`; finalizers, annotations and labels use
+the same prefix (`kflare.dev/finalizer`, `kflare.dev/deletion-policy`, ...). The group was
+`cloudflare.cloudflare.k8s.io` until October 2026, which sat in the Kubernetes-reserved `*.k8s.io` space.
 
 ### Language & Frameworks
 - **Go** (1.22+)
@@ -57,7 +58,7 @@ Desired State (CRD spec) → Observed State (Cloudflare API) → Delta → Recon
 With:
 - `status.conditions` using standard Kubernetes condition types
 - `status.cloudflareMetadata` (ID, zone ID, timestamps)
-- Finalizer-based deletion protection: `cloudflare.k8s.io/finalizer`
+- Finalizer-based deletion protection: `kflare.dev/finalizer`
 - `AdoptedResource` CRD for importing pre-existing Cloudflare resources
 - `FieldExport` CRD for piping resource fields into ConfigMaps/Secrets
 
@@ -105,7 +106,7 @@ Planned, not yet present: `helm/` (Phase 4), `generator/` (Phase 3), `docs/` (Ph
 **Actual file layout (differs from original plan):**
 - `api/v1alpha1/` (not `apis/`) — kubebuilder convention
 - `internal/controller/` (not `pkg/reconciler/`) — kubebuilder convention
-- API group resolved to `cloudflare.cloudflare.k8s.io` (group=`cloudflare` + domain=`cloudflare.k8s.io`)
+- API group is `kflare.dev` (originally `cloudflare.cloudflare.k8s.io` from group=`cloudflare` + domain=`cloudflare.k8s.io`)
 
 ---
 
@@ -135,7 +136,7 @@ Shared infrastructure that all Phase 2 controllers will use.
 - [x] `pkg/reconciler/base.go` — shared reconciler helpers
   - `SetCondition()` — wraps `meta.SetStatusCondition`, always sets `ObservedGeneration`
   - `EnsureFinalizer()` / `RemoveFinalizer()` — idempotent finalizer lifecycle
-  - `Finalizer` constant — `"cloudflare.k8s.io/finalizer"`
+  - `Finalizer` constant — `"kflare.dev/finalizer"`
 - [x] Unit tests — 100% coverage on both packages; controller updated to use shared helpers
 
 **Design note:** Each controller declares its own narrow interface (e.g. `CloudflareAccountAPI`) for testability. `*cfpkg.Client` satisfies all such interfaces because it embeds `*cloudflare.API`.
@@ -176,7 +177,7 @@ Shared infrastructure that all Phase 2 controllers will use.
 - [x] `internal/controller/zone_controller.go`
   - Create / read / update / delete lifecycle
   - Drift detection on zone type
-  - Finalizer: `cloudflare.k8s.io/finalizer`
+  - Finalizer: `kflare.dev/finalizer`
   - Deletion policy annotation: `retain | delete`
   - Watch on CloudflareAccount → re-triggers zones when account heals
 - [x] Unit tests (mocked CF client, 96.2% coverage)
@@ -418,7 +419,7 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
 4. **Adoption** — controllers adopt an existing Cloudflare resource with the same name before creating one
    (the planned `AdoptedResource` CRD, Phase 4, will make this explicit)
 5. **FieldExport** (planned, Phase 4) — `FieldExport` CR pipes `.status.*` fields into ConfigMaps for cross-namespace consumption
-6. **Deletion policy** — annotation `cloudflare.k8s.io/deletion-policy: retain | delete` controls whether the
+6. **Deletion policy** — annotation `kflare.dev/deletion-policy: retain | delete` controls whether the
    Cloudflare resource is deleted on CR deletion; check it with `reconciler.RetainOnDelete`
 7. **Immutability** — fields that identify the Cloudflare resource (names, refs) are immutable via CEL
    `self == oldSelf`, with an envtest case per field

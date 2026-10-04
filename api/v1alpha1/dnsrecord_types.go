@@ -16,8 +16,8 @@ import (
 // manages. kflare sets it, and never adopts a record that another DNSRecord
 // already carries in this label, so each Cloudflare record has at most one
 // owner. Find the owner of a record with
-// `kubectl get dnsrecords -A -l cloudflare.k8s.io/record-id=<id>`.
-const DNSRecordIDLabel = "cloudflare.k8s.io/record-id"
+// `kubectl get dnsrecords -A -l kflare.dev/record-id=<id>`.
+const DNSRecordIDLabel = "kflare.dev/record-id"
 
 // DNSRecordSpec defines the desired state of DNSRecord.
 type DNSRecordSpec struct {
