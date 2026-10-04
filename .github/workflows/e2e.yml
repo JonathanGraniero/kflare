@@ -29,11 +29,9 @@ jobs:
           cluster_name: kflare-e2e
           config: local/kind-config.yaml
 
-      - name: Install CRDs
-        run: make manifests && kubectl apply -k config/crd/
-
+      # Builds the manager image, deploys it with config/default and checks
+      # that the manager starts. No Cloudflare credentials are needed.
       - name: Run e2e tests
         env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        run: go test ./test/e2e/... -tags e2e -v -timeout 10m
+          KIND_CLUSTER: kflare-e2e
+        run: go test ./test/e2e/ -v -ginkgo.v -timeout 20m

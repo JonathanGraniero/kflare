@@ -227,15 +227,19 @@ func TestRemoveFinalizer_PreservesOtherFinalizers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainOnDelete(t *testing.T) {
+	const (
+		policy = reconciler.DeletionPolicyAnnotation
+		retain = reconciler.DeletionPolicyRetain
+	)
 	cases := []struct {
 		name        string
 		annotations map[string]string
 		want        bool
 	}{
 		{name: "no annotations", annotations: nil, want: false},
-		{name: "retain", annotations: map[string]string{reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyRetain}, want: true},
-		{name: "delete", annotations: map[string]string{reconciler.DeletionPolicyAnnotation: "delete"}, want: false},
-		{name: "unrelated annotation", annotations: map[string]string{"example.com/other": reconciler.DeletionPolicyRetain}, want: false},
+		{name: "retain", annotations: map[string]string{policy: retain}, want: true},
+		{name: "delete", annotations: map[string]string{policy: "delete"}, want: false},
+		{name: "unrelated annotation", annotations: map[string]string{"example.com/other": retain}, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

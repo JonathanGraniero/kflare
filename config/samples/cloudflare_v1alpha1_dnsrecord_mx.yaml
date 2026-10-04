@@ -2,7 +2,7 @@ apiVersion: cloudflare.cloudflare.k8s.io/v1alpha1
 kind: DNSRecord
 metadata:
   name: mx-record
-  namespace: kflare-system
+  namespace: default
   annotations:
     cloudflare.k8s.io/deletion-policy: retain
 spec:

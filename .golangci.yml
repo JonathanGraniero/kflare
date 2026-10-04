@@ -1,5 +1,5 @@
 run:
-  deadline: 5m
+  timeout: 5m
   allow-parallel-runners: true
 
 issues:
@@ -16,6 +16,10 @@ issues:
       linters:
         - dupl
         - lll
+    # Repeated literals in test fixtures read better inline than as constants.
+    - path: "_test\\.go"
+      linters:
+        - goconst
 linters:
   disable-all: true
   enable:
