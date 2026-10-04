@@ -145,9 +145,12 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 		if listErr != nil {
 			return handleCloudflareError(ctx, r.Client, record, listErr)
 		}
-		if len(records) > 0 {
-			// Adopt the pre-existing record.
-			cfRecord = records[0]
+		claimed, err := r.claimedRecordIDs(ctx, record)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if existing, ok := adoptableRecord(record, records, claimed); ok {
+			cfRecord = existing
 			logger.Info("Adopted existing DNS record",
 				"name", record.Spec.Name, "type", record.Spec.Type, "recordID", cfRecord.ID)
 		} else {
@@ -166,6 +169,12 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 		}
 	}
 
+	// Claim the record before anything else can fail, so no other DNSRecord
+	// adopts it in the meantime.
+	if err := r.claimRecord(ctx, record, cfRecord.ID); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Drift detection: compare desired spec against observed CF state.
 	if drifted, params := driftDetect(record, cfRecord); drifted {
 		params.ID = cfRecord.ID
@@ -182,6 +191,74 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 	record.Status.CloudflareMetadata.ZoneID = cfRecord.ZoneID
 	record.Status.CloudflareMetadata.Proxiable = cfRecord.Proxiable
 	return ctrl.Result{}, updateReady(ctx, r.Client, record, "Synced", "DNS record is synced with Cloudflare")
+}
+
+// claimedRecordIDs returns the Cloudflare record IDs that DNSRecords other
+// than record manage, across all namespaces: two Zone resources in different
+// namespaces can point at the same Cloudflare zone.
+func (r *DNSRecordReconciler) claimedRecordIDs(
+	ctx context.Context,
+	record *cloudflarev1alpha1.DNSRecord,
+) (map[string]bool, error) {
+	list := &cloudflarev1alpha1.DNSRecordList{}
+	if err := r.List(ctx, list, client.HasLabels{cloudflarev1alpha1.DNSRecordIDLabel}); err != nil {
+		return nil, err
+	}
+	claimed := make(map[string]bool, len(list.Items))
+	for _, other := range list.Items {
+		if other.UID != record.UID {
+			claimed[other.Labels[cloudflarev1alpha1.DNSRecordIDLabel]] = true
+		}
+	}
+	return claimed, nil
+}
+
+// adoptableRecord picks the existing Cloudflare record that record should
+// adopt from candidates (same name and type), or returns false when a new
+// record should be created.
+//
+// Records another DNSRecord manages are never adopted. Among the rest, one
+// whose content (or data) already matches is preferred, so DNSRecords for
+// the members of a set (several MX, TXT or A records) each find their own.
+// A record that does not match is only adopted, and corrected, when it is the
+// only record with that name and type, because only then is it clearly the
+// one this DNSRecord describes; otherwise a new record joins the set.
+func adoptableRecord(
+	record *cloudflarev1alpha1.DNSRecord,
+	candidates []cf.DNSRecord,
+	claimed map[string]bool,
+) (cf.DNSRecord, bool) {
+	for _, c := range candidates {
+		if !claimed[c.ID] && recordContentMatches(record, c) {
+			return c, true
+		}
+	}
+	if len(candidates) == 1 && !claimed[candidates[0].ID] {
+		return candidates[0], true
+	}
+	return cf.DNSRecord{}, false
+}
+
+// recordContentMatches reports whether cfRecord holds the value record
+// describes: its data when spec.data is set, otherwise its content.
+func recordContentMatches(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) bool {
+	if record.Spec.Data != nil {
+		return !dataDrifted(record, cfRecord)
+	}
+	return record.Spec.Content == cfRecord.Content
+}
+
+// claimRecord records recordID in record's DNSRecordIDLabel.
+func (r *DNSRecordReconciler) claimRecord(ctx context.Context, record *cloudflarev1alpha1.DNSRecord, recordID string) error {
+	if record.Labels[cloudflarev1alpha1.DNSRecordIDLabel] == recordID {
+		return nil
+	}
+	patch := client.MergeFrom(record.DeepCopy())
+	if record.Labels == nil {
+		record.Labels = map[string]string{}
+	}
+	record.Labels[cloudflarev1alpha1.DNSRecordIDLabel] = recordID
+	return r.Patch(ctx, record, patch)
 }
 
 // automaticTTL is the TTL Cloudflare reports for "automatic". It is also what

@@ -459,10 +459,44 @@ var _ = Describe("DNSRecord Controller", func() {
 			updated := &cloudflarev1alpha1.DNSRecord{}
 			Expect(k8sClient.Get(ctx, recordKey, updated)).To(Succeed())
 			Expect(updated.Status.CloudflareMetadata.RecordID).To(Equal("existing-111"))
+			Expect(updated.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.DNSRecordIDLabel, "existing-111"))
 
 			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("creates a record instead of adopting one another DNSRecord already manages", func() {
+			createDNSAccount(true)
+			createReadyZone()
+			createDNSSecret()
+			createDNSRecord(nil)
+			record := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
+			record.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, record)).To(Succeed())
+
+			// Another DNSRecord, in another namespace, already owns the only
+			// record with this name and type.
+			owner := &cloudflarev1alpha1.DNSRecord{
+				ObjectMeta: metav1.ObjectMeta{Name: "owner-record", Namespace: "kube-public",
+					Labels: map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "taken-111"}},
+				Spec: cloudflarev1alpha1.DNSRecordSpec{ZoneRef: corev1.LocalObjectReference{Name: "z"},
+					Name: dnsRecordName, Type: dnsRecordType, Content: dnsRecordIP},
+			}
+			Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, owner)).To(Succeed()) })
+
+			taken := cf.DNSRecord{ID: "taken-111", ZoneID: dnsFakeZoneID, Name: dnsRecordName, Type: dnsRecordType, Content: dnsRecordIP, TTL: 300}
+			created := cf.DNSRecord{ID: "new-222", ZoneID: dnsFakeZoneID, Name: dnsRecordName, Type: dnsRecordType, Content: dnsRecordIP, TTL: 300}
+			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{taken}, createRecord: created}
+			_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, recordKey, updated)).To(Succeed())
+			Expect(updated.Status.CloudflareMetadata.RecordID).To(Equal("new-222"))
+			Expect(updated.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.DNSRecordIDLabel, "new-222"))
 		})
 
 		It("reconciles without drift when record already exists in status (no update)", func() {
