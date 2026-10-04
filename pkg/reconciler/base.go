@@ -25,7 +25,22 @@ const (
 	// controller has had a chance to clean up the corresponding Cloudflare
 	// resource (unless the deletion-policy annotation says "retain").
 	Finalizer = "cloudflare.k8s.io/finalizer"
+
+	// DeletionPolicyAnnotation chooses what happens to the Cloudflare resource
+	// when its Kubernetes resource is deleted. Any value other than
+	// DeletionPolicyRetain, including no annotation, deletes it.
+	DeletionPolicyAnnotation = "cloudflare.k8s.io/deletion-policy"
+
+	// DeletionPolicyRetain keeps the Cloudflare resource when its Kubernetes
+	// resource is deleted.
+	DeletionPolicyRetain = "retain"
 )
+
+// RetainOnDelete reports whether obj's deletion-policy annotation asks to
+// keep the Cloudflare resource when obj is deleted.
+func RetainOnDelete(obj client.Object) bool {
+	return obj.GetAnnotations()[DeletionPolicyAnnotation] == DeletionPolicyRetain
+}
 
 // SetCondition upserts a standard Kubernetes condition on the provided slice.
 // It is a thin, typed wrapper around meta.SetStatusCondition that ensures

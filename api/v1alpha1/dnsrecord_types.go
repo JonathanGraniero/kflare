@@ -15,32 +15,40 @@ import (
 // DNSRecordSpec defines the desired state of DNSRecord.
 type DNSRecordSpec struct {
 	// ZoneRef references the Zone CR (in the same namespace) that owns this record.
+	// Immutable after creation.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="zoneRef is immutable"
 	ZoneRef corev1.LocalObjectReference `json:"zoneRef"`
 
 	// Name is the fully-qualified DNS record name (e.g. "www.example.com"). Immutable after creation.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
-	// Type is the DNS record type.
-	// +kubebuilder:validation:Enum=A;AAAA;CNAME;MX;TXT;SRV;CAA;NS;PTR;CERT;DNSKEY;DS;NAPTR;SMIMEA;SSHFP;TLSA;URI
+	// Type is the DNS record type. Immutable after creation.
+	// +kubebuilder:validation:Enum=A;AAAA;CAA;CERT;CNAME;DNSKEY;DS;HTTPS;LOC;MX;NAPTR;NS;OPENPGPKEY;PTR;SMIMEA;SRV;SSHFP;SVCB;TLSA;TXT;URI
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable"
 	Type string `json:"type"`
 
 	// Content is the DNS record content (e.g. an IP address for A records, a hostname for CNAME/MX).
-	// Omit for record types that use the Data field instead (SRV, LOC).
+	// Omit for record types that use the Data field instead (SRV, LOC, CAA, ...).
 	// +optional
 	Content string `json:"content,omitempty"`
 
-	// TTL is the time-to-live in seconds. Use 1 for automatic TTL.
+	// TTL is the time-to-live in seconds: 1 for automatic (the default), or
+	// 30-86400. Cloudflare only accepts values below 60 on Enterprise zones.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=86400
+	// +kubebuilder:validation:XValidation:rule="self == 1 || self >= 30",message="ttl must be 1 (automatic) or between 30 and 86400"
 	// +optional
 	TTL int `json:"ttl,omitempty"`
 
 	// Proxied controls whether Cloudflare proxies traffic through its network for this record.
-	// Only applicable to A, AAAA, and CNAME records.
+	// Only applicable to A, AAAA, and CNAME records. Defaults to false (DNS only).
 	// +optional
 	Proxied *bool `json:"proxied,omitempty"`
 
-	// Priority is the record priority, used for MX and SRV records.
+	// Priority is the record priority, used for MX, SRV and URI records.
+	// When unset, kflare leaves the priority Cloudflare chose unchanged.
 	// +optional
 	Priority *uint16 `json:"priority,omitempty"`
 
@@ -54,6 +62,8 @@ type DNSRecordSpec struct {
 
 	// Data holds structured record data for types that require it (SRV, LOC, CAA).
 	// The JSON structure must match the Cloudflare API schema for the given record type.
+	// Cloudflare derives the record content from it, so content drift is not
+	// corrected while data is set.
 	// +optional
 	Data *apiextensionsv1.JSON `json:"data,omitempty"`
 }

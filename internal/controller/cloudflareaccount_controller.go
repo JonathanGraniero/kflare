@@ -16,7 +16,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cf "github.com/cloudflare/cloudflare-go"
 
@@ -57,30 +59,12 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Fetch the API token from the referenced Secret.
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{
-		Name:      account.Spec.TokenSecretRef.Name,
-		Namespace: account.Spec.TokenSecretRef.Namespace,
-	}
-	if err := r.Get(ctx, secretKey, secret); err != nil {
+	// Fetch the API token from the referenced Secret. The Secret watch
+	// re-triggers this reconcile once the Secret is created or fixed.
+	token, credErr := accountToken(ctx, r.Client, account)
+	if credErr != nil {
 		reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "SecretNotFound",
-			fmt.Sprintf("Secret %s/%s not found: %v", secretKey.Namespace, secretKey.Name, err),
-			account.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, account)
-	}
-
-	tokenKey := account.Spec.TokenSecretRef.Key
-	if tokenKey == "" {
-		tokenKey = "CF_API_TOKEN"
-	}
-	token, ok := secret.Data[tokenKey]
-	if !ok {
-		reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TokenKeyMissing",
-			fmt.Sprintf("Key %q not found in secret %s/%s", tokenKey, secretKey.Namespace, secretKey.Name),
-			account.Generation)
+			metav1.ConditionFalse, credErr.Reason, credErr.Message, account.Generation)
 		return ctrl.Result{}, r.Status().Update(ctx, account)
 	}
 
@@ -89,7 +73,7 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if newClient == nil {
 		newClient = defaultCFClient
 	}
-	cfClient, err := newClient(string(token))
+	cfClient, err := newClient(token)
 	if err != nil {
 		reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
 			metav1.ConditionFalse, "InvalidToken",
@@ -100,11 +84,7 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	cfAccount, _, err := cfClient.Account(ctx, account.Spec.AccountID)
 	if err != nil {
-		reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "APIError",
-			fmt.Sprintf("Cloudflare API error: %v", err),
-			account.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, account)
+		return r.handleCFError(ctx, account, err)
 	}
 
 	logger.Info("Cloudflare account validated", "accountName", cfAccount.Name)
@@ -117,11 +97,56 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, r.Status().Update(ctx, account)
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// handleCFError sets the appropriate condition based on whether the Cloudflare
+// error is terminal (stop requeuing until the token Secret or spec changes) or
+// retryable (let controller-runtime back off and retry).
+func (r *CloudflareAccountReconciler) handleCFError(
+	ctx context.Context,
+	account *cloudflarev1alpha1.CloudflareAccount,
+	err error,
+) (ctrl.Result, error) {
+	if cfpkg.IsTerminalError(err) {
+		reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
+			metav1.ConditionFalse, "TerminalError",
+			fmt.Sprintf("Terminal Cloudflare API error: %v", err),
+			account.Generation)
+		return ctrl.Result{}, r.Status().Update(ctx, account)
+	}
+	reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
+		metav1.ConditionFalse, "APIError",
+		fmt.Sprintf("Cloudflare API error: %v", err),
+		account.Generation)
+	if statusErr := r.Status().Update(ctx, account); statusErr != nil {
+		return ctrl.Result{}, statusErr
+	}
+	return ctrl.Result{}, err
+}
+
+// SetupWithManager sets up the controller with the Manager. It also watches
+// Secrets, so creating, fixing or rotating an account's API token
+// re-validates the account straight away.
 func (r *CloudflareAccountReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.CloudflareAccount{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.accountsForSecret)).
 		Complete(r)
+}
+
+// accountsForSecret maps a Secret event to reconcile.Requests for every
+// CloudflareAccount whose token is stored in that Secret.
+func (r *CloudflareAccountReconciler) accountsForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	list := &cloudflarev1alpha1.CloudflareAccountList{}
+	if err := r.List(ctx, list); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for _, a := range list.Items {
+		ref := a.Spec.TokenSecretRef
+		if ref.Name == obj.GetName() && ref.Namespace == obj.GetNamespace() {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: a.Name}})
+		}
+	}
+	return reqs
 }
 
 // defaultCFClient is the production factory: it delegates to cfpkg.New so

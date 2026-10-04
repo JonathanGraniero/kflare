@@ -167,13 +167,30 @@ var _ = Describe("CloudflareAccount Controller", func() {
 			Expect(cond.Reason).To(Equal("InvalidToken"))
 		})
 
-		It("sets Ready=False with reason APIError when the Cloudflare API call fails", func() {
+		It("sets Ready=False TerminalError and does not requeue when Cloudflare rejects the token", func() {
 			createAccount()
 			createSecret(tokenKey, fakeToken)
 
-			r := reconcilerWithFake(&fakeCFClient{err: errors.New("cloudflare: 403 Forbidden")})
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
+			// cloudflare-go returns a pointer to this type for HTTP 403.
+			forbidden := cloudflare.NewAuthenticationError(&cloudflare.Error{StatusCode: 403, Type: cloudflare.ErrorTypeAuthentication})
+			r := reconcilerWithFake(&fakeCFClient{err: &forbidden})
+			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsZero()).To(BeTrue())
+
+			cond := getCondition(cloudflarev1alpha1.ConditionReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("TerminalError"))
+		})
+
+		It("sets Ready=False APIError and returns the error so a transient failure is retried", func() {
+			createAccount()
+			createSecret(tokenKey, fakeToken)
+
+			r := reconcilerWithFake(&fakeCFClient{err: errors.New("connection reset by peer")})
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
+			Expect(err).To(HaveOccurred())
 
 			cond := getCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())

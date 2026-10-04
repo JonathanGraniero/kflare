@@ -54,14 +54,10 @@ func IsTerminalError(err error) bool {
 	}
 
 	// 4xx RequestError — bad payload, unsupported operation, etc.
-	var reqErr *cf.RequestError
-	if errors.As(err, &reqErr) {
-		return true
-	}
-
 	// RatelimitError (429) and ServiceError (5xx) are retryable; all other
 	// unknown errors (e.g. network timeouts) are also retryable by default.
-	return false
+	var reqErr *cf.RequestError
+	return errors.As(err, &reqErr)
 }
 
 // IsNotFound returns true if err is a Cloudflare 404 Not Found response.

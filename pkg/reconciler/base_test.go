@@ -221,3 +221,33 @@ func TestRemoveFinalizer_PreservesOtherFinalizers(t *testing.T) {
 		t.Errorf("kflare finalizer %q still present after RemoveFinalizer", reconciler.Finalizer)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RetainOnDelete
+// ---------------------------------------------------------------------------
+
+func TestRetainOnDelete(t *testing.T) {
+	const (
+		policy = reconciler.DeletionPolicyAnnotation
+		retain = reconciler.DeletionPolicyRetain
+	)
+	cases := []struct {
+		name        string
+		annotations map[string]string
+		want        bool
+	}{
+		{name: "no annotations", annotations: nil, want: false},
+		{name: "retain", annotations: map[string]string{policy: retain}, want: true},
+		{name: "delete", annotations: map[string]string{policy: "delete"}, want: false},
+		{name: "unrelated annotation", annotations: map[string]string{"example.com/other": retain}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cm := newConfigMap("retain-cm")
+			cm.Annotations = tc.annotations
+			if got := reconciler.RetainOnDelete(cm); got != tc.want {
+				t.Errorf("RetainOnDelete() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

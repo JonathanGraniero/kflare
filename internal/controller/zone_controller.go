@@ -11,7 +11,6 @@ import (
 	"fmt"
 
 	cf "github.com/cloudflare/cloudflare-go"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -80,58 +79,14 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	// Fetch the CloudflareAccount that this zone belongs to.
-	account := &cloudflarev1alpha1.CloudflareAccount{}
-	if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.AccountRef.Name}, account); err != nil {
+	account, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
+	if credErr != nil {
 		reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "AccountNotFound",
-			fmt.Sprintf("CloudflareAccount %q not found: %v", zone.Spec.AccountRef.Name, err),
-			zone.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, zone)
+			metav1.ConditionFalse, credErr.Reason, credErr.Message, zone.Generation)
+		return ctrl.Result{RequeueAfter: credentialsRetryInterval}, r.Status().Update(ctx, zone)
 	}
 
-	// The account must be ready before we can use its credentials.
-	if !isAccountReady(account) {
-		reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "AccountNotReady",
-			fmt.Sprintf("CloudflareAccount %q is not ready", zone.Spec.AccountRef.Name),
-			zone.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, zone)
-	}
-
-	// Fetch the API token from the secret referenced by the account.
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{
-		Name:      account.Spec.TokenSecretRef.Name,
-		Namespace: account.Spec.TokenSecretRef.Namespace,
-	}
-	if err := r.Get(ctx, secretKey, secret); err != nil {
-		reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "SecretNotFound",
-			fmt.Sprintf("Secret %s/%s not found: %v", secretKey.Namespace, secretKey.Name, err),
-			zone.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, zone)
-	}
-
-	tokenKey := account.Spec.TokenSecretRef.Key
-	if tokenKey == "" {
-		tokenKey = "CF_API_TOKEN"
-	}
-	tokenBytes, ok := secret.Data[tokenKey]
-	if !ok {
-		reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TokenKeyMissing",
-			fmt.Sprintf("Key %q not found in secret %s/%s", tokenKey, secretKey.Namespace, secretKey.Name),
-			zone.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, zone)
-	}
-
-	// Build the Cloudflare client.
-	newAPI := r.NewZoneAPI
-	if newAPI == nil {
-		newAPI = defaultZoneAPI
-	}
-	cfAPI, err := newAPI(string(tokenBytes))
+	cfAPI, err := r.newZoneAPI(token)
 	if err != nil {
 		reconciler.SetCondition(&zone.Status.Conditions, cloudflarev1alpha1.ConditionReady,
 			metav1.ConditionFalse, "InvalidToken",
@@ -140,19 +95,17 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, r.Status().Update(ctx, zone)
 	}
 
-	return r.syncZone(ctx, logger, zone, account, cfAPI)
+	return r.syncZone(ctx, zone, account, cfAPI)
 }
 
 // syncZone drives the desired→observed→delta→reconcile loop for a Zone.
 func (r *ZoneReconciler) syncZone(
 	ctx context.Context,
-	logger interface {
-		Info(msg string, keysAndValues ...interface{})
-	},
 	zone *cloudflarev1alpha1.Zone,
 	account *cloudflarev1alpha1.CloudflareAccount,
 	cfAPI ZoneAPI,
 ) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 	var cfZone cf.Zone
 
 	// If we already have a zone ID, try to fetch the current state.
@@ -176,22 +129,18 @@ func (r *ZoneReconciler) syncZone(
 		if listErr != nil {
 			return r.handleCFError(ctx, zone, listErr)
 		}
-		if len(zones) > 0 {
+		if existing, ok := zoneInAccount(zones, account.Spec.AccountID); ok {
 			// Adopt the pre-existing zone.
-			cfZone = zones[0]
+			cfZone = existing
 			logger.Info("Adopted existing zone", "name", zone.Spec.Name, "zoneID", cfZone.ID)
 		} else {
 			// Create a brand-new zone.
-			zoneType := zone.Spec.Type
-			if zoneType == "" {
-				zoneType = "full"
-			}
 			created, createErr := cfAPI.CreateZone(
 				ctx,
 				zone.Spec.Name,
 				true,
 				cf.Account{ID: account.Spec.AccountID},
-				zoneType,
+				desiredZoneType(zone),
 			)
 			if createErr != nil {
 				return r.handleCFError(ctx, zone, createErr)
@@ -202,11 +151,7 @@ func (r *ZoneReconciler) syncZone(
 	}
 
 	// Drift detection: zone type.
-	desiredType := zone.Spec.Type
-	if desiredType == "" {
-		desiredType = "full"
-	}
-	if cfZone.Type != desiredType {
+	if desiredType := desiredZoneType(zone); cfZone.Type != desiredType {
 		updated, editErr := cfAPI.EditZone(ctx, cfZone.ID, cf.ZoneOptions{Type: desiredType})
 		if editErr != nil {
 			return r.handleCFError(ctx, zone, editErr)
@@ -224,6 +169,27 @@ func (r *ZoneReconciler) syncZone(
 		"Zone is synced with Cloudflare",
 		zone.Generation)
 	return ctrl.Result{}, r.Status().Update(ctx, zone)
+}
+
+// zoneInAccount returns the zone owned by accountID. The token may reach
+// several accounts, and the same domain can exist in more than one of them
+// (for example while it moves between accounts), so a zone from another
+// account must never be adopted: deleting this resource would delete it.
+func zoneInAccount(zones []cf.Zone, accountID string) (cf.Zone, bool) {
+	for _, z := range zones {
+		if z.Account.ID == accountID {
+			return z, true
+		}
+	}
+	return cf.Zone{}, false
+}
+
+// desiredZoneType returns spec.type, or "full" when it is unset.
+func desiredZoneType(zone *cloudflarev1alpha1.Zone) string {
+	if zone.Spec.Type == "" {
+		return "full"
+	}
+	return zone.Spec.Type
 }
 
 // handleCFError sets the appropriate condition based on whether the Cloudflare
@@ -256,43 +222,15 @@ func (r *ZoneReconciler) reconcileDelete(ctx context.Context, zone *cloudflarev1
 	}
 
 	zoneID := zone.Status.CloudflareMetadata.ZoneID
-	policy := zone.Annotations["cloudflare.k8s.io/deletion-policy"]
-
-	if zoneID != "" && policy != "retain" {
-		// Resolve credentials to call the Cloudflare API.
-		account := &cloudflarev1alpha1.CloudflareAccount{}
-		if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.AccountRef.Name}, account); err != nil {
-			return ctrl.Result{}, err
+	if zoneID != "" && !reconciler.RetainOnDelete(zone) {
+		_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, false)
+		if credErr != nil {
+			return ctrl.Result{}, credErr
 		}
-
-		secret := &corev1.Secret{}
-		secretKey := types.NamespacedName{
-			Name:      account.Spec.TokenSecretRef.Name,
-			Namespace: account.Spec.TokenSecretRef.Namespace,
-		}
-		if err := r.Get(ctx, secretKey, secret); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		tokenKey := account.Spec.TokenSecretRef.Key
-		if tokenKey == "" {
-			tokenKey = "CF_API_TOKEN"
-		}
-		tokenBytes, ok := secret.Data[tokenKey]
-		if !ok {
-			return ctrl.Result{}, fmt.Errorf("key %q not found in secret %s/%s",
-				tokenKey, secretKey.Namespace, secretKey.Name)
-		}
-
-		newAPI := r.NewZoneAPI
-		if newAPI == nil {
-			newAPI = defaultZoneAPI
-		}
-		cfAPI, err := newAPI(string(tokenBytes))
+		cfAPI, err := r.newZoneAPI(token)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-
 		if _, err := cfAPI.DeleteZone(ctx, zoneID); err != nil && !cfpkg.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
@@ -334,14 +272,13 @@ func (r *ZoneReconciler) zonesForAccount(ctx context.Context, obj client.Object)
 	return reqs
 }
 
-// isAccountReady returns true if the CloudflareAccount has a Ready=True condition.
-func isAccountReady(account *cloudflarev1alpha1.CloudflareAccount) bool {
-	for _, c := range account.Status.Conditions {
-		if c.Type == cloudflarev1alpha1.ConditionReady {
-			return c.Status == metav1.ConditionTrue
-		}
+// newZoneAPI builds a ZoneAPI with the injected factory, falling back to the
+// production client.
+func (r *ZoneReconciler) newZoneAPI(token string) (ZoneAPI, error) {
+	if r.NewZoneAPI != nil {
+		return r.NewZoneAPI(token)
 	}
-	return false
+	return defaultZoneAPI(token)
 }
 
 // defaultZoneAPI is the production factory: it delegates to cfpkg.New so

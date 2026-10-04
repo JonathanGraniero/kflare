@@ -15,7 +15,6 @@ testbin/
 
 # Env
 .env
-CLAUDE.md
 
 # Coverage
 *.out

@@ -38,3 +38,11 @@ jobs:
 
       - name: Check generated and formatted files are committed
         run: git diff --exit-code
+
+      - name: Lint
+        run: make lint
+
+      # The image copies source directories explicitly, so a new top-level
+      # package must be added to the Dockerfile; this catches it.
+      - name: Build image
+        run: make docker-build IMG=kflare:ci

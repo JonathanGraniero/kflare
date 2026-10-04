@@ -143,7 +143,8 @@ var _ = Describe("CloudflareAccount Controller (nil factory fallback)", func() {
 			},
 		}
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
-		Expect(err).NotTo(HaveOccurred())
+		// Retryable: the error goes back to controller-runtime for back-off.
+		Expect(err).To(HaveOccurred())
 
 		updated := &cloudflarev1alpha1.CloudflareAccount{}
 		Expect(k8sClient.Get(ctx, accountKey, updated)).To(Succeed())
@@ -156,5 +157,47 @@ var _ = Describe("CloudflareAccount Controller (nil factory fallback)", func() {
 		}
 		Expect(readyCond).NotTo(BeNil())
 		Expect(readyCond.Reason).To(Equal("APIError"))
+	})
+})
+
+var _ = Describe("CloudflareAccountReconciler accountsForSecret", func() {
+	ctx := context.Background()
+	r := &CloudflareAccountReconciler{}
+
+	newAccount := func(name, secretName, secretNS string) *cloudflarev1alpha1.CloudflareAccount {
+		return &cloudflarev1alpha1.CloudflareAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: cloudflarev1alpha1.CloudflareAccountSpec{
+				AccountID:      "any",
+				TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: secretName, Namespace: secretNS},
+			},
+		}
+	}
+
+	BeforeEach(func() {
+		r.Client = k8sClient
+		Expect(k8sClient.Create(ctx, newAccount("afs-match", "afs-token", "default"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newAccount("afs-other-ns", "afs-token", "kube-system"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newAccount("afs-other-name", "afs-other", "default"))).To(Succeed())
+	})
+
+	AfterEach(func() {
+		for _, name := range []string{"afs-match", "afs-other-ns", "afs-other-name"} {
+			Expect(k8sClient.Delete(ctx, newAccount(name, "", ""))).To(Succeed())
+		}
+	})
+
+	It("returns only the accounts whose token Secret matches by name and namespace", func() {
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "afs-token", Namespace: "default"}}
+		reqs := r.accountsForSecret(ctx, secret)
+		Expect(reqs).To(HaveLen(1))
+		Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Name: "afs-match"}))
+	})
+
+	It("returns nil when the account list fails", func() {
+		cancelCtx, cancel := context.WithCancel(ctx)
+		cancel()
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "afs-token", Namespace: "default"}}
+		Expect(r.accountsForSecret(cancelCtx, secret)).To(BeNil())
 	})
 })

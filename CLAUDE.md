@@ -26,8 +26,10 @@ This is a **public, production-grade repository**. Every line of code must meet 
 
 ### API Group
 ```
-cloudflare.k8s.io
+cloudflare.cloudflare.k8s.io
 ```
+kubebuilder combined group `cloudflare` with domain `cloudflare.k8s.io`. `*.k8s.io` is a protected
+group, so every CRD carries `api-approved.kubernetes.io: unapproved` (stamped by `make manifests`).
 
 ### Language & Frameworks
 - **Go** (1.22+)
@@ -62,28 +64,23 @@ With:
 ### Repo Structure
 ```
 .
-├── apis/
-│   └── v1alpha1/          # CRD type definitions (generated + hand-edited)
-├── cmd/
-│   └── controller/        # Main entrypoint
+├── api/v1alpha1/          # CRD type definitions + generated deepcopy
+├── cmd/main.go            # Manager entrypoint; registers every controller
+├── internal/controller/   # One reconciler per CRD (+ credentials.go), envtest suites alongside
 ├── pkg/
-│   ├── cloudflare/        # Cloudflare API client wrappers
-│   ├── reconciler/        # Shared reconciler base logic
-│   └── util/              # Shared utilities
+│   ├── cloudflare/        # Client wrapper and error classification
+│   └── reconciler/        # Conditions, finalizer and deletion-policy helpers
 ├── config/
-│   ├── crd/               # Generated CRD manifests
-│   ├── rbac/              # RBAC manifests
-│   └── default/           # Kustomize base
-├── helm/
-│   └── kflare/            # Helm chart
-├── generator/             # OpenAPI → CRD/controller codegen tooling
-├── test/
-│   ├── unit/
-│   └── e2e/               # Tests against live Cloudflare API (requires credentials)
-├── docs/                  # Docusaurus site
+│   ├── crd/               # Generated CRDs (make manifests) + kustomization
+│   ├── rbac/              # Generated role.yaml + kustomize RBAC
+│   ├── default/           # Kustomize base used by make deploy
+│   └── samples/           # Example CRs
+├── test/e2e/              # Deployment smoke test against kind (make test-e2e)
+├── local/                 # kind cluster setup for running the controller with make run
 ├── CLAUDE.md              # This file
 └── Makefile
 ```
+Planned, not yet present: `helm/` (Phase 4), `generator/` (Phase 3), `docs/` (Phase 4).
 
 ---
 
@@ -157,9 +154,10 @@ Shared infrastructure that all Phase 2 controllers will use.
   - `make test` (runs manifests, generate, fmt, vet, unit and envtest suites)
   - `git diff --exit-code` afterwards (ensures generated and formatted files are committed)
   - `GOTOOLCHAIN=local`; `ENVTEST_VERSION` pinned to `release-0.19` (tagged setup-envtest releases need a newer Go)
-- [x] `.github/workflows/e2e.yml` (manual trigger only, requires secrets)
-  - `CF_API_TOKEN`, `CF_ACCOUNT_ID` as GitHub Actions secrets
-  - Spins up kind cluster, runs `//go:build e2e` tests
+- [x] `.github/workflows/e2e.yml` (manual trigger only)
+  - Deployment smoke test: builds the image, deploys `config/default` to a kind cluster and checks the
+    manager pod runs. It does not call Cloudflare; a live-API e2e suite is still to do
+- [x] CI also runs `make lint` and `make docker-build` (the Dockerfile copies source directories explicitly)
 
 **Test locally:** push branch and verify Actions run green
 
@@ -188,7 +186,10 @@ Shared infrastructure that all Phase 2 controllers will use.
 **Zone-specific design notes:**
 - `ZoneAPI` interface: `CreateZone/ZoneDetails/ListZones/DeleteZone/EditZone` (all on `*cf.API`)
 - `*cfpkg.Client` satisfies `ZoneAPI` because it embeds `*cf.API`
-- List→adopt pre-existing zones before creating new ones
+- List→adopt pre-existing zones before creating new ones; only a zone owned by the referenced account is adopted
+  (the token may reach several accounts that hold the same domain)
+- `spec.name` and `spec.accountRef` are immutable via CEL
+- `spec.plan` is accepted but not applied: plan changes go through Cloudflare billing
 - Get→NotFound path recreates externally-deleted zones
 - cloudflare-go returns pointer error types (`*AuthenticationError` etc.) from its HTTP layer;
   `errors.As` targets must be pointer types too — see `pkg/cloudflare/errors.go` comments
@@ -227,6 +228,12 @@ kubectl get zone example-zone -o yaml   # check Ready condition + cloudflareMeta
 - `spec.data` uses `*apiextensionsv1.JSON` for structured SRV/LOC/CAA data; unmarshalled to `interface{}` for SDK
 - `UpdateDNSRecordParams.Comment` is `*string` (unlike Create which uses `string`)
 - Resolves chain: DNSRecord → Zone (namespaced) → CloudflareAccount (cluster-scoped) → Secret
+- Cloudflare always reports `ttl` and `proxied`, so unset spec values are compared against its defaults
+  (ttl 1 = automatic, proxied false) and sent explicitly when they drift — the update is a PATCH that omits
+  zero values. An unset `priority` is left to Cloudflare
+- Content is not compared when `spec.data` is set (or for SRV): Cloudflare derives it from data
+- `spec.name`, `spec.type` and `spec.zoneRef` are immutable via CEL; `ttl` must be 1 or 30–86400
+- Deletion skips the Cloudflare call when the Zone resource is already gone (e.g. namespace deletion)
 
 **Test locally:**
 ```sh
@@ -264,9 +271,9 @@ kubectl get dnsrecord -o yaml   # check Ready + cloudflareMetadata.recordID
 - Deletion calls `CleanupTunnelConnections` first, which drops even active connectors, then `DeleteTunnel`;
   a running cloudflared is disconnected immediately (verified live)
 - `GetTunnel` on a deleted tunnel returns success with `deleted_at` set, not 404 (verified live)
-- Credential and Secret-conflict failures requeue after 1 minute (the API token Secret is not watched)
+- Credential and Secret-conflict failures requeue after 1 minute (the API token Secret is not watched); Zone
+  and DNSRecord use `resolveAccountToken` and the same retry
 - Needs an API token with the account-level **Cloudflare Tunnel: Edit** permission
-- Follow-up: move the zone and DNS record controllers onto `resolveAccountToken`
 
 **Test locally:**
 ```sh
@@ -402,13 +409,19 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
 
 ## Operator Conventions
 
-1. **Condition types** — use `kflare.ResourceSynced` and `kflare.Terminal` condition types
+1. **Conditions** — every resource has a single `Ready` condition. Reasons: `Synced`/`Validated` (True);
+   `TerminalError` (Cloudflare 4xx, not requeued until something changes); `APIError` (retryable, the error
+   is returned so controller-runtime backs off); credential reasons from `credentials.go`
+   (`AccountNotFound`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a minute)
 2. **Status fields** — every CRD status has `conditions []metav1.Condition` and a `cloudflareMetadata` block
 3. **References** — foreign-key relationships use `*Ref` fields (e.g., `zoneRef`, `tunnelRef`) not raw IDs
-4. **AdoptedResource** — allows importing pre-existing Cloudflare resources into management
-5. **FieldExport** — `FieldExport` CR pipes `.status.*` fields into ConfigMaps for cross-namespace consumption
-6. **Deletion policy** — annotation `cloudflare.k8s.io/deletion-policy: retain | delete` controls whether the Cloudflare resource is deleted on CR deletion
-7. **Terminal errors** — unrecoverable API errors (4xx, invalid config) set `kflare.Terminal=True` and stop requeuing
+4. **Adoption** — controllers adopt an existing Cloudflare resource with the same name before creating one
+   (the planned `AdoptedResource` CRD, Phase 4, will make this explicit)
+5. **FieldExport** (planned, Phase 4) — `FieldExport` CR pipes `.status.*` fields into ConfigMaps for cross-namespace consumption
+6. **Deletion policy** — annotation `cloudflare.k8s.io/deletion-policy: retain | delete` controls whether the
+   Cloudflare resource is deleted on CR deletion; check it with `reconciler.RetainOnDelete`
+7. **Immutability** — fields that identify the Cloudflare resource (names, refs) are immutable via CEL
+   `self == oldSelf`, with an envtest case per field
 
 ---
 
@@ -427,14 +440,14 @@ make run
 # Run unit tests
 make test
 
-# Run e2e tests (requires CF_API_TOKEN and CF_ACCOUNT_ID env vars)
+# Lint (also run in CI)
+make lint
+
+# Deployment smoke test against a kind cluster named $KIND_CLUSTER (default "kind")
 make test-e2e
 
 # Build and push controller image
 make docker-build docker-push IMG=ghcr.io/your-org/kflare:latest
-
-# Package Helm chart
-make helm-package
 ```
 
 ---

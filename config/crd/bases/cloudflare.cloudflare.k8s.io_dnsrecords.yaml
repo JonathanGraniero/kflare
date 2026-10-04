@@ -69,25 +69,32 @@ spec:
               content:
                 description: |-
                   Content is the DNS record content (e.g. an IP address for A records, a hostname for CNAME/MX).
-                  Omit for record types that use the Data field instead (SRV, LOC).
+                  Omit for record types that use the Data field instead (SRV, LOC, CAA, ...).
                 type: string
               data:
                 description: |-
                   Data holds structured record data for types that require it (SRV, LOC, CAA).
                   The JSON structure must match the Cloudflare API schema for the given record type.
+                  Cloudflare derives the record content from it, so content drift is not
+                  corrected while data is set.
                 x-kubernetes-preserve-unknown-fields: true
               name:
                 description: Name is the fully-qualified DNS record name (e.g. "www.example.com").
                   Immutable after creation.
+                minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: name is immutable
+                  rule: self == oldSelf
               priority:
-                description: Priority is the record priority, used for MX and SRV
-                  records.
+                description: |-
+                  Priority is the record priority, used for MX, SRV and URI records.
+                  When unset, kflare leaves the priority Cloudflare chose unchanged.
                 type: integer
               proxied:
                 description: |-
                   Proxied controls whether Cloudflare proxies traffic through its network for this record.
-                  Only applicable to A, AAAA, and CNAME records.
+                  Only applicable to A, AAAA, and CNAME records. Defaults to false (DNS only).
                 type: boolean
               tags:
                 description: Tags are optional labels attached to the record in Cloudflare.
@@ -95,35 +102,47 @@ spec:
                   type: string
                 type: array
               ttl:
-                description: TTL is the time-to-live in seconds. Use 1 for automatic
-                  TTL.
+                description: |-
+                  TTL is the time-to-live in seconds: 1 for automatic (the default), or
+                  30-86400. Cloudflare only accepts values below 60 on Enterprise zones.
                 maximum: 86400
                 minimum: 1
                 type: integer
+                x-kubernetes-validations:
+                - message: ttl must be 1 (automatic) or between 30 and 86400
+                  rule: self == 1 || self >= 30
               type:
-                description: Type is the DNS record type.
+                description: Type is the DNS record type. Immutable after creation.
                 enum:
                 - A
                 - AAAA
-                - CNAME
-                - MX
-                - TXT
-                - SRV
                 - CAA
-                - NS
-                - PTR
                 - CERT
+                - CNAME
                 - DNSKEY
                 - DS
+                - HTTPS
+                - LOC
+                - MX
                 - NAPTR
+                - NS
+                - OPENPGPKEY
+                - PTR
                 - SMIMEA
+                - SRV
                 - SSHFP
+                - SVCB
                 - TLSA
+                - TXT
                 - URI
                 type: string
+                x-kubernetes-validations:
+                - message: type is immutable
+                  rule: self == oldSelf
               zoneRef:
-                description: ZoneRef references the Zone CR (in the same namespace)
-                  that owns this record.
+                description: |-
+                  ZoneRef references the Zone CR (in the same namespace) that owns this record.
+                  Immutable after creation.
                 properties:
                   name:
                     description: |-
@@ -133,6 +152,9 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: zoneRef is immutable
+                  rule: self == oldSelf
             required:
             - name
             - type

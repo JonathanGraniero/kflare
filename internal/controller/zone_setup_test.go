@@ -101,17 +101,10 @@ var _ = Describe("ZoneReconciler syncZone (empty Type defaults)", func() {
 		fake := &fakeZoneAPI{listZones: []cfgo.Zone{}, createZone: createdZone}
 
 		r := &ZoneReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		// logr.Discard() satisfies the logger interface.
-		nopLogger := nopLog{}
-		_, err := r.syncZone(ctx, nopLogger, zone, account, fake)
+		_, err := r.syncZone(ctx, zone, account, fake)
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
-
-// nopLog is a no-op logger satisfying the narrow interface used by syncZone.
-type nopLog struct{}
-
-func (nopLog) Info(_ string, _ ...interface{}) {}
 
 var _ = Describe("ZoneReconciler reconcileDelete (no finalizer)", func() {
 	It("returns no error when the zone has no finalizer (safety path)", func() {

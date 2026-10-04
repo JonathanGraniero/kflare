@@ -226,8 +226,10 @@ var _ = Describe("Zone Controller", func() {
 			Expect(k8sClient.Update(ctx, zone)).To(Succeed())
 
 			r := reconcilerWithFakeZoneAPI(&fakeZoneAPI{})
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
 			Expect(err).NotTo(HaveOccurred())
+			// The account becoming ready does not always change the Zone, so retry on a timer.
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
 
 			cond := getZoneCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
@@ -432,8 +434,13 @@ var _ = Describe("Zone Controller", func() {
 			zone.Finalizers = []string{reconciler.Finalizer}
 			Expect(k8sClient.Update(ctx, zone)).To(Succeed())
 
-			existing := cf.Zone{ID: "zone-existing-111", Name: domainName, Type: "full", Status: "active"}
-			fake := &fakeZoneAPI{listZones: []cf.Zone{existing}}
+			// The token can see the same domain in another account; only the
+			// zone in the referenced account may be adopted.
+			otherAccount := cf.Zone{ID: "zone-other-000", Name: domainName, Type: "full", Status: "pending",
+				Account: cf.Account{ID: "some-other-account"}}
+			existing := cf.Zone{ID: "zone-existing-111", Name: domainName, Type: "full", Status: "active",
+				Account: cf.Account{ID: fakeAcctID}}
+			fake := &fakeZoneAPI{listZones: []cf.Zone{otherAccount, existing}}
 			r := reconcilerWithFakeZoneAPI(fake)
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
 			Expect(err).NotTo(HaveOccurred())
@@ -445,6 +452,29 @@ var _ = Describe("Zone Controller", func() {
 			cond := getZoneCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("creates a zone instead of adopting one that belongs to another account", func() {
+			createAccount(true)
+			createSecret()
+			createZone(nil)
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+			zone.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, zone)).To(Succeed())
+
+			otherAccount := cf.Zone{ID: "zone-other-000", Name: domainName, Type: "full", Status: "active",
+				Account: cf.Account{ID: "some-other-account"}}
+			created := cf.Zone{ID: "zone-created-222", Name: domainName, Type: "full", Status: "pending",
+				Account: cf.Account{ID: fakeAcctID}}
+			fake := &fakeZoneAPI{listZones: []cf.Zone{otherAccount}, createZone: created}
+			r := reconcilerWithFakeZoneAPI(fake)
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, zoneKey, updated)).To(Succeed())
+			Expect(updated.Status.CloudflareMetadata.ZoneID).To(Equal("zone-created-222"))
 		})
 
 		It("calls EditZone when the zone type has drifted", func() {
@@ -782,6 +812,34 @@ var _ = Describe("Zone Controller", func() {
 			cond := getZoneCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Describe("Validation", func() {
+		getZone := func() *cloudflarev1alpha1.Zone {
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+			return zone
+		}
+
+		BeforeEach(func() { createZone(nil) })
+
+		It("rejects changing spec.name", func() {
+			zone := getZone()
+			zone.Spec.Name = "example.org"
+			Expect(k8sClient.Update(ctx, zone)).To(MatchError(ContainSubstring("name is immutable")))
+		})
+
+		It("rejects changing spec.accountRef", func() {
+			zone := getZone()
+			zone.Spec.AccountRef.Name = "other-account"
+			Expect(k8sClient.Update(ctx, zone)).To(MatchError(ContainSubstring("accountRef is immutable")))
+		})
+
+		It("allows changing spec.type", func() {
+			zone := getZone()
+			zone.Spec.Type = "partial"
+			Expect(k8sClient.Update(ctx, zone)).To(Succeed())
 		})
 	})
 })

@@ -15,6 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -475,7 +476,9 @@ var _ = Describe("DNSRecord Controller", func() {
 			record.Finalizers = []string{reconciler.Finalizer}
 			Expect(k8sClient.Update(ctx, record)).To(Succeed())
 
-			cfRecord := cf.DNSRecord{ID: dnsFakeRecordID, ZoneID: dnsFakeZoneID, Name: dnsRecordName, Type: dnsRecordType, Content: dnsRecordIP, TTL: 300}
+			// Cloudflare always reports proxied, even for records that never set it.
+			cfRecord := cf.DNSRecord{ID: dnsFakeRecordID, ZoneID: dnsFakeZoneID, Name: dnsRecordName, Type: dnsRecordType,
+				Content: dnsRecordIP, TTL: 300, Proxied: cf.BoolPtr(false), Tags: []string{}}
 			fake := &fakeDNSRecordAPI{getRecord: cfRecord}
 			r := reconcilerWithFakeDNSAPI(fake)
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
@@ -485,6 +488,35 @@ var _ = Describe("DNSRecord Controller", func() {
 			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("does not update a record that leaves ttl and proxied unset", func() {
+			createDNSAccount(true)
+			createReadyZone()
+			createDNSSecret()
+			rec := &cloudflarev1alpha1.DNSRecord{
+				ObjectMeta: metav1.ObjectMeta{Name: dnsRecordCRName, Namespace: dnsRecordNS},
+				Spec: cloudflarev1alpha1.DNSRecordSpec{
+					ZoneRef: corev1.LocalObjectReference{Name: dnsZoneCRName},
+					Name:    dnsRecordName,
+					Type:    dnsRecordType,
+					Content: dnsRecordIP,
+				},
+			}
+			Expect(k8sClient.Create(ctx, rec)).To(Succeed())
+			setRecordIDInStatus(dnsFakeRecordID)
+			Expect(k8sClient.Get(ctx, recordKey, rec)).To(Succeed())
+			rec.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, rec)).To(Succeed())
+
+			// What Cloudflare returns for a record created without ttl or proxied.
+			cfRecord := cf.DNSRecord{ID: dnsFakeRecordID, ZoneID: dnsFakeZoneID, Name: dnsRecordName, Type: dnsRecordType,
+				Content: dnsRecordIP, TTL: 1, Proxied: cf.BoolPtr(false), Tags: []string{}}
+			fake := &fakeDNSRecordAPI{getRecord: cfRecord}
+			r := reconcilerWithFakeDNSAPI(fake)
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.updateCalled).To(BeFalse())
 		})
 
 		It("calls UpdateDNSRecord when content has drifted", func() {
@@ -919,8 +951,8 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(result.IsZero()).To(BeTrue())
 		})
 
-		It("returns an error from reconcileDelete when zone is not found during deletion", func() {
-			// No zone created.
+		It("removes the finalizer without calling CF delete when the Zone is already gone", func() {
+			// No zone: it was deleted first, e.g. together with its namespace.
 			createDNSRecord(map[string]string{"cloudflare.k8s.io/deletion-policy": "delete"})
 			setRecordIDInStatus(dnsFakeRecordID)
 			record := &cloudflarev1alpha1.DNSRecord{}
@@ -932,9 +964,14 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
 			Expect(record.DeletionTimestamp).NotTo(BeNil())
 
-			r := reconcilerWithFakeDNSAPI(&fakeDNSRecordAPI{})
+			fake := &fakeDNSRecordAPI{}
+			r := reconcilerWithFakeDNSAPI(fake)
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
-			Expect(err).To(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.deleteCalled).To(BeFalse())
+
+			err = k8sClient.Get(ctx, recordKey, record)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
 		It("returns an error from reconcileDelete when DeleteDNSRecord returns a non-NotFound error", func() {
@@ -1155,6 +1192,46 @@ var _ = Describe("DNSRecord Controller", func() {
 			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Describe("Validation", func() {
+		getRecord := func() *cloudflarev1alpha1.DNSRecord {
+			record := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
+			return record
+		}
+
+		BeforeEach(func() { createDNSRecord(nil) })
+
+		It("rejects changing spec.name", func() {
+			record := getRecord()
+			record.Spec.Name = "api.example.com"
+			Expect(k8sClient.Update(ctx, record)).To(MatchError(ContainSubstring("name is immutable")))
+		})
+
+		It("rejects changing spec.type", func() {
+			record := getRecord()
+			record.Spec.Type = "AAAA"
+			Expect(k8sClient.Update(ctx, record)).To(MatchError(ContainSubstring("type is immutable")))
+		})
+
+		It("rejects changing spec.zoneRef", func() {
+			record := getRecord()
+			record.Spec.ZoneRef.Name = "other-zone"
+			Expect(k8sClient.Update(ctx, record)).To(MatchError(ContainSubstring("zoneRef is immutable")))
+		})
+
+		It("allows changing spec.content", func() {
+			record := getRecord()
+			record.Spec.Content = "5.6.7.8"
+			Expect(k8sClient.Update(ctx, record)).To(Succeed())
+		})
+
+		It("rejects a ttl Cloudflare cannot accept", func() {
+			record := getRecord()
+			record.Spec.TTL = 10
+			Expect(k8sClient.Update(ctx, record)).To(MatchError(ContainSubstring("ttl must be 1 (automatic)")))
 		})
 	})
 })
