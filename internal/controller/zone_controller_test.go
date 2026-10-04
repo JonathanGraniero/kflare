@@ -35,13 +35,31 @@ type fakeZoneAPI struct {
 	editErr      error
 	editCalled   bool
 	deleteCalled bool
+
+	// Plan changes: the rate plan sent through each endpoint, the error to
+	// return, and what ZoneDetails reports once the plan has been changed.
+	setPlan          string
+	updatePlan       string
+	planErr          error
+	zoneAfterPlanSet cf.Zone
 }
 
 func (f *fakeZoneAPI) CreateZone(_ context.Context, _ string, _ bool, _ cf.Account, _ string) (cf.Zone, error) {
 	return f.createZone, f.createErr
 }
 func (f *fakeZoneAPI) ZoneDetails(_ context.Context, _ string) (cf.Zone, error) {
+	if f.setPlan != "" || f.updatePlan != "" {
+		return f.zoneAfterPlanSet, nil
+	}
 	return f.getZone, f.getErr
+}
+func (f *fakeZoneAPI) ZoneSetPlan(_ context.Context, _ string, planType string) error {
+	f.setPlan = planType
+	return f.planErr
+}
+func (f *fakeZoneAPI) ZoneUpdatePlan(_ context.Context, _ string, planType string) error {
+	f.updatePlan = planType
+	return f.planErr
 }
 func (f *fakeZoneAPI) ListZones(_ context.Context, _ ...string) ([]cf.Zone, error) {
 	return f.listZones, f.listErr
@@ -504,6 +522,110 @@ var _ = Describe("Zone Controller", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		})
 
+		Describe("plan", func() {
+			// readyZoneWithPlan creates a Zone already linked to fakeZoneID,
+			// with the finalizer, requesting plan (empty for unset).
+			readyZoneWithPlan := func(plan string) {
+				createAccount(true)
+				createSecret()
+				createZone(nil)
+				setZoneIDInStatus(fakeZoneID)
+				zone := &cloudflarev1alpha1.Zone{}
+				Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+				zone.Finalizers = []string{reconciler.Finalizer}
+				zone.Spec.Plan = plan
+				Expect(k8sClient.Update(ctx, zone)).To(Succeed())
+			}
+			// cfZoneOnPlan is a full zone as ZoneDetails reports it.
+			cfZoneOnPlan := func(plan string, subscribed bool, pending string) cf.Zone {
+				return cf.Zone{ID: fakeZoneID, Name: domainName, Type: "full", Status: "active",
+					Plan:        cf.ZonePlan{LegacyID: plan, IsSubscribed: subscribed},
+					PlanPending: cf.ZonePlan{LegacyID: pending}}
+			}
+			getZone := func() *cloudflarev1alpha1.Zone {
+				zone := &cloudflarev1alpha1.Zone{}
+				Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+				return zone
+			}
+
+			It("leaves the plan alone when spec.plan is unset", func() {
+				readyZoneWithPlan("")
+				fake := &fakeZoneAPI{getZone: cfZoneOnPlan("pro", true, "")}
+				_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.setPlan).To(BeEmpty())
+				Expect(fake.updatePlan).To(BeEmpty())
+				Expect(getZone().Status.CloudflareMetadata.Plan).To(Equal("pro"))
+			})
+
+			It("does nothing when the zone is already on the plan", func() {
+				readyZoneWithPlan("free")
+				fake := &fakeZoneAPI{getZone: cfZoneOnPlan("free", false, "")}
+				_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.setPlan).To(BeEmpty())
+				Expect(fake.updatePlan).To(BeEmpty())
+			})
+
+			It("creates a subscription to upgrade a free zone", func() {
+				readyZoneWithPlan("pro")
+				fake := &fakeZoneAPI{
+					getZone:          cfZoneOnPlan("free", false, ""),
+					zoneAfterPlanSet: cfZoneOnPlan("pro", true, ""),
+				}
+				_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.setPlan).To(Equal("CF_PRO"))
+				Expect(fake.updatePlan).To(BeEmpty())
+				Expect(getZone().Status.CloudflareMetadata.Plan).To(Equal("pro"))
+			})
+
+			It("updates the subscription of a paid zone and reports a scheduled downgrade", func() {
+				readyZoneWithPlan("free")
+				fake := &fakeZoneAPI{
+					getZone:          cfZoneOnPlan("business", true, ""),
+					zoneAfterPlanSet: cfZoneOnPlan("business", true, "free"),
+				}
+				_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.updatePlan).To(Equal("CF_FREE"))
+				Expect(fake.setPlan).To(BeEmpty())
+				meta := getZone().Status.CloudflareMetadata
+				Expect(meta.Plan).To(Equal("business"))
+				Expect(meta.PendingPlan).To(Equal("free"))
+			})
+
+			It("does not change the plan again while the change is pending", func() {
+				readyZoneWithPlan("free")
+				fake := &fakeZoneAPI{getZone: cfZoneOnPlan("business", true, "free")}
+				_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.updatePlan).To(BeEmpty())
+			})
+
+			It("sets TerminalError when Cloudflare refuses the plan change", func() {
+				readyZoneWithPlan("enterprise")
+				refused := cf.NewRequestError(&cf.Error{StatusCode: 400, Type: cf.ErrorTypeRequest})
+				fake := &fakeZoneAPI{getZone: cfZoneOnPlan("free", false, ""), planErr: &refused}
+				_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.setPlan).To(Equal("CF_ENT"))
+				cond := getZoneCondition(cloudflarev1alpha1.ConditionReady)
+				Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				Expect(cond.Reason).To(Equal("TerminalError"))
+			})
+
+			It("returns a retryable error from re-reading the zone after a plan change", func() {
+				readyZoneWithPlan("pro")
+				fake := &failingAfterPlan{fakeZoneAPI: &fakeZoneAPI{getZone: cfZoneOnPlan("free", false, "")}}
+				r := &ZoneReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+					NewZoneAPI: func(_ string) (ZoneAPI, error) { return fake, nil }}
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+				Expect(err).To(MatchError("zone read failed"))
+				Expect(getZoneCondition(cloudflarev1alpha1.ConditionReady).Reason).To(Equal("APIError"))
+			})
+		})
+
 		It("removes the finalizer without calling CF delete when deletion-policy=retain", func() {
 			createAccount(true)
 			createSecret()
@@ -843,3 +965,14 @@ var _ = Describe("Zone Controller", func() {
 		})
 	})
 })
+
+// failingAfterPlan is a fakeZoneAPI whose ZoneDetails fails once a plan
+// change has been made.
+type failingAfterPlan struct{ *fakeZoneAPI }
+
+func (f *failingAfterPlan) ZoneDetails(ctx context.Context, zoneID string) (cf.Zone, error) {
+	if f.setPlan != "" || f.updatePlan != "" {
+		return cf.Zone{}, errors.New("zone read failed")
+	}
+	return f.fakeZoneAPI.ZoneDetails(ctx, zoneID)
+}

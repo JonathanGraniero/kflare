@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.cloudflareMetadata.zoneID
       name: Zone ID
       type: string
+    - jsonPath: .status.cloudflareMetadata.plan
+      name: Plan
+      type: string
     - jsonPath: .status.cloudflareMetadata.status
       name: CF Status
       type: string
@@ -86,9 +89,12 @@ spec:
                   rule: self == oldSelf
               plan:
                 description: |-
-                  Plan is the billing plan for the zone: free, pro, business, or enterprise.
-                  Not applied yet: kflare does not change a zone's plan, which goes
-                  through Cloudflare billing.
+                  Plan is the zone's billing plan: free, pro, business, or enterprise.
+                  When unset, kflare leaves the plan alone. When set, kflare subscribes
+                  the zone to it, which bills the account's default payment method.
+                  Enterprise cannot be bought through the API; set it only for a zone
+                  that is already on Enterprise. Downgrades take effect at the end of
+                  the billing period and show up in status.cloudflareMetadata.pendingPlan.
                 enum:
                 - free
                 - pro
@@ -120,6 +126,15 @@ spec:
                     items:
                       type: string
                     type: array
+                  pendingPlan:
+                    description: |-
+                      PendingPlan is a plan change Cloudflare has scheduled for the end of
+                      the billing period, such as a downgrade.
+                    type: string
+                  plan:
+                    description: Plan is the zone's current billing plan (free, pro,
+                      business or enterprise).
+                    type: string
                   status:
                     description: |-
                       Status is the zone activation status as reported by Cloudflare

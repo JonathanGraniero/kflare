@@ -34,6 +34,18 @@ type ZoneAPI interface {
 	ListZones(ctx context.Context, z ...string) ([]cf.Zone, error)
 	DeleteZone(ctx context.Context, zoneID string) (cf.ZoneID, error)
 	EditZone(ctx context.Context, zoneID string, zoneOpts cf.ZoneOptions) (cf.Zone, error)
+	ZoneSetPlan(ctx context.Context, zoneID string, planType string) error
+	ZoneUpdatePlan(ctx context.Context, zoneID string, planType string) error
+}
+
+// zoneRatePlans maps spec.plan to the rate plan IDs of the zone subscription
+// API. Cloudflare reports the current plan by the spec.plan names
+// (plan.legacy_id).
+var zoneRatePlans = map[string]string{
+	"free":       "CF_FREE",
+	"pro":        "CF_PRO",
+	"business":   "CF_BIZ",
+	"enterprise": "CF_ENT",
 }
 
 // ZoneReconciler reconciles a Zone object.
@@ -152,10 +164,34 @@ func (r *ZoneReconciler) syncZone(
 		logger.Info("Updated zone type", "zoneID", cfZone.ID, "type", desiredType)
 	}
 
+	// Drift detection: plan, only when spec.plan is set.
+	if ratePlan, drifted := zonePlanDrift(zone, cfZone); drifted {
+		// A zone on the free plan has no subscription yet, so it needs one
+		// created; a paid zone's subscription is updated in place.
+		setPlan := cfAPI.ZoneUpdatePlan
+		if !cfZone.Plan.IsSubscribed {
+			setPlan = cfAPI.ZoneSetPlan
+		}
+		if err := setPlan(ctx, cfZone.ID, ratePlan); err != nil {
+			return handleCloudflareError(ctx, r.Client, zone, err)
+		}
+		logger.Info("Changed zone plan", "zoneID", cfZone.ID,
+			"from", cfZone.Plan.LegacyID, "to", zone.Spec.Plan)
+
+		// Read the zone again so status shows the new (or pending) plan.
+		updated, err := cfAPI.ZoneDetails(ctx, cfZone.ID)
+		if err != nil {
+			return handleCloudflareError(ctx, r.Client, zone, err)
+		}
+		cfZone = updated
+	}
+
 	// Sync status from Cloudflare.
 	zone.Status.CloudflareMetadata.ZoneID = cfZone.ID
 	zone.Status.CloudflareMetadata.NameServers = cfZone.NameServers
 	zone.Status.CloudflareMetadata.Status = cfZone.Status
+	zone.Status.CloudflareMetadata.Plan = cfZone.Plan.LegacyID
+	zone.Status.CloudflareMetadata.PendingPlan = cfZone.PlanPending.LegacyID
 	return ctrl.Result{}, updateReady(ctx, r.Client, zone, "Synced", "Zone is synced with Cloudflare")
 }
 
@@ -170,6 +206,17 @@ func zoneInAccount(zones []cf.Zone, accountID string) (cf.Zone, bool) {
 		}
 	}
 	return cf.Zone{}, false
+}
+
+// zonePlanDrift returns the rate plan to subscribe cfZone to, or false when
+// spec.plan is unset or Cloudflare already has it, either as the current
+// plan or as a change scheduled for the end of the billing period.
+func zonePlanDrift(zone *cloudflarev1alpha1.Zone, cfZone cf.Zone) (string, bool) {
+	desired := zone.Spec.Plan
+	if desired == "" || desired == cfZone.Plan.LegacyID || desired == cfZone.PlanPending.LegacyID {
+		return "", false
+	}
+	return zoneRatePlans[desired], true
 }
 
 // desiredZoneType returns spec.type, or "full" when it is unset.
