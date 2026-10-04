@@ -8,10 +8,8 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -24,7 +22,6 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
-	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 // CloudflareAccountAPI is the subset of the Cloudflare API used by this
@@ -63,9 +60,7 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// re-triggers this reconcile once the Secret is created or fixed.
 	token, credErr := accountToken(ctx, r.Client, account)
 	if credErr != nil {
-		reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, credErr.Reason, credErr.Message, account.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, account)
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, account, credErr.Reason, credErr.Message)
 	}
 
 	// Build the Cloudflare client.
@@ -75,51 +70,18 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	cfClient, err := newClient(token)
 	if err != nil {
-		reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "InvalidToken",
-			fmt.Sprintf("Failed to create Cloudflare client: %v", err),
-			account.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, account)
+		return invalidToken(ctx, r.Client, account, err)
 	}
 
 	cfAccount, _, err := cfClient.Account(ctx, account.Spec.AccountID)
 	if err != nil {
-		return r.handleCFError(ctx, account, err)
+		return handleCloudflareError(ctx, r.Client, account, err)
 	}
 
 	logger.Info("Cloudflare account validated", "accountName", cfAccount.Name)
 	account.Status.AccountName = cfAccount.Name
-	reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionTrue, "Validated",
-		"Credentials are valid and account is reachable",
-		account.Generation)
-
-	return ctrl.Result{}, r.Status().Update(ctx, account)
-}
-
-// handleCFError sets the appropriate condition based on whether the Cloudflare
-// error is terminal (stop requeuing until the token Secret or spec changes) or
-// retryable (let controller-runtime back off and retry).
-func (r *CloudflareAccountReconciler) handleCFError(
-	ctx context.Context,
-	account *cloudflarev1alpha1.CloudflareAccount,
-	err error,
-) (ctrl.Result, error) {
-	if cfpkg.IsTerminalError(err) {
-		reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TerminalError",
-			fmt.Sprintf("Terminal Cloudflare API error: %v", err),
-			account.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, account)
-	}
-	reconciler.SetCondition(&account.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionFalse, "APIError",
-		fmt.Sprintf("Cloudflare API error: %v", err),
-		account.Generation)
-	if statusErr := r.Status().Update(ctx, account); statusErr != nil {
-		return ctrl.Result{}, statusErr
-	}
-	return ctrl.Result{}, err
+	return ctrl.Result{}, updateReady(ctx, r.Client, account, "Validated",
+		"Credentials are valid and account is reachable")
 }
 
 // SetupWithManager sets up the controller with the Manager. It also watches

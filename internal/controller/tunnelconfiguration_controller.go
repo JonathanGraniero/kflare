@@ -15,7 +15,6 @@ import (
 	cf "github.com/cloudflare/cloudflare-go"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -97,18 +96,12 @@ func (r *TunnelConfigurationReconciler) Reconcile(ctx context.Context, req ctrl.
 	tunnel := &cloudflarev1alpha1.Tunnel{}
 	tunnelKey := types.NamespacedName{Name: tc.Spec.TunnelRef.Name, Namespace: tc.Namespace}
 	if err := r.Get(ctx, tunnelKey, tunnel); err != nil {
-		reconciler.SetCondition(&tc.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TunnelNotFound",
-			fmt.Sprintf("Tunnel %q not found: %v", tc.Spec.TunnelRef.Name, err),
-			tc.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, tc)
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, tc, "TunnelNotFound",
+			fmt.Sprintf("Tunnel %q not found: %v", tc.Spec.TunnelRef.Name, err))
 	}
 	if !isTunnelReady(tunnel) {
-		reconciler.SetCondition(&tc.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TunnelNotReady",
-			fmt.Sprintf("Tunnel %q is not ready", tc.Spec.TunnelRef.Name),
-			tc.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, tc)
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, tc, "TunnelNotReady",
+			fmt.Sprintf("Tunnel %q is not ready", tc.Spec.TunnelRef.Name))
 	}
 
 	// Only one TunnelConfiguration may own a tunnel's ingress rules.
@@ -117,27 +110,18 @@ func (r *TunnelConfigurationReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 	if owner != tc.Name {
-		reconciler.SetCondition(&tc.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TunnelAlreadyConfigured",
-			fmt.Sprintf("Tunnel %q is already configured by TunnelConfiguration %q", tc.Spec.TunnelRef.Name, owner),
-			tc.Generation)
-		return ctrl.Result{RequeueAfter: tunnelConflictRetryInterval}, r.Status().Update(ctx, tc)
+		return ctrl.Result{RequeueAfter: tunnelConflictRetryInterval}, updateNotReady(ctx, r.Client, tc, "TunnelAlreadyConfigured",
+			fmt.Sprintf("Tunnel %q is already configured by TunnelConfiguration %q", tc.Spec.TunnelRef.Name, owner))
 	}
 
 	account, token, credErr := resolveAccountToken(ctx, r.Client, tunnel.Spec.AccountRef.Name, true)
 	if credErr != nil {
-		reconciler.SetCondition(&tc.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, credErr.Reason, credErr.Message, tc.Generation)
-		return ctrl.Result{RequeueAfter: credentialsRetryInterval}, r.Status().Update(ctx, tc)
+		return notReadyRetryAfter(ctx, r.Client, tc, credErr)
 	}
 
 	cfAPI, err := r.newTunnelConfigurationAPI(token)
 	if err != nil {
-		reconciler.SetCondition(&tc.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "InvalidToken",
-			fmt.Sprintf("Failed to create Cloudflare client: %v", err),
-			tc.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, tc)
+		return invalidToken(ctx, r.Client, tc, err)
 	}
 
 	return r.syncConfiguration(ctx, tc, account, tunnel.Status.CloudflareMetadata.TunnelID, cfAPI)
@@ -159,7 +143,7 @@ func (r *TunnelConfigurationReconciler) syncConfiguration(
 
 	current, err := cfAPI.GetTunnelConfiguration(ctx, rc, tunnelID)
 	if err != nil {
-		return r.handleCFError(ctx, tc, err)
+		return handleCloudflareError(ctx, r.Client, tc, err)
 	}
 
 	if !tunnelConfigurationMatches(desired, current.Config) {
@@ -168,7 +152,7 @@ func (r *TunnelConfigurationReconciler) syncConfiguration(
 			Config:   desired,
 		})
 		if err != nil {
-			return r.handleCFError(ctx, tc, err)
+			return handleCloudflareError(ctx, r.Client, tc, err)
 		}
 		current = updated
 		logger.Info("Updated tunnel configuration", "tunnelID", tunnelID, "version", updated.Version)
@@ -176,11 +160,8 @@ func (r *TunnelConfigurationReconciler) syncConfiguration(
 
 	tc.Status.CloudflareMetadata.TunnelID = tunnelID
 	tc.Status.CloudflareMetadata.Version = current.Version
-	reconciler.SetCondition(&tc.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionTrue, "Synced",
-		"Tunnel configuration is synced with Cloudflare",
-		tc.Generation)
-	return ctrl.Result{}, r.Status().Update(ctx, tc)
+	return ctrl.Result{}, updateReady(ctx, r.Client, tc, "Synced",
+		"Tunnel configuration is synced with Cloudflare")
 }
 
 // configurationOwner returns the name of the TunnelConfiguration that owns
@@ -277,31 +258,6 @@ func normalizeIngress(rules []cf.UnvalidatedIngressRule) []cf.UnvalidatedIngress
 		out[i] = rule
 	}
 	return out
-}
-
-// handleCFError sets the appropriate condition based on whether the Cloudflare
-// error is terminal (stop requeuing) or retryable (let controller-runtime
-// back off and retry).
-func (r *TunnelConfigurationReconciler) handleCFError(
-	ctx context.Context,
-	tc *cloudflarev1alpha1.TunnelConfiguration,
-	err error,
-) (ctrl.Result, error) {
-	if cfpkg.IsTerminalError(err) {
-		reconciler.SetCondition(&tc.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TerminalError",
-			fmt.Sprintf("Terminal Cloudflare API error: %v", err),
-			tc.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, tc)
-	}
-	reconciler.SetCondition(&tc.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionFalse, "APIError",
-		fmt.Sprintf("Cloudflare API error: %v", err),
-		tc.Generation)
-	if statusErr := r.Status().Update(ctx, tc); statusErr != nil {
-		return ctrl.Result{}, statusErr
-	}
-	return ctrl.Result{}, err
 }
 
 // reconcileDelete handles the deletion lifecycle: unless the retain policy is

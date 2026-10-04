@@ -15,7 +15,6 @@ import (
 
 	cf "github.com/cloudflare/cloudflare-go"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -84,27 +83,19 @@ func (r *WorkerScriptReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	account, token, credErr := resolveAccountToken(ctx, r.Client, ws.Spec.AccountRef.Name, true)
 	if credErr != nil {
-		reconciler.SetCondition(&ws.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, credErr.Reason, credErr.Message, ws.Generation)
-		return ctrl.Result{RequeueAfter: credentialsRetryInterval}, r.Status().Update(ctx, ws)
+		return notReadyRetryAfter(ctx, r.Client, ws, credErr)
 	}
 
 	// Resolve the script source and binding values. A missing ConfigMap or
 	// Secret is reported and picked up again by the watches on both kinds.
 	upload, hash, srcErr := r.desiredUpload(ctx, ws)
 	if srcErr != nil {
-		reconciler.SetCondition(&ws.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, srcErr.Reason, srcErr.Message, ws.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, ws)
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, ws, srcErr.Reason, srcErr.Message)
 	}
 
 	cfAPI, err := r.newWorkerScriptAPI(token)
 	if err != nil {
-		reconciler.SetCondition(&ws.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "InvalidToken",
-			fmt.Sprintf("Failed to create Cloudflare client: %v", err),
-			ws.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, ws)
+		return invalidToken(ctx, r.Client, ws, err)
 	}
 
 	return r.syncWorker(ctx, ws, account, upload, hash, cfAPI)
@@ -134,7 +125,7 @@ func (r *WorkerScriptReconciler) syncWorker(
 	} else {
 		workers, _, err := cfAPI.ListWorkers(ctx, rc, cf.ListWorkersParams{})
 		if err != nil {
-			return r.handleCFError(ctx, ws, err)
+			return handleCloudflareError(ctx, r.Client, ws, err)
 		}
 		reason, observed = workerDrift(workers.WorkerList, ws.Spec.Name, ws.Status.CloudflareMetadata.ModifiedOn)
 	}
@@ -142,7 +133,7 @@ func (r *WorkerScriptReconciler) syncWorker(
 	if reason != "" {
 		resp, err := cfAPI.UploadWorker(ctx, rc, upload)
 		if err != nil {
-			return r.handleCFError(ctx, ws, err)
+			return handleCloudflareError(ctx, r.Client, ws, err)
 		}
 		logger.Info("Uploaded Worker", "script", ws.Spec.Name, "reason", reason,
 			"observedModifiedOn", observed, "previousModifiedOn", ws.Status.CloudflareMetadata.ModifiedOn,
@@ -152,11 +143,7 @@ func (r *WorkerScriptReconciler) syncWorker(
 		ws.Status.AppliedHash = hash
 	}
 
-	reconciler.SetCondition(&ws.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionTrue, "Synced",
-		"Worker is synced with Cloudflare",
-		ws.Generation)
-	return ctrl.Result{}, r.Status().Update(ctx, ws)
+	return ctrl.Result{}, updateReady(ctx, r.Client, ws, "Synced", "Worker is synced with Cloudflare")
 }
 
 // workerDrift returns why the Worker named scriptName must be uploaded again,
@@ -182,13 +169,6 @@ func formatModifiedOn(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// sourceError explains why the Worker's script or a binding value could not
-// be resolved. Reason is a CamelCase condition reason.
-type sourceError struct {
-	Reason  string
-	Message string
-}
-
 // desiredUpload resolves the script source and binding values into the
 // upload request, together with a hash identifying that desired state.
 //
@@ -198,7 +178,7 @@ type sourceError struct {
 func (r *WorkerScriptReconciler) desiredUpload(
 	ctx context.Context,
 	ws *cloudflarev1alpha1.WorkerScript,
-) (cf.CreateWorkerParams, string, *sourceError) {
+) (cf.CreateWorkerParams, string, *conditionError) {
 	script, srcErr := r.scriptSource(ctx, ws)
 	if srcErr != nil {
 		return cf.CreateWorkerParams{}, "", srcErr
@@ -250,21 +230,21 @@ func (r *WorkerScriptReconciler) desiredUpload(
 }
 
 // scriptSource returns the Worker code from spec.script or the referenced ConfigMap.
-func (r *WorkerScriptReconciler) scriptSource(ctx context.Context, ws *cloudflarev1alpha1.WorkerScript) (string, *sourceError) {
+func (r *WorkerScriptReconciler) scriptSource(ctx context.Context, ws *cloudflarev1alpha1.WorkerScript) (string, *conditionError) {
 	if ws.Spec.Script != nil {
 		return *ws.Spec.Script, nil
 	}
 	ref := ws.Spec.ScriptConfigMapRef
 	cm := &corev1.ConfigMap{}
 	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ws.Namespace}, cm); err != nil {
-		return "", &sourceError{
+		return "", &conditionError{
 			Reason:  "ScriptConfigMapNotFound",
 			Message: fmt.Sprintf("ConfigMap %s/%s not found: %v", ws.Namespace, ref.Name, err),
 		}
 	}
 	script, ok := cm.Data[ref.Key]
 	if !ok || script == "" {
-		return "", &sourceError{
+		return "", &conditionError{
 			Reason:  "ScriptKeyMissing",
 			Message: fmt.Sprintf("Key %q not found or empty in ConfigMap %s/%s", ref.Key, ws.Namespace, ref.Name),
 		}
@@ -278,44 +258,23 @@ func (r *WorkerScriptReconciler) bindingSecret(
 	ctx context.Context,
 	namespace string,
 	b cloudflarev1alpha1.WorkerBinding,
-) (string, string, *sourceError) {
+) (string, string, *conditionError) {
 	ref := b.SecretKeyRef
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: namespace}, secret); err != nil {
-		return "", "", &sourceError{
+		return "", "", &conditionError{
 			Reason:  "BindingSecretNotFound",
 			Message: fmt.Sprintf("Secret %s/%s for binding %q not found: %v", namespace, ref.Name, b.Name, err),
 		}
 	}
 	value, ok := secret.Data[ref.Key]
 	if !ok || len(value) == 0 {
-		return "", "", &sourceError{
+		return "", "", &conditionError{
 			Reason:  "BindingSecretKeyMissing",
 			Message: fmt.Sprintf("Key %q not found or empty in Secret %s/%s for binding %q", ref.Key, namespace, ref.Name, b.Name),
 		}
 	}
 	return string(value), fmt.Sprintf("%s/%s/%s", secret.UID, secret.ResourceVersion, ref.Key), nil
-}
-
-// handleCFError sets the appropriate condition based on whether the Cloudflare
-// error is terminal (stop requeuing) or retryable (let controller-runtime
-// back off and retry).
-func (r *WorkerScriptReconciler) handleCFError(ctx context.Context, ws *cloudflarev1alpha1.WorkerScript, err error) (ctrl.Result, error) {
-	if cfpkg.IsTerminalError(err) {
-		reconciler.SetCondition(&ws.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TerminalError",
-			fmt.Sprintf("Terminal Cloudflare API error: %v", err),
-			ws.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, ws)
-	}
-	reconciler.SetCondition(&ws.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionFalse, "APIError",
-		fmt.Sprintf("Cloudflare API error: %v", err),
-		ws.Generation)
-	if statusErr := r.Status().Update(ctx, ws); statusErr != nil {
-		return ctrl.Result{}, statusErr
-	}
-	return ctrl.Result{}, err
 }
 
 // reconcileDelete handles the deletion lifecycle: unless the retain policy is

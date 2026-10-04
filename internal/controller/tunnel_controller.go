@@ -13,7 +13,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
 	corev1 "k8s.io/api/core/v1"
@@ -42,13 +41,6 @@ const (
 	// tunnelSecretBytes is the length of the random secret sent when creating
 	// a tunnel. Cloudflare requires at least 32 bytes.
 	tunnelSecretBytes = 32
-
-	// credentialsRetryInterval is how long to wait before retrying when the
-	// tunnel cannot proceed because of something outside its own spec: the
-	// account credentials, or a Secret kflare does not own. Neither the token
-	// Secret nor a conflicting Secret is watched, so a timed retry is what
-	// notices that it has been fixed.
-	credentialsRetryInterval = time.Minute
 )
 
 // TunnelAPI is the subset of the Cloudflare API used by this controller.
@@ -111,18 +103,12 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	account, token, credErr := resolveAccountToken(ctx, r.Client, tunnel.Spec.AccountRef.Name, true)
 	if credErr != nil {
-		reconciler.SetCondition(&tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, credErr.Reason, credErr.Message, tunnel.Generation)
-		return ctrl.Result{RequeueAfter: credentialsRetryInterval}, r.Status().Update(ctx, tunnel)
+		return notReadyRetryAfter(ctx, r.Client, tunnel, credErr)
 	}
 
 	cfAPI, err := r.newTunnelAPI(token)
 	if err != nil {
-		reconciler.SetCondition(&tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "InvalidToken",
-			fmt.Sprintf("Failed to create Cloudflare client: %v", err),
-			tunnel.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, tunnel)
+		return invalidToken(ctx, r.Client, tunnel, err)
 	}
 
 	return r.syncTunnel(ctx, tunnel, account, cfAPI)
@@ -153,7 +139,7 @@ func (r *TunnelReconciler) syncTunnel(
 		case err == nil || cfpkg.IsNotFound(err):
 			logger.Info("Tunnel deleted externally, recreating", "tunnelID", tunnelID)
 		default:
-			return r.handleCFError(ctx, tunnel, err)
+			return handleCloudflareError(ctx, r.Client, tunnel, err)
 		}
 	}
 
@@ -166,7 +152,7 @@ func (r *TunnelReconciler) syncTunnel(
 			IsDeleted: cf.BoolPtr(false),
 		})
 		if err != nil {
-			return r.handleCFError(ctx, tunnel, err)
+			return handleCloudflareError(ctx, r.Client, tunnel, err)
 		}
 		if len(tunnels) > 0 {
 			cfTunnel = tunnels[0]
@@ -182,7 +168,7 @@ func (r *TunnelReconciler) syncTunnel(
 				ConfigSrc: tunnelConfigSource,
 			})
 			if err != nil {
-				return r.handleCFError(ctx, tunnel, err)
+				return handleCloudflareError(ctx, r.Client, tunnel, err)
 			}
 			cfTunnel = created
 			logger.Info("Created tunnel", "name", tunnel.Spec.Name, "tunnelID", cfTunnel.ID)
@@ -198,7 +184,7 @@ func (r *TunnelReconciler) syncTunnel(
 	// outside kflare.
 	token, err := cfAPI.GetTunnelToken(ctx, rc, cfTunnel.ID)
 	if err != nil {
-		return r.handleCFError(ctx, tunnel, err)
+		return handleCloudflareError(ctx, r.Client, tunnel, err)
 	}
 
 	if err := r.ensureCredentialsSecret(ctx, tunnel, token); err != nil {
@@ -206,9 +192,8 @@ func (r *TunnelReconciler) syncTunnel(
 		if !errors.As(err, &conflict) {
 			return ctrl.Result{}, err
 		}
-		reconciler.SetCondition(&tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "CredentialsSecretConflict", conflict.Error(), tunnel.Generation)
-		return ctrl.Result{RequeueAfter: credentialsRetryInterval}, r.Status().Update(ctx, tunnel)
+		return notReadyRetryAfter(ctx, r.Client, tunnel,
+			&conditionError{Reason: "CredentialsSecretConflict", Message: conflict.Error()})
 	}
 
 	if err := r.deleteStaleCredentialsSecret(ctx, tunnel); err != nil {
@@ -216,11 +201,7 @@ func (r *TunnelReconciler) syncTunnel(
 	}
 	tunnel.Status.CredentialsSecretName = tunnel.Spec.CredentialsSecretRef.Name
 
-	reconciler.SetCondition(&tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionTrue, "Synced",
-		"Tunnel is synced with Cloudflare",
-		tunnel.Generation)
-	return ctrl.Result{}, r.Status().Update(ctx, tunnel)
+	return ctrl.Result{}, updateReady(ctx, r.Client, tunnel, "Synced", "Tunnel is synced with Cloudflare")
 }
 
 // secretConflictError reports that the credentials Secret exists but belongs
@@ -293,27 +274,6 @@ func (r *TunnelReconciler) deleteStaleCredentialsSecret(ctx context.Context, tun
 		return nil
 	}
 	return client.IgnoreNotFound(r.Delete(ctx, secret))
-}
-
-// handleCFError sets the appropriate condition based on whether the Cloudflare
-// error is terminal (stop requeuing) or retryable (let controller-runtime
-// back off and retry).
-func (r *TunnelReconciler) handleCFError(ctx context.Context, tunnel *cloudflarev1alpha1.Tunnel, err error) (ctrl.Result, error) {
-	if cfpkg.IsTerminalError(err) {
-		reconciler.SetCondition(&tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TerminalError",
-			fmt.Sprintf("Terminal Cloudflare API error: %v", err),
-			tunnel.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, tunnel)
-	}
-	reconciler.SetCondition(&tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-		metav1.ConditionFalse, "APIError",
-		fmt.Sprintf("Cloudflare API error: %v", err),
-		tunnel.Generation)
-	if statusErr := r.Status().Update(ctx, tunnel); statusErr != nil {
-		return ctrl.Result{}, statusErr
-	}
-	return ctrl.Result{}, err
 }
 
 // reconcileDelete handles the deletion lifecycle: unless the retain policy is

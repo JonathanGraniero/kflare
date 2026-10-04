@@ -293,7 +293,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(cond.Reason).To(Equal("ZoneNotFound"))
 		})
 
-		It("sets Ready=False ZoneNotReady and returns an error when the Zone is not ready", func() {
+		It("sets Ready=False ZoneNotReady when the Zone is not ready", func() {
 			createNotReadyZone()
 			createDNSRecord(nil)
 			record := &cloudflarev1alpha1.DNSRecord{}
@@ -303,7 +303,7 @@ var _ = Describe("DNSRecord Controller", func() {
 
 			r := reconcilerWithFakeDNSAPI(&fakeDNSRecordAPI{})
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
-			Expect(err).To(HaveOccurred()) // returns error to trigger requeue
+			Expect(err).NotTo(HaveOccurred()) // the Zone watch re-triggers it
 
 			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())

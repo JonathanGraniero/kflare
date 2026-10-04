@@ -21,15 +21,6 @@ import (
 // defaultTokenKey is the Secret key read when TokenSecretRef.Key is empty.
 const defaultTokenKey = "CF_API_TOKEN"
 
-// credentialsError explains why an account's API token could not be resolved.
-// Reason is a CamelCase condition reason suitable for a Ready=False condition.
-type credentialsError struct {
-	Reason  string
-	Message string
-}
-
-func (e *credentialsError) Error() string { return e.Message }
-
 // resolveAccountToken fetches the cluster-scoped CloudflareAccount named
 // accountName and the API token from the Secret it references.
 //
@@ -37,24 +28,24 @@ func (e *credentialsError) Error() string { return e.Message }
 // rejected. Deletion paths pass false so that cleanup can proceed while the
 // account is being re-validated.
 //
-// The error is a concrete *credentialsError so callers can read its Reason
+// The error is a concrete *conditionError so callers can read its Reason
 // directly; it is nil on success.
 func resolveAccountToken(
 	ctx context.Context,
 	c client.Reader,
 	accountName string,
 	requireReady bool,
-) (*cloudflarev1alpha1.CloudflareAccount, string, *credentialsError) {
+) (*cloudflarev1alpha1.CloudflareAccount, string, *conditionError) {
 	account := &cloudflarev1alpha1.CloudflareAccount{}
 	if err := c.Get(ctx, types.NamespacedName{Name: accountName}, account); err != nil {
-		return nil, "", &credentialsError{
+		return nil, "", &conditionError{
 			Reason:  "AccountNotFound",
 			Message: fmt.Sprintf("CloudflareAccount %q not found: %v", accountName, err),
 		}
 	}
 
 	if requireReady && !isAccountReady(account) {
-		return nil, "", &credentialsError{
+		return nil, "", &conditionError{
 			Reason:  "AccountNotReady",
 			Message: fmt.Sprintf("CloudflareAccount %q is not ready", accountName),
 		}
@@ -69,20 +60,20 @@ func resolveAccountToken(
 
 // accountToken reads the API token from the Secret referenced by account.
 //
-// The error is a concrete *credentialsError so callers can read its Reason
+// The error is a concrete *conditionError so callers can read its Reason
 // directly; it is nil on success.
 func accountToken(
 	ctx context.Context,
 	c client.Reader,
 	account *cloudflarev1alpha1.CloudflareAccount,
-) (string, *credentialsError) {
+) (string, *conditionError) {
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
 		Name:      account.Spec.TokenSecretRef.Name,
 		Namespace: account.Spec.TokenSecretRef.Namespace,
 	}
 	if err := c.Get(ctx, secretKey, secret); err != nil {
-		return "", &credentialsError{
+		return "", &conditionError{
 			Reason:  "SecretNotFound",
 			Message: fmt.Sprintf("Secret %s/%s not found: %v", secretKey.Namespace, secretKey.Name, err),
 		}
@@ -94,7 +85,7 @@ func accountToken(
 	}
 	token, ok := secret.Data[tokenKey]
 	if !ok {
-		return "", &credentialsError{
+		return "", &conditionError{
 			Reason:  "TokenKeyMissing",
 			Message: fmt.Sprintf("Key %q not found in secret %s/%s", tokenKey, secretKey.Namespace, secretKey.Name),
 		}
