@@ -98,6 +98,9 @@ Planned, not yet present: `helm/` (Phase 4), `generator/` (Phase 3), `docs/` (Ph
   - Calls `cf.Account()` to validate credentials on reconcile
   - Sets `Ready` condition and `accountName` in status
   - Tested live against real Cloudflare account ✅
+  - Watches its token Secret; deletion protection keeps the account (finalizer, `Ready=False InUse`) while a
+    Zone, Tunnel or WorkerScript references it, and the token Secret (`kflare.dev/token-protection`, recorded
+    in `status.protectedTokenSecret`) while an account references it — see `cloudflareaccount_protection.go`
 - [x] Makefile targets: `generate`, `manifests`, `build`, `run`, `test` (kubebuilder-generated)
 - [x] Local dev environment: `local/setup.sh`, `local/teardown.sh`, kind cluster config
 - [x] `pkg/cloudflare/client.go` — shared CF client wrapper (completed in `feat/shared-client`)
@@ -190,7 +193,9 @@ Shared infrastructure that all Phase 2 controllers will use.
 - List→adopt pre-existing zones before creating new ones; only a zone owned by the referenced account is adopted
   (the token may reach several accounts that hold the same domain)
 - `spec.name` and `spec.accountRef` are immutable via CEL
-- `spec.plan` is accepted but not applied: plan changes go through Cloudflare billing
+- `spec.plan` (optional) is applied through the zone subscription API: POST (`ZoneSetPlan`) for a free zone,
+  which has no subscription, PUT (`ZoneUpdatePlan`) for a paid one. A change already in `plan_pending` counts
+  as applied. Setting it bills the account; never exercised live for that reason
 - Get→NotFound path recreates externally-deleted zones
 - cloudflare-go returns pointer error types (`*AuthenticationError` etc.) from its HTTP layer;
   `errors.As` targets must be pointer types too — see `pkg/cloudflare/errors.go` comments
@@ -235,6 +240,10 @@ kubectl get zone example-zone -o yaml   # check Ready condition + cloudflareMeta
 - Content is not compared when `spec.data` is set (or for SRV): Cloudflare derives it from data
 - `spec.name`, `spec.type` and `spec.zoneRef` are immutable via CEL; `ttl` must be 1 or 30–86400
 - Deletion skips the Cloudflare call when the Zone resource is already gone (e.g. namespace deletion)
+- Ownership: the `kflare.dev/record-id` label holds the Cloudflare record a DNSRecord manages. Adoption skips
+  records another DNSRecord carries in that label, prefers a record whose content/data matches, and only adopts
+  a non-matching record when it is the only one with that name and type. Record tags would be the
+  Cloudflare-side alternative, but they are paid-plan only
 
 **Test locally:**
 ```sh
@@ -423,6 +432,10 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
    Cloudflare resource is deleted on CR deletion; check it with `reconciler.RetainOnDelete`
 7. **Immutability** — fields that identify the Cloudflare resource (names, refs) are immutable via CEL
    `self == oldSelf`, with an envtest case per field
+8. **Status helpers** — set conditions and report errors through `internal/controller/status.go`
+   (`updateReady`, `updateNotReady`, `handleCloudflareError`, `notReadyRetryAfter`); API types implement
+   `GetConditions/SetConditions`
+9. **Prefix** — every finalizer, annotation and label kflare owns starts with `kflare.dev/`
 
 ---
 

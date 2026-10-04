@@ -35,6 +35,7 @@ Early development. Phase 1 (foundation) and Phase 2 (core resources) are complet
 - A Cloudflare account and API token with **Edit zone DNS** permissions
   - `Tunnel` also needs the account-level **Cloudflare Tunnel: Edit** permission
   - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission
+  - Setting `Zone` `spec.plan` also needs **Billing: Edit**, and changes your bill
 
 ## Local Development
 
