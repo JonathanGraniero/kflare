@@ -328,9 +328,7 @@ func (r *WorkerScriptReconciler) reconcileDelete(ctx context.Context, ws *cloudf
 	}
 
 	uploaded := ws.Status.CloudflareMetadata.ModifiedOn != ""
-	policy := ws.Annotations["cloudflare.k8s.io/deletion-policy"]
-
-	if uploaded && policy != "retain" {
+	if uploaded && !reconciler.RetainOnDelete(ws) {
 		account, token, credErr := resolveAccountToken(ctx, r.Client, ws.Spec.AccountRef.Name, false)
 		if credErr != nil {
 			return ctrl.Result{}, credErr

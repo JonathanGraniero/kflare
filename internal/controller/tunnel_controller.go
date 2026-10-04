@@ -330,9 +330,7 @@ func (r *TunnelReconciler) reconcileDelete(ctx context.Context, tunnel *cloudfla
 	}
 
 	tunnelID := tunnel.Status.CloudflareMetadata.TunnelID
-	policy := tunnel.Annotations["cloudflare.k8s.io/deletion-policy"]
-
-	if tunnelID != "" && policy != "retain" {
+	if tunnelID != "" && !reconciler.RetainOnDelete(tunnel) {
 		account, token, credErr := resolveAccountToken(ctx, r.Client, tunnel.Spec.AccountRef.Name, false)
 		if credErr != nil {
 			return ctrl.Result{}, credErr

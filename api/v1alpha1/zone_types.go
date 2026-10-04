@@ -15,9 +15,12 @@ import (
 type ZoneSpec struct {
 	// Name is the domain (e.g. "example.com"). Immutable after creation.
 	// +kubebuilder:validation:Pattern=`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
 	// AccountRef references the CloudflareAccount that owns this zone.
+	// Immutable after creation.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="accountRef is immutable"
 	AccountRef corev1.LocalObjectReference `json:"accountRef"`
 
 	// Plan is the billing plan for the zone: free, pro, business, or enterprise.

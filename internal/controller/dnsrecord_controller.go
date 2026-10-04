@@ -14,7 +14,8 @@ import (
 	"sort"
 
 	cf "github.com/cloudflare/cloudflare-go"
-	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -105,60 +106,14 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, fmt.Errorf("zone %q is not ready", record.Spec.ZoneRef.Name)
 	}
 
-	zoneID := zone.Status.CloudflareMetadata.ZoneID
-
-	// Fetch the CloudflareAccount that the zone belongs to.
-	account := &cloudflarev1alpha1.CloudflareAccount{}
-	if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.AccountRef.Name}, account); err != nil {
+	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
+	if credErr != nil {
 		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "AccountNotFound",
-			fmt.Sprintf("CloudflareAccount %q not found: %v", zone.Spec.AccountRef.Name, err),
-			record.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, record)
+			metav1.ConditionFalse, credErr.Reason, credErr.Message, record.Generation)
+		return ctrl.Result{RequeueAfter: credentialsRetryInterval}, r.Status().Update(ctx, record)
 	}
 
-	// The account must be ready before we can use its credentials.
-	if !isAccountReady(account) {
-		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "AccountNotReady",
-			fmt.Sprintf("CloudflareAccount %q is not ready", zone.Spec.AccountRef.Name),
-			record.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, record)
-	}
-
-	// Fetch the API token from the secret referenced by the account.
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{
-		Name:      account.Spec.TokenSecretRef.Name,
-		Namespace: account.Spec.TokenSecretRef.Namespace,
-	}
-	if err := r.Get(ctx, secretKey, secret); err != nil {
-		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "SecretNotFound",
-			fmt.Sprintf("Secret %s/%s not found: %v", secretKey.Namespace, secretKey.Name, err),
-			record.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, record)
-	}
-
-	tokenKey := account.Spec.TokenSecretRef.Key
-	if tokenKey == "" {
-		tokenKey = "CF_API_TOKEN"
-	}
-	tokenBytes, ok := secret.Data[tokenKey]
-	if !ok {
-		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
-			metav1.ConditionFalse, "TokenKeyMissing",
-			fmt.Sprintf("Key %q not found in secret %s/%s", tokenKey, secretKey.Namespace, secretKey.Name),
-			record.Generation)
-		return ctrl.Result{}, r.Status().Update(ctx, record)
-	}
-
-	// Build the Cloudflare client.
-	newAPI := r.NewDNSRecordAPI
-	if newAPI == nil {
-		newAPI = defaultDNSRecordAPI
-	}
-	cfAPI, err := newAPI(string(tokenBytes))
+	cfAPI, err := r.newDNSRecordAPI(token)
 	if err != nil {
 		reconciler.SetCondition(&record.Status.Conditions, cloudflarev1alpha1.ConditionReady,
 			metav1.ConditionFalse, "InvalidToken",
@@ -167,19 +122,17 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, r.Status().Update(ctx, record)
 	}
 
-	return r.syncDNSRecord(ctx, logger, record, zoneID, cfAPI)
+	return r.syncDNSRecord(ctx, record, zone.Status.CloudflareMetadata.ZoneID, cfAPI)
 }
 
 // syncDNSRecord drives the desired→observed→delta→reconcile loop for a DNSRecord.
 func (r *DNSRecordReconciler) syncDNSRecord(
 	ctx context.Context,
-	logger interface {
-		Info(msg string, keysAndValues ...interface{})
-	},
 	record *cloudflarev1alpha1.DNSRecord,
 	zoneID string,
 	cfAPI DNSRecordAPI,
 ) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 	rc := cf.ZoneIdentifier(zoneID)
 	var cfRecord cf.DNSRecord
 
@@ -250,13 +203,17 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 	return ctrl.Result{}, r.Status().Update(ctx, record)
 }
 
+// automaticTTL is the TTL Cloudflare reports for "automatic". It is also what
+// Cloudflare stores when a record is created without a TTL.
+const automaticTTL = 1
+
 // buildCreateParams constructs a CreateDNSRecordParams from the DNSRecord spec.
 func buildCreateParams(record *cloudflarev1alpha1.DNSRecord) (cf.CreateDNSRecordParams, error) {
 	params := cf.CreateDNSRecordParams{
 		Type:     record.Spec.Type,
 		Name:     record.Spec.Name,
 		Content:  record.Spec.Content,
-		TTL:      record.Spec.TTL,
+		TTL:      desiredTTL(record),
 		Proxied:  record.Spec.Proxied,
 		Priority: record.Spec.Priority,
 		Comment:  record.Spec.Comment,
@@ -272,10 +229,23 @@ func buildCreateParams(record *cloudflarev1alpha1.DNSRecord) (cf.CreateDNSRecord
 	return params, nil
 }
 
+// desiredTTL returns spec.ttl, or automatic when it is unset.
+func desiredTTL(record *cloudflarev1alpha1.DNSRecord) int {
+	if record.Spec.TTL == 0 {
+		return automaticTTL
+	}
+	return record.Spec.TTL
+}
+
 // driftDetect compares the desired DNSRecord spec against the observed CF record.
 // Returns (true, params) if any field has drifted, (false, zero) otherwise.
-// Note: content drift is skipped for SRV records because Cloudflare auto-formats
-// the content field from the data fields, making a direct comparison unreliable.
+//
+// Unset spec fields are compared against Cloudflare's defaults, because
+// Cloudflare always reports a value for them: an unset ttl means automatic (1)
+// and an unset proxied means false. An unset priority is left to Cloudflare.
+//
+// Content is not compared when spec.data is set, or for SRV records, because
+// Cloudflare derives the content from the data fields.
 func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (bool, cf.UpdateDNSRecordParams) {
 	drifted := false
 	params := cf.UpdateDNSRecordParams{
@@ -287,31 +257,35 @@ func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (b
 		Priority: cfRecord.Priority,
 		Tags:     cfRecord.Tags,
 	}
-	if cfRecord.Tags == nil {
+	// Tags are always sent (the field has no omitempty), so never send null.
+	if params.Tags == nil {
 		params.Tags = []string{}
 	}
 
-	// Content: skip for SRV (CF auto-formats it from the data block).
-	if record.Spec.Type != "SRV" && record.Spec.Content != cfRecord.Content {
+	// Content: skipped when Cloudflare derives it from the data block.
+	contentFromData := record.Spec.Data != nil || record.Spec.Type == "SRV"
+	if !contentFromData && record.Spec.Content != cfRecord.Content {
 		params.Content = record.Spec.Content
 		drifted = true
 	}
 
 	// TTL.
-	if record.Spec.TTL != cfRecord.TTL {
-		params.TTL = record.Spec.TTL
+	if ttl := desiredTTL(record); ttl != cfRecord.TTL {
+		params.TTL = ttl
 		drifted = true
 	}
 
-	// Proxied (*bool comparison).
-	if !boolPtrEqual(record.Spec.Proxied, cfRecord.Proxied) {
-		params.Proxied = record.Spec.Proxied
+	// Proxied. The update is a PATCH that omits a nil value, so the desired
+	// value is always sent explicitly.
+	proxied := record.Spec.Proxied != nil && *record.Spec.Proxied
+	if proxied != (cfRecord.Proxied != nil && *cfRecord.Proxied) {
+		params.Proxied = &proxied
 		drifted = true
 	}
 
-	// Priority (*uint16 comparison).
-	if !uint16PtrEqual(record.Spec.Priority, cfRecord.Priority) {
-		params.Priority = record.Spec.Priority
+	// Priority: only managed when the spec sets it.
+	if p := record.Spec.Priority; p != nil && (cfRecord.Priority == nil || *cfRecord.Priority != *p) {
+		params.Priority = p
 		drifted = true
 	}
 
@@ -323,7 +297,7 @@ func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (b
 
 	// Tags (sort both before comparing).
 	if !tagsEqual(record.Spec.Tags, cfRecord.Tags) {
-		params.Tags = record.Spec.Tags
+		params.Tags = append([]string{}, record.Spec.Tags...)
 		drifted = true
 	}
 
@@ -367,6 +341,11 @@ func (r *DNSRecordReconciler) handleDNSCFError(ctx context.Context, record *clou
 // reconcileDelete handles the deletion lifecycle: optionally removes the DNS
 // record from Cloudflare (unless the retain policy is set), then removes
 // the finalizer.
+//
+// If the Zone resource is already gone there is nothing to delete with: the
+// zone was either deleted from Cloudflare with it, taking its records along,
+// or deliberately retained. This also keeps namespace deletion from hanging
+// when the Zone is removed before its records.
 func (r *DNSRecordReconciler) reconcileDelete(ctx context.Context, record *cloudflarev1alpha1.DNSRecord) (ctrl.Result, error) {
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(record, reconciler.Finalizer) {
@@ -374,52 +353,8 @@ func (r *DNSRecordReconciler) reconcileDelete(ctx context.Context, record *cloud
 	}
 
 	recordID := record.Status.CloudflareMetadata.RecordID
-	policy := record.Annotations["cloudflare.k8s.io/deletion-policy"]
-
-	if recordID != "" && policy != "retain" {
-		// Resolve Zone → Account → Secret to call the Cloudflare API.
-		zone := &cloudflarev1alpha1.Zone{}
-		zoneKey := types.NamespacedName{Name: record.Spec.ZoneRef.Name, Namespace: record.Namespace}
-		if err := r.Get(ctx, zoneKey, zone); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		account := &cloudflarev1alpha1.CloudflareAccount{}
-		if err := r.Get(ctx, types.NamespacedName{Name: zone.Spec.AccountRef.Name}, account); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		secret := &corev1.Secret{}
-		secretKey := types.NamespacedName{
-			Name:      account.Spec.TokenSecretRef.Name,
-			Namespace: account.Spec.TokenSecretRef.Namespace,
-		}
-		if err := r.Get(ctx, secretKey, secret); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		tokenKey := account.Spec.TokenSecretRef.Key
-		if tokenKey == "" {
-			tokenKey = "CF_API_TOKEN"
-		}
-		tokenBytes, ok := secret.Data[tokenKey]
-		if !ok {
-			return ctrl.Result{}, fmt.Errorf("key %q not found in secret %s/%s",
-				tokenKey, secretKey.Namespace, secretKey.Name)
-		}
-
-		newAPI := r.NewDNSRecordAPI
-		if newAPI == nil {
-			newAPI = defaultDNSRecordAPI
-		}
-		cfAPI, err := newAPI(string(tokenBytes))
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-
-		zoneID := zone.Status.CloudflareMetadata.ZoneID
-		rc := cf.ZoneIdentifier(zoneID)
-		if err := cfAPI.DeleteDNSRecord(ctx, rc, recordID); err != nil && !cfpkg.IsNotFound(err) {
+	if recordID != "" && !reconciler.RetainOnDelete(record) {
+		if err := r.deleteCloudflareRecord(ctx, record, recordID); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -427,6 +362,40 @@ func (r *DNSRecordReconciler) reconcileDelete(ctx context.Context, record *cloud
 	// Remove the finalizer to allow Kubernetes to complete the deletion.
 	_, err := reconciler.RemoveFinalizer(ctx, r.Client, record)
 	return ctrl.Result{}, err
+}
+
+// deleteCloudflareRecord deletes recordID from the zone of record's Zone
+// resource, resolving Zone → Account → Secret for credentials.
+func (r *DNSRecordReconciler) deleteCloudflareRecord(
+	ctx context.Context,
+	record *cloudflarev1alpha1.DNSRecord,
+	recordID string,
+) error {
+	zone := &cloudflarev1alpha1.Zone{}
+	zoneKey := types.NamespacedName{Name: record.Spec.ZoneRef.Name, Namespace: record.Namespace}
+	if err := r.Get(ctx, zoneKey, zone); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Info("Zone is gone, skipping Cloudflare deletion",
+				"zone", zoneKey.Name, "recordID", recordID)
+			return nil
+		}
+		return err
+	}
+
+	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, false)
+	if credErr != nil {
+		return credErr
+	}
+	cfAPI, err := r.newDNSRecordAPI(token)
+	if err != nil {
+		return err
+	}
+
+	rc := cf.ZoneIdentifier(zone.Status.CloudflareMetadata.ZoneID)
+	if err := cfAPI.DeleteDNSRecord(ctx, rc, recordID); err != nil && !cfpkg.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // SetupWithManager registers DNSRecordReconciler with the manager and adds a
@@ -462,43 +431,23 @@ func (r *DNSRecordReconciler) recordsForZone(ctx context.Context, obj client.Obj
 
 // isZoneReady returns true if the Zone has a Ready=True condition and a zone ID.
 func isZoneReady(zone *cloudflarev1alpha1.Zone) bool {
-	if zone.Status.CloudflareMetadata.ZoneID == "" {
-		return false
+	return zone.Status.CloudflareMetadata.ZoneID != "" &&
+		meta.IsStatusConditionTrue(zone.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+}
+
+// newDNSRecordAPI builds a DNSRecordAPI with the injected factory, falling
+// back to the production client.
+func (r *DNSRecordReconciler) newDNSRecordAPI(token string) (DNSRecordAPI, error) {
+	if r.NewDNSRecordAPI != nil {
+		return r.NewDNSRecordAPI(token)
 	}
-	for _, c := range zone.Status.Conditions {
-		if c.Type == cloudflarev1alpha1.ConditionReady {
-			return c.Status == metav1.ConditionTrue
-		}
-	}
-	return false
+	return defaultDNSRecordAPI(token)
 }
 
 // defaultDNSRecordAPI is the production factory: it delegates to cfpkg.New so
 // that the returned *cfpkg.Client (which embeds *cf.API) satisfies DNSRecordAPI.
 func defaultDNSRecordAPI(token string) (DNSRecordAPI, error) {
 	return cfpkg.New(token)
-}
-
-// boolPtrEqual returns true if both pointers point to equal values, or are both nil.
-func boolPtrEqual(a, b *bool) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
-}
-
-// uint16PtrEqual returns true if both pointers point to equal values, or are both nil.
-func uint16PtrEqual(a, b *uint16) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
 }
 
 // tagsEqual returns true if both tag slices contain the same elements (order-independent).

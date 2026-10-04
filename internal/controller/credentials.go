@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -59,13 +60,29 @@ func resolveAccountToken(
 		}
 	}
 
+	token, credErr := accountToken(ctx, c, account)
+	if credErr != nil {
+		return nil, "", credErr
+	}
+	return account, token, nil
+}
+
+// accountToken reads the API token from the Secret referenced by account.
+//
+// The error is a concrete *credentialsError so callers can read its Reason
+// directly; it is nil on success.
+func accountToken(
+	ctx context.Context,
+	c client.Reader,
+	account *cloudflarev1alpha1.CloudflareAccount,
+) (string, *credentialsError) {
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
 		Name:      account.Spec.TokenSecretRef.Name,
 		Namespace: account.Spec.TokenSecretRef.Namespace,
 	}
 	if err := c.Get(ctx, secretKey, secret); err != nil {
-		return nil, "", &credentialsError{
+		return "", &credentialsError{
 			Reason:  "SecretNotFound",
 			Message: fmt.Sprintf("Secret %s/%s not found: %v", secretKey.Namespace, secretKey.Name, err),
 		}
@@ -77,11 +94,16 @@ func resolveAccountToken(
 	}
 	token, ok := secret.Data[tokenKey]
 	if !ok {
-		return nil, "", &credentialsError{
+		return "", &credentialsError{
 			Reason:  "TokenKeyMissing",
 			Message: fmt.Sprintf("Key %q not found in secret %s/%s", tokenKey, secretKey.Namespace, secretKey.Name),
 		}
 	}
 
-	return account, string(token), nil
+	return string(token), nil
+}
+
+// isAccountReady returns true if the CloudflareAccount has a Ready=True condition.
+func isAccountReady(account *cloudflarev1alpha1.CloudflareAccount) bool {
+	return meta.IsStatusConditionTrue(account.Status.Conditions, cloudflarev1alpha1.ConditionReady)
 }

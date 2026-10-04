@@ -14,6 +14,7 @@ import (
 
 	cf "github.com/cloudflare/cloudflare-go"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -320,9 +321,7 @@ func (r *TunnelConfigurationReconciler) reconcileDelete(
 	}
 
 	tunnelID := tc.Status.CloudflareMetadata.TunnelID
-	policy := tc.Annotations["cloudflare.k8s.io/deletion-policy"]
-
-	if tunnelID != "" && policy != "retain" {
+	if tunnelID != "" && !reconciler.RetainOnDelete(tc) {
 		if err := r.resetTunnelConfiguration(ctx, tc, tunnelID); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -403,15 +402,8 @@ func (r *TunnelConfigurationReconciler) configurationsForTunnel(ctx context.Cont
 
 // isTunnelReady returns true if the Tunnel has a Ready=True condition and a tunnel ID.
 func isTunnelReady(tunnel *cloudflarev1alpha1.Tunnel) bool {
-	if tunnel.Status.CloudflareMetadata.TunnelID == "" {
-		return false
-	}
-	for _, c := range tunnel.Status.Conditions {
-		if c.Type == cloudflarev1alpha1.ConditionReady {
-			return c.Status == metav1.ConditionTrue
-		}
-	}
-	return false
+	return tunnel.Status.CloudflareMetadata.TunnelID != "" &&
+		meta.IsStatusConditionTrue(tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady)
 }
 
 // newTunnelConfigurationAPI builds a TunnelConfigurationAPI with the injected

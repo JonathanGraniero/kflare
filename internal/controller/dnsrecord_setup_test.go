@@ -172,49 +172,6 @@ var _ = Describe("isZoneReady", func() {
 	})
 })
 
-var _ = Describe("boolPtrEqual", func() {
-	It("returns true when both are nil", func() {
-		Expect(boolPtrEqual(nil, nil)).To(BeTrue())
-	})
-
-	It("returns false when one is nil", func() {
-		t := true
-		Expect(boolPtrEqual(&t, nil)).To(BeFalse())
-		Expect(boolPtrEqual(nil, &t)).To(BeFalse())
-	})
-
-	It("returns true when both point to the same value", func() {
-		t, f := true, true
-		Expect(boolPtrEqual(&t, &f)).To(BeTrue())
-	})
-
-	It("returns false when they point to different values", func() {
-		t, f := true, false
-		Expect(boolPtrEqual(&t, &f)).To(BeFalse())
-	})
-})
-
-var _ = Describe("uint16PtrEqual", func() {
-	It("returns true when both are nil", func() {
-		Expect(uint16PtrEqual(nil, nil)).To(BeTrue())
-	})
-
-	It("returns false when one is nil", func() {
-		v := uint16(10)
-		Expect(uint16PtrEqual(&v, nil)).To(BeFalse())
-	})
-
-	It("returns true when both point to the same value", func() {
-		a, b := uint16(10), uint16(10)
-		Expect(uint16PtrEqual(&a, &b)).To(BeTrue())
-	})
-
-	It("returns false when they point to different values", func() {
-		a, b := uint16(10), uint16(20)
-		Expect(uint16PtrEqual(&a, &b)).To(BeFalse())
-	})
-})
-
 var _ = Describe("tagsEqual", func() {
 	It("returns true for two nil slices", func() {
 		Expect(tagsEqual(nil, nil)).To(BeTrue())
@@ -276,6 +233,15 @@ var _ = Describe("dataDrifted", func() {
 })
 
 var _ = Describe("buildCreateParams", func() {
+	It("sends an automatic TTL when spec.ttl is unset", func() {
+		rec := &cloudflarev1alpha1.DNSRecord{
+			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Name: "www.example.com", Content: "1.2.3.4"},
+		}
+		params, err := buildCreateParams(rec)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.TTL).To(Equal(1))
+	})
+
 	It("includes Data when spec.Data is valid JSON", func() {
 		rec := &cloudflarev1alpha1.DNSRecord{
 			Spec: cloudflarev1alpha1.DNSRecordSpec{
@@ -335,6 +301,77 @@ var _ = Describe("driftDetect", func() {
 		drifted, params := driftDetect(spec, cfRecord)
 		Expect(drifted).To(BeFalse())
 		Expect(params).To(Equal(cf.UpdateDNSRecordParams{}))
+	})
+
+	It("treats unset ttl and proxied as Cloudflare's defaults (automatic, not proxied)", func() {
+		spec := &cloudflarev1alpha1.DNSRecord{
+			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Content: "1.2.3.4"},
+		}
+		// Cloudflare always reports ttl and proxied, even when they were never set.
+		cfRecord := cf.DNSRecord{Type: "A", Content: "1.2.3.4", TTL: 1, Proxied: makeProxy(false), Tags: []string{}}
+		drifted, _ := driftDetect(spec, cfRecord)
+		Expect(drifted).To(BeFalse())
+	})
+
+	It("sends proxied=false explicitly when an unset proxied was enabled outside kflare", func() {
+		spec := &cloudflarev1alpha1.DNSRecord{
+			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Content: "1.2.3.4"},
+		}
+		cfRecord := cf.DNSRecord{Type: "A", Content: "1.2.3.4", TTL: 1, Proxied: makeProxy(true)}
+		drifted, params := driftDetect(spec, cfRecord)
+		Expect(drifted).To(BeTrue())
+		// A nil Proxied would be omitted from the PATCH and leave proxying on.
+		Expect(params.Proxied).To(Equal(makeProxy(false)))
+	})
+
+	It("sends ttl=1 explicitly when an unset ttl was changed outside kflare", func() {
+		spec := &cloudflarev1alpha1.DNSRecord{
+			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Content: "1.2.3.4"},
+		}
+		cfRecord := cf.DNSRecord{Type: "A", Content: "1.2.3.4", TTL: 300, Proxied: makeProxy(false)}
+		drifted, params := driftDetect(spec, cfRecord)
+		Expect(drifted).To(BeTrue())
+		Expect(params.TTL).To(Equal(1))
+	})
+
+	It("leaves priority to Cloudflare when the spec does not set it", func() {
+		spec := &cloudflarev1alpha1.DNSRecord{
+			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "MX", Content: "mail.example.com", TTL: 300},
+		}
+		cfRecord := cf.DNSRecord{Type: "MX", Content: "mail.example.com", TTL: 300, Proxied: makeProxy(false),
+			Priority: makePriority(10)}
+		drifted, _ := driftDetect(spec, cfRecord)
+		Expect(drifted).To(BeFalse())
+	})
+
+	It("skips content drift when the record is described by data (CAA)", func() {
+		spec := &cloudflarev1alpha1.DNSRecord{
+			Spec: cloudflarev1alpha1.DNSRecordSpec{
+				Type: "CAA",
+				TTL:  300,
+				Data: &apiextensionsv1.JSON{Raw: []byte(`{"flags":0,"tag":"issue","value":"letsencrypt.org"}`)},
+			},
+		}
+		cfRecord := cf.DNSRecord{
+			Type:    "CAA",
+			Content: `0 issue "letsencrypt.org"`, // derived from data by Cloudflare
+			TTL:     300,
+			Proxied: makeProxy(false),
+			Data:    map[string]interface{}{"flags": float64(0), "tag": "issue", "value": "letsencrypt.org"},
+		}
+		drifted, _ := driftDetect(spec, cfRecord)
+		Expect(drifted).To(BeFalse())
+	})
+
+	It("sends an empty tag list rather than null when the spec removes all tags", func() {
+		spec := &cloudflarev1alpha1.DNSRecord{
+			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Content: "1.2.3.4", TTL: 300},
+		}
+		cfRecord := cf.DNSRecord{Type: "A", Content: "1.2.3.4", TTL: 300, Tags: []string{"env:prod"}}
+		drifted, params := driftDetect(spec, cfRecord)
+		Expect(drifted).To(BeTrue())
+		Expect(params.Tags).NotTo(BeNil())
+		Expect(params.Tags).To(BeEmpty())
 	})
 
 	It("skips content drift for SRV records", func() {
