@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -22,6 +23,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 // CloudflareAccountAPI is the subset of the Cloudflare API used by this
@@ -46,7 +48,7 @@ type CloudflareAccountReconciler struct {
 //+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=cloudflareaccounts,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=cloudflareaccounts/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=cloudflare.cloudflare.k8s.io,resources=cloudflareaccounts/finalizers,verbs=update
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;update;patch
 
 func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -54,6 +56,20 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	account := &cloudflarev1alpha1.CloudflareAccount{}
 	if err := r.Get(ctx, req.NamespacedName, account); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if !account.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, account)
+	}
+
+	// The finalizer keeps the account, and with it the credentials its
+	// dependents need for their own cleanup, until nothing uses it. The
+	// update refreshes account, so the reconcile can carry on.
+	if _, err := reconciler.EnsureFinalizer(ctx, r.Client, account); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.protectTokenSecret(ctx, account); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Fetch the API token from the referenced Secret. The Secret watch
@@ -87,10 +103,19 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 // SetupWithManager sets up the controller with the Manager. It also watches
 // Secrets, so creating, fixing or rotating an account's API token
 // re-validates the account straight away.
+//
+// While an account is being deleted, the deletion of each resource that uses
+// it re-triggers the account, so it is released as soon as the last one is
+// gone.
 func (r *CloudflareAccountReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	dependentDeleted := builder.WithPredicates(deletesOnly)
+	dependent := handler.EnqueueRequestsFromMapFunc(r.deletingAccountOf)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.CloudflareAccount{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.accountsForSecret)).
+		Watches(&cloudflarev1alpha1.Zone{}, dependent, dependentDeleted).
+		Watches(&cloudflarev1alpha1.Tunnel{}, dependent, dependentDeleted).
+		Watches(&cloudflarev1alpha1.WorkerScript{}, dependent, dependentDeleted).
 		Complete(r)
 }
 

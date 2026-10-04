@@ -62,14 +62,8 @@ var _ = Describe("CloudflareAccount Controller (nil factory fallback)", func() {
 	secretKey := types.NamespacedName{Name: secretName, Namespace: secretNS}
 
 	AfterEach(func() {
-		acct := &cloudflarev1alpha1.CloudflareAccount{}
-		if err := k8sClient.Get(ctx, accountKey, acct); err == nil {
-			Expect(k8sClient.Delete(ctx, acct)).To(Succeed())
-		}
-		secret := &corev1.Secret{}
-		if err := k8sClient.Get(ctx, secretKey, secret); err == nil {
-			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
-		}
+		forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, accountKey)
+		forceDelete(ctx, &corev1.Secret{}, secretKey)
 	})
 
 	It("falls back to defaultCFClient when NewCFClient is nil and sets InvalidToken for empty token", func() {
