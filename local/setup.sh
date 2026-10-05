@@ -10,8 +10,19 @@ if [[ -z "${CF_API_TOKEN:-}" || -z "${CF_ACCOUNT_ID:-}" ]]; then
   exit 1
 fi
 
+# The pinned kind (v0.30+ is needed for the Kubernetes 1.34 node image).
+make -C "$ROOT_DIR" -s kind >/dev/null
+KIND="$(make -C "$ROOT_DIR" -s kind-path)"
+
+# With several kind clusters on one Linux host, kube-proxy fails with "too many
+# open files" and pods cannot reach the API server unless this limit is raised.
+if [[ "$(sysctl -n fs.inotify.max_user_instances 2>/dev/null || echo 512)" -lt 512 ]]; then
+  echo "WARNING: fs.inotify.max_user_instances is below 512; pods may fail to reach the API server."
+  echo "         Raise it with: sudo sysctl fs.inotify.max_user_instances=512"
+fi
+
 echo "==> Creating kind cluster..."
-kind create cluster --config "$SCRIPT_DIR/kind-config.yaml" --wait 60s
+"$KIND" create cluster --config "$SCRIPT_DIR/kind-config.yaml" --wait 60s
 
 echo "==> Installing CRDs..."
 cd "$ROOT_DIR"

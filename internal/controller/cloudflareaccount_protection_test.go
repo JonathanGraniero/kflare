@@ -168,13 +168,14 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 	It("names every kind of dependent and shortens a long list", func() {
 		ref := corev1.LocalObjectReference{Name: acctName}
 		script := "export default {}"
-		dependents := []client.Object{
+		dependents := make([]client.Object, 0, 6)
+		dependents = append(dependents,
 			&cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: "protect-tunnel", Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelSpec{Name: "t", AccountRef: ref,
 					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "t-token"}}},
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: metav1.ObjectMeta{Name: "protect-worker", Namespace: ns},
 				Spec: cloudflarev1alpha1.WorkerScriptSpec{Name: "w", AccountRef: ref, Script: &script}},
-		}
+		)
 		for _, z := range []string{"protect-z1", "protect-z2", "protect-z3", "protect-z4"} {
 			dependents = append(dependents, &cloudflarev1alpha1.Zone{ObjectMeta: metav1.ObjectMeta{Name: z, Namespace: ns},
 				Spec: cloudflarev1alpha1.ZoneSpec{Name: z + ".example.com", AccountRef: ref}})

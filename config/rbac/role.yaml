@@ -28,135 +28,10 @@ rules:
   - kflare.dev
   resources:
   - cloudflareaccounts
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - kflare.dev
-  resources:
-  - cloudflareaccounts/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
-  - cloudflareaccounts/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
   - dnsrecords
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - kflare.dev
-  resources:
-  - dnsrecords/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
-  - dnsrecords/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
   - tunnelconfigurations
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - kflare.dev
-  resources:
-  - tunnelconfigurations/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
-  - tunnelconfigurations/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
   - tunnels
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - kflare.dev
-  resources:
-  - tunnels/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
-  - tunnels/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
   - workerscripts
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - kflare.dev
-  resources:
-  - workerscripts/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
-  - workerscripts/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - kflare.dev
-  resources:
   - zones
   verbs:
   - create
@@ -169,12 +44,22 @@ rules:
 - apiGroups:
   - kflare.dev
   resources:
+  - cloudflareaccounts/finalizers
+  - dnsrecords/finalizers
+  - tunnelconfigurations/finalizers
+  - tunnels/finalizers
+  - workerscripts/finalizers
   - zones/finalizers
   verbs:
   - update
 - apiGroups:
   - kflare.dev
   resources:
+  - cloudflareaccounts/status
+  - dnsrecords/status
+  - tunnelconfigurations/status
+  - tunnels/status
+  - workerscripts/status
   - zones/status
   verbs:
   - get

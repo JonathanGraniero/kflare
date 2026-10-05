@@ -10,8 +10,15 @@ on:
 
 jobs:
   e2e:
-    name: E2E Tests
+    name: E2E Tests (Kubernetes ${{ matrix.kubernetes }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported release and the newest one.
+        kubernetes: [v1.34.11, v1.37.0]
+    env:
+      GOTOOLCHAIN: local
 
     steps:
       - name: Checkout
@@ -20,12 +27,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.26"
           cache: true
 
       - name: Set up kind
         uses: helm/kind-action@v1
         with:
+          version: v0.33.0
+          node_image: kindest/node:${{ matrix.kubernetes }}
           cluster_name: kflare-e2e
           config: local/kind-config.yaml
 

@@ -101,5 +101,5 @@ type ZoneList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&Zone{}, &ZoneList{})
+	register(&Zone{}, &ZoneList{})
 }

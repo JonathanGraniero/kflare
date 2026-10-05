@@ -129,5 +129,5 @@ type TunnelConfigurationList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&TunnelConfiguration{}, &TunnelConfigurationList{})
+	register(&TunnelConfiguration{}, &TunnelConfigurationList{})
 }

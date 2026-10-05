@@ -7,7 +7,6 @@ SPDX-License-Identifier: MIT
 package e2e
 
 import (
-	"fmt"
 	"os/exec"
 	"testing"
 
@@ -31,7 +30,7 @@ const (
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	logf.SetLogger(GinkgoLogr)
-	fmt.Fprintf(GinkgoWriter, "Starting kflare e2e suite\n")
+	GinkgoWriter.Println("Starting kflare e2e suite")
 	RunSpecs(t, "e2e suite")
 }
 
@@ -70,7 +69,7 @@ var _ = ReportAfterEach(func(report SpecReport) {
 	}
 	out, _ := utils.Run(exec.Command("kubectl", "logs", "-n", managerNamespace,
 		"-l", "control-plane=controller-manager", "-c", "manager", "--tail=100"))
-	fmt.Fprintf(GinkgoWriter, "controller-manager log:\n%s\n", out)
+	GinkgoWriter.Printf("controller-manager log:\n%s\n", out)
 })
 
 var _ = AfterSuite(func() {
