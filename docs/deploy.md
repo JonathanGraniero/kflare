@@ -17,7 +17,7 @@ account, and covers upgrades, uninstalling and troubleshooting.
 
 ## Requirements
 
-- Kubernetes 1.25 or newer (the CRDs validate with CEL). CI tests against 1.29.
+- Kubernetes 1.34 or newer. The chart refuses to install on older clusters.
 - Helm 3.8 or newer (OCI chart support).
 - One kflare installation per cluster. A second release would reconcile the same resources.
 
