@@ -9,8 +9,10 @@ Instead of clicking through the Cloudflare dashboard or scripting API calls, you
 - **Declarative Cloudflare management** — define DNS records, zones, tunnels, and Workers as Kubernetes CRDs
 - **GitOps-ready** — store your Cloudflare config in git alongside your app manifests
 - **Credential management** — reference Kubernetes Secrets for API tokens, with support for external-secrets
-- **Drift detection** — continuously reconciles desired state against the live Cloudflare API
-- **Import existing resources** — adopt pre-existing Cloudflare resources into management without recreating them
+- **Drift detection** — compares desired state against the live Cloudflare API on every reconcile and corrects any difference. Changes made outside kflare are picked up on the next reconcile, not immediately; see [when drift is detected](./ARCHITECTURE.md#when-drift-is-detected)
+- **Import existing resources** — adopt pre-existing Cloudflare resources into management without recreating them. Adopted resources are overwritten to match the spec and deleted with their Kubernetes resource unless you set `kflare.dev/deletion-policy: retain`; see [adoption and ownership](./ARCHITECTURE.md#adoption-and-ownership)
+
+For how the controllers work, including known limitations, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Status
 
@@ -43,10 +45,10 @@ configuration, upgrades, uninstalling safely and troubleshooting.
 
 For working on kflare itself:
 
-
-- Go 1.22+
+- Go 1.26+
+- Kubernetes 1.34+ (the oldest version kflare supports and tests against)
 - kubectl
-- kind (for local development)
+- Docker (kind itself is pinned and downloaded by `make kind`)
 - A Cloudflare account and API token with **Edit zone DNS** permissions
   - `Tunnel` also needs the account-level **Cloudflare Tunnel: Edit** permission
   - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission

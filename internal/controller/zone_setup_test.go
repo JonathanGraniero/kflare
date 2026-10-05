@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
+	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 )
 
 var _ = Describe("defaultZoneAPI", func() {
@@ -146,8 +147,7 @@ var _ = Describe("ZoneReconciler zonesForAccount", func() {
 		api, err := defaultZoneAPI("token")
 		Expect(err).NotTo(HaveOccurred())
 
-		var _ ZoneAPI = api
-		Expect(api).NotTo(BeNil())
+		Expect(api).To(BeAssignableToTypeOf(&cfpkg.Client{}))
 	})
 
 	It("returns empty when no zones reference the account", func() {

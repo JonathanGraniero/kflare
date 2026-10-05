@@ -192,7 +192,7 @@ func (r *WorkerScriptReconciler) desiredUpload(
 	// Each field is written %q-quoted on its own line, so the encoding is
 	// unambiguous and writing to the hash cannot fail.
 	h := sha256.New()
-	fmt.Fprintf(h, "script=%q\nformat=%q\ncompatibilityDate=%q\ncompatibilityFlags=%q\n",
+	_, _ = fmt.Fprintf(h, "script=%q\nformat=%q\ncompatibilityDate=%q\ncompatibilityFlags=%q\n",
 		script, format, ws.Spec.CompatibilityDate, ws.Spec.CompatibilityFlags)
 
 	bindings := make(map[string]cf.WorkerBinding, len(ws.Spec.Bindings))
@@ -216,7 +216,7 @@ func (r *WorkerScriptReconciler) desiredUpload(
 			bindings[b.Name] = cf.WorkerSecretTextBinding{Text: value}
 			kind, hashed = "secretText", version
 		}
-		fmt.Fprintf(h, "binding=%q type=%q value=%q\n", b.Name, kind, hashed)
+		_, _ = fmt.Fprintf(h, "binding=%q type=%q value=%q\n", b.Name, kind, hashed)
 	}
 
 	return cf.CreateWorkerParams{

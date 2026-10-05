@@ -165,5 +165,5 @@ type WorkerScriptList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&WorkerScript{}, &WorkerScriptList{})
+	register(&WorkerScript{}, &WorkerScriptList{})
 }

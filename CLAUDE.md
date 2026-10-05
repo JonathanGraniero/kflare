@@ -33,7 +33,10 @@ the same prefix (`kflare.dev/finalizer`, `kflare.dev/deletion-policy`, ...). The
 `cloudflare.cloudflare.k8s.io` until October 2026, which sat in the Kubernetes-reserved `*.k8s.io` space.
 
 ### Language & Frameworks
-- **Go** (1.22+)
+- **Go** (1.26+; required by the Kubernetes 0.37 libraries)
+- **Kubernetes 1.34+** is the support floor. Client libraries track the newest release (k8s.io/* v0.37,
+  controller-runtime v0.25); envtest runs on 1.34.1 (`ENVTEST_K8S_VERSION`) and 1.37.0 in CI, and the e2e
+  workflow on kind node images 1.34 and 1.37. No compatibility code for older clusters
 - **controller-runtime** for reconciler scaffolding
 - **kubebuilder** for CRD/RBAC/webhook generation
 - **operator-sdk** for OLM compatibility (later phases)
@@ -81,6 +84,7 @@ With:
 ├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
 ├── hack/                  # sync-helm-chart.sh and the license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
+├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
 ├── CLAUDE.md              # This file
 └── Makefile
 ```
@@ -160,10 +164,18 @@ Shared infrastructure that all Phase 2 controllers will use.
   - `go mod tidy` check, `go build ./...`
   - `make test` (runs manifests, generate, fmt, vet, unit and envtest suites)
   - `git diff --exit-code` afterwards (ensures generated and formatted files are committed)
-  - `GOTOOLCHAIN=local`; `ENVTEST_VERSION` pinned to `release-0.19` (tagged setup-envtest releases need a newer Go)
-- [x] `.github/workflows/e2e.yml` (manual trigger only)
-  - Deployment smoke test: builds the image, deploys `config/default` to a kind cluster and checks the
-    manager pod runs. It does not call Cloudflare; a live-API e2e suite is still to do
+  - `GOTOOLCHAIN=local` with Go 1.26; a second job runs the envtest suites on the newest Kubernetes (1.37.0)
+  - Tool versions (controller-gen, setup-envtest, golangci-lint v2, kustomize, kind) are pinned in the Makefile;
+    setup-envtest follows the controller-runtime version
+- [x] `.github/workflows/e2e.yml` (manual trigger only) runs `make test-e2e`:
+  - Deployment smoke test: builds the image, deploys `config/default` to kind, checks the manager pod is
+    ready with no restarts
+  - Live Cloudflare specs (`test/e2e/cloudflare_test.go`, skipped without credentials): account validation,
+    Tunnel + token Secret, TunnelConfiguration, WorkerScript, then deletion verified on the Cloudflare side.
+    With `CF_E2E_ZONE` also Zone adoption (always `retain`) and a DNSRecord, including a check that an idle
+    reconcile does not write to Cloudflare. Everything is named `kflare-e2e-<run>` and cleaned up even on failure
+  - Needs repo secrets `CF_API_TOKEN`, `CF_ACCOUNT_ID` and variable `CF_E2E_ZONE` (`kflare.dev`, the project's
+    own zone, is the test zone)
 - [x] CI also runs `make lint` and `make docker-build` (the Dockerfile copies source directories explicitly)
 
 **Test locally:** push branch and verify Actions run green
@@ -446,6 +458,8 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
    (`updateReady`, `updateNotReady`, `handleCloudflareError`, `notReadyRetryAfter`); API types implement
    `GetConditions/SetConditions`
 9. **Prefix** — every finalizer, annotation and label kflare owns starts with `kflare.dev/`
+10. **ARCHITECTURE.md** — a new controller, or a change to drift detection, adoption, error handling or deletion,
+    updates the matching section and tables in `ARCHITECTURE.md`
 
 ---
 
@@ -467,7 +481,11 @@ make test
 # Lint (also run in CI)
 make lint
 
-# Deployment smoke test against a kind cluster named $KIND_CLUSTER (default "kind")
+# Pinned kind (v0.30+ needed for 1.34 node images); local/setup.sh uses it
+make kind
+
+# e2e: deploys to the kind cluster in the current context ($KIND_CLUSTER, default "kind");
+# runs the live Cloudflare specs when CF_API_TOKEN/CF_ACCOUNT_ID (and CF_E2E_ZONE) are set
 make test-e2e
 
 # Regenerate the Helm chart's CRDs/RBAC from config/, and lint + render it
@@ -485,7 +503,7 @@ make docker-build docker-push IMG=ghcr.io/your-org/kflare:latest
 ```bash
 export CF_API_TOKEN=<your-cloudflare-api-token>
 export CF_ACCOUNT_ID=<your-cloudflare-account-id>
-export CF_ZONE_ID=<zone-id-for-e2e-tests>   # a test zone, not production
+export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopted with retain, never deleted
 ```
 
 ---

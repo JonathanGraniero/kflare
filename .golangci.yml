@@ -1,44 +1,43 @@
+# golangci-lint v2 configuration (see GOLANGCI_LINT_VERSION in the Makefile).
+version: "2"
+
 run:
   timeout: 5m
   allow-parallel-runners: true
 
-issues:
-  # don't skip warning about doc comments
-  # don't exclude the default set of lint
-  exclude-use-default: false
-  # restore some of the defaults
-  # (fill in the rest as needed)
-  exclude-rules:
-    - path: "api/*"
-      linters:
-        - lll
-    - path: "internal/*"
-      linters:
-        - dupl
-        - lll
-    # Repeated literals in test fixtures read better inline than as constants.
-    - path: "_test\\.go"
-      linters:
-        - goconst
 linters:
-  disable-all: true
+  default: none
   enable:
     - dupl
     - errcheck
-    - exportloopref
     - goconst
     - gocyclo
-    - gofmt
-    - goimports
-    - gosimple
     - govet
     - ineffassign
     - lll
     - misspell
     - nakedret
     - prealloc
-    - staticcheck
-    - typecheck
+    - staticcheck # includes the former gosimple and stylecheck
     - unconvert
     - unparam
     - unused
+  exclusions:
+    generated: lax
+    rules:
+      - path: api/*
+        linters:
+          - lll
+      - path: internal/*
+        linters:
+          - dupl
+          - lll
+      # Repeated literals in test fixtures read better inline than as constants.
+      - path: _test\.go
+        linters:
+          - goconst
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

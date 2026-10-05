@@ -100,5 +100,5 @@ type TunnelList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&Tunnel{}, &TunnelList{})
+	register(&Tunnel{}, &TunnelList{})
 }

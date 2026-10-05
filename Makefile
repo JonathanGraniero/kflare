@@ -1,7 +1,8 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
-# ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.29.0
+# ENVTEST_K8S_VERSION is the Kubernetes version the envtest suites run against.
+# kflare supports 1.34 and newer; CI also runs the suites on the newest release.
+ENVTEST_K8S_VERSION ?= 1.34.1
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -64,9 +65,12 @@ test: manifests generate fmt vet envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
-.PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
-test-e2e:
-	go test ./test/e2e/ -v -ginkgo.v
+# Deploys the manager to the kind cluster in the current context ($KIND_CLUSTER
+# names it for image loading). The Cloudflare specs also need CF_API_TOKEN and
+# CF_ACCOUNT_ID, and CF_E2E_ZONE for Zone/DNSRecord; without them they skip.
+.PHONY: test-e2e
+test-e2e: kind ## Run the e2e suite against a kind cluster (and Cloudflare, when credentials are set).
+	KIND=$(KIND) go test ./test/e2e/ -v -ginkgo.v -timeout 30m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
@@ -118,6 +122,9 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 ##@ Helm
 
 HELM ?= helm
+# Kubernetes versions the chart is linted and rendered for: the oldest
+# supported release (the chart's kubeVersion floor) and the newest.
+HELM_KUBE_VERSIONS ?= 1.34.0 1.37.0
 
 .PHONY: helm
 helm: manifests ## Regenerate the chart's CRDs and RBAC rules from config/.
@@ -125,9 +132,13 @@ helm: manifests ## Regenerate the chart's CRDs and RBAC rules from config/.
 
 .PHONY: helm-lint
 helm-lint: helm ## Lint the chart and render it with default and non-default values.
-	$(HELM) lint --strict helm/kflare
-	$(HELM) template kflare helm/kflare > /dev/null
-	$(HELM) template kflare helm/kflare --set crds.enabled=false,leaderElection=false,metrics.serviceMonitor.enabled=true > /dev/null
+	@set -e; for v in $(HELM_KUBE_VERSIONS); do \
+		echo "==> Kubernetes $$v"; \
+		$(HELM) lint --strict --kube-version $$v helm/kflare; \
+		$(HELM) template kflare helm/kflare --kube-version $$v > /dev/null; \
+		$(HELM) template kflare helm/kflare --kube-version $$v \
+			--set crds.enabled=false,leaderElection=false,metrics.serviceMonitor.enabled=true > /dev/null; \
+	done
 
 .PHONY: helm-package
 helm-package: helm ## Package the chart into dist/.
@@ -169,14 +180,16 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize-$(KUSTOMIZE_VERSION)
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+KIND ?= $(LOCALBIN)/kind-$(KIND_VERSION)
 
 ## Tool Versions
-KUSTOMIZE_VERSION ?= v5.3.0
-CONTROLLER_TOOLS_VERSION ?= v0.14.0
-# setup-envtest is only tagged from v0.24, which needs a newer Go than go.mod targets.
-# release-0.19 builds with Go 1.22 and downloads binaries from the GitHub release index.
-ENVTEST_VERSION ?= release-0.19
-GOLANGCI_LINT_VERSION ?= v1.54.2
+KUSTOMIZE_VERSION ?= v5.8.2
+CONTROLLER_TOOLS_VERSION ?= v0.22.0
+# setup-envtest is released with controller-runtime; keep them on the same version.
+ENVTEST_VERSION ?= v0.25.2
+GOLANGCI_LINT_VERSION ?= v2.14.0
+# kind v0.30+ is needed for Kubernetes 1.34 node images (see local/kind-config.yaml).
+KIND_VERSION ?= v0.33.0
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -196,7 +209,16 @@ $(ENVTEST): $(LOCALBIN)
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
-	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,${GOLANGCI_LINT_VERSION})
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,${GOLANGCI_LINT_VERSION})
+
+.PHONY: kind-path
+kind-path: ## Print the path of the pinned kind binary (run `make kind` to download it).
+	@echo $(KIND)
+
+.PHONY: kind
+kind: $(KIND) ## Download kind locally if necessary.
+$(KIND): $(LOCALBIN)
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary (ideally with version)

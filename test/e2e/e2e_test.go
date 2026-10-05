@@ -9,6 +9,7 @@ package e2e
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -17,91 +18,43 @@ import (
 	"github.com/JonathanGraniero/kflare/test/utils"
 )
 
-const namespace = "cloudflare-operator-system"
-
-// This suite is a deployment smoke test: it builds the manager image, deploys
-// it with the default kustomization into a kind cluster and checks that the
-// manager starts. It does not call the Cloudflare API.
-var _ = Describe("controller", Ordered, func() {
-	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd)
-	})
-
-	AfterAll(func() {
-		By("undeploying the controller-manager")
-		cmd := exec.Command("make", "undeploy", "ignore-not-found=true")
-		_, _ = utils.Run(cmd)
-
-		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-	})
-
-	Context("Operator", func() {
-		It("should run successfully", func() {
-			var controllerPodName string
-			var err error
-
-			// projectimage stores the name of the image used in the example
-			var projectimage = "example.com/kflare:e2e"
-
-			By("building the manager(Operator) image")
-			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("loading the manager image on kind")
-			err = utils.LoadImageToKindClusterWithName(projectimage)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("installing CRDs")
-			cmd = exec.Command("make", "install")
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("deploying the controller-manager")
-			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("validating that the controller-manager pod is running as expected")
-			verifyControllerUp := func() error {
-				// Get pod name
-
-				cmd = exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
-				)
-
-				podOutput, err := utils.Run(cmd)
-				ExpectWithOffset(2, err).NotTo(HaveOccurred())
-				podNames := utils.GetNonEmptyLines(string(podOutput))
-				if len(podNames) != 1 {
-					return fmt.Errorf("expect 1 controller pods running, but got %d", len(podNames))
-				}
-				controllerPodName = podNames[0]
-				ExpectWithOffset(2, controllerPodName).Should(ContainSubstring("controller-manager"))
-
-				// Validate pod status
-				cmd = exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				status, err := utils.Run(cmd)
-				ExpectWithOffset(2, err).NotTo(HaveOccurred())
-				if string(status) != "Running" {
-					return fmt.Errorf("controller pod in %s status", status)
-				}
-				return nil
+// The deployment smoke test: the image built from this checkout runs with
+// the default kustomization (RBAC, kube-rbac-proxy sidecar, probes).
+var _ = Describe("controller-manager", func() {
+	It("runs one pod whose containers are all ready and have not restarted", func() {
+		Eventually(func() error {
+			out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", managerNamespace,
+				"-l", "control-plane=controller-manager", "-o",
+				`go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}`+
+					`{{ .metadata.name }} {{ .status.phase }}{{ range .status.containerStatuses }}`+
+					` {{ .ready }}/{{ .restartCount }}{{ end }}{{ "\n" }}{{ end }}{{ end }}`))
+			if err != nil {
+				return err
 			}
-			EventuallyWithOffset(1, verifyControllerUp, time.Minute, time.Second).Should(Succeed())
+			pods := utils.GetNonEmptyLines(string(out))
+			if len(pods) != 1 {
+				return fmt.Errorf("expected 1 controller pod, got %d: %v", len(pods), pods)
+			}
+			fields := strings.Fields(pods[0])
+			if fields[1] != "Running" {
+				return fmt.Errorf("controller pod is %s", fields[1])
+			}
+			for _, c := range fields[2:] {
+				if c != "true/0" {
+					return fmt.Errorf("container not ready or restarted (ready/restarts = %s)", c)
+				}
+			}
+			return nil
+		}, 2*time.Minute, time.Second).Should(Succeed())
+	})
 
-		})
+	It("reaches the API server and becomes leader", func() {
+		// A ready pod only proves the probes answer; holding the lease proves
+		// the manager can talk to the API server and has started its controllers.
+		Eventually(func() ([]string, error) {
+			out, err := utils.Run(exec.Command("kubectl", "get", "leases", "-n", managerNamespace,
+				"-o", "jsonpath={.items[*].spec.holderIdentity}"))
+			return strings.Fields(string(out)), err
+		}, 2*time.Minute, 2*time.Second).ShouldNot(BeEmpty())
 	})
 })
