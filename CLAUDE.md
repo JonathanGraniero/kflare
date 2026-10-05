@@ -81,11 +81,14 @@ With:
 │   └── samples/           # Example CRs
 ├── test/e2e/              # Deployment smoke test against kind (make test-e2e)
 ├── local/                 # kind cluster setup for running the controller with make run
+├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
+├── hack/                  # sync-helm-chart.sh and the license header
+├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
 ├── CLAUDE.md              # This file
 └── Makefile
 ```
-Planned, not yet present: `helm/` (Phase 4), `generator/` (Phase 3), `docs/` (Phase 4).
+Planned, not yet present: `generator/` (Phase 3), the Docusaurus site under `docs/` (Phase 4).
 
 ---
 
@@ -415,7 +418,14 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
 
 - [ ] Full `FieldExport` implementation (export any CRD field → ConfigMap/Secret)
 - [ ] `AdoptedResource` full implementation (import existing CF resources into management)
-- [ ] Helm chart published to ArtifactHub
+- [x] Helm chart (`helm/kflare`) with deploy guide (`docs/deploy.md`); `.github/workflows/release.yml` publishes
+  the image and chart to `ghcr.io` on a `vX.Y.Z` tag matching `Chart.yaml`
+  - CRDs are templates (upgraded by `helm upgrade`, `helm.sh/resource-policy: keep`), generated from
+    `config/crd/bases` with the manager ClusterRole rules by `make helm`; CI fails if they drift
+  - `view`/`edit` aggregated ClusterRoles; CloudflareAccount is never in `edit` (it can point at any Secret)
+  - Verified by installing on kind with a live token: account Ready, Secret protection finalizer, upgrade,
+    uninstall keeping CRDs
+- [ ] Chart listed on ArtifactHub
 - [ ] Kustomize component overlays for common patterns (tunnel + DNS combo, zero-trust stack)
 - [ ] Docusaurus documentation site
   - Getting Started
@@ -477,6 +487,10 @@ make kind
 # e2e: deploys to the kind cluster in the current context ($KIND_CLUSTER, default "kind");
 # runs the live Cloudflare specs when CF_API_TOKEN/CF_ACCOUNT_ID (and CF_E2E_ZONE) are set
 make test-e2e
+
+# Regenerate the Helm chart's CRDs/RBAC from config/, and lint + render it
+make helm
+make helm-lint
 
 # Build and push controller image
 make docker-build docker-push IMG=ghcr.io/your-org/kflare:latest

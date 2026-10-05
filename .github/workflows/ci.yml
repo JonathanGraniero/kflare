@@ -37,6 +37,14 @@ jobs:
       - name: Test
         run: make test
 
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      # Also regenerates the chart's CRDs and RBAC rules from config/, so the
+      # diff check below catches a chart that was not re-synced.
+      - name: Lint Helm chart
+        run: make helm-lint
+
       - name: Check generated and formatted files are committed
         run: git diff --exit-code
 

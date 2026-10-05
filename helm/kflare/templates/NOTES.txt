@@ -1,0 +1,29 @@
+kflare {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+Check that the controller is running:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "kflare.fullname" . }}
+
+Next, connect a Cloudflare account. Store an API token in a Secret and point a
+CloudflareAccount at it:
+
+  kubectl -n {{ .Release.Namespace }} create secret generic cloudflare-token \
+    --from-literal=CF_API_TOKEN=<your-api-token>
+
+  cat <<YAML | kubectl apply -f -
+  apiVersion: kflare.dev/v1alpha1
+  kind: CloudflareAccount
+  metadata:
+    name: my-account
+  spec:
+    accountID: <your-account-id>
+    tokenSecretRef:
+      name: cloudflare-token
+      namespace: {{ .Release.Namespace }}
+  YAML
+
+  kubectl get cloudflareaccounts   # READY should become True
+
+Before uninstalling, delete your kflare resources while the controller is still
+running, so it can clean up (or retain) the matching Cloudflare objects.
+Guide: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md
