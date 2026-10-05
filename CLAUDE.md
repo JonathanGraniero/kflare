@@ -81,6 +81,7 @@ With:
 │   └── samples/           # Example CRs
 ├── test/e2e/              # Deployment smoke test against kind (make test-e2e)
 ├── local/                 # kind cluster setup for running the controller with make run
+├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
 ├── CLAUDE.md              # This file
 └── Makefile
 ```
@@ -447,6 +448,8 @@ Same branch-per-feature pattern as Phase 2. Planned branches:
    (`updateReady`, `updateNotReady`, `handleCloudflareError`, `notReadyRetryAfter`); API types implement
    `GetConditions/SetConditions`
 9. **Prefix** — every finalizer, annotation and label kflare owns starts with `kflare.dev/`
+10. **ARCHITECTURE.md** — a new controller, or a change to drift detection, adoption, error handling or deletion,
+    updates the matching section and tables in `ARCHITECTURE.md`
 
 ---
 
