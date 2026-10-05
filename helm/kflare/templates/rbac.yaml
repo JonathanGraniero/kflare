@@ -1,0 +1,94 @@
+{{- if .Values.rbac.create }}
+# Permissions the controller needs, generated from the kubebuilder RBAC
+# markers (config/rbac/role.yaml) by hack/sync-helm-chart.sh.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kflare.fullname" . }}-manager
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+rules:
+{{ .Files.Get "files/manager-rules.yaml" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kflare.fullname" . }}-manager
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kflare.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kflare.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.leaderElection }}
+---
+# Leader election uses a Lease (and Events) in the release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kflare.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kflare.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kflare.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kflare.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.rbac.aggregateToDefaultRoles }}
+---
+# Read access to every kflare kind for anyone with the built-in view role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kflare.fullname" . }}-view
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+rules:
+  - apiGroups: ["kflare.dev"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+---
+# Write access to the namespaced kinds for the built-in edit and admin roles.
+# CloudflareAccount is deliberately left out: it can point the controller at a
+# token Secret in any namespace, so only cluster administrators manage it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kflare.fullname" . }}-edit
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+rules:
+  - apiGroups: ["kflare.dev"]
+    resources: ["zones", "dnsrecords", "tunnels", "tunnelconfigurations", "workerscripts"]
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+{{- end }}
+{{- end }}

@@ -27,7 +27,22 @@ Early development. Phase 1 (foundation) and Phase 2 (core resources) are complet
 **Planned next:**
 - `WorkerRoute` — routes a zone URL pattern to a `WorkerScript`
 
+## Install
+
+kflare installs with Helm:
+
+```sh
+helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
+  --version <version> --namespace kflare-system --create-namespace
+```
+
+The [deploy guide](docs/deploy.md) covers the API token permissions, connecting a Cloudflare account,
+configuration, upgrades, uninstalling safely and troubleshooting.
+
 ## Prerequisites
+
+For working on kflare itself:
+
 
 - Go 1.22+
 - kubectl

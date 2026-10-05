@@ -21,3 +21,5 @@ testbin/
 
 # Claude Code
 .claude/
+# Packaged Helm charts and installers
+dist/

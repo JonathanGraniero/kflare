@@ -1,0 +1,70 @@
+name: Release
+
+# Pushing a vX.Y.Z tag publishes the controller image and the Helm chart to
+# GitHub Container Registry. Bump version and appVersion in
+# helm/kflare/Chart.yaml (through a PR) before tagging; the tag must match.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/jonathangraniero/kflare
+  CHART_REPO: oci://ghcr.io/jonathangraniero/charts
+
+jobs:
+  release:
+    name: Publish image and chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check the tag matches the chart
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          chart="$(awk '/^version:/ {print $2}' helm/kflare/Chart.yaml)"
+          app="$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}' helm/kflare/Chart.yaml)"
+          if [ "$version" != "$chart" ] || [ "$version" != "$app" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Chart.yaml (version $chart, appVersion $app)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          # Links the package to this repository on GitHub.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Package and push chart
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          helm package helm/kflare --destination dist
+          helm push "dist/kflare-${{ steps.version.outputs.version }}.tgz" "$CHART_REPO"

@@ -97,22 +97,13 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
-# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
-# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
+# PLATFORMS defines the target platforms for the manager image built by
+# docker-buildx. The Dockerfile cross-compiles on the build host, so this needs
+# docker buildx but no emulation. The image is pushed to ${IMG}.
+PLATFORMS ?= linux/amd64,linux/arm64
 .PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name project-v3-builder
-	$(CONTAINER_TOOL) buildx use project-v3-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm project-v3-builder
-	rm Dockerfile.cross
+docker-buildx: ## Build and push a multi-platform manager image.
+	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} .
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
@@ -123,6 +114,24 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	echo "---" >> dist/install.yaml  # Add a document separator before appending
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default >> dist/install.yaml
+
+##@ Helm
+
+HELM ?= helm
+
+.PHONY: helm
+helm: manifests ## Regenerate the chart's CRDs and RBAC rules from config/.
+	./hack/sync-helm-chart.sh
+
+.PHONY: helm-lint
+helm-lint: helm ## Lint the chart and render it with default and non-default values.
+	$(HELM) lint --strict helm/kflare
+	$(HELM) template kflare helm/kflare > /dev/null
+	$(HELM) template kflare helm/kflare --set crds.enabled=false,leaderElection=false,metrics.serviceMonitor.enabled=true > /dev/null
+
+.PHONY: helm-package
+helm-package: helm ## Package the chart into dist/.
+	$(HELM) package helm/kflare --destination dist
 
 ##@ Deployment
 

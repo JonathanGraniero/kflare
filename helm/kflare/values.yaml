@@ -1,0 +1,123 @@
+# Default values for the kflare chart. Every key is documented here; see
+# docs/deploy.md for a guided install.
+
+# -- Number of controller replicas. Leader election keeps exactly one active;
+# extra replicas only shorten failover.
+replicaCount: 1
+
+image:
+  # -- Controller image repository.
+  repository: ghcr.io/jonathangraniero/kflare
+  # -- Image tag. Defaults to the chart's appVersion.
+  tag: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Secrets for pulling the image from a private registry.
+imagePullSecrets: []
+
+# -- Override the chart name used in resource names.
+nameOverride: ""
+# -- Override the full resource name prefix.
+fullnameOverride: ""
+
+crds:
+  # -- Install and upgrade the kflare CRDs with the chart. Disable to manage
+  # them yourself from config/crd/bases of the matching release.
+  enabled: true
+  # -- Keep the CRDs when the release is uninstalled. Deleting a CRD deletes
+  # every resource of that kind, which (while the controller runs) deletes the
+  # matching Cloudflare objects. Only disable this deliberately.
+  keep: true
+
+serviceAccount:
+  # -- Create the controller's ServiceAccount.
+  create: true
+  # -- ServiceAccount name. Defaults to the release fullname.
+  name: ""
+  # -- Annotations for the ServiceAccount.
+  annotations: {}
+
+rbac:
+  # -- Create the ClusterRole/Role and bindings the controller needs.
+  create: true
+  # -- Create ClusterRoles that add read access to kflare resources to the
+  # built-in `view` role, and write access to the namespaced kinds to `edit`
+  # and `admin`. CloudflareAccount is never aggregated into `edit`: it points
+  # the controller at a token Secret in any namespace.
+  aggregateToDefaultRoles: true
+
+# -- Run with leader election. Keep it on whenever replicaCount > 1, and when
+# rolling updates can briefly run two pods.
+leaderElection: true
+
+logging:
+  # -- Log level: debug, info or error.
+  level: info
+  # -- Log encoding: json or console.
+  format: json
+
+metrics:
+  # -- Serve Prometheus metrics. The endpoint is plain HTTP without
+  # authentication; restrict access with a NetworkPolicy if needed.
+  enabled: true
+  # -- Container port for metrics.
+  port: 8080
+  service:
+    # -- Create a ClusterIP Service for the metrics endpoint.
+    enabled: true
+    # -- Service port.
+    port: 8080
+  serviceMonitor:
+    # -- Create a Prometheus Operator ServiceMonitor (needs its CRDs).
+    enabled: false
+    # -- Scrape interval.
+    interval: 30s
+    # -- Extra labels, e.g. to match your Prometheus' serviceMonitorSelector.
+    labels: {}
+
+# -- Container port for the /healthz and /readyz probes.
+healthPort: 8081
+
+# -- Controller resources. The controller is light; raise the memory limit
+# for clusters with many Secrets, which it caches.
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# -- Pod security context (restricted Pod Security Standard).
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context (restricted Pod Security Standard).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Extra annotations for the controller pod.
+podAnnotations: {}
+# -- Extra labels for the controller pod.
+podLabels: {}
+# -- Priority class for the controller pod.
+priorityClassName: ""
+# -- Node selector for the controller pod.
+nodeSelector: {}
+# -- Tolerations for the controller pod.
+tolerations: []
+# -- Affinity for the controller pod.
+affinity: {}
+# -- Topology spread constraints for the controller pod.
+topologySpreadConstraints: []
+
+# -- Extra command-line arguments for the controller.
+extraArgs: []
+# -- Extra environment variables for the controller container.
+extraEnv: []

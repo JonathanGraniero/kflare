@@ -1,5 +1,7 @@
 # Build the manager binary
-FROM golang:1.22 AS builder
+# The builder runs on the build host's platform and cross-compiles for
+# TARGETOS/TARGETARCH, so multi-arch builds need no emulation.
+FROM --platform=$BUILDPLATFORM golang:1.22 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

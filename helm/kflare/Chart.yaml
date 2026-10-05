@@ -1,0 +1,23 @@
+apiVersion: v2
+name: kflare
+description: A Kubernetes operator that manages Cloudflare zones, DNS records, tunnels and Workers as custom resources.
+type: application
+# Chart and application are released together from a vX.Y.Z tag; the release
+# workflow refuses a tag that does not match this version.
+version: 0.1.0
+appVersion: "0.1.0"
+# CRD validation uses CEL (x-kubernetes-validations), on by default from 1.25.
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/JonathanGraniero/kflare
+sources:
+  - https://github.com/JonathanGraniero/kflare
+keywords:
+  - cloudflare
+  - operator
+  - dns
+  - tunnel
+  - workers
+  - gitops
+maintainers:
+  - name: Jonathan Graniero
+    url: https://github.com/JonathanGraniero
