@@ -88,5 +88,5 @@ type CloudflareAccountList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&CloudflareAccount{}, &CloudflareAccountList{})
+	register(&CloudflareAccount{}, &CloudflareAccountList{})
 }

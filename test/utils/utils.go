@@ -12,7 +12,7 @@ import (
 	"os/exec"
 	"strings"
 
-	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
+	"github.com/onsi/ginkgo/v2"
 )
 
 // Run executes the provided command within this context
@@ -21,12 +21,12 @@ func Run(cmd *exec.Cmd) ([]byte, error) {
 	cmd.Dir = dir
 
 	if err := os.Chdir(cmd.Dir); err != nil {
-		fmt.Fprintf(GinkgoWriter, "chdir dir: %s\n", err)
+		ginkgo.GinkgoWriter.Printf("chdir dir: %s\n", err)
 	}
 
 	cmd.Env = append(os.Environ(), "GO111MODULE=on")
 	command := strings.Join(cmd.Args, " ")
-	fmt.Fprintf(GinkgoWriter, "running: %s\n", command)
+	ginkgo.GinkgoWriter.Printf("running: %s\n", command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
@@ -36,14 +36,19 @@ func Run(cmd *exec.Cmd) ([]byte, error) {
 }
 
 // LoadImageToKindClusterWithName loads a local docker image into the kind
-// cluster named by $KIND_CLUSTER (default "kind").
+// cluster named by $KIND_CLUSTER (default "kind"), using the kind binary in
+// $KIND (default "kind" on the PATH).
 func LoadImageToKindClusterWithName(name string) error {
 	cluster := "kind"
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	cmd := exec.Command("kind", kindOptions...)
+	kind := "kind"
+	if v, ok := os.LookupEnv("KIND"); ok {
+		kind = v
+	}
+	cmd := exec.Command(kind, kindOptions...)
 	_, err := Run(cmd)
 	return err
 }
@@ -68,6 +73,6 @@ func GetProjectDir() (string, error) {
 	if err != nil {
 		return wd, err
 	}
-	wd = strings.Replace(wd, "/test/e2e", "", -1)
+	wd = strings.ReplaceAll(wd, "/test/e2e", "")
 	return wd, nil
 }

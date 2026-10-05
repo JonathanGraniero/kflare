@@ -29,9 +29,10 @@ Early development. Phase 1 (foundation) and Phase 2 (core resources) are complet
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.26+
+- Kubernetes 1.34+ (the oldest version kflare supports and tests against)
 - kubectl
-- kind (for local development)
+- Docker (kind itself is pinned and downloaded by `make kind`)
 - A Cloudflare account and API token with **Edit zone DNS** permissions
   - `Tunnel` also needs the account-level **Cloudflare Tunnel: Edit** permission
   - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission

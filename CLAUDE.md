@@ -33,7 +33,10 @@ the same prefix (`kflare.dev/finalizer`, `kflare.dev/deletion-policy`, ...). The
 `cloudflare.cloudflare.k8s.io` until October 2026, which sat in the Kubernetes-reserved `*.k8s.io` space.
 
 ### Language & Frameworks
-- **Go** (1.22+)
+- **Go** (1.26+; required by the Kubernetes 0.37 libraries)
+- **Kubernetes 1.34+** is the support floor. Client libraries track the newest release (k8s.io/* v0.37,
+  controller-runtime v0.25); envtest runs on 1.34.1 (`ENVTEST_K8S_VERSION`) and 1.37.0 in CI, and the e2e
+  workflow on kind node images 1.34 and 1.37. No compatibility code for older clusters
 - **controller-runtime** for reconciler scaffolding
 - **kubebuilder** for CRD/RBAC/webhook generation
 - **operator-sdk** for OLM compatibility (later phases)
@@ -157,7 +160,9 @@ Shared infrastructure that all Phase 2 controllers will use.
   - `go mod tidy` check, `go build ./...`
   - `make test` (runs manifests, generate, fmt, vet, unit and envtest suites)
   - `git diff --exit-code` afterwards (ensures generated and formatted files are committed)
-  - `GOTOOLCHAIN=local`; `ENVTEST_VERSION` pinned to `release-0.19` (tagged setup-envtest releases need a newer Go)
+  - `GOTOOLCHAIN=local` with Go 1.26; a second job runs the envtest suites on the newest Kubernetes (1.37.0)
+  - Tool versions (controller-gen, setup-envtest, golangci-lint v2, kustomize, kind) are pinned in the Makefile;
+    setup-envtest follows the controller-runtime version
 - [x] `.github/workflows/e2e.yml` (manual trigger only) runs `make test-e2e`:
   - Deployment smoke test: builds the image, deploys `config/default` to kind, checks the manager pod is
     ready with no restarts
@@ -462,6 +467,9 @@ make test
 
 # Lint (also run in CI)
 make lint
+
+# Pinned kind (v0.30+ needed for 1.34 node images); local/setup.sh uses it
+make kind
 
 # e2e: deploys to the kind cluster in the current context ($KIND_CLUSTER, default "kind");
 # runs the live Cloudflare specs when CF_API_TOKEN/CF_ACCOUNT_ID (and CF_E2E_ZONE) are set
