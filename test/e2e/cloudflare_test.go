@@ -57,8 +57,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		zoneName  string
 
 		accountKey, tunnelKey, tunnelConfigKey, workerKey, zoneKey, recordKey client.ObjectKey
+		routeKey, exclusionKey                                                client.ObjectKey
 
-		tunnelID, zoneID, recordID string
+		tunnelID, zoneID, recordID, routeID, exclusionID string
 	)
 
 	// resourceName is the name of every Cloudflare object this run creates.
@@ -111,10 +112,12 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		workerKey = client.ObjectKey{Namespace: e2eNamespace, Name: "worker"}
 		zoneKey = client.ObjectKey{Namespace: e2eNamespace, Name: "zone"}
 		recordKey = client.ObjectKey{Namespace: e2eNamespace, Name: "record"}
+		routeKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route"}
+		exclusionKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route-exclusion"}
 
 		DeferCleanup(func() {
 			By("removing anything this run left behind in Cloudflare")
-			cleanupCloudflare(ctx, cfAPI, accountRC, resourceName(), zoneID, recordName())
+			cleanupCloudflare(ctx, cfAPI, accountRC, resourceName(), zoneID, recordName(), routeIDs(routeID, exclusionID))
 		})
 
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: e2eNamespace}}
@@ -263,16 +266,63 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}, 15*time.Second, 3*time.Second).Should(Succeed())
 	})
 
-	It("removes everything from Cloudflare when the resources are deleted", func() {
-		By("deleting the namespaced resources")
-		for _, obj := range []client.Object{
+	It("routes a pattern to the WorkerScript and excludes a sub-path", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		pattern := recordName() + "/*"
+		route := &cloudflarev1alpha1.WorkerRoute{
+			ObjectMeta: objectMeta(routeKey),
+			Spec: cloudflarev1alpha1.WorkerRouteSpec{
+				ZoneRef:         corev1.LocalObjectReference{Name: zoneKey.Name},
+				Pattern:         pattern,
+				WorkerScriptRef: &corev1.LocalObjectReference{Name: workerKey.Name},
+			},
+		}
+		exclusion := &cloudflarev1alpha1.WorkerRoute{
+			ObjectMeta: objectMeta(exclusionKey),
+			Spec: cloudflarev1alpha1.WorkerRouteSpec{
+				ZoneRef: corev1.LocalObjectReference{Name: zoneKey.Name},
+				Pattern: recordName() + "/static/*",
+			},
+		}
+		Expect(k8s.Create(ctx, route)).To(Succeed())
+		Expect(k8s.Create(ctx, exclusion)).To(Succeed())
+		expectReady(routeKey, route, func() []metav1.Condition { return route.Status.Conditions })
+		expectReady(exclusionKey, exclusion, func() []metav1.Condition { return exclusion.Status.Conditions })
+		routeID = route.Status.CloudflareMetadata.RouteID
+		exclusionID = exclusion.Status.CloudflareMetadata.RouteID
+
+		cfRoute, err := cfAPI.GetWorkerRoute(ctx, cf.ZoneIdentifier(zoneID), routeID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfRoute.Pattern).To(Equal(pattern))
+		Expect(cfRoute.ScriptName).To(Equal(resourceName()))
+		cfExclusion, err := cfAPI.GetWorkerRoute(ctx, cf.ZoneIdentifier(zoneID), exclusionID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfExclusion.ScriptName).To(BeEmpty())
+	})
+
+	It("removes everything from Cloudflare when everything is deleted at once", func() {
+
+		// One delete for everything, in no particular order, like `kubectl delete
+		// -f` on a directory: parents must wait for the children that need them
+		// (Zone, Tunnel, CloudflareAccount and its token Secret).
+		By("deleting every resource at once")
+		everything := []client.Object{
+			&cloudflarev1alpha1.WorkerRoute{ObjectMeta: objectMeta(routeKey)},
+			&cloudflarev1alpha1.WorkerRoute{ObjectMeta: objectMeta(exclusionKey)},
 			&cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(recordKey)},
 			&cloudflarev1alpha1.TunnelConfiguration{ObjectMeta: objectMeta(tunnelConfigKey)},
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: objectMeta(workerKey)},
 			&cloudflarev1alpha1.Tunnel{ObjectMeta: objectMeta(tunnelKey)},
 			&cloudflarev1alpha1.Zone{ObjectMeta: objectMeta(zoneKey)},
-		} {
+			&cloudflarev1alpha1.CloudflareAccount{ObjectMeta: objectMeta(accountKey)},
+			&corev1.Secret{ObjectMeta: objectMeta(client.ObjectKey{Namespace: e2eNamespace, Name: "cloudflare-token"})},
+		}
+		for _, obj := range everything {
 			Expect(client.IgnoreNotFound(k8s.Delete(ctx, obj))).To(Succeed())
+		}
+		for _, obj := range everything {
 			expectGone(client.ObjectKeyFromObject(obj), obj)
 		}
 
@@ -287,17 +337,13 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		if zoneName != "" {
 			_, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), recordID)
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "record was not deleted: %v", err)
+			for _, id := range routeIDs(routeID, exclusionID) {
+				_, err = cfAPI.GetWorkerRoute(ctx, cf.ZoneIdentifier(zoneID), id)
+				Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "route %s was not deleted: %v", id, err)
+			}
 			_, err = cfAPI.ZoneDetails(ctx, zoneID)
 			Expect(err).NotTo(HaveOccurred(), "the retained zone must still exist")
 		}
-
-		By("deleting the account and its token Secret")
-		account := &cloudflarev1alpha1.CloudflareAccount{ObjectMeta: metav1.ObjectMeta{Name: accountKey.Name}}
-		Expect(k8s.Delete(ctx, account)).To(Succeed())
-		expectGone(accountKey, account)
-		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cloudflare-token", Namespace: e2eNamespace}}
-		Expect(k8s.Delete(ctx, secret)).To(Succeed())
-		expectGone(client.ObjectKeyFromObject(secret), secret)
 	})
 })
 
@@ -312,10 +358,16 @@ func workerNames(ctx context.Context, api *cf.API, rc *cf.ResourceContainer) []s
 	return names
 }
 
-// cleanupCloudflare deletes the tunnel, Worker and DNS record this run may
-// have created. It only reports problems: it runs after the specs, whether
+// cleanupCloudflare deletes the tunnel, Worker, DNS record and Worker routes
+// this run may have created. It only reports problems: it runs after the specs, whether
 // or not they passed.
-func cleanupCloudflare(ctx context.Context, api *cf.API, rc *cf.ResourceContainer, name, zoneID, record string) {
+func cleanupCloudflare(
+	ctx context.Context,
+	api *cf.API,
+	rc *cf.ResourceContainer,
+	name, zoneID, record string,
+	routes []string,
+) {
 	report := func(what string, err error) {
 		if err != nil && !cfpkg.IsNotFound(err) {
 			GinkgoWriter.Printf("cleanup: %s: %v\n", what, err)
@@ -338,10 +390,25 @@ func cleanupCloudflare(ctx context.Context, api *cf.API, rc *cf.ResourceContaine
 		for _, r := range records {
 			report("deleting DNS record "+r.ID, api.DeleteDNSRecord(ctx, zrc, r.ID))
 		}
+		for _, id := range routes {
+			_, err := api.DeleteWorkerRoute(ctx, zrc, id)
+			report("deleting Worker route "+id, err)
+		}
 	}
 }
 
 // objectMeta names the object at key.
 func objectMeta(key client.ObjectKey) metav1.ObjectMeta {
 	return metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}
+}
+
+// routeIDs returns the non-empty route IDs among ids.
+func routeIDs(ids ...string) []string {
+	var out []string
+	for _, id := range ids {
+		if id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
