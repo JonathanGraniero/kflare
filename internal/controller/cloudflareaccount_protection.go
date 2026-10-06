@@ -8,9 +8,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"sort"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,9 +15,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -33,27 +28,15 @@ import (
 // cleanup. Two finalizers chain the deletions:
 //
 //   - A CloudflareAccount keeps reconciler.Finalizer until no Zone, Tunnel or
-//     WorkerScript references it. DNSRecords and TunnelConfigurations reach
-//     the account through their Zone or Tunnel, which waits for them or
-//     skips cleanup once it is gone.
+//     WorkerScript references it (see protection.go). DNSRecords, WorkerRoutes
+//     and TunnelConfigurations reach the account through their Zone or
+//     Tunnel, which in turn waits for them.
 //   - The account's token Secret keeps tokenSecretFinalizer until no
 //     CloudflareAccount references it.
 
 // tokenSecretFinalizer protects a CloudflareAccount's token Secret from
 // deletion while an account references it.
 const tokenSecretFinalizer = "kflare.dev/token-protection"
-
-// deletesOnly passes only delete events, which are all a CloudflareAccount
-// needs to hear about its dependents.
-var deletesOnly = predicate.Funcs{
-	CreateFunc:  func(event.CreateEvent) bool { return false },
-	UpdateFunc:  func(event.UpdateEvent) bool { return false },
-	DeleteFunc:  func(event.DeleteEvent) bool { return true },
-	GenericFunc: func(event.GenericEvent) bool { return false },
-}
-
-// maxListedDependents caps how many blocking resources the InUse message names.
-const maxListedDependents = 5
 
 // reconcileDelete releases the account once no resource uses it: it frees
 // the token Secret and removes the finalizer. Until then it reports
@@ -66,18 +49,12 @@ func (r *CloudflareAccountReconciler) reconcileDelete(
 		return ctrl.Result{}, nil
 	}
 
-	dependents, err := r.accountDependents(ctx, account.Name)
+	dependents, err := dependentsOf(ctx, r.Client, "", account.Name, accountDependents)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if len(dependents) > 0 {
-		listed := dependents
-		if len(listed) > maxListedDependents {
-			listed = append(listed[:maxListedDependents:maxListedDependents], "...")
-		}
-		return ctrl.Result{}, updateNotReady(ctx, r.Client, account, "InUse",
-			fmt.Sprintf("Deletion is waiting for %d resource(s) that use this account: %s",
-				len(dependents), strings.Join(listed, ", ")))
+		return ctrl.Result{}, reportInUse(ctx, r.Client, account, dependents)
 	}
 
 	for _, ref := range protectedSecrets(account) {
@@ -89,66 +66,10 @@ func (r *CloudflareAccountReconciler) reconcileDelete(
 	return ctrl.Result{}, err
 }
 
-// accountDependents returns the Zones, Tunnels and WorkerScripts that
-// reference accountName, as sorted "Kind namespace/name" strings.
-func (r *CloudflareAccountReconciler) accountDependents(ctx context.Context, accountName string) ([]string, error) {
-	var dependents []string
-	add := func(kind string, obj client.Object, ref string) {
-		if ref == accountName {
-			dependents = append(dependents, fmt.Sprintf("%s %s/%s", kind, obj.GetNamespace(), obj.GetName()))
-		}
-	}
-
-	zones := &cloudflarev1alpha1.ZoneList{}
-	if err := r.List(ctx, zones); err != nil {
-		return nil, err
-	}
-	for i := range zones.Items {
-		add("Zone", &zones.Items[i], zones.Items[i].Spec.AccountRef.Name)
-	}
-	tunnels := &cloudflarev1alpha1.TunnelList{}
-	if err := r.List(ctx, tunnels); err != nil {
-		return nil, err
-	}
-	for i := range tunnels.Items {
-		add("Tunnel", &tunnels.Items[i], tunnels.Items[i].Spec.AccountRef.Name)
-	}
-	workers := &cloudflarev1alpha1.WorkerScriptList{}
-	if err := r.List(ctx, workers); err != nil {
-		return nil, err
-	}
-	for i := range workers.Items {
-		add("WorkerScript", &workers.Items[i], workers.Items[i].Spec.AccountRef.Name)
-	}
-
-	sort.Strings(dependents)
-	return dependents, nil
-}
-
 // deletingAccountOf maps the deletion of a Zone, Tunnel or WorkerScript to
-// its account, but only while that account is itself being deleted: an
-// account in normal use has nothing to do when a dependent goes away.
+// its account while that account is being deleted.
 func (r *CloudflareAccountReconciler) deletingAccountOf(ctx context.Context, obj client.Object) []reconcile.Request {
-	var accountName string
-	switch o := obj.(type) {
-	case *cloudflarev1alpha1.Zone:
-		accountName = o.Spec.AccountRef.Name
-	case *cloudflarev1alpha1.Tunnel:
-		accountName = o.Spec.AccountRef.Name
-	case *cloudflarev1alpha1.WorkerScript:
-		accountName = o.Spec.AccountRef.Name
-	default:
-		return nil
-	}
-
-	account := &cloudflarev1alpha1.CloudflareAccount{}
-	if err := r.Get(ctx, types.NamespacedName{Name: accountName}, account); err != nil {
-		return nil
-	}
-	if account.DeletionTimestamp.IsZero() {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: accountName}}}
+	return deletingParentOf(ctx, r.Client, obj, &cloudflarev1alpha1.CloudflareAccount{}, false, accountDependents)
 }
 
 // protectTokenSecret adds tokenSecretFinalizer to the Secret named by

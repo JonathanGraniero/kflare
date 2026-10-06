@@ -265,8 +265,9 @@ func normalizeIngress(rules []cf.UnvalidatedIngressRule) []cf.UnvalidatedIngress
 // catch-all rule remains (Cloudflare does not allow an empty configuration),
 // then removes the finalizer.
 //
-// If the Tunnel resource is already gone there is nothing to reset: the
-// tunnel was either deleted from Cloudflare with it or deliberately retained.
+// The Tunnel waits for its configurations before it is deleted, so it is
+// normally still there. If it is gone anyway (its finalizer was removed by
+// hand), there are no credentials to reset with and the rules are left.
 func (r *TunnelConfigurationReconciler) reconcileDelete(
 	ctx context.Context,
 	tc *cloudflarev1alpha1.TunnelConfiguration,

@@ -46,3 +46,9 @@ func (in *WorkerScript) GetConditions() []metav1.Condition { return in.Status.Co
 
 // SetConditions replaces the Worker script's status conditions.
 func (in *WorkerScript) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
+
+// GetConditions returns the Worker route's status conditions.
+func (in *WorkerRoute) GetConditions() []metav1.Condition { return in.Status.Conditions }
+
+// SetConditions replaces the Worker route's status conditions.
+func (in *WorkerRoute) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }

@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -61,6 +62,7 @@ type ZoneReconciler struct {
 //+kubebuilder:rbac:groups=kflare.dev,resources=zones,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=kflare.dev,resources=zones/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=kflare.dev,resources=zones/finalizers,verbs=update
+//+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords;workerroutes,verbs=get;list;watch
 //+kubebuilder:rbac:groups=kflare.dev,resources=cloudflareaccounts,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
@@ -227,12 +229,23 @@ func desiredZoneType(zone *cloudflarev1alpha1.Zone) string {
 	return zone.Spec.Type
 }
 
-// reconcileDelete handles the deletion lifecycle: optionally removes the zone
-// from Cloudflare (unless the retain policy is set), then removes the finalizer.
+// reconcileDelete handles the deletion lifecycle: once no DNSRecord or
+// WorkerRoute uses the zone, it removes the zone from Cloudflare (unless the
+// retain policy is set) and removes the finalizer.
 func (r *ZoneReconciler) reconcileDelete(ctx context.Context, zone *cloudflarev1alpha1.Zone) (ctrl.Result, error) {
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(zone, reconciler.Finalizer) {
 		return ctrl.Result{}, nil
+	}
+
+	// Records and routes need this Zone to clean up after themselves; the
+	// watches on them re-trigger this reconcile as they go.
+	dependents, err := dependentsOf(ctx, r.Client, zone.Namespace, zone.Name, zoneDependents)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(dependents) > 0 {
+		return ctrl.Result{}, reportInUse(ctx, r.Client, zone, dependents)
 	}
 
 	zoneID := zone.Status.CloudflareMetadata.ZoneID
@@ -251,21 +264,33 @@ func (r *ZoneReconciler) reconcileDelete(ctx context.Context, zone *cloudflarev1
 	}
 
 	// Remove the finalizer to allow Kubernetes to complete the deletion.
-	_, err := reconciler.RemoveFinalizer(ctx, r.Client, zone)
+	_, err = reconciler.RemoveFinalizer(ctx, r.Client, zone)
 	return ctrl.Result{}, err
 }
 
 // SetupWithManager registers ZoneReconciler with the manager and adds a watch
 // on CloudflareAccount so that a change in account credentials automatically
-// re-triggers reconciliation of all zones that reference that account.
+// re-triggers reconciliation of all zones that reference that account. It
+// also hears about deleted DNSRecords and WorkerRoutes, so a zone waiting for
+// them to go is released as soon as the last one is gone.
 func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	dependentDeleted := builder.WithPredicates(deletesOnly)
+	dependent := handler.EnqueueRequestsFromMapFunc(r.deletingZoneOf)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.Zone{}).
 		Watches(
 			&cloudflarev1alpha1.CloudflareAccount{},
 			handler.EnqueueRequestsFromMapFunc(r.zonesForAccount),
 		).
+		Watches(&cloudflarev1alpha1.DNSRecord{}, dependent, dependentDeleted).
+		Watches(&cloudflarev1alpha1.WorkerRoute{}, dependent, dependentDeleted).
 		Complete(r)
+}
+
+// deletingZoneOf maps the deletion of a DNSRecord or WorkerRoute to its Zone
+// while that Zone is being deleted.
+func (r *ZoneReconciler) deletingZoneOf(ctx context.Context, obj client.Object) []reconcile.Request {
+	return deletingParentOf(ctx, r.Client, obj, &cloudflarev1alpha1.Zone{}, true, zoneDependents)
 }
 
 // zonesForAccount maps a CloudflareAccount event to reconcile.Requests for

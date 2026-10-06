@@ -8,6 +8,7 @@ resources:
 - bases/kflare.dev_tunnels.yaml
 - bases/kflare.dev_tunnelconfigurations.yaml
 - bases/kflare.dev_workerscripts.yaml
+- bases/kflare.dev_workerroutes.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 #patches:

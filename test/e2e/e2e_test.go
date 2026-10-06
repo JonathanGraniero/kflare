@@ -21,6 +21,12 @@ import (
 // The deployment smoke test: the image built from this checkout runs with
 // the default kustomization (RBAC, kube-rbac-proxy sidecar, probes).
 var _ = Describe("controller-manager", func() {
+	BeforeEach(func() {
+		if externalManager() {
+			Skip("KFLARE_E2E_MANAGER=external: the manager is not deployed by this suite")
+		}
+	})
+
 	It("runs one pod whose containers are all ready and have not restarted", func() {
 		Eventually(func() error {
 			out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", managerNamespace,

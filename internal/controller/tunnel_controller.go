@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -73,6 +74,7 @@ type TunnelReconciler struct {
 //+kubebuilder:rbac:groups=kflare.dev,resources=tunnels,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=kflare.dev,resources=tunnels/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=kflare.dev,resources=tunnels/finalizers,verbs=update
+//+kubebuilder:rbac:groups=kflare.dev,resources=tunnelconfigurations,verbs=get;list;watch
 //+kubebuilder:rbac:groups=kflare.dev,resources=cloudflareaccounts,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
@@ -276,9 +278,10 @@ func (r *TunnelReconciler) deleteStaleCredentialsSecret(ctx context.Context, tun
 	return client.IgnoreNotFound(r.Delete(ctx, secret))
 }
 
-// reconcileDelete handles the deletion lifecycle: unless the retain policy is
-// set, it removes the tunnel's connections and deletes the tunnel from
-// Cloudflare, then removes the finalizer. The credentials Secret is
+// reconcileDelete handles the deletion lifecycle: once no TunnelConfiguration
+// uses the tunnel, and unless the retain policy is set, it removes the
+// tunnel's connections and deletes the tunnel from Cloudflare, then removes
+// the finalizer. The credentials Secret is
 // garbage-collected through its owner reference in either case.
 //
 // Removing the connections disconnects any cloudflared still running with
@@ -287,6 +290,16 @@ func (r *TunnelReconciler) reconcileDelete(ctx context.Context, tunnel *cloudfla
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(tunnel, reconciler.Finalizer) {
 		return ctrl.Result{}, nil
+	}
+
+	// A TunnelConfiguration resets the tunnel's ingress rules through this
+	// Tunnel when it is deleted; the watch on them re-triggers this reconcile.
+	dependents, err := dependentsOf(ctx, r.Client, tunnel.Namespace, tunnel.Name, tunnelDependents)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(dependents) > 0 {
+		return ctrl.Result{}, reportInUse(ctx, r.Client, tunnel, dependents)
 	}
 
 	tunnelID := tunnel.Status.CloudflareMetadata.TunnelID
@@ -310,7 +323,7 @@ func (r *TunnelReconciler) reconcileDelete(ctx context.Context, tunnel *cloudfla
 	}
 
 	// Remove the finalizer to allow Kubernetes to complete the deletion.
-	_, err := reconciler.RemoveFinalizer(ctx, r.Client, tunnel)
+	_, err = reconciler.RemoveFinalizer(ctx, r.Client, tunnel)
 	return ctrl.Result{}, err
 }
 
@@ -318,6 +331,9 @@ func (r *TunnelReconciler) reconcileDelete(ctx context.Context, tunnel *cloudfla
 // Secrets it owns, so a deleted or edited token Secret is restored, and
 // CloudflareAccounts, so a change in account credentials re-triggers every
 // tunnel that references the account.
+//
+// Deleted TunnelConfigurations re-trigger a Tunnel that is waiting for them
+// to go before it can be deleted.
 func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.Tunnel{}).
@@ -326,7 +342,15 @@ func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&cloudflarev1alpha1.CloudflareAccount{},
 			handler.EnqueueRequestsFromMapFunc(r.tunnelsForAccount),
 		).
+		Watches(&cloudflarev1alpha1.TunnelConfiguration{},
+			handler.EnqueueRequestsFromMapFunc(r.deletingTunnelOf), builder.WithPredicates(deletesOnly)).
 		Complete(r)
+}
+
+// deletingTunnelOf maps the deletion of a TunnelConfiguration to its Tunnel
+// while that Tunnel is being deleted.
+func (r *TunnelReconciler) deletingTunnelOf(ctx context.Context, obj client.Object) []reconcile.Request {
+	return deletingParentOf(ctx, r.Client, obj, &cloudflarev1alpha1.Tunnel{}, true, tunnelDependents)
 }
 
 // tunnelsForAccount maps a CloudflareAccount event to reconcile.Requests for

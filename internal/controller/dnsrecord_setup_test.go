@@ -402,7 +402,7 @@ var _ = Describe("adoptableRecord", func() {
 			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "MX", Name: "example.com", Content: content},
 		}
 	}
-	none := map[string]bool{}
+	none := map[string]string{}
 
 	It("prefers the member of a set whose content matches", func() {
 		got, ok := adoptableRecord(spec("mx2.example.com"),
@@ -425,7 +425,7 @@ var _ = Describe("adoptableRecord", func() {
 
 	It("never adopts a record another DNSRecord manages, even when it matches", func() {
 		_, ok := adoptableRecord(spec("mx1.example.com"), []cf.DNSRecord{mx("1", "mx1.example.com")},
-			map[string]bool{"1": true})
+			map[string]string{"1": "default/owner"})
 		Expect(ok).To(BeFalse())
 	})
 

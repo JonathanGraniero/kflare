@@ -88,7 +88,7 @@ metadata:
     rbac.authorization.k8s.io/aggregate-to-admin: "true"
 rules:
   - apiGroups: ["kflare.dev"]
-    resources: ["zones", "dnsrecords", "tunnels", "tunnelconfigurations", "workerscripts"]
+    resources: ["zones", "dnsrecords", "tunnels", "tunnelconfigurations", "workerscripts", "workerroutes"]
     verbs: ["create", "update", "patch", "delete", "deletecollection"]
 {{- end }}
 {{- end }}

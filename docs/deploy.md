@@ -34,6 +34,7 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 | `DNSRecord` | Zone · DNS · Edit |
 | `Tunnel`, `TunnelConfiguration` | Account · Cloudflare Tunnel · Edit |
 | `WorkerScript` | Account · Workers Scripts · Edit |
+| `WorkerRoute` | Zone · Workers Routes · Edit |
 
 Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's
 overview page.
@@ -120,6 +121,7 @@ Every other kind references the account (or a resource that does). Examples are 
 | `Tunnel` | Namespaced | `accountRef` | [tunnel](../config/samples/cloudflare_v1alpha1_tunnel.yaml) |
 | `TunnelConfiguration` | Namespaced | `tunnelRef` (same namespace) | [tunnel configuration](../config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml) |
 | `WorkerScript` | Namespaced | `accountRef` | [worker](../config/samples/cloudflare_v1alpha1_workerscript.yaml) |
+| `WorkerRoute` | Namespaced | `zoneRef`, optional `workerScriptRef` (same namespace) | [route and exclusion](../config/samples/cloudflare_v1alpha1_workerroute.yaml) |
 
 Things to know before pointing kflare at existing infrastructure:
 
@@ -207,11 +209,12 @@ exist, short names such as `kubectl get cloudflareaccounts` can resolve to eithe
 Order matters, because kflare's finalizers need the controller running to clean up:
 
 1. **Delete your kflare resources while the controller is still running.** Each one deletes its Cloudflare
-   object, or keeps it if annotated `retain`. Accounts wait until nothing uses them, and token Secrets wait
-   until no account uses them.
+   object, or keeps it if annotated `retain`. The order does not matter: Zones wait for their records and
+   routes, Tunnels for their configurations, accounts until nothing uses them, and token Secrets until no
+   account uses them.
 
    ```sh
-   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev --all -A
+   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev --all -A
    kubectl delete cloudflareaccounts.kflare.dev --all
    ```
 
@@ -278,4 +281,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `ZoneNotFound`, `ZoneNotReady`, `TunnelNotFound`, `TunnelNotReady` | The referenced parent is missing or not ready | Check the parent resource |
 | `TunnelAlreadyConfigured` | Another `TunnelConfiguration` owns this tunnel | Keep one configuration per tunnel |
 | `CredentialsSecretConflict` | A Secret with the tunnel's `credentialsSecretRef` name exists and kflare does not own it | Delete it or pick another name |
-| `InUse` | A `CloudflareAccount` being deleted is still referenced | Delete the resources listed in the message |
+| `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern | Keep one WorkerRoute per pattern |
+| `PatternOutsideZone` | The route pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |
+| `WorkerScriptNotFound`, `WorkerScriptNotReady`, `AccountMismatch` | The route's WorkerScript is missing, not uploaded yet, or in a different account than the zone | Check the WorkerScript; it must use the zone's account |
+| `InUse` | A `CloudflareAccount`, `Zone` or `Tunnel` being deleted is still referenced | Delete the resources listed in the message |

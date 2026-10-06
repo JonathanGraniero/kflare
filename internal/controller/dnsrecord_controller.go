@@ -145,7 +145,7 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 		if listErr != nil {
 			return handleCloudflareError(ctx, r.Client, record, listErr)
 		}
-		claimed, err := r.claimedRecordIDs(ctx, record)
+		claimed, err := claimedIDs(ctx, r.Client, &cloudflarev1alpha1.DNSRecordList{}, cloudflarev1alpha1.DNSRecordIDLabel, record)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -171,7 +171,7 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 
 	// Claim the record before anything else can fail, so no other DNSRecord
 	// adopts it in the meantime.
-	if err := r.claimRecord(ctx, record, cfRecord.ID); err != nil {
+	if err := claimID(ctx, r.Client, record, cloudflarev1alpha1.DNSRecordIDLabel, cfRecord.ID); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -193,26 +193,6 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 	return ctrl.Result{}, updateReady(ctx, r.Client, record, "Synced", "DNS record is synced with Cloudflare")
 }
 
-// claimedRecordIDs returns the Cloudflare record IDs that DNSRecords other
-// than record manage, across all namespaces: two Zone resources in different
-// namespaces can point at the same Cloudflare zone.
-func (r *DNSRecordReconciler) claimedRecordIDs(
-	ctx context.Context,
-	record *cloudflarev1alpha1.DNSRecord,
-) (map[string]bool, error) {
-	list := &cloudflarev1alpha1.DNSRecordList{}
-	if err := r.List(ctx, list, client.HasLabels{cloudflarev1alpha1.DNSRecordIDLabel}); err != nil {
-		return nil, err
-	}
-	claimed := make(map[string]bool, len(list.Items))
-	for _, other := range list.Items {
-		if other.UID != record.UID {
-			claimed[other.Labels[cloudflarev1alpha1.DNSRecordIDLabel]] = true
-		}
-	}
-	return claimed, nil
-}
-
 // adoptableRecord picks the existing Cloudflare record that record should
 // adopt from candidates (same name and type), or returns false when a new
 // record should be created.
@@ -226,14 +206,15 @@ func (r *DNSRecordReconciler) claimedRecordIDs(
 func adoptableRecord(
 	record *cloudflarev1alpha1.DNSRecord,
 	candidates []cf.DNSRecord,
-	claimed map[string]bool,
+	claimed map[string]string,
 ) (cf.DNSRecord, bool) {
+	isClaimed := func(id string) bool { _, taken := claimed[id]; return taken }
 	for _, c := range candidates {
-		if !claimed[c.ID] && recordContentMatches(record, c) {
+		if !isClaimed(c.ID) && recordContentMatches(record, c) {
 			return c, true
 		}
 	}
-	if len(candidates) == 1 && !claimed[candidates[0].ID] {
+	if len(candidates) == 1 && !isClaimed(candidates[0].ID) {
 		return candidates[0], true
 	}
 	return cf.DNSRecord{}, false
@@ -246,19 +227,6 @@ func recordContentMatches(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSR
 		return !dataDrifted(record, cfRecord)
 	}
 	return record.Spec.Content == cfRecord.Content
-}
-
-// claimRecord records recordID in record's DNSRecordIDLabel.
-func (r *DNSRecordReconciler) claimRecord(ctx context.Context, record *cloudflarev1alpha1.DNSRecord, recordID string) error {
-	if record.Labels[cloudflarev1alpha1.DNSRecordIDLabel] == recordID {
-		return nil
-	}
-	patch := client.MergeFrom(record.DeepCopy())
-	if record.Labels == nil {
-		record.Labels = map[string]string{}
-	}
-	record.Labels[cloudflarev1alpha1.DNSRecordIDLabel] = recordID
-	return r.Patch(ctx, record, patch)
 }
 
 // automaticTTL is the TTL Cloudflare reports for "automatic". It is also what
@@ -380,10 +348,10 @@ func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (b
 // record from Cloudflare (unless the retain policy is set), then removes
 // the finalizer.
 //
-// If the Zone resource is already gone there is nothing to delete with: the
-// zone was either deleted from Cloudflare with it, taking its records along,
-// or deliberately retained. This also keeps namespace deletion from hanging
-// when the Zone is removed before its records.
+// The Zone waits for its records before it is deleted, so it is normally
+// still there. If it is gone anyway (its finalizer was removed by hand),
+// there are no credentials to delete with and the record is left in
+// Cloudflare.
 func (r *DNSRecordReconciler) reconcileDelete(ctx context.Context, record *cloudflarev1alpha1.DNSRecord) (ctrl.Result, error) {
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(record, reconciler.Finalizer) {

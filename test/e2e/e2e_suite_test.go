@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package e2e
 
 import (
+	"os"
 	"os/exec"
 	"testing"
 
@@ -25,6 +26,14 @@ const (
 	managerImage = "example.com/kflare:e2e"
 )
 
+// externalManager reports whether KFLARE_E2E_MANAGER=external asks the suite
+// to use a manager that is already running (for example `make run` against
+// the current cluster) instead of building and deploying one. The suite then
+// only installs the CRDs, and the deployment smoke specs are skipped.
+func externalManager() bool {
+	return os.Getenv("KFLARE_E2E_MANAGER") == "external"
+}
+
 // TestE2E runs the e2e suite against the kind cluster in the current
 // kubeconfig context ($KIND_CLUSTER names it for image loading).
 func TestE2E(t *testing.T) {
@@ -37,6 +46,13 @@ func TestE2E(t *testing.T) {
 // The manager is deployed once for the whole suite: Ginkgo shuffles
 // top-level containers, and every spec needs it running.
 var _ = BeforeSuite(func() {
+	if externalManager() {
+		By("installing CRDs for the externally running manager")
+		_, err := utils.Run(exec.Command("make", "install"))
+		Expect(err).NotTo(HaveOccurred())
+		return
+	}
+
 	By("creating manager namespace")
 	_, _ = utils.Run(exec.Command("kubectl", "create", "ns", managerNamespace))
 
@@ -64,7 +80,7 @@ var _ = BeforeSuite(func() {
 // ReportAfterEach prints the manager's recent log after a failed spec, before
 // AfterSuite undeploys it.
 var _ = ReportAfterEach(func(report SpecReport) {
-	if !report.Failed() {
+	if !report.Failed() || externalManager() {
 		return
 	}
 	out, _ := utils.Run(exec.Command("kubectl", "logs", "-n", managerNamespace,
@@ -73,6 +89,9 @@ var _ = ReportAfterEach(func(report SpecReport) {
 })
 
 var _ = AfterSuite(func() {
+	if externalManager() {
+		return
+	}
 	By("undeploying the controller-manager")
 	_, _ = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
 
