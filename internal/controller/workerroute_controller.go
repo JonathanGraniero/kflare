@@ -276,9 +276,9 @@ func isWorkerScriptReady(ws *cloudflarev1alpha1.WorkerScript) bool {
 // reconcileDelete handles the deletion lifecycle: unless the retain policy is
 // set, it deletes the route from Cloudflare, then removes the finalizer.
 //
-// If the Zone resource is already gone there is nothing to delete with: the
-// zone was either deleted from Cloudflare with it, taking its routes along,
-// or deliberately retained.
+// The Zone waits for its routes before it is deleted, so it is normally still
+// there. If it is gone anyway (its finalizer was removed by hand), there are
+// no credentials to delete with and the route is left in Cloudflare.
 func (r *WorkerRouteReconciler) reconcileDelete(ctx context.Context, route *cloudflarev1alpha1.WorkerRoute) (ctrl.Result, error) {
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(route, reconciler.Finalizer) {

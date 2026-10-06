@@ -348,10 +348,10 @@ func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (b
 // record from Cloudflare (unless the retain policy is set), then removes
 // the finalizer.
 //
-// If the Zone resource is already gone there is nothing to delete with: the
-// zone was either deleted from Cloudflare with it, taking its records along,
-// or deliberately retained. This also keeps namespace deletion from hanging
-// when the Zone is removed before its records.
+// The Zone waits for its records before it is deleted, so it is normally
+// still there. If it is gone anyway (its finalizer was removed by hand),
+// there are no credentials to delete with and the record is left in
+// Cloudflare.
 func (r *DNSRecordReconciler) reconcileDelete(ctx context.Context, record *cloudflarev1alpha1.DNSRecord) (ctrl.Result, error) {
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(record, reconciler.Finalizer) {
