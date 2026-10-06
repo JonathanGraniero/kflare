@@ -1,0 +1,24 @@
+# Runs the example Worker for every request under example.com/api/.
+apiVersion: kflare.dev/v1alpha1
+kind: WorkerRoute
+metadata:
+  name: example-api-route
+  namespace: default
+spec:
+  zoneRef:
+    name: example-zone        # a Zone in the same namespace
+  pattern: example.com/api/*  # no scheme; "*" only at the start of the host or the end of the path
+  workerScriptRef:
+    name: example-worker      # a WorkerScript in the same namespace and the zone's account
+---
+# Excludes example.com/api/static/ from the route above: with no
+# workerScriptRef, no Worker runs for matching requests.
+apiVersion: kflare.dev/v1alpha1
+kind: WorkerRoute
+metadata:
+  name: example-api-static-exclusion
+  namespace: default
+spec:
+  zoneRef:
+    name: example-zone
+  pattern: example.com/api/static/*

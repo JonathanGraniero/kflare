@@ -31,6 +31,7 @@ rules:
   - dnsrecords
   - tunnelconfigurations
   - tunnels
+  - workerroutes
   - workerscripts
   - zones
   verbs:
@@ -48,6 +49,7 @@ rules:
   - dnsrecords/finalizers
   - tunnelconfigurations/finalizers
   - tunnels/finalizers
+  - workerroutes/finalizers
   - workerscripts/finalizers
   - zones/finalizers
   verbs:
@@ -59,6 +61,7 @@ rules:
   - dnsrecords/status
   - tunnelconfigurations/status
   - tunnels/status
+  - workerroutes/status
   - workerscripts/status
   - zones/status
   verbs:
