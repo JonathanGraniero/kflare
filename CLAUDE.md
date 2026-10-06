@@ -171,9 +171,12 @@ Shared infrastructure that all Phase 2 controllers will use.
   - Deployment smoke test: builds the image, deploys `config/default` to kind, checks the manager pod is
     ready with no restarts
   - Live Cloudflare specs (`test/e2e/cloudflare_test.go`, skipped without credentials): account validation,
-    Tunnel + token Secret, TunnelConfiguration, WorkerScript, then deletion verified on the Cloudflare side.
-    With `CF_E2E_ZONE` also Zone adoption (always `retain`) and a DNSRecord, including a check that an idle
-    reconcile does not write to Cloudflare. Everything is named `kflare-e2e-<run>` and cleaned up even on failure
+    Tunnel + token Secret, TunnelConfiguration, WorkerScript. With `CF_E2E_ZONE` also Zone adoption (always
+    `retain`), a DNSRecord (including a check that an idle reconcile does not write to Cloudflare) and a
+    WorkerRoute plus exclusion route. Then everything is deleted in one pass and Cloudflare is checked. Everything
+    is named `kflare-e2e-<run>` and cleaned up even on failure
+  - `KFLARE_E2E_MANAGER=external` uses an already running manager (e.g. `make run`) instead of deploying one
+    (first green live run: 2026-10-05, this way, on kind-kflare-dev)
   - Needs repo secrets `CF_API_TOKEN`, `CF_ACCOUNT_ID` and variable `CF_E2E_ZONE` (`kflare.dev`, the project's
     own zone, is the test zone)
 - [x] CI also runs `make lint` and `make docker-build` (the Dockerfile copies source directories explicitly)
@@ -373,14 +376,55 @@ kubectl get tunnelconfiguration -o yaml   # check Ready + cloudflareMetadata.ver
   UID/resourceVersion, never the value
 - Any change made outside kflare triggers one re-upload, including toggling the workers.dev subdomain (verified
   live); the re-upload keeps the subdomain enabled
-- Routes are not part of WorkerScript: they are zone-level resources with their own IDs. Planned as a separate
-  `WorkerRoute` CRD (`zoneRef` + `pattern` + `workerScriptRef`) following the Zone → DNSRecord pattern
+- Routes are not part of WorkerScript: they are zone-level resources with their own IDs, managed by `WorkerRoute`
 
 **Test locally:**
 ```sh
 kubectl create secret generic example-worker-secrets --from-literal=api-key=...
 kubectl apply -f config/samples/cloudflare_v1alpha1_workerscript.yaml
 kubectl get workerscript example-worker -o yaml   # check Ready + cloudflareMetadata.modifiedOn
+```
+
+---
+
+#### Branch: `feat/worker-route-controller`
+**Depends on:** `feat/zone-controller`, `feat/worker-script-controller`
+**Merges into:** main
+**Status:** ✅ Complete
+
+- [x] `api/v1alpha1/workerroute_types.go`
+  - `spec`: `zoneRef` (immutable, same namespace), `pattern`, optional `workerScriptRef` (same namespace);
+    without a WorkerScript the route excludes its pattern from a broader route
+  - `status.conditions`, `status.cloudflareMetadata` (route ID, zone ID, script routed to)
+- [x] `internal/controller/workerroute_controller.go`
+  - Get by status ID → adopt the route with the same pattern → create; pattern and Worker drift corrected with an
+    in-place PUT
+  - Waits for the Zone and an uploaded WorkerScript (Cloudflare refuses a route to a missing Worker); reports
+    `PatternOutsideZone` and `AccountMismatch` without calling Cloudflare
+  - Claims its route in the `kflare.dev/route-id` label; `PatternConflict` instead of taking over another
+    WorkerRoute's route (`ownership.go`, shared with DNSRecord)
+  - Watches Zones and WorkerScripts; finalizer deletes the route (unless `retain`)
+- [x] Zone and Tunnel deletion protection (`protection.go`): a Zone waits for its DNSRecords and WorkerRoutes, a
+  Tunnel for its TunnelConfigurations, as accounts already did. Found live: with a retained Zone, deleting
+  everything at once left routes behind
+- [x] Unit/envtest tests; live e2e spec (route + exclusion) and an all-at-once deletion spec
+- [x] `config/samples/cloudflare_v1alpha1_workerroute.yaml`
+
+**WorkerRoute-specific design notes (all verified live on `kflare.dev`):**
+- `WorkerRouteAPI` interface: `CreateWorkerRoute/GetWorkerRoute/ListWorkerRoutes/UpdateWorkerRoute/DeleteWorkerRoute`;
+  `rc` is `cloudflare.ZoneIdentifier(zoneID)`
+- Patterns are unique per zone (duplicate → 409, code 10020); a route outside the zone → 400 (10022); a route to a
+  missing Worker → 400 (10019); an unknown route ID → 404
+- PUT replaces the route: omitting `script` (the SDK's `omitempty` for "") clears it, so exclusion works through
+  `UpdateWorkerRoute`
+- **Deleting a Worker deletes its routes.** The WorkerRoute sees a 404 by ID and recreates the route once the
+  WorkerScript is uploaded again (the WorkerScript watch triggers it)
+- Needs the zone-level **Workers Routes: Edit** permission (added to the dev token on 2026-10-05)
+
+**Test locally:**
+```sh
+kubectl apply -f config/samples/cloudflare_v1alpha1_workerroute.yaml
+kubectl get workerroutes.kflare.dev   # check Ready + Route ID
 ```
 
 ---
@@ -518,6 +562,6 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 
 ## Current Status
 
-> **Phase 1 and Phase 2 complete.**
-> Next branch: a `WorkerRoute` CRD (`zoneRef` + `pattern` + `workerScriptRef`), then Phase 3.
+> **Phase 1 and Phase 2 complete, including `WorkerRoute`.**
+> Next: Phase 3, starting with `feat/health-check-controller` (load balancers depend on it).
 > Last updated: October 2026

@@ -26,8 +26,9 @@ Early development. Phase 1 (foundation) and Phase 2 (core resources) are complet
 - `TunnelConfiguration` — owns a Tunnel's ingress rules (hostname → service), pushes them to Cloudflare and reverts changes made outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml))
 - `WorkerScript` — uploads a Worker from inline code or a ConfigMap, with plain text, secret (from a Kubernetes Secret), KV and R2 bindings, and re-uploads it when it is changed outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_workerscript.yaml))
 
-**Planned next:**
-- `WorkerRoute` — routes a zone URL pattern to a `WorkerScript`
+- `WorkerRoute` — routes a URL pattern in a `Zone` to a `WorkerScript`, or excludes a pattern from a broader route, and recreates the route when Cloudflare drops it (see [the sample](config/samples/cloudflare_v1alpha1_workerroute.yaml))
+
+**Planned next:** Phase 3 — health checks and load balancers, rate limiting, firewall and WAF rules, R2, KV and Zero Trust (see [CLAUDE.md](./CLAUDE.md)).
 
 ## Install
 
@@ -52,6 +53,7 @@ For working on kflare itself:
 - A Cloudflare account and API token with **Edit zone DNS** permissions
   - `Tunnel` also needs the account-level **Cloudflare Tunnel: Edit** permission
   - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission
+  - `WorkerRoute` also needs the zone-level **Workers Routes: Edit** permission
   - Setting `Zone` `spec.plan` also needs **Billing: Edit**, and changes your bill
 
 ## Local Development
