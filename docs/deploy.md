@@ -35,6 +35,7 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 | `Tunnel`, `TunnelConfiguration` | Account · Cloudflare Tunnel · Edit |
 | `WorkerScript` | Account · Workers Scripts · Edit |
 | `WorkerRoute` | Zone · Workers Routes · Edit |
+| `KVNamespace` | Account · Workers KV Storage · Edit |
 
 Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's
 overview page.
@@ -122,6 +123,7 @@ Every other kind references the account (or a resource that does). Examples are 
 | `TunnelConfiguration` | Namespaced | `tunnelRef` (same namespace) | [tunnel configuration](../config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml) |
 | `WorkerScript` | Namespaced | `accountRef` | [worker](../config/samples/cloudflare_v1alpha1_workerscript.yaml) |
 | `WorkerRoute` | Namespaced | `zoneRef`, optional `workerScriptRef` (same namespace) | [route and exclusion](../config/samples/cloudflare_v1alpha1_workerroute.yaml) |
+| `KVNamespace` | Namespaced | `accountRef`; WorkerScripts bind it with `kvNamespaceRef` | [KV namespace](../config/samples/cloudflare_v1alpha1_kvnamespace.yaml) |
 
 Things to know before pointing kflare at existing infrastructure:
 
@@ -130,6 +132,8 @@ Things to know before pointing kflare at existing infrastructure:
 - **Deletion policy.** Deleting a kflare resource deletes the Cloudflare object, unless the resource carries
   the annotation `kflare.dev/deletion-policy: retain`. Use `retain` on anything you adopted and want to keep,
   such as a production zone.
+- **KV data.** Deleting a `KVNamespace` deletes the namespace and everything stored in it. Use `retain` on
+  namespaces holding data you need.
 - **Immutable fields.** Names and references (`spec.name`, `accountRef`, `zoneRef`, DNS `type`, ...) cannot be
   changed. Create a new resource instead.
 
@@ -210,11 +214,11 @@ Order matters, because kflare's finalizers need the controller running to clean 
 
 1. **Delete your kflare resources while the controller is still running.** Each one deletes its Cloudflare
    object, or keeps it if annotated `retain`. The order does not matter: Zones wait for their records and
-   routes, Tunnels for their configurations, accounts until nothing uses them, and token Secrets until no
-   account uses them.
+   routes, Tunnels for their configurations, KV namespaces for the Workers bound to them, accounts until
+   nothing uses them, and token Secrets until no account uses them.
 
    ```sh
-   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev --all -A
+   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev,kvnamespaces.kflare.dev --all -A
    kubectl delete cloudflareaccounts.kflare.dev --all
    ```
 
@@ -284,4 +288,6 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern | Keep one WorkerRoute per pattern |
 | `PatternOutsideZone` | The route pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |
 | `WorkerScriptNotFound`, `WorkerScriptNotReady`, `AccountMismatch` | The route's WorkerScript is missing, not uploaded yet, or in a different account than the zone | Check the WorkerScript; it must use the zone's account |
-| `InUse` | A `CloudflareAccount`, `Zone` or `Tunnel` being deleted is still referenced | Delete the resources listed in the message |
+| `TitleConflict` | Another `KVNamespace` already manages a namespace with this title | Keep one KVNamespace per title |
+| `KVNamespaceNotFound`, `KVNamespaceNotReady` | A WorkerScript's `kvNamespaceRef` names a missing or not-yet-ready KVNamespace | Check the KVNamespace; it must use the Worker's account |
+| `InUse` | A `CloudflareAccount`, `Zone`, `Tunnel` or `KVNamespace` being deleted is still referenced | Delete the resources listed in the message |

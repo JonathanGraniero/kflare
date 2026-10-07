@@ -14,7 +14,8 @@ Secret (API token)
        │    └─ WorkerRoute (same namespace, via zoneRef; runs a WorkerScript)
        ├─ Tunnel (namespaced)
        │    └─ TunnelConfiguration (same namespace, via tunnelRef)
-       └─ WorkerScript (namespaced)
+       ├─ WorkerScript (namespaced; binds KVNamespaces via kvNamespaceRef)
+       └─ KVNamespace (namespaced)
 ```
 
 Every namespaced resource resolves its credentials through this chain at reconcile time: a DNSRecord reads its Zone, the
@@ -71,7 +72,8 @@ What each controller compares when it does reconcile:
 | `DNSRecord` | Content, TTL, proxied, priority (when set), comment, tags, structured data; recreated if deleted externally |
 | `Tunnel` | Existence (recreated if deleted externally); token Secret contents |
 | `TunnelConfiguration` | The full ingress configuration |
-| `WorkerScript` | Cloudflare's `modified_on` timestamp, because its etag does not change for binding-only edits |
+| `WorkerScript` | Cloudflare's `modified_on` timestamp, because its etag does not change for binding-only edits; the IDs of bound KVNamespaces, so a recreated namespace re-uploads the Worker |
+| `KVNamespace` | Title (renamed in place); recreated, empty, if deleted externally |
 | `WorkerRoute` | Pattern and the Worker it runs; recreated if deleted externally, including when Cloudflare deletes it together with its Worker |
 
 ## Adoption and ownership
@@ -91,12 +93,13 @@ retain policy first (see [Deletion](#deletion)).
 | `Tunnel` | The first non-deleted tunnel named `spec.name` in the account. |
 | `TunnelConfiguration` | The tunnel's entire ingress configuration. kflare replaces whatever is there. When several TunnelConfigurations point at one Tunnel, the oldest owns it and the others report `TunnelAlreadyConfigured`. |
 | `WorkerScript` | No lookup. The first reconcile uploads the script, replacing any existing Worker with the same name. |
+| `KVNamespace` | The namespace with the same title in the account (titles are unique per account) unless another KVNamespace manages it, in which case it reports `TitleConflict` and retries every minute. |
 | `WorkerRoute` | The route with the same pattern in the zone (patterns are unique per zone) unless another WorkerRoute manages it, in which case the WorkerRoute reports `PatternConflict` and retries every minute. |
 
-### DNSRecord and WorkerRoute ownership
+### DNSRecord, WorkerRoute and KVNamespace ownership
 
-DNSRecord stores the Cloudflare record ID it manages in the `kflare.dev/record-id` label, and WorkerRoute its route ID in
-`kflare.dev/route-id`; each claims the object before doing anything else with it (`internal/controller/ownership.go`).
+DNSRecord stores the Cloudflare record ID it manages in the `kflare.dev/record-id` label, WorkerRoute its route ID in
+`kflare.dev/route-id` and KVNamespace its namespace ID in `kflare.dev/kv-namespace-id`; each claims the object before doing anything else with it (`internal/controller/ownership.go`).
 Adoption skips any object another resource of the same kind already carries in its label, across all namespaces,
 because two Zone resources in different namespaces can point at the same Cloudflare zone. Cloudflare record tags would be
 a Cloudflare-side alternative, but they are only available on paid plans.
@@ -142,6 +145,8 @@ Per-resource details:
 - **WorkerScript** deletes the Worker only if kflare uploaded it.
 - **WorkerScript** deletion also removes the Worker's routes: Cloudflare deletes them with the Worker. A WorkerRoute that
   still references it reports `WorkerScriptNotFound` and recreates its route once the Worker is uploaded again.
+- **KVNamespace** deletion deletes the namespace **and all of its data**. Set the retain policy on namespaces holding data
+  you need to keep.
 
 Deleting resources in any order, for example a namespace or `kubectl delete -f` on a directory, must not strand a
 resource that still needs its parent for its own cleanup. Parents therefore keep their finalizer, reporting
@@ -151,6 +156,8 @@ resource that still needs its parent for its own cleanup. Parents therefore keep
 - A `CloudflareAccount` waits for the Zones, Tunnels and WorkerScripts that reference it.
 - A `Zone` waits for its DNSRecords and WorkerRoutes.
 - A `Tunnel` waits for its TunnelConfigurations.
+- A `KVNamespace` waits for the WorkerScripts bound to it through `kvNamespaceRef`. Cloudflare deletes a namespace a
+  Worker is bound to, but every later upload of that Worker then fails.
 - The account's token Secret carries `kflare.dev/token-protection` until no `CloudflareAccount` references it.
 
 Each child therefore cleans up with its own deletion policy even when its parent is retained. The live e2e suite deletes
