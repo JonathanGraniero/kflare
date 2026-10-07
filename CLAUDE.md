@@ -435,20 +435,22 @@ kubectl get workerroutes.kflare.dev   # check Ready + Route ID
 **Status:** 🚧 In progress
 
 Same branch-per-feature pattern as Phase 2. Items that can be built **and live-tested on a Free zone** come first;
-load balancing waits until the account has the Load Balancing add-on (decided 2026-10-06).
+load balancing waits until the account has the Load Balancing add-on (decided 2026-10-06). Anything skipped or
+only partly built because of a paid plan, add-on or account setup is tracked in
+[Deferred: paid plan, add-on or account setup](#deferred-paid-plan-add-on-or-account-setup) below.
 
-| Branch | CRD(s) | Depends on | Status |
-|--------|--------|------------|--------|
+| Branch | CRD(s) | Depends on | Status / Free-plan scope |
+|--------|--------|------------|--------------------------|
 | `feat/kv-namespace-controller` | `KVNamespace` (+ WorkerScript `kvNamespaceRef`) | shared-client | ✅ |
 | `feat/r2-bucket-controller` | `R2Bucket` | shared-client | Next (the account already has R2) |
-| `feat/firewall-rule-controller` | `FirewallRule` | zone-controller | |
-| `feat/rate-limit-controller` | `RateLimit` | zone-controller | |
-| `feat/zero-trust-controllers` | `AccessApplication`, `AccessPolicy`, `AccessGroup` | shared-client | |
-| `feat/waf-controller` | `WAFPackage` | zone-controller | |
-| `feat/managed-transform-controller` | `ManagedTransform` | zone-controller | |
-| `feat/page-rule-controller` | `PageRule` | zone-controller | |
-| `feat/load-balancer-monitor-controller` | `LoadBalancerMonitor` | shared-client | Needs Load Balancing add-on |
-| `feat/load-balancer-controller` | `LoadBalancer` (+ pools) | load-balancer-monitor-controller | Needs Load Balancing add-on |
+| `feat/firewall-rule-controller` | `FirewallRule` → build as WAF custom rules | zone-controller | Free: 5 rules, no regex, no Log action. **Rename first** (see Deferred → plan corrections) |
+| `feat/rate-limit-controller` | `RateLimit` | zone-controller | Free: 1 rule, counts by IP only, 10 s period |
+| `feat/zero-trust-controllers` | `AccessApplication`, `AccessPolicy`, `AccessGroup` | shared-client | Needs Zero Trust enabled on the account first (free plan exists) |
+| `feat/waf-controller` | `WAFPackage` → build as managed ruleset config | zone-controller | Free: only the Cloudflare Free Managed Ruleset. **Rename first** |
+| `feat/managed-transform-controller` | `ManagedTransform` | zone-controller | Available on the Free zone (4 request transforms listed) |
+| `feat/page-rule-controller` | `PageRule` | zone-controller | Free: 3 rules. **Deprecated product**: reconsider before building |
+| `feat/load-balancer-monitor-controller` | `LoadBalancerMonitor` | shared-client | ⏸ Deferred: needs Load Balancing add-on |
+| `feat/load-balancer-controller` | `LoadBalancer` (+ pools) | load-balancer-monitor-controller | ⏸ Deferred: needs Load Balancing add-on |
 
 **Notes:**
 - `LoadBalancerMonitor` (renamed from `HealthCheck`, 2026-10-06) is Cloudflare's account-level load balancer monitor,
@@ -458,6 +460,59 @@ load balancing waits until the account has the Load Balancing add-on (decided 20
   zone-level Health Checks product, which needs a Pro plan
 - Zero Trust resources require `Account`-scoped (not Zone-scoped) API tokens — separate CF token needed
 - R2 and KV are account-level — no `zoneRef`
+
+#### Deferred: paid plan, add-on or account setup
+
+Everything here was skipped, or built without live verification, because the dev account (Free zone `kflare.dev`, no
+add-ons besides R2) cannot exercise it. Before starting any item below, re-check the limits: Cloudflare changes them.
+Last checked 2026-10-07.
+
+**Not built yet — needs something we don't have:**
+
+| Item | Needs | Cost (2026-10) | What was verified | When we come back to it |
+|------|-------|----------------|-------------------|-------------------------|
+| `LoadBalancerMonitor`, `LoadBalancer` (+ pools) | Load Balancing add-on (account) | $5/month incl. 2 origins, +$5/origin/month, +$0.50 per 500K DNS queries | Live, 2026-10-06: every monitor create fails, `interval is not in range [1, 1]`. The token already has Load Balancing: Monitors and Pools Write | Subscribe, build the monitor then the load balancer; cancel after if it was only for testing |
+| `HealthCheck` (standalone, zone-level Health Checks) | Pro plan or higher on the zone; zone-level Health Checks Write on the token | Pro plan ~$20+/month per zone | Docs: Free plan gets 0 checks (Pro 10, Business 50). Token has Health Checks Read only | Not in the Phase 3 table yet. Add a branch once a Pro zone exists; keep it separate from `LoadBalancerMonitor` |
+
+**Built, but not verified live because it costs money:**
+
+| Item | Why | What exists | When we come back to it |
+|------|-----|-------------|-------------------------|
+| Zone `spec.plan` | Changing a plan bills the account | Implemented (subscription POST/PUT, `plan_pending`), unit-tested against response shapes read from the live Free zone | Exercise once on a disposable zone (upgrade, check status, downgrade); expect a prorated charge |
+
+**Worked around because the clean option is paid:**
+
+| Item | Paid option | Current workaround | When we come back to it |
+|------|-------------|--------------------|-------------------------|
+| Ownership marker on the Cloudflare side (DNSRecord, and in general) | DNS record tags (Pro plan and up) | `kflare.dev/record-id` / `route-id` / `kv-namespace-id` labels in the cluster; ARCHITECTURE.md lists "no ownership marker on the Cloudflare side" as a known limitation | With a Pro zone, tag records kflare creates; or a TXT ownership registry like external-dns (works on Free) |
+
+**Free, but needs account setup first:**
+
+| Item | Setup | Verified |
+|------|-------|----------|
+| Zero Trust (`AccessApplication`, `AccessPolicy`, `AccessGroup`) | Enable Zero Trust in the dashboard (pick a team name and the Free plan, up to 50 users). Not confirmed whether it asks for a payment method | Live, 2026-10-07: the API returns `Access is not enabled`. The token already has the Access: Apps/Policies/Groups Write permissions |
+
+**Free-plan limits to design around** (build for them; the e2e suite must stay within them):
+
+| Item | Free | Pro | Business |
+|------|------|-----|----------|
+| Rate limiting rules | 1 rule, IP only, 10 s period, 10 s–1 h mitigation | 2 rules, IP only, periods up to 1 min | 5 rules, periods up to 10 min |
+| WAF custom rules | 5 rules, no regex, no Log action, 1 zone-level custom ruleset | 20 rules | 100 rules, regex |
+| WAF managed rulesets | Cloudflare Free Managed Ruleset only | + Cloudflare Managed Ruleset, OWASP Core Ruleset | same as Pro |
+| Page Rules | 3 | 20 | 50 |
+
+Controllers must not hard-code these limits: report Cloudflare's own rejection (`TerminalError`) instead, so higher plans
+work unchanged.
+
+**Plan corrections found while checking** (decide before starting these branches):
+
+- `FirewallRule`: Cloudflare Firewall Rules is deprecated and existing rules were moved to **WAF custom rules** (Rulesets
+  API, `http_request_firewall_custom` phase). Build a WAF custom rule CRD instead of `FirewallRule`.
+- `WAFPackage`: WAF packages belong to the previous WAF; the current product is **WAF managed rulesets** (Rulesets API,
+  `http_request_firewall_managed` phase, which `kflare.dev` already has as a managed entrypoint). Build managed-ruleset
+  configuration instead. Confirm the legacy API's status first: the docs checked did not say.
+- `PageRule`: Page Rules is marked deprecated. Its features moved to the Rules products (redirect, cache, configuration
+  and origin rules), so consider building those instead.
 
 #### Branch: `feat/kv-namespace-controller`
 **Status:** ✅ Complete
@@ -593,6 +648,6 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Current Status
 
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace` done.**
-> Next: `feat/r2-bucket-controller`. Load balancing (`LoadBalancerMonitor`, `LoadBalancer`) waits for the Load
-> Balancing add-on.
+> Next: `feat/r2-bucket-controller`. Items needing a paid plan, add-on or account setup are tracked under
+> "Deferred: paid plan, add-on or account setup" in Phase 3.
 > Last updated: October 2026
