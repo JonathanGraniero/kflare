@@ -1,0 +1,19 @@
+# A Workers KV namespace. Deleting this resource deletes the namespace and all
+# of its data in Cloudflare; the annotation below keeps them instead.
+apiVersion: kflare.dev/v1alpha1
+kind: KVNamespace
+metadata:
+  name: example-kv
+  namespace: default
+  annotations:
+    kflare.dev/deletion-policy: retain
+spec:
+  accountRef:
+    name: my-account
+  title: example-kv          # unique in the account; changing it renames the namespace in place
+# Bind it to a WorkerScript in the same namespace by reference:
+#
+#   bindings:
+#     - name: CACHE
+#       kvNamespaceRef:
+#         name: example-kv

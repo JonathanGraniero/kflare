@@ -171,10 +171,10 @@ Shared infrastructure that all Phase 2 controllers will use.
   - Deployment smoke test: builds the image, deploys `config/default` to kind, checks the manager pod is
     ready with no restarts
   - Live Cloudflare specs (`test/e2e/cloudflare_test.go`, skipped without credentials): account validation,
-    Tunnel + token Secret, TunnelConfiguration, WorkerScript. With `CF_E2E_ZONE` also Zone adoption (always
-    `retain`), a DNSRecord (including a check that an idle reconcile does not write to Cloudflare) and a
-    WorkerRoute plus exclusion route. Then everything is deleted in one pass and Cloudflare is checked. Everything
-    is named `kflare-e2e-<run>` and cleaned up even on failure
+    Tunnel + token Secret, TunnelConfiguration, KVNamespace, WorkerScript (bound to it). With `CF_E2E_ZONE` also
+    Zone adoption (always `retain`), a DNSRecord (including a check that an idle reconcile does not write to
+    Cloudflare) and a WorkerRoute plus exclusion route. Then everything is deleted in one pass and Cloudflare is
+    checked. Everything is named `kflare-e2e-<run>` and cleaned up even on failure
   - `KFLARE_E2E_MANAGER=external` uses an already running manager (e.g. `make run`) instead of deploying one
     (first green live run: 2026-10-05, this way, on kind-kflare-dev)
   - Needs repo secrets `CF_API_TOKEN`, `CF_ACCOUNT_ID` and variable `CF_E2E_ZONE` (`kflare.dev`, the project's
@@ -355,12 +355,14 @@ kubectl get tunnelconfiguration -o yaml   # check Ready + cloudflareMetadata.ver
 - [x] `api/v1alpha1/workerscript_types.go`
   - `spec`: `name` (immutable), `accountRef` (immutable), exactly one of `script` / `scriptConfigMapRef {name, key}`,
     `format` (`module` default, or `serviceWorker`), `compatibilityDate`, `compatibilityFlags`,
-    `bindings[]` (exactly one of `plainText`, `secretKeyRef {name, key}`, `kvNamespaceID`, `r2BucketName`)
+    `bindings[]` (exactly one of `plainText`, `secretKeyRef {name, key}`, `kvNamespaceRef`, `kvNamespaceID`,
+    `r2BucketName`; `kvNamespaceRef` added with KVNamespace)
   - `status.conditions`, `status.cloudflareMetadata` (etag, modifiedOn at full precision), `status.appliedHash`
 - [x] `internal/controller/workerscript_controller.go`
   - Uploads when the desired-state hash changes, when the Worker is missing, or when Cloudflare's `modified_on`
     differs from kflare's last upload
-  - Watches ConfigMaps (script source), Secrets (secret bindings) and CloudflareAccounts
+  - Watches ConfigMaps (script source), Secrets (secret bindings), KVNamespaces (`kvNamespaceRef`) and
+    CloudflareAccounts
   - Finalizer: deletes the Worker (unless `retain`); a Worker kflare never uploaded is left alone
 - [x] Unit tests (96.4% package coverage)
 - [x] `config/samples/cloudflare_v1alpha1_workerscript.yaml`
@@ -430,27 +432,55 @@ kubectl get workerroutes.kflare.dev   # check Ready + Route ID
 ---
 
 ### Phase 3 — Expanded API Surface
-**Status:** 🔲 Not started
+**Status:** 🚧 In progress
 
-Same branch-per-feature pattern as Phase 2. Planned branches:
+Same branch-per-feature pattern as Phase 2. Items that can be built **and live-tested on a Free zone** come first;
+load balancing waits until the account has the Load Balancing add-on (decided 2026-10-06).
 
-| Branch | CRD(s) | Depends on |
-|--------|--------|------------|
-| `feat/health-check-controller` | `HealthCheck` | shared-client |
-| `feat/load-balancer-controller` | `LoadBalancer` | health-check-controller |
-| `feat/rate-limit-controller` | `RateLimit` | zone-controller |
-| `feat/firewall-rule-controller` | `FirewallRule` | zone-controller |
-| `feat/page-rule-controller` | `PageRule` | zone-controller |
-| `feat/r2-bucket-controller` | `R2Bucket` | shared-client |
-| `feat/kv-namespace-controller` | `KVNamespace` | shared-client |
-| `feat/zero-trust-controllers` | `AccessApplication`, `AccessPolicy`, `AccessGroup` | shared-client |
-| `feat/waf-controller` | `WAFPackage` | zone-controller |
-| `feat/managed-transform-controller` | `ManagedTransform` | zone-controller |
+| Branch | CRD(s) | Depends on | Status |
+|--------|--------|------------|--------|
+| `feat/kv-namespace-controller` | `KVNamespace` (+ WorkerScript `kvNamespaceRef`) | shared-client | ✅ |
+| `feat/r2-bucket-controller` | `R2Bucket` | shared-client | Next (the account already has R2) |
+| `feat/firewall-rule-controller` | `FirewallRule` | zone-controller | |
+| `feat/rate-limit-controller` | `RateLimit` | zone-controller | |
+| `feat/zero-trust-controllers` | `AccessApplication`, `AccessPolicy`, `AccessGroup` | shared-client | |
+| `feat/waf-controller` | `WAFPackage` | zone-controller | |
+| `feat/managed-transform-controller` | `ManagedTransform` | zone-controller | |
+| `feat/page-rule-controller` | `PageRule` | zone-controller | |
+| `feat/load-balancer-monitor-controller` | `LoadBalancerMonitor` | shared-client | Needs Load Balancing add-on |
+| `feat/load-balancer-controller` | `LoadBalancer` (+ pools) | load-balancer-monitor-controller | Needs Load Balancing add-on |
 
 **Notes:**
+- `LoadBalancerMonitor` (renamed from `HealthCheck`, 2026-10-06) is Cloudflare's account-level load balancer monitor,
+  matching the API and Terraform (`cloudflare_load_balancer_monitor`). Without the Load Balancing add-on
+  (~$5/month) Cloudflare rejects every monitor: the interval range collapses to [1, 1], which cannot satisfy
+  interval > (retries+1) × timeout (verified live). The name `HealthCheck` stays free for Cloudflare's separate
+  zone-level Health Checks product, which needs a Pro plan
 - Zero Trust resources require `Account`-scoped (not Zone-scoped) API tokens — separate CF token needed
 - R2 and KV are account-level — no `zoneRef`
-- `LoadBalancer` depends on `HealthCheck` — do health checks first
+
+#### Branch: `feat/kv-namespace-controller`
+**Status:** ✅ Complete
+
+- [x] `api/v1alpha1/kvnamespace_types.go`: `spec.accountRef` (immutable), `spec.title` (renamed in place);
+  `status.cloudflareMetadata.namespaceID`
+- [x] `internal/controller/kvnamespace_controller.go`: list → match status ID → adopt by title → create; title drift
+  corrected by rename; claims its namespace in `kflare.dev/kv-namespace-id` (`TitleConflict` otherwise)
+- [x] WorkerScript binding `kvNamespaceRef` (same namespace): waits for the KVNamespace to be ready, hashes the
+  resolved ID (a recreated namespace re-uploads the Worker), watches KVNamespaces
+- [x] Deletion: a KVNamespace waits for the WorkerScripts bound to it; it counts as a user of its account.
+  Deleting it deletes the data unless `retain`
+- [x] Unit/envtest tests; live e2e spec (namespace + Worker binding checked via `ListWorkerBindings`)
+
+**KVNamespace design notes (verified live):**
+- `KVNamespaceAPI` interface: `CreateWorkersKVNamespace/ListWorkersKVNamespaces/UpdateWorkersKVNamespace/
+  DeleteWorkersKVNamespace` (account-level `rc`); cloudflare-go v0.89 has no single-namespace read, so the
+  controller lists (the SDK pages) and matches the ID
+- Titles are unique per account (duplicate → 400, code 10014); unknown namespace ID → 404 (10013); rename (PUT)
+  keeps the ID
+- Cloudflare deletes a namespace a Worker is bound to and leaves the binding dangling; every later upload of that
+  Worker fails with 10041 "KV namespace not found". Hence the deletion ordering
+- Needs the account-level **Workers KV Storage: Edit** permission
 
 **Also in Phase 3:**
 - [ ] OpenAPI-to-CRD generator skeleton (`generator/` package) — parses the [Cloudflare OpenAPI spec](https://github.com/cloudflare/api-schemas) to generate CRD type definitions and reconciler skeletons; intended to accelerate the long tail of resources beyond what is hand-written in Phase 2
@@ -562,6 +592,7 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 
 ## Current Status
 
-> **Phase 1 and Phase 2 complete, including `WorkerRoute`.**
-> Next: Phase 3, starting with `feat/health-check-controller` (load balancers depend on it).
+> **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace` done.**
+> Next: `feat/r2-bucket-controller`. Load balancing (`LoadBalancerMonitor`, `LoadBalancer`) waits for the Load
+> Balancing add-on.
 > Last updated: October 2026

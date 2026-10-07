@@ -52,3 +52,9 @@ func (in *WorkerRoute) GetConditions() []metav1.Condition { return in.Status.Con
 
 // SetConditions replaces the Worker route's status conditions.
 func (in *WorkerRoute) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
+
+// GetConditions returns the KV namespace's status conditions.
+func (in *KVNamespace) GetConditions() []metav1.Condition { return in.Status.Conditions }
+
+// SetConditions replaces the KV namespace's status conditions.
+func (in *KVNamespace) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }

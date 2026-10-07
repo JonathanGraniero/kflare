@@ -24,6 +24,7 @@ func TestConditionAccessors(t *testing.T) {
 		"TunnelConfiguration": &TunnelConfiguration{},
 		"WorkerScript":        &WorkerScript{},
 		"WorkerRoute":         &WorkerRoute{},
+		"KVNamespace":         &KVNamespace{},
 	}
 	want := []metav1.Condition{{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: "Synced"}}
 	for kind, obj := range objects {

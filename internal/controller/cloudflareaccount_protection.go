@@ -69,7 +69,8 @@ func (r *CloudflareAccountReconciler) reconcileDelete(
 // deletingAccountOf maps the deletion of a Zone, Tunnel or WorkerScript to
 // its account while that account is being deleted.
 func (r *CloudflareAccountReconciler) deletingAccountOf(ctx context.Context, obj client.Object) []reconcile.Request {
-	return deletingParentOf(ctx, r.Client, obj, &cloudflarev1alpha1.CloudflareAccount{}, false, accountDependents)
+	return deletingParentOf(ctx, r.Client, obj,
+		func() client.Object { return &cloudflarev1alpha1.CloudflareAccount{} }, false, accountDependents)
 }
 
 // protectTokenSecret adds tokenSecretFinalizer to the Secret named by

@@ -57,9 +57,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		zoneName  string
 
 		accountKey, tunnelKey, tunnelConfigKey, workerKey, zoneKey, recordKey client.ObjectKey
-		routeKey, exclusionKey                                                client.ObjectKey
+		routeKey, exclusionKey, kvKey                                         client.ObjectKey
 
-		tunnelID, zoneID, recordID, routeID, exclusionID string
+		tunnelID, zoneID, recordID, routeID, exclusionID, kvNamespaceID string
 	)
 
 	// resourceName is the name of every Cloudflare object this run creates.
@@ -114,10 +114,17 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		recordKey = client.ObjectKey{Namespace: e2eNamespace, Name: "record"}
 		routeKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route"}
 		exclusionKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route-exclusion"}
+		kvKey = client.ObjectKey{Namespace: e2eNamespace, Name: "kv"}
 
 		DeferCleanup(func() {
 			By("removing anything this run left behind in Cloudflare")
 			cleanupCloudflare(ctx, cfAPI, accountRC, resourceName(), zoneID, recordName(), routeIDs(routeID, exclusionID))
+			if kvNamespaceID != "" {
+				_, err := cfAPI.DeleteWorkersKVNamespace(ctx, accountRC, kvNamespaceID)
+				if err != nil && !cfpkg.IsNotFound(err) {
+					GinkgoWriter.Printf("cleanup: deleting KV namespace %s: %v\n", kvNamespaceID, err)
+				}
+			}
 		})
 
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: e2eNamespace}}
@@ -188,7 +195,22 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(cfConfig.Config.Ingress[1].Service).To(Equal("http_status:404"))
 	})
 
-	It("uploads a WorkerScript", func() {
+	It("creates a KVNamespace", func() {
+		kv := &cloudflarev1alpha1.KVNamespace{
+			ObjectMeta: objectMeta(kvKey),
+			Spec: cloudflarev1alpha1.KVNamespaceSpec{
+				AccountRef: corev1.LocalObjectReference{Name: accountKey.Name},
+				Title:      resourceName(),
+			},
+		}
+		Expect(k8s.Create(ctx, kv)).To(Succeed())
+		expectReady(kvKey, kv, func() []metav1.Condition { return kv.Status.Conditions })
+		kvNamespaceID = kv.Status.CloudflareMetadata.NamespaceID
+
+		Expect(kvNamespaces(ctx, cfAPI, accountRC)).To(HaveKeyWithValue(kvNamespaceID, resourceName()))
+	})
+
+	It("uploads a WorkerScript bound to the KVNamespace", func() {
 		script := `export default { async fetch(request, env) { return new Response(env.GREETING); } };`
 		greeting := "hello from kflare e2e"
 		worker := &cloudflarev1alpha1.WorkerScript{
@@ -198,7 +220,10 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				AccountRef:        corev1.LocalObjectReference{Name: accountKey.Name},
 				Script:            &script,
 				CompatibilityDate: "2024-09-23",
-				Bindings:          []cloudflarev1alpha1.WorkerBinding{{Name: "GREETING", PlainText: &greeting}},
+				Bindings: []cloudflarev1alpha1.WorkerBinding{
+					{Name: "GREETING", PlainText: &greeting},
+					{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvKey.Name}},
+				},
 			},
 		}
 		Expect(k8s.Create(ctx, worker)).To(Succeed())
@@ -206,6 +231,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(worker.Status.CloudflareMetadata.ModifiedOn).NotTo(BeEmpty())
 
 		Expect(workerNames(ctx, cfAPI, accountRC)).To(ContainElement(resourceName()))
+		bindings, err := cfAPI.ListWorkerBindings(ctx, accountRC, cf.ListWorkerBindingsParams{ScriptName: resourceName()})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(bindings.BindingList).To(ContainElement(cf.WorkerBindingListItem{
+			Name: "CACHE", Binding: cf.WorkerKvNamespaceBinding{NamespaceID: kvNamespaceID},
+		}))
 	})
 
 	It("adopts the test zone without changing it", func() {
@@ -314,6 +344,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			&cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(recordKey)},
 			&cloudflarev1alpha1.TunnelConfiguration{ObjectMeta: objectMeta(tunnelConfigKey)},
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: objectMeta(workerKey)},
+			&cloudflarev1alpha1.KVNamespace{ObjectMeta: objectMeta(kvKey)},
 			&cloudflarev1alpha1.Tunnel{ObjectMeta: objectMeta(tunnelKey)},
 			&cloudflarev1alpha1.Zone{ObjectMeta: objectMeta(zoneKey)},
 			&cloudflarev1alpha1.CloudflareAccount{ObjectMeta: objectMeta(accountKey)},
@@ -334,6 +365,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "unexpected error: %v", err)
 		}
 		Expect(workerNames(ctx, cfAPI, accountRC)).NotTo(ContainElement(resourceName()))
+		Expect(kvNamespaces(ctx, cfAPI, accountRC)).NotTo(HaveKey(kvNamespaceID))
 		if zoneName != "" {
 			_, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), recordID)
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "record was not deleted: %v", err)
@@ -346,6 +378,17 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}
 	})
 })
+
+// kvNamespaces maps the account's KV namespace IDs to their titles.
+func kvNamespaces(ctx context.Context, api *cf.API, rc *cf.ResourceContainer) map[string]string {
+	namespaces, _, err := api.ListWorkersKVNamespaces(ctx, rc, cf.ListWorkersKVNamespacesParams{})
+	Expect(err).NotTo(HaveOccurred())
+	out := make(map[string]string, len(namespaces))
+	for _, ns := range namespaces {
+		out[ns.ID] = ns.Title
+	}
+	return out
+}
 
 // workerNames lists the Worker script names in the account.
 func workerNames(ctx context.Context, api *cf.API, rc *cf.ResourceContainer) []string {

@@ -598,10 +598,13 @@ var _ = Describe("WorkerScript Controller", func() {
 			}, "exactly one of script or scriptConfigMapRef"),
 			Entry("a binding with two sources", func(s *cloudflarev1alpha1.WorkerScriptSpec) {
 				s.Bindings[0].KVNamespaceID = cf.StringPtr("kv")
-			}, "exactly one of plainText, secretKeyRef, kvNamespaceID or r2BucketName"),
+			}, "exactly one of plainText, secretKeyRef, kvNamespaceRef, kvNamespaceID or r2BucketName"),
+			Entry("a binding with both kvNamespaceRef and kvNamespaceID", func(s *cloudflarev1alpha1.WorkerScriptSpec) {
+				s.Bindings[2].KVNamespaceRef = &corev1.LocalObjectReference{Name: "kv"}
+			}, "exactly one of plainText, secretKeyRef, kvNamespaceRef, kvNamespaceID or r2BucketName"),
 			Entry("a binding with no source", func(s *cloudflarev1alpha1.WorkerScriptSpec) {
 				s.Bindings[0].PlainText = nil
-			}, "exactly one of plainText, secretKeyRef, kvNamespaceID or r2BucketName"),
+			}, "exactly one of plainText, secretKeyRef, kvNamespaceRef, kvNamespaceID or r2BucketName"),
 			Entry("duplicate binding names", func(s *cloudflarev1alpha1.WorkerScriptSpec) {
 				s.Bindings[1].Name = s.Bindings[0].Name
 			}, "Duplicate value"),

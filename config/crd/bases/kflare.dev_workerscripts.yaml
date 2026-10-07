@@ -85,9 +85,28 @@ spec:
                     Exactly one source must be set.
                   properties:
                     kvNamespaceID:
-                      description: KVNamespaceID binds a Workers KV namespace by ID.
+                      description: |-
+                        KVNamespaceID binds a Workers KV namespace by ID. Prefer
+                        kvNamespaceRef for namespaces managed by kflare.
                       minLength: 1
                       type: string
+                    kvNamespaceRef:
+                      description: |-
+                        KVNamespaceRef binds the Workers KV namespace of a KVNamespace in the
+                        same namespace. The Worker is uploaded once the KVNamespace is ready,
+                        and the KVNamespace is not deleted while this binding exists.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
                     name:
                       description: Name of the binding, as seen by the Worker (env.NAME).
                       pattern: ^[A-Za-z_][A-Za-z0-9_]*$
@@ -122,10 +141,11 @@ spec:
                   - name
                   type: object
                   x-kubernetes-validations:
-                  - message: exactly one of plainText, secretKeyRef, kvNamespaceID
-                      or r2BucketName must be set
-                    rule: '[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceID),
-                      has(self.r2BucketName)].filter(x, x).size() == 1'
+                  - message: exactly one of plainText, secretKeyRef, kvNamespaceRef,
+                      kvNamespaceID or r2BucketName must be set
+                    rule: '[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceRef),
+                      has(self.kvNamespaceID), has(self.r2BucketName)].filter(x, x).size()
+                      == 1'
                 maxItems: 64
                 type: array
                 x-kubernetes-list-map-keys:

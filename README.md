@@ -28,7 +28,9 @@ Early development. Phase 1 (foundation) and Phase 2 (core resources) are complet
 
 - `WorkerRoute` — routes a URL pattern in a `Zone` to a `WorkerScript`, or excludes a pattern from a broader route, and recreates the route when Cloudflare drops it (see [the sample](config/samples/cloudflare_v1alpha1_workerroute.yaml))
 
-**Planned next:** Phase 3 — health checks and load balancers, rate limiting, firewall and WAF rules, R2, KV and Zero Trust (see [CLAUDE.md](./CLAUDE.md)).
+- `KVNamespace` — creates or adopts a Workers KV namespace (renamed in place when its title changes); WorkerScripts bind it with `kvNamespaceRef` instead of a copied ID (see [the sample](config/samples/cloudflare_v1alpha1_kvnamespace.yaml))
+
+**Planned next:** more of Phase 3 — R2 buckets, firewall and WAF rules, rate limiting and Zero Trust, then load balancers (see [CLAUDE.md](./CLAUDE.md)).
 
 ## Install
 
@@ -54,6 +56,7 @@ For working on kflare itself:
   - `Tunnel` also needs the account-level **Cloudflare Tunnel: Edit** permission
   - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission
   - `WorkerRoute` also needs the zone-level **Workers Routes: Edit** permission
+  - `KVNamespace` also needs the account-level **Workers KV Storage: Edit** permission
   - Setting `Zone` `spec.plan` also needs **Billing: Edit**, and changes your bill
 
 ## Local Development
