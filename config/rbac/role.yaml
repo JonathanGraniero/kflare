@@ -29,6 +29,7 @@ rules:
   resources:
   - cloudflareaccounts
   - dnsrecords
+  - kvnamespaces
   - tunnelconfigurations
   - tunnels
   - workerroutes
@@ -47,6 +48,7 @@ rules:
   resources:
   - cloudflareaccounts/finalizers
   - dnsrecords/finalizers
+  - kvnamespaces/finalizers
   - tunnelconfigurations/finalizers
   - tunnels/finalizers
   - workerroutes/finalizers
@@ -59,6 +61,7 @@ rules:
   resources:
   - cloudflareaccounts/status
   - dnsrecords/status
+  - kvnamespaces/status
   - tunnelconfigurations/status
   - tunnels/status
   - workerroutes/status

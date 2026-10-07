@@ -9,6 +9,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -30,7 +31,10 @@ import (
 //     use its credentials;
 //   - a Zone waits for its DNSRecords and WorkerRoutes, which need its zone ID
 //     and account;
-//   - a Tunnel waits for its TunnelConfigurations.
+//   - a Tunnel waits for its TunnelConfigurations;
+//   - a KVNamespace waits for the WorkerScripts bound to it: Cloudflare
+//     deletes a namespace a Worker is bound to, but every later upload of
+//     that Worker then fails.
 //
 // Without this, deleting everything at once (a namespace, or `kubectl delete
 // -f` on a directory) lets a parent go first. A child then cannot reach
@@ -38,25 +42,25 @@ import (
 // for example DNS records were left behind in a retained zone.
 
 // dependentKind describes one kind of resource that depends on a parent: how
-// to list it and which parent a given resource references.
+// to list it and which parents a given resource references.
 type dependentKind struct {
-	kind   string
-	list   func() client.ObjectList
-	parent func(client.Object) (string, bool)
+	kind    string
+	list    func() client.ObjectList
+	parents func(client.Object) ([]string, bool)
 }
 
-// dependents builds a dependentKind for objects of type T whose parent's name
-// ref returns.
-func dependents[T client.Object](kind string, list func() client.ObjectList, ref func(T) string) dependentKind {
+// dependents builds a dependentKind for objects of type T that reference the
+// parents named by refs.
+func dependents[T client.Object](kind string, list func() client.ObjectList, refs func(T) []string) dependentKind {
 	return dependentKind{
 		kind: kind,
 		list: list,
-		parent: func(obj client.Object) (string, bool) {
+		parents: func(obj client.Object) ([]string, bool) {
 			typed, ok := obj.(T)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			return ref(typed), true
+			return refs(typed), true
 		},
 	}
 }
@@ -65,25 +69,34 @@ var (
 	// accountDependents use a CloudflareAccount's credentials directly.
 	accountDependents = []dependentKind{
 		dependents("Zone", func() client.ObjectList { return &cloudflarev1alpha1.ZoneList{} },
-			func(z *cloudflarev1alpha1.Zone) string { return z.Spec.AccountRef.Name }),
+			func(z *cloudflarev1alpha1.Zone) []string { return []string{z.Spec.AccountRef.Name} }),
 		dependents("Tunnel", func() client.ObjectList { return &cloudflarev1alpha1.TunnelList{} },
-			func(t *cloudflarev1alpha1.Tunnel) string { return t.Spec.AccountRef.Name }),
+			func(t *cloudflarev1alpha1.Tunnel) []string { return []string{t.Spec.AccountRef.Name} }),
 		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
-			func(w *cloudflarev1alpha1.WorkerScript) string { return w.Spec.AccountRef.Name }),
+			func(w *cloudflarev1alpha1.WorkerScript) []string { return []string{w.Spec.AccountRef.Name} }),
+		dependents("KVNamespace", func() client.ObjectList { return &cloudflarev1alpha1.KVNamespaceList{} },
+			func(kv *cloudflarev1alpha1.KVNamespace) []string { return []string{kv.Spec.AccountRef.Name} }),
 	}
 
 	// zoneDependents live in a Zone's namespace and reference it by name.
 	zoneDependents = []dependentKind{
 		dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
-			func(d *cloudflarev1alpha1.DNSRecord) string { return d.Spec.ZoneRef.Name }),
+			func(d *cloudflarev1alpha1.DNSRecord) []string { return []string{d.Spec.ZoneRef.Name} }),
 		dependents("WorkerRoute", func() client.ObjectList { return &cloudflarev1alpha1.WorkerRouteList{} },
-			func(w *cloudflarev1alpha1.WorkerRoute) string { return w.Spec.ZoneRef.Name }),
+			func(w *cloudflarev1alpha1.WorkerRoute) []string { return []string{w.Spec.ZoneRef.Name} }),
+	}
+
+	// kvNamespaceDependents live in a KVNamespace's namespace and bind it
+	// through kvNamespaceRef.
+	kvNamespaceDependents = []dependentKind{
+		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
+			boundKVNamespaces),
 	}
 
 	// tunnelDependents live in a Tunnel's namespace and reference it by name.
 	tunnelDependents = []dependentKind{
 		dependents("TunnelConfiguration", func() client.ObjectList { return &cloudflarev1alpha1.TunnelConfigurationList{} },
-			func(tc *cloudflarev1alpha1.TunnelConfiguration) string { return tc.Spec.TunnelRef.Name }),
+			func(tc *cloudflarev1alpha1.TunnelConfiguration) []string { return []string{tc.Spec.TunnelRef.Name} }),
 	}
 )
 
@@ -111,7 +124,7 @@ func dependentsOf(
 			if !ok {
 				return nil, fmt.Errorf("unexpected list item %T", item)
 			}
-			if name, ok := k.parent(obj); ok && name == parentName {
+			if names, ok := k.parents(obj); ok && slices.Contains(names, parentName) {
 				found = append(found, fmt.Sprintf("%s %s/%s", k.kind, obj.GetNamespace(), obj.GetName()))
 			}
 		}
@@ -144,30 +157,36 @@ var deletesOnly = predicate.Funcs{
 	GenericFunc: func(event.GenericEvent) bool { return false },
 }
 
-// deletingParentOf maps the deletion of dependent to its parent, but only
-// while that parent is itself being deleted: a parent in normal use has
-// nothing to do when a dependent goes away. parent is an empty object of the
-// parent's kind; namespaced parents are looked up in the dependent's namespace.
+// deletingParentOf maps the deletion of dependent to those of its parents
+// that are themselves being deleted: a parent in normal use has nothing to do
+// when a dependent goes away. newParent returns an empty object of the
+// parent's kind; namespaced parents are looked up in the dependent's
+// namespace.
 func deletingParentOf(
 	ctx context.Context,
 	c client.Reader,
-	dependent, parent client.Object,
+	dependent client.Object,
+	newParent func() client.Object,
 	namespaced bool,
 	kinds []dependentKind,
 ) []reconcile.Request {
+	var reqs []reconcile.Request
 	for _, k := range kinds {
-		name, ok := k.parent(dependent)
+		names, ok := k.parents(dependent)
 		if !ok {
 			continue
 		}
-		key := types.NamespacedName{Name: name}
-		if namespaced {
-			key.Namespace = dependent.GetNamespace()
+		for _, name := range names {
+			key := types.NamespacedName{Name: name}
+			if namespaced {
+				key.Namespace = dependent.GetNamespace()
+			}
+			parent := newParent()
+			if err := c.Get(ctx, key, parent); err != nil || parent.GetDeletionTimestamp().IsZero() {
+				continue
+			}
+			reqs = append(reqs, reconcile.Request{NamespacedName: key})
 		}
-		if err := c.Get(ctx, key, parent); err != nil || parent.GetDeletionTimestamp().IsZero() {
-			return nil
-		}
-		return []reconcile.Request{{NamespacedName: key}}
 	}
-	return nil
+	return reqs
 }

@@ -290,7 +290,8 @@ func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // deletingZoneOf maps the deletion of a DNSRecord or WorkerRoute to its Zone
 // while that Zone is being deleted.
 func (r *ZoneReconciler) deletingZoneOf(ctx context.Context, obj client.Object) []reconcile.Request {
-	return deletingParentOf(ctx, r.Client, obj, &cloudflarev1alpha1.Zone{}, true, zoneDependents)
+	return deletingParentOf(ctx, r.Client, obj,
+		func() client.Object { return &cloudflarev1alpha1.Zone{} }, true, zoneDependents)
 }
 
 // zonesForAccount maps a CloudflareAccount event to reconcile.Requests for

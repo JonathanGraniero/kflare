@@ -81,7 +81,7 @@ type WorkerKeyReference struct {
 
 // WorkerBinding exposes one value or resource to the Worker under Name.
 // Exactly one source must be set.
-// +kubebuilder:validation:XValidation:rule="[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceID), has(self.r2BucketName)].filter(x, x).size() == 1",message="exactly one of plainText, secretKeyRef, kvNamespaceID or r2BucketName must be set"
+// +kubebuilder:validation:XValidation:rule="[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceRef), has(self.kvNamespaceID), has(self.r2BucketName)].filter(x, x).size() == 1",message="exactly one of plainText, secretKeyRef, kvNamespaceRef, kvNamespaceID or r2BucketName must be set"
 type WorkerBinding struct {
 	// Name of the binding, as seen by the Worker (env.NAME).
 	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
@@ -98,7 +98,14 @@ type WorkerBinding struct {
 	// +optional
 	SecretKeyRef *WorkerKeyReference `json:"secretKeyRef,omitempty"`
 
-	// KVNamespaceID binds a Workers KV namespace by ID.
+	// KVNamespaceRef binds the Workers KV namespace of a KVNamespace in the
+	// same namespace. The Worker is uploaded once the KVNamespace is ready,
+	// and the KVNamespace is not deleted while this binding exists.
+	// +optional
+	KVNamespaceRef *corev1.LocalObjectReference `json:"kvNamespaceRef,omitempty"`
+
+	// KVNamespaceID binds a Workers KV namespace by ID. Prefer
+	// kvNamespaceRef for namespaces managed by kflare.
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	KVNamespaceID *string `json:"kvNamespaceID,omitempty"`

@@ -350,7 +350,8 @@ func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // deletingTunnelOf maps the deletion of a TunnelConfiguration to its Tunnel
 // while that Tunnel is being deleted.
 func (r *TunnelReconciler) deletingTunnelOf(ctx context.Context, obj client.Object) []reconcile.Request {
-	return deletingParentOf(ctx, r.Client, obj, &cloudflarev1alpha1.Tunnel{}, true, tunnelDependents)
+	return deletingParentOf(ctx, r.Client, obj,
+		func() client.Object { return &cloudflarev1alpha1.Tunnel{} }, true, tunnelDependents)
 }
 
 // tunnelsForAccount maps a CloudflareAccount event to reconcile.Requests for

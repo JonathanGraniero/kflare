@@ -11,10 +11,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -55,6 +57,7 @@ type WorkerScriptReconciler struct {
 //+kubebuilder:rbac:groups=kflare.dev,resources=cloudflareaccounts,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+//+kubebuilder:rbac:groups=kflare.dev,resources=kvnamespaces,verbs=get;list;watch
 
 func (r *WorkerScriptReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -202,6 +205,13 @@ func (r *WorkerScriptReconciler) desiredUpload(
 		case b.PlainText != nil:
 			bindings[b.Name] = cf.WorkerPlainTextBinding{Text: *b.PlainText}
 			kind, hashed = "plainText", *b.PlainText
+		case b.KVNamespaceRef != nil:
+			namespaceID, srcErr := r.bindingKVNamespace(ctx, ws, b)
+			if srcErr != nil {
+				return cf.CreateWorkerParams{}, "", srcErr
+			}
+			bindings[b.Name] = cf.WorkerKvNamespaceBinding{NamespaceID: namespaceID}
+			kind, hashed = "kvNamespace", namespaceID
 		case b.KVNamespaceID != nil:
 			bindings[b.Name] = cf.WorkerKvNamespaceBinding{NamespaceID: *b.KVNamespaceID}
 			kind, hashed = "kvNamespace", *b.KVNamespaceID
@@ -250,6 +260,57 @@ func (r *WorkerScriptReconciler) scriptSource(ctx context.Context, ws *cloudflar
 		}
 	}
 	return script, nil
+}
+
+// bindingKVNamespace returns the Cloudflare namespace ID of the KVNamespace a
+// kvNamespaceRef binding names. It must be ready and use the Worker's account:
+// a Worker can only bind namespaces in its own account.
+func (r *WorkerScriptReconciler) bindingKVNamespace(
+	ctx context.Context,
+	ws *cloudflarev1alpha1.WorkerScript,
+	b cloudflarev1alpha1.WorkerBinding,
+) (string, *conditionError) {
+	ref := b.KVNamespaceRef
+	kv := &cloudflarev1alpha1.KVNamespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ws.Namespace}, kv); err != nil {
+		return "", &conditionError{
+			Reason:  "KVNamespaceNotFound",
+			Message: fmt.Sprintf("KVNamespace %q for binding %q not found: %v", ref.Name, b.Name, err),
+		}
+	}
+	if kv.Spec.AccountRef.Name != ws.Spec.AccountRef.Name {
+		return "", &conditionError{
+			Reason: "AccountMismatch",
+			Message: fmt.Sprintf("KVNamespace %q for binding %q uses CloudflareAccount %q but this Worker uses %q",
+				kv.Name, b.Name, kv.Spec.AccountRef.Name, ws.Spec.AccountRef.Name),
+		}
+	}
+	if !isKVNamespaceReady(kv) {
+		return "", &conditionError{
+			Reason:  "KVNamespaceNotReady",
+			Message: fmt.Sprintf("KVNamespace %q for binding %q is not ready", kv.Name, b.Name),
+		}
+	}
+	return kv.Status.CloudflareMetadata.NamespaceID, nil
+}
+
+// isKVNamespaceReady returns true if the KVNamespace has a Ready=True
+// condition and a namespace ID.
+func isKVNamespaceReady(kv *cloudflarev1alpha1.KVNamespace) bool {
+	return kv.Status.CloudflareMetadata.NamespaceID != "" &&
+		meta.IsStatusConditionTrue(kv.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+}
+
+// boundKVNamespaces returns the names of the KVNamespaces ws binds through
+// kvNamespaceRef.
+func boundKVNamespaces(ws *cloudflarev1alpha1.WorkerScript) []string {
+	var names []string
+	for _, b := range ws.Spec.Bindings {
+		if b.KVNamespaceRef != nil {
+			names = append(names, b.KVNamespaceRef.Name)
+		}
+	}
+	return names
 }
 
 // bindingSecret returns the value of a secret binding and a version string
@@ -309,14 +370,16 @@ func (r *WorkerScriptReconciler) reconcileDelete(ctx context.Context, ws *cloudf
 
 // SetupWithManager registers WorkerScriptReconciler with the manager. Besides
 // WorkerScripts it watches the ConfigMaps holding script code, the Secrets
-// behind secret bindings, and CloudflareAccounts, so a change to any of them
-// re-triggers the Workers that use it.
+// behind secret bindings, the KVNamespaces behind namespace bindings, and
+// CloudflareAccounts, so a change to any of them re-triggers the Workers that
+// use it.
 func (r *WorkerScriptReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.WorkerScript{}).
 		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.workersForConfigMap)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.workersForSecret)).
 		Watches(&cloudflarev1alpha1.CloudflareAccount{}, handler.EnqueueRequestsFromMapFunc(r.workersForAccount)).
+		Watches(&cloudflarev1alpha1.KVNamespace{}, handler.EnqueueRequestsFromMapFunc(r.workersForKVNamespace)).
 		Complete(r)
 }
 
@@ -358,6 +421,13 @@ func (r *WorkerScriptReconciler) workersForSecret(ctx context.Context, obj clien
 			}
 		}
 		return false
+	})
+}
+
+// workersForKVNamespace maps a KVNamespace event to the WorkerScripts that bind it.
+func (r *WorkerScriptReconciler) workersForKVNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.workersMatching(ctx, obj.GetNamespace(), func(ws *cloudflarev1alpha1.WorkerScript) bool {
+		return slices.Contains(boundKVNamespaces(ws), obj.GetName())
 	})
 }
 
