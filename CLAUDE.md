@@ -106,8 +106,9 @@ Planned, not yet present: `generator/` (Phase 3), the Docusaurus site under `doc
   - Sets `Ready` condition and `accountName` in status
   - Tested live against real Cloudflare account ✅
   - Watches its token Secret; deletion protection keeps the account (finalizer, `Ready=False InUse`) while a
-    Zone, Tunnel or WorkerScript references it, and the token Secret (`kflare.dev/token-protection`, recorded
-    in `status.protectedTokenSecret`) while an account references it — see `cloudflareaccount_protection.go`
+    Zone, Tunnel, WorkerScript, KVNamespace or R2Bucket references it, and the token Secret
+    (`kflare.dev/token-protection`, recorded in `status.protectedTokenSecret`) while an account references it — see
+    `cloudflareaccount_protection.go`
 - [x] Makefile targets: `generate`, `manifests`, `build`, `run`, `test` (kubebuilder-generated)
 - [x] Local dev environment: `local/setup.sh`, `local/teardown.sh`, kind cluster config
 - [x] `pkg/cloudflare/client.go` — shared CF client wrapper (completed in `feat/shared-client`)
@@ -143,6 +144,7 @@ Shared infrastructure that all Phase 2 controllers will use.
   - `IsTerminalError(err)` — true for 401/403/404/4xx (stop requeuing)
   - `IsNotFound(err)` — true for 404 specifically
   - `IsRateLimit(err)` — true for 429 (apply back-off)
+  - `HasErrorCode(err, code)` — a 4xx carrying a specific Cloudflare error code (added with R2Bucket)
 - [x] `pkg/reconciler/base.go` — shared reconciler helpers
   - `SetCondition()` — wraps `meta.SetStatusCondition`, always sets `ObservedGeneration`
   - `EnsureFinalizer()` / `RemoveFinalizer()` — idempotent finalizer lifecycle
@@ -171,9 +173,9 @@ Shared infrastructure that all Phase 2 controllers will use.
   - Deployment smoke test: builds the image, deploys `config/default` to kind, checks the manager pod is
     ready with no restarts
   - Live Cloudflare specs (`test/e2e/cloudflare_test.go`, skipped without credentials): account validation,
-    Tunnel + token Secret, TunnelConfiguration, KVNamespace, WorkerScript (bound to it). With `CF_E2E_ZONE` also
-    Zone adoption (always `retain`), a DNSRecord (including a check that an idle reconcile does not write to
-    Cloudflare) and a WorkerRoute plus exclusion route. Then everything is deleted in one pass and Cloudflare is
+    Tunnel + token Secret, TunnelConfiguration, KVNamespace, R2Bucket, WorkerScript (bound to both). With
+    `CF_E2E_ZONE` also Zone adoption (always `retain`), a DNSRecord (including a check that an idle reconcile does not
+    write to Cloudflare) and a WorkerRoute plus exclusion route. Then everything is deleted in one pass and Cloudflare is
     checked. Everything is named `kflare-e2e-<run>` and cleaned up even on failure
   - `KFLARE_E2E_MANAGER=external` uses an already running manager (e.g. `make run`) instead of deploying one
     (first green live run: 2026-10-05, this way, on kind-kflare-dev)
@@ -356,13 +358,13 @@ kubectl get tunnelconfiguration -o yaml   # check Ready + cloudflareMetadata.ver
   - `spec`: `name` (immutable), `accountRef` (immutable), exactly one of `script` / `scriptConfigMapRef {name, key}`,
     `format` (`module` default, or `serviceWorker`), `compatibilityDate`, `compatibilityFlags`,
     `bindings[]` (exactly one of `plainText`, `secretKeyRef {name, key}`, `kvNamespaceRef`, `kvNamespaceID`,
-    `r2BucketName`; `kvNamespaceRef` added with KVNamespace)
+    `r2BucketRef`, `r2BucketName`; the refs were added with KVNamespace and R2Bucket)
   - `status.conditions`, `status.cloudflareMetadata` (etag, modifiedOn at full precision), `status.appliedHash`
 - [x] `internal/controller/workerscript_controller.go`
   - Uploads when the desired-state hash changes, when the Worker is missing, or when Cloudflare's `modified_on`
     differs from kflare's last upload
-  - Watches ConfigMaps (script source), Secrets (secret bindings), KVNamespaces (`kvNamespaceRef`) and
-    CloudflareAccounts
+  - Watches ConfigMaps (script source), Secrets (secret bindings), KVNamespaces (`kvNamespaceRef`), R2Buckets
+    (`r2BucketRef`) and CloudflareAccounts
   - Finalizer: deletes the Worker (unless `retain`); a Worker kflare never uploaded is left alone
 - [x] Unit tests (96.4% package coverage)
 - [x] `config/samples/cloudflare_v1alpha1_workerscript.yaml`
@@ -442,7 +444,7 @@ only partly built because of a paid plan, add-on or account setup is tracked in
 | Branch | CRD(s) | Depends on | Status / Free-plan scope |
 |--------|--------|------------|--------------------------|
 | `feat/kv-namespace-controller` | `KVNamespace` (+ WorkerScript `kvNamespaceRef`) | shared-client | ✅ |
-| `feat/r2-bucket-controller` | `R2Bucket` | shared-client | Next (the account already has R2) |
+| `feat/r2-bucket-controller` | `R2Bucket` (+ WorkerScript `r2BucketRef`) | shared-client | ✅ |
 | `feat/firewall-rule-controller` | `FirewallRule` → build as WAF custom rules | zone-controller | Free: 5 rules, no regex, no Log action. **Rename first** (see Deferred → plan corrections) |
 | `feat/rate-limit-controller` | `RateLimit` | zone-controller | Free: 1 rule, counts by IP only, 10 s period |
 | `feat/zero-trust-controllers` | `AccessApplication`, `AccessPolicy`, `AccessGroup` | shared-client | Needs Zero Trust enabled on the account first (free plan exists) |
@@ -473,6 +475,7 @@ Last checked 2026-10-07.
 |------|-------|----------------|-------------------|-------------------------|
 | `LoadBalancerMonitor`, `LoadBalancer` (+ pools) | Load Balancing add-on (account) | $5/month incl. 2 origins, +$5/origin/month, +$0.50 per 500K DNS queries | Live, 2026-10-06: every monitor create fails, `interval is not in range [1, 1]`. The token already has Load Balancing: Monitors and Pools Write | Subscribe, build the monitor then the load balancer; cancel after if it was only for testing |
 | `HealthCheck` (standalone, zone-level Health Checks) | Pro plan or higher on the zone; zone-level Health Checks Write on the token | Pro plan ~$20+/month per zone | Docs: Free plan gets 0 checks (Pro 10, Business 50). Token has Health Checks Read only | Not in the Phase 3 table yet. Add a branch once a Pro zone exists; keep it separate from `LoadBalancerMonitor` |
+| R2Bucket `storageClass` (a bucket's default storage class, `Standard` or `InfrequentAccess`) | Nothing to subscribe to, but R2's free tier covers Standard storage only, so testing Infrequent Access is billed usage | Usage-based; see R2 pricing | Not probed, to stay free. Every bucket on the account reports `Standard`. Also needs `Raw` calls: cloudflare-go v0.89 cannot send the `cf-r2-storage-class` header | Decide whether a few cents of test usage are acceptable, then add it as an optional, mutable field (create header + PATCH) |
 
 **Built, but not verified live because it costs money:**
 
@@ -484,7 +487,7 @@ Last checked 2026-10-07.
 
 | Item | Paid option | Current workaround | When we come back to it |
 |------|-------------|--------------------|-------------------------|
-| Ownership marker on the Cloudflare side (DNSRecord, and in general) | DNS record tags (Pro plan and up) | `kflare.dev/record-id` / `route-id` / `kv-namespace-id` labels in the cluster; ARCHITECTURE.md lists "no ownership marker on the Cloudflare side" as a known limitation | With a Pro zone, tag records kflare creates; or a TXT ownership registry like external-dns (works on Free) |
+| Ownership marker on the Cloudflare side (DNSRecord, and in general) | DNS record tags (Pro plan and up) | `kflare.dev/record-id` / `route-id` / `kv-namespace-id` / `r2-bucket-name` labels in the cluster; ARCHITECTURE.md lists "no ownership marker on the Cloudflare side" as a known limitation | With a Pro zone, tag records kflare creates; or a TXT ownership registry like external-dns (works on Free) |
 
 **Free, but needs account setup first:**
 
@@ -536,6 +539,43 @@ work unchanged.
 - Cloudflare deletes a namespace a Worker is bound to and leaves the binding dangling; every later upload of that
   Worker fails with 10041 "KV namespace not found". Hence the deletion ordering
 - Needs the account-level **Workers KV Storage: Edit** permission
+
+#### Branch: `feat/r2-bucket-controller`
+**Status:** ✅ Complete
+
+- [x] `api/v1alpha1/r2bucket_types.go`: `spec.accountRef` and `spec.name` (immutable), optional `spec.locationHint`
+  (immutable, used only when kflare creates the bucket); `status.cloudflareMetadata.location`, `creationDate`
+- [x] `internal/controller/r2bucket_controller.go`: get by name → adopt or create; claims the name in
+  `kflare.dev/r2-bucket-name` (`NameConflict` when another R2Bucket for the same Cloudflare account holds it, even
+  through a different CloudflareAccount); recreated, empty, if deleted outside kflare
+- [x] WorkerScript binding `r2BucketRef` (same namespace): waits for the R2Bucket to be ready, binds by bucket name,
+  watches R2Buckets
+- [x] Deletion: waits for the WorkerScripts bound to it; counts as a user of its account. kflare never deletes
+  objects: a bucket that holds any reports `BucketNotEmpty` and is checked again every minute. A bucket the R2Bucket
+  never claimed is left alone
+- [x] `pkg/cloudflare.HasErrorCode` tells 4xx rejections apart by Cloudflare error code
+- [x] Unit/envtest tests; live e2e spec (bucket + Worker binding checked via `ListWorkerBindings`)
+
+**R2Bucket design notes (verified live, 2026-10-07):**
+- `R2BucketAPI` interface: `GetR2Bucket/CreateR2Bucket/DeleteR2Bucket` (account `rc`). A bucket has no ID; its name
+  identifies it in the account
+- Duplicate create → 409 (10004); missing bucket → 404 (10006) for GET and DELETE; invalid name → 400 (10005);
+  unknown location hint → 400 (10044, lists `wnam, enam, weur, eeur, apac, oc, auto`). GET returns `location`,
+  `storage_class` and `jurisdiction`; LIST returns them as null
+- Deleting a bucket that holds objects → 409 (10008)
+- Cloudflare deletes a bucket a Worker is bound to; every later upload of that Worker then fails with 10085, and a
+  Worker bound to a missing bucket cannot be uploaded at all. Hence the deletion ordering and the readiness wait
+- Bindings resolve the bucket by name: a Worker kept working, without a re-upload, after its bucket was deleted and
+  created again under the same name (while it was gone the Worker threw error 1101). The binding hash is therefore the
+  bucket name only, unlike KV where a recreated namespace has a new ID
+- Needs the account-level **Workers R2 Storage: Edit** permission
+
+**Not supported yet:**
+- Jurisdictions (`eu`, `fedramp`): cloudflare-go v0.89 cannot send `cf-r2-jurisdiction`, and its Worker R2 binding has
+  no `jurisdiction` field. Needs `Raw` calls and a custom binding, or a newer SDK
+- Default storage class: see Deferred (Infrequent Access testing is billed)
+- Bucket configuration that Terraform models as separate resources: CORS, lifecycle rules, custom domains and the
+  r2.dev public URL, event notifications, bucket locks, Sippy
 
 **Also in Phase 3:**
 - [ ] OpenAPI-to-CRD generator skeleton (`generator/` package) — parses the [Cloudflare OpenAPI spec](https://github.com/cloudflare/api-schemas) to generate CRD type definitions and reconciler skeletons; intended to accelerate the long tail of resources beyond what is hand-written in Phase 2
@@ -647,7 +687,7 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 
 ## Current Status
 
-> **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace` done.**
-> Next: `feat/r2-bucket-controller`. Items needing a paid plan, add-on or account setup are tracked under
-> "Deferred: paid plan, add-on or account setup" in Phase 3.
+> **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace` and `R2Bucket` done.**
+> Next: WAF custom rules (the `FirewallRule` row; rename it first, see "Plan corrections"). Items needing a paid
+> plan, add-on or account setup are tracked under "Deferred: paid plan, add-on or account setup" in Phase 3.
 > Last updated: October 2026

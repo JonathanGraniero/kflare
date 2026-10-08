@@ -215,6 +215,13 @@ func (r *WorkerScriptReconciler) desiredUpload(
 		case b.KVNamespaceID != nil:
 			bindings[b.Name] = cf.WorkerKvNamespaceBinding{NamespaceID: *b.KVNamespaceID}
 			kind, hashed = "kvNamespace", *b.KVNamespaceID
+		case b.R2BucketRef != nil:
+			bucketName, srcErr := r.bindingR2Bucket(ctx, ws, b)
+			if srcErr != nil {
+				return cf.CreateWorkerParams{}, "", srcErr
+			}
+			bindings[b.Name] = cf.WorkerR2BucketBinding{BucketName: bucketName}
+			kind, hashed = "r2Bucket", bucketName
 		case b.R2BucketName != nil:
 			bindings[b.Name] = cf.WorkerR2BucketBinding{BucketName: *b.R2BucketName}
 			kind, hashed = "r2Bucket", *b.R2BucketName
@@ -280,7 +287,7 @@ func (r *WorkerScriptReconciler) bindingKVNamespace(
 	}
 	if kv.Spec.AccountRef.Name != ws.Spec.AccountRef.Name {
 		return "", &conditionError{
-			Reason: "AccountMismatch",
+			Reason: reasonAccountMismatch,
 			Message: fmt.Sprintf("KVNamespace %q for binding %q uses CloudflareAccount %q but this Worker uses %q",
 				kv.Name, b.Name, kv.Spec.AccountRef.Name, ws.Spec.AccountRef.Name),
 		}
@@ -308,6 +315,54 @@ func boundKVNamespaces(ws *cloudflarev1alpha1.WorkerScript) []string {
 	for _, b := range ws.Spec.Bindings {
 		if b.KVNamespaceRef != nil {
 			names = append(names, b.KVNamespaceRef.Name)
+		}
+	}
+	return names
+}
+
+// bindingR2Bucket returns the Cloudflare bucket name of the R2Bucket an
+// r2BucketRef binding names. It must be ready, because Cloudflare refuses to
+// upload a Worker bound to a missing bucket, and use the Worker's account.
+//
+// The binding resolves the bucket by name: a Worker keeps working when its
+// bucket is deleted and created again under the same name (verified live),
+// so unlike a KV namespace a recreated bucket needs no re-upload.
+func (r *WorkerScriptReconciler) bindingR2Bucket(
+	ctx context.Context,
+	ws *cloudflarev1alpha1.WorkerScript,
+	b cloudflarev1alpha1.WorkerBinding,
+) (string, *conditionError) {
+	ref := b.R2BucketRef
+	bucket := &cloudflarev1alpha1.R2Bucket{}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ws.Namespace}, bucket); err != nil {
+		return "", &conditionError{
+			Reason:  "R2BucketNotFound",
+			Message: fmt.Sprintf("R2Bucket %q for binding %q not found: %v", ref.Name, b.Name, err),
+		}
+	}
+	if bucket.Spec.AccountRef.Name != ws.Spec.AccountRef.Name {
+		return "", &conditionError{
+			Reason: reasonAccountMismatch,
+			Message: fmt.Sprintf("R2Bucket %q for binding %q uses CloudflareAccount %q but this Worker uses %q",
+				bucket.Name, b.Name, bucket.Spec.AccountRef.Name, ws.Spec.AccountRef.Name),
+		}
+	}
+	if !meta.IsStatusConditionTrue(bucket.Status.Conditions, cloudflarev1alpha1.ConditionReady) {
+		return "", &conditionError{
+			Reason:  "R2BucketNotReady",
+			Message: fmt.Sprintf("R2Bucket %q for binding %q is not ready", bucket.Name, b.Name),
+		}
+	}
+	return bucket.Spec.Name, nil
+}
+
+// boundR2Buckets returns the names of the R2Buckets ws binds through
+// r2BucketRef.
+func boundR2Buckets(ws *cloudflarev1alpha1.WorkerScript) []string {
+	var names []string
+	for _, b := range ws.Spec.Bindings {
+		if b.R2BucketRef != nil {
+			names = append(names, b.R2BucketRef.Name)
 		}
 	}
 	return names
@@ -370,8 +425,8 @@ func (r *WorkerScriptReconciler) reconcileDelete(ctx context.Context, ws *cloudf
 
 // SetupWithManager registers WorkerScriptReconciler with the manager. Besides
 // WorkerScripts it watches the ConfigMaps holding script code, the Secrets
-// behind secret bindings, the KVNamespaces behind namespace bindings, and
-// CloudflareAccounts, so a change to any of them re-triggers the Workers that
+// behind secret bindings, the KVNamespaces and R2Buckets behind namespace and
+// bucket bindings, and CloudflareAccounts, so a change to any of them re-triggers the Workers that
 // use it.
 func (r *WorkerScriptReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -380,6 +435,7 @@ func (r *WorkerScriptReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.workersForSecret)).
 		Watches(&cloudflarev1alpha1.CloudflareAccount{}, handler.EnqueueRequestsFromMapFunc(r.workersForAccount)).
 		Watches(&cloudflarev1alpha1.KVNamespace{}, handler.EnqueueRequestsFromMapFunc(r.workersForKVNamespace)).
+		Watches(&cloudflarev1alpha1.R2Bucket{}, handler.EnqueueRequestsFromMapFunc(r.workersForR2Bucket)).
 		Complete(r)
 }
 
@@ -428,6 +484,13 @@ func (r *WorkerScriptReconciler) workersForSecret(ctx context.Context, obj clien
 func (r *WorkerScriptReconciler) workersForKVNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
 	return r.workersMatching(ctx, obj.GetNamespace(), func(ws *cloudflarev1alpha1.WorkerScript) bool {
 		return slices.Contains(boundKVNamespaces(ws), obj.GetName())
+	})
+}
+
+// workersForR2Bucket maps an R2Bucket event to the WorkerScripts that bind it.
+func (r *WorkerScriptReconciler) workersForR2Bucket(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.workersMatching(ctx, obj.GetNamespace(), func(ws *cloudflarev1alpha1.WorkerScript) bool {
+		return slices.Contains(boundR2Buckets(ws), obj.GetName())
 	})
 }
 

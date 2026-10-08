@@ -36,6 +36,7 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 | `WorkerScript` | Account · Workers Scripts · Edit |
 | `WorkerRoute` | Zone · Workers Routes · Edit |
 | `KVNamespace` | Account · Workers KV Storage · Edit |
+| `R2Bucket` | Account · Workers R2 Storage · Edit |
 
 Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's
 overview page.
@@ -124,6 +125,7 @@ Every other kind references the account (or a resource that does). Examples are 
 | `WorkerScript` | Namespaced | `accountRef` | [worker](../config/samples/cloudflare_v1alpha1_workerscript.yaml) |
 | `WorkerRoute` | Namespaced | `zoneRef`, optional `workerScriptRef` (same namespace) | [route and exclusion](../config/samples/cloudflare_v1alpha1_workerroute.yaml) |
 | `KVNamespace` | Namespaced | `accountRef`; WorkerScripts bind it with `kvNamespaceRef` | [KV namespace](../config/samples/cloudflare_v1alpha1_kvnamespace.yaml) |
+| `R2Bucket` | Namespaced | `accountRef`; WorkerScripts bind it with `r2BucketRef` | [R2 bucket](../config/samples/cloudflare_v1alpha1_r2bucket.yaml) |
 
 Things to know before pointing kflare at existing infrastructure:
 
@@ -132,6 +134,8 @@ Things to know before pointing kflare at existing infrastructure:
 - **Deletion policy.** Deleting a kflare resource deletes the Cloudflare object, unless the resource carries
   the annotation `kflare.dev/deletion-policy: retain`. Use `retain` on anything you adopted and want to keep,
   such as a production zone.
+- **R2 objects.** kflare never deletes objects. Deleting an `R2Bucket` deletes the bucket only once it is
+  empty; until then it reports `BucketNotEmpty`. Use `retain` to keep a bucket and its objects.
 - **KV data.** Deleting a `KVNamespace` deletes the namespace and everything stored in it. Use `retain` on
   namespaces holding data you need.
 - **Immutable fields.** Names and references (`spec.name`, `accountRef`, `zoneRef`, DNS `type`, ...) cannot be
@@ -214,11 +218,12 @@ Order matters, because kflare's finalizers need the controller running to clean 
 
 1. **Delete your kflare resources while the controller is still running.** Each one deletes its Cloudflare
    object, or keeps it if annotated `retain`. The order does not matter: Zones wait for their records and
-   routes, Tunnels for their configurations, KV namespaces for the Workers bound to them, accounts until
-   nothing uses them, and token Secrets until no account uses them.
+   routes, Tunnels for their configurations, KV namespaces and R2 buckets for the Workers bound to them,
+   accounts until nothing uses them, and token Secrets until no account uses them. An R2 bucket that still
+   holds objects is not deleted: empty it, or annotate the R2Bucket `retain`.
 
    ```sh
-   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev,kvnamespaces.kflare.dev --all -A
+   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev,kvnamespaces.kflare.dev,r2buckets.kflare.dev --all -A
    kubectl delete cloudflareaccounts.kflare.dev --all
    ```
 
@@ -290,4 +295,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `WorkerScriptNotFound`, `WorkerScriptNotReady`, `AccountMismatch` | The route's WorkerScript is missing, not uploaded yet, or in a different account than the zone | Check the WorkerScript; it must use the zone's account |
 | `TitleConflict` | Another `KVNamespace` already manages a namespace with this title | Keep one KVNamespace per title |
 | `KVNamespaceNotFound`, `KVNamespaceNotReady` | A WorkerScript's `kvNamespaceRef` names a missing or not-yet-ready KVNamespace | Check the KVNamespace; it must use the Worker's account |
-| `InUse` | A `CloudflareAccount`, `Zone`, `Tunnel` or `KVNamespace` being deleted is still referenced | Delete the resources listed in the message |
+| `NameConflict` | Another `R2Bucket` already manages a bucket with this name in the same Cloudflare account | Keep one R2Bucket per bucket |
+| `R2BucketNotFound`, `R2BucketNotReady` | A WorkerScript's `r2BucketRef` names a missing or not-yet-ready R2Bucket | Check the R2Bucket; it must use the Worker's account |
+| `BucketNotEmpty` | A deleted `R2Bucket`'s bucket still holds objects; kflare does not delete them | Empty the bucket, or annotate the R2Bucket `kflare.dev/deletion-policy: retain` to keep it |
+| `InUse` | A `CloudflareAccount`, `Zone`, `Tunnel`, `KVNamespace` or `R2Bucket` being deleted is still referenced | Delete the resources listed in the message |

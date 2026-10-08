@@ -170,3 +170,32 @@ func TestIsRateLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestHasErrorCode(t *testing.T) {
+	// The shape cloudflare-go returns for deleting an R2 bucket that still
+	// holds objects (verified live): HTTP 409 with code 10008.
+	notEmpty := &cf.Error{StatusCode: 409, Type: cf.ErrorTypeRequest, ErrorCodes: []int{10008}}
+
+	tests := []struct {
+		name string
+		err  error
+		has  bool
+	}{
+		{"nil", nil, false},
+		{"RequestError with the code", ptrRequest(notEmpty), true},
+		{"wrapped RequestError with the code", errors.Join(errors.New("outer"), ptrRequest(notEmpty)), true},
+		{"RequestError with another code", ptrRequest(&cf.Error{StatusCode: 400, ErrorCodes: []int{10005}}), false},
+		{"RequestError without codes", ptrRequest(&cf.Error{StatusCode: 400}), false},
+		{"NotFoundError with the code", ptrNotFound(&cf.Error{StatusCode: 404, ErrorCodes: []int{10008}}), false},
+		{"plain error", errors.New("code 10008"), false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cfpkg.HasErrorCode(tc.err, 10008)
+			if got != tc.has {
+				t.Errorf("HasErrorCode(%v, 10008) = %v, want %v", tc.err, got, tc.has)
+			}
+		})
+	}
+}
