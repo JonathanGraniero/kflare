@@ -57,7 +57,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		zoneName  string
 
 		accountKey, tunnelKey, tunnelConfigKey, workerKey, zoneKey, recordKey client.ObjectKey
-		routeKey, exclusionKey, kvKey                                         client.ObjectKey
+		routeKey, exclusionKey, kvKey, bucketKey                              client.ObjectKey
 
 		tunnelID, zoneID, recordID, routeID, exclusionID, kvNamespaceID string
 	)
@@ -115,6 +115,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		routeKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route"}
 		exclusionKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route-exclusion"}
 		kvKey = client.ObjectKey{Namespace: e2eNamespace, Name: "kv"}
+		bucketKey = client.ObjectKey{Namespace: e2eNamespace, Name: "bucket"}
 
 		DeferCleanup(func() {
 			By("removing anything this run left behind in Cloudflare")
@@ -124,6 +125,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				if err != nil && !cfpkg.IsNotFound(err) {
 					GinkgoWriter.Printf("cleanup: deleting KV namespace %s: %v\n", kvNamespaceID, err)
 				}
+			}
+			if err := cfAPI.DeleteR2Bucket(ctx, accountRC, resourceName()); err != nil && !cfpkg.IsNotFound(err) {
+				GinkgoWriter.Printf("cleanup: deleting R2 bucket %s: %v\n", resourceName(), err)
 			}
 		})
 
@@ -210,7 +214,25 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(kvNamespaces(ctx, cfAPI, accountRC)).To(HaveKeyWithValue(kvNamespaceID, resourceName()))
 	})
 
-	It("uploads a WorkerScript bound to the KVNamespace", func() {
+	It("creates an R2Bucket", func() {
+		bucket := &cloudflarev1alpha1.R2Bucket{
+			ObjectMeta: objectMeta(bucketKey),
+			Spec: cloudflarev1alpha1.R2BucketSpec{
+				AccountRef:   corev1.LocalObjectReference{Name: accountKey.Name},
+				Name:         resourceName(),
+				LocationHint: "weur",
+			},
+		}
+		Expect(k8s.Create(ctx, bucket)).To(Succeed())
+		expectReady(bucketKey, bucket, func() []metav1.Condition { return bucket.Status.Conditions })
+		Expect(bucket.Status.CloudflareMetadata.Location).NotTo(BeEmpty())
+
+		cfBucket, err := cfAPI.GetR2Bucket(ctx, accountRC, resourceName())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfBucket.Location).To(Equal(bucket.Status.CloudflareMetadata.Location))
+	})
+
+	It("uploads a WorkerScript bound to the KVNamespace and R2Bucket", func() {
 		script := `export default { async fetch(request, env) { return new Response(env.GREETING); } };`
 		greeting := "hello from kflare e2e"
 		worker := &cloudflarev1alpha1.WorkerScript{
@@ -223,6 +245,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				Bindings: []cloudflarev1alpha1.WorkerBinding{
 					{Name: "GREETING", PlainText: &greeting},
 					{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvKey.Name}},
+					{Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: bucketKey.Name}},
 				},
 			},
 		}
@@ -233,9 +256,10 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(workerNames(ctx, cfAPI, accountRC)).To(ContainElement(resourceName()))
 		bindings, err := cfAPI.ListWorkerBindings(ctx, accountRC, cf.ListWorkerBindingsParams{ScriptName: resourceName()})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(bindings.BindingList).To(ContainElement(cf.WorkerBindingListItem{
-			Name: "CACHE", Binding: cf.WorkerKvNamespaceBinding{NamespaceID: kvNamespaceID},
-		}))
+		Expect(bindings.BindingList).To(ContainElements(
+			cf.WorkerBindingListItem{Name: "CACHE", Binding: cf.WorkerKvNamespaceBinding{NamespaceID: kvNamespaceID}},
+			cf.WorkerBindingListItem{Name: "ASSETS", Binding: cf.WorkerR2BucketBinding{BucketName: resourceName()}},
+		))
 	})
 
 	It("adopts the test zone without changing it", func() {
@@ -336,7 +360,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 
 		// One delete for everything, in no particular order, like `kubectl delete
 		// -f` on a directory: parents must wait for the children that need them
-		// (Zone, Tunnel, CloudflareAccount and its token Secret).
+		// (Zone, Tunnel, KVNamespace, R2Bucket, CloudflareAccount and its token Secret).
 		By("deleting every resource at once")
 		everything := []client.Object{
 			&cloudflarev1alpha1.WorkerRoute{ObjectMeta: objectMeta(routeKey)},
@@ -345,6 +369,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			&cloudflarev1alpha1.TunnelConfiguration{ObjectMeta: objectMeta(tunnelConfigKey)},
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: objectMeta(workerKey)},
 			&cloudflarev1alpha1.KVNamespace{ObjectMeta: objectMeta(kvKey)},
+			&cloudflarev1alpha1.R2Bucket{ObjectMeta: objectMeta(bucketKey)},
 			&cloudflarev1alpha1.Tunnel{ObjectMeta: objectMeta(tunnelKey)},
 			&cloudflarev1alpha1.Zone{ObjectMeta: objectMeta(zoneKey)},
 			&cloudflarev1alpha1.CloudflareAccount{ObjectMeta: objectMeta(accountKey)},
@@ -366,6 +391,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}
 		Expect(workerNames(ctx, cfAPI, accountRC)).NotTo(ContainElement(resourceName()))
 		Expect(kvNamespaces(ctx, cfAPI, accountRC)).NotTo(HaveKey(kvNamespaceID))
+		_, err = cfAPI.GetR2Bucket(ctx, accountRC, resourceName())
+		Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "bucket was not deleted: %v", err)
 		if zoneName != "" {
 			_, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), recordID)
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "record was not deleted: %v", err)
