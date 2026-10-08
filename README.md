@@ -30,7 +30,9 @@ Early development. Phase 1 (foundation) and Phase 2 (core resources) are complet
 
 - `KVNamespace` — creates or adopts a Workers KV namespace (renamed in place when its title changes); WorkerScripts bind it with `kvNamespaceRef` instead of a copied ID (see [the sample](config/samples/cloudflare_v1alpha1_kvnamespace.yaml))
 
-**Planned next:** more of Phase 3 — R2 buckets, firewall and WAF rules, rate limiting and Zero Trust, then load balancers (see [CLAUDE.md](./CLAUDE.md)).
+- `R2Bucket` — creates or adopts an R2 bucket, with an optional location hint; WorkerScripts bind it with `r2BucketRef`. kflare never deletes objects: a bucket that still holds any is kept and reported as `BucketNotEmpty` (see [the sample](config/samples/cloudflare_v1alpha1_r2bucket.yaml))
+
+**Planned next:** more of Phase 3 — firewall and WAF rules, rate limiting and Zero Trust, then load balancers (see [CLAUDE.md](./CLAUDE.md)).
 
 ## Install
 
@@ -57,6 +59,7 @@ For working on kflare itself:
   - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission
   - `WorkerRoute` also needs the zone-level **Workers Routes: Edit** permission
   - `KVNamespace` also needs the account-level **Workers KV Storage: Edit** permission
+  - `R2Bucket` also needs the account-level **Workers R2 Storage: Edit** permission
   - Setting `Zone` `spec.plan` also needs **Billing: Edit**, and changes your bill
 
 ## Local Development

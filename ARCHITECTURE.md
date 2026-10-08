@@ -14,8 +14,9 @@ Secret (API token)
        │    └─ WorkerRoute (same namespace, via zoneRef; runs a WorkerScript)
        ├─ Tunnel (namespaced)
        │    └─ TunnelConfiguration (same namespace, via tunnelRef)
-       ├─ WorkerScript (namespaced; binds KVNamespaces via kvNamespaceRef)
-       └─ KVNamespace (namespaced)
+       ├─ WorkerScript (namespaced; binds KVNamespaces via kvNamespaceRef, R2Buckets via r2BucketRef)
+       ├─ KVNamespace (namespaced)
+       └─ R2Bucket (namespaced)
 ```
 
 Every namespaced resource resolves its credentials through this chain at reconcile time: a DNSRecord reads its Zone, the
@@ -74,6 +75,7 @@ What each controller compares when it does reconcile:
 | `TunnelConfiguration` | The full ingress configuration |
 | `WorkerScript` | Cloudflare's `modified_on` timestamp, because its etag does not change for binding-only edits; the IDs of bound KVNamespaces, so a recreated namespace re-uploads the Worker |
 | `KVNamespace` | Title (renamed in place); recreated, empty, if deleted externally |
+| `R2Bucket` | Existence only: recreated, empty, if deleted externally. Its name cannot change and its location is fixed at creation. Workers bind a bucket by name, so they keep working with the recreated bucket without a re-upload (verified live) |
 | `WorkerRoute` | Pattern and the Worker it runs; recreated if deleted externally, including when Cloudflare deletes it together with its Worker |
 
 ## Adoption and ownership
@@ -94,15 +96,21 @@ retain policy first (see [Deletion](#deletion)).
 | `TunnelConfiguration` | The tunnel's entire ingress configuration. kflare replaces whatever is there. When several TunnelConfigurations point at one Tunnel, the oldest owns it and the others report `TunnelAlreadyConfigured`. |
 | `WorkerScript` | No lookup. The first reconcile uploads the script, replacing any existing Worker with the same name. |
 | `KVNamespace` | The namespace with the same title in the account (titles are unique per account) unless another KVNamespace manages it, in which case it reports `TitleConflict` and retries every minute. |
+| `R2Bucket` | The bucket named `spec.name` in the account's default jurisdiction (names are unique per account) unless another R2Bucket for the same Cloudflare account manages it, in which case it reports `NameConflict` and retries every minute. An adopted bucket keeps its location; `spec.locationHint` only applies when kflare creates the bucket. |
 | `WorkerRoute` | The route with the same pattern in the zone (patterns are unique per zone) unless another WorkerRoute manages it, in which case the WorkerRoute reports `PatternConflict` and retries every minute. |
 
-### DNSRecord, WorkerRoute and KVNamespace ownership
+### DNSRecord, WorkerRoute, KVNamespace and R2Bucket ownership
 
 DNSRecord stores the Cloudflare record ID it manages in the `kflare.dev/record-id` label, WorkerRoute its route ID in
 `kflare.dev/route-id` and KVNamespace its namespace ID in `kflare.dev/kv-namespace-id`; each claims the object before doing anything else with it (`internal/controller/ownership.go`).
 Adoption skips any object another resource of the same kind already carries in its label, across all namespaces,
 because two Zone resources in different namespaces can point at the same Cloudflare zone. Cloudflare record tags would be
 a Cloudflare-side alternative, but they are only available on paid plans.
+
+An R2 bucket has no ID, so R2Bucket claims the bucket name in `kflare.dev/r2-bucket-name`. Bucket names are only unique
+within an account, so a claim blocks another R2Bucket only when both point at the same Cloudflare account, through the
+same CloudflareAccount or two that share an account ID. An R2Bucket that never claimed its bucket, for example one
+reporting `NameConflict`, leaves the bucket alone when it is deleted.
 
 This prevents two DNSRecords from fighting over one record. It does **not** protect records that were created outside
 kflare: a lone record with a matching name and type is adopted and overwritten. Tools such as external-dns avoid this
@@ -147,17 +155,22 @@ Per-resource details:
   still references it reports `WorkerScriptNotFound` and recreates its route once the Worker is uploaded again.
 - **KVNamespace** deletion deletes the namespace **and all of its data**. Set the retain policy on namespaces holding data
   you need to keep.
+- **R2Bucket** deletion deletes only an empty bucket: kflare never deletes objects. Cloudflare refuses to delete a bucket
+  that holds objects (409, code 10008), so the R2Bucket keeps its finalizer and reports `BucketNotEmpty`, checking again
+  every minute until the bucket is emptied or the retain policy is set.
 
 Deleting resources in any order, for example a namespace or `kubectl delete -f` on a directory, must not strand a
 resource that still needs its parent for its own cleanup. Parents therefore keep their finalizer, reporting
 `Ready=False` with reason `InUse` and the resources they wait for, until their dependents are gone
 (`internal/controller/protection.go`):
 
-- A `CloudflareAccount` waits for the Zones, Tunnels and WorkerScripts that reference it.
+- A `CloudflareAccount` waits for the Zones, Tunnels, WorkerScripts, KVNamespaces and R2Buckets that reference it.
 - A `Zone` waits for its DNSRecords and WorkerRoutes.
 - A `Tunnel` waits for its TunnelConfigurations.
 - A `KVNamespace` waits for the WorkerScripts bound to it through `kvNamespaceRef`. Cloudflare deletes a namespace a
   Worker is bound to, but every later upload of that Worker then fails.
+- An `R2Bucket` waits for the WorkerScripts bound to it through `r2BucketRef`, for the same reason: Cloudflare deletes a
+  bucket a Worker is bound to, then refuses every upload of that Worker (code 10085, verified live).
 - The account's token Secret carries `kflare.dev/token-protection` until no `CloudflareAccount` references it.
 
 Each child therefore cleans up with its own deletion policy even when its parent is retained. The live e2e suite deletes
@@ -172,11 +185,12 @@ object in place.
 - **Drift is not corrected promptly.** Out-of-band changes wait for the next trigger, at worst the 10-hour resync. A
   configurable periodic requeue on successful reconciles would bound this; it needs to stay within Cloudflare's API
   rate limits when many resources are managed.
-- **Adoption is implicit.** Zone, DNSRecord and Tunnel adopt matching objects automatically, WorkerScript overwrites a
-  same-named Worker, and the default deletion policy applies to adopted objects. An explicit opt-in for adopting
-  objects kflare did not create would make this safer.
+- **Adoption is implicit.** Zone, DNSRecord, Tunnel, WorkerRoute, KVNamespace and R2Bucket adopt matching objects
+  automatically, WorkerScript overwrites a same-named Worker, and the default deletion policy applies to adopted objects.
+  An explicit opt-in for adopting objects kflare did not create would make this safer.
 - **No ownership marker on the Cloudflare side.** kflare tracks what it owns only in Kubernetes. If the cluster's
   resources are lost, kflare cannot tell its objects apart from anyone else's.
 - **Pinned to the legacy SDK.** kflare uses cloudflare-go v0.89. Some limitations come from it: Tunnel renames are
-  impossible because `UpdateTunnel` omits the tunnel ID from the request path, and `originRequest` timeouts are not
-  exposed because `TunnelDuration` does not round-trip.
+  impossible because `UpdateTunnel` omits the tunnel ID from the request path, `originRequest` timeouts are not
+  exposed because `TunnelDuration` does not round-trip, and R2Bucket manages buckets in the default jurisdiction only:
+  the SDK cannot send the `cf-r2-jurisdiction` header, and its Worker R2 binding has no jurisdiction field.
