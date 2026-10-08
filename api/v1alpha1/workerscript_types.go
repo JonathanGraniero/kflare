@@ -81,7 +81,7 @@ type WorkerKeyReference struct {
 
 // WorkerBinding exposes one value or resource to the Worker under Name.
 // Exactly one source must be set.
-// +kubebuilder:validation:XValidation:rule="[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceRef), has(self.kvNamespaceID), has(self.r2BucketName)].filter(x, x).size() == 1",message="exactly one of plainText, secretKeyRef, kvNamespaceRef, kvNamespaceID or r2BucketName must be set"
+// +kubebuilder:validation:XValidation:rule="[has(self.plainText), has(self.secretKeyRef), has(self.kvNamespaceRef), has(self.kvNamespaceID), has(self.r2BucketRef), has(self.r2BucketName)].filter(x, x).size() == 1",message="exactly one of plainText, secretKeyRef, kvNamespaceRef, kvNamespaceID, r2BucketRef or r2BucketName must be set"
 type WorkerBinding struct {
 	// Name of the binding, as seen by the Worker (env.NAME).
 	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
@@ -110,7 +110,14 @@ type WorkerBinding struct {
 	// +optional
 	KVNamespaceID *string `json:"kvNamespaceID,omitempty"`
 
-	// R2BucketName binds an R2 bucket by name.
+	// R2BucketRef binds the R2 bucket of an R2Bucket in the same namespace.
+	// The Worker is uploaded once the R2Bucket is ready, and the R2Bucket is
+	// not deleted while this binding exists.
+	// +optional
+	R2BucketRef *corev1.LocalObjectReference `json:"r2BucketRef,omitempty"`
+
+	// R2BucketName binds an R2 bucket by name. Prefer r2BucketRef for
+	// buckets managed by kflare.
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	R2BucketName *string `json:"r2BucketName,omitempty"`

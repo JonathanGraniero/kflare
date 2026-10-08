@@ -25,6 +25,7 @@
   - cloudflareaccounts
   - dnsrecords
   - kvnamespaces
+  - r2buckets
   - tunnelconfigurations
   - tunnels
   - workerroutes
@@ -44,6 +45,7 @@
   - cloudflareaccounts/finalizers
   - dnsrecords/finalizers
   - kvnamespaces/finalizers
+  - r2buckets/finalizers
   - tunnelconfigurations/finalizers
   - tunnels/finalizers
   - workerroutes/finalizers
@@ -57,6 +59,7 @@
   - cloudflareaccounts/status
   - dnsrecords/status
   - kvnamespaces/status
+  - r2buckets/status
   - tunnelconfigurations/status
   - tunnels/status
   - workerroutes/status

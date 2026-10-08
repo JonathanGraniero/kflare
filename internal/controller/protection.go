@@ -32,9 +32,9 @@ import (
 //   - a Zone waits for its DNSRecords and WorkerRoutes, which need its zone ID
 //     and account;
 //   - a Tunnel waits for its TunnelConfigurations;
-//   - a KVNamespace waits for the WorkerScripts bound to it: Cloudflare
-//     deletes a namespace a Worker is bound to, but every later upload of
-//     that Worker then fails.
+//   - a KVNamespace or R2Bucket waits for the WorkerScripts bound to it:
+//     Cloudflare deletes a namespace or bucket a Worker is bound to, but
+//     every later upload of that Worker then fails.
 //
 // Without this, deleting everything at once (a namespace, or `kubectl delete
 // -f` on a directory) lets a parent go first. A child then cannot reach
@@ -76,6 +76,8 @@ var (
 			func(w *cloudflarev1alpha1.WorkerScript) []string { return []string{w.Spec.AccountRef.Name} }),
 		dependents("KVNamespace", func() client.ObjectList { return &cloudflarev1alpha1.KVNamespaceList{} },
 			func(kv *cloudflarev1alpha1.KVNamespace) []string { return []string{kv.Spec.AccountRef.Name} }),
+		dependents("R2Bucket", func() client.ObjectList { return &cloudflarev1alpha1.R2BucketList{} },
+			func(b *cloudflarev1alpha1.R2Bucket) []string { return []string{b.Spec.AccountRef.Name} }),
 	}
 
 	// zoneDependents live in a Zone's namespace and reference it by name.
@@ -91,6 +93,13 @@ var (
 	kvNamespaceDependents = []dependentKind{
 		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
 			boundKVNamespaces),
+	}
+
+	// r2BucketDependents live in an R2Bucket's namespace and bind it through
+	// r2BucketRef.
+	r2BucketDependents = []dependentKind{
+		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
+			boundR2Buckets),
 	}
 
 	// tunnelDependents live in a Tunnel's namespace and reference it by name.

@@ -145,7 +145,7 @@ func (r *WorkerRouteReconciler) routedScript(
 	}
 	if ws.Spec.AccountRef.Name != zone.Spec.AccountRef.Name {
 		return "", &conditionError{
-			Reason: "AccountMismatch",
+			Reason: reasonAccountMismatch,
 			Message: fmt.Sprintf("WorkerScript %q uses CloudflareAccount %q but Zone %q uses %q; "+
 				"a route can only run a Worker from the zone's account",
 				ws.Name, ws.Spec.AccountRef.Name, zone.Name, zone.Spec.AccountRef.Name),

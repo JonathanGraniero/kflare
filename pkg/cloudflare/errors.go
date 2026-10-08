@@ -75,3 +75,13 @@ func IsRateLimit(err error) bool {
 	var rlErr *cf.RatelimitError
 	return errors.As(err, &rlErr)
 }
+
+// HasErrorCode returns true if err is a Cloudflare 4xx RequestError (any
+// client error other than 401, 403, 404 and 429) whose response carries code
+// among its error codes. Controllers use it to tell apart specific rejections
+// that share an HTTP status, for example an R2 bucket that is not empty
+// (409, code 10008).
+func HasErrorCode(err error, code int) bool {
+	var reqErr *cf.RequestError
+	return errors.As(err, &reqErr) && reqErr.InternalErrorCodeIs(code)
+}

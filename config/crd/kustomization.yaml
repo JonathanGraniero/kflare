@@ -10,6 +10,7 @@ resources:
 - bases/kflare.dev_workerscripts.yaml
 - bases/kflare.dev_workerroutes.yaml
 - bases/kflare.dev_kvnamespaces.yaml
+- bases/kflare.dev_r2buckets.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 #patches:

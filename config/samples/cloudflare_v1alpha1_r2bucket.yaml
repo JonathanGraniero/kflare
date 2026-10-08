@@ -1,0 +1,21 @@
+# An R2 bucket. kflare never deletes objects: deleting this resource deletes
+# the bucket only once it is empty (until then it reports BucketNotEmpty).
+# The annotation below keeps the bucket and its objects instead.
+apiVersion: kflare.dev/v1alpha1
+kind: R2Bucket
+metadata:
+  name: example-bucket
+  namespace: default
+  annotations:
+    kflare.dev/deletion-policy: retain
+spec:
+  accountRef:
+    name: my-account
+  name: example-assets       # unique in the account; buckets cannot be renamed
+  locationHint: weur         # optional, only used when kflare creates the bucket
+# Bind it to a WorkerScript in the same namespace by reference:
+#
+#   bindings:
+#     - name: ASSETS
+#       r2BucketRef:
+#         name: example-bucket

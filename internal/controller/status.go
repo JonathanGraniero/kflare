@@ -42,6 +42,10 @@ type conditionError struct {
 
 func (e *conditionError) Error() string { return e.Message }
 
+// reasonAccountMismatch reports a reference to a resource that uses a
+// different CloudflareAccount than the resource referring to it.
+const reasonAccountMismatch = "AccountMismatch"
+
 // setReady sets obj's Ready condition for its current generation, in memory.
 func setReady(obj conditionedObject, status metav1.ConditionStatus, reason, message string) {
 	conditions := obj.GetConditions()
