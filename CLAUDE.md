@@ -441,18 +441,37 @@ load balancing waits until the account has the Load Balancing add-on (decided 20
 only partly built because of a paid plan, add-on or account setup is tracked in
 [Deferred: paid plan, add-on or account setup](#deferred-paid-plan-add-on-or-account-setup) below.
 
+Most of what remains is a rule in one of a zone's **Rulesets API** phases: WAF custom rules, rate limiting rules,
+managed ruleset deployments, and the Rules products that replace Page Rules. `feat/rulesets-foundation` builds the
+shared machinery once; each rule CRD on top of it is mostly types plus a conversion from spec to rule. Decided
+2026-10-09: **one Kubernetes resource per rule**, not one per zone and phase, so that each app can own its own rules.
+
 | Branch | CRD(s) | Depends on | Status / Free-plan scope |
 |--------|--------|------------|--------------------------|
 | `feat/kv-namespace-controller` | `KVNamespace` (+ WorkerScript `kvNamespaceRef`) | shared-client | ✅ |
 | `feat/r2-bucket-controller` | `R2Bucket` (+ WorkerScript `r2BucketRef`) | shared-client | ✅ |
-| `feat/firewall-rule-controller` | `FirewallRule` → build as WAF custom rules | zone-controller | Free: 5 rules, no regex, no Log action. **Rename first** (see Deferred → plan corrections) |
-| `feat/rate-limit-controller` | `RateLimit` | zone-controller | Free: 1 rule, counts by IP only, 10 s period |
-| `feat/zero-trust-controllers` | `AccessApplication`, `AccessPolicy`, `AccessGroup` | shared-client | Needs Zero Trust enabled on the account first (free plan exists) |
-| `feat/waf-controller` | `WAFPackage` → build as managed ruleset config | zone-controller | Free: only the Cloudflare Free Managed Ruleset. **Rename first** |
-| `feat/managed-transform-controller` | `ManagedTransform` | zone-controller | Available on the Free zone (4 request transforms listed) |
-| `feat/page-rule-controller` | `PageRule` | zone-controller | Free: 3 rules. **Deprecated product**: reconsider before building |
+| `feat/cloudflare-go-v0.119` | none: SDK bump | — | Next, if the [SDK decision](#sdk-decision) is accepted |
+| `feat/rulesets-foundation` | none: Rulesets client calls and the shared rule sync | zone-controller | Live probes first |
+| `feat/waf-custom-rule-controller` | `WAFCustomRule` (was `FirewallRule`) | rulesets-foundation | Free: 5 rules, no regex, no Log action, no custom block response |
+| `feat/rate-limit-rule-controller` | `RateLimitRule` (was `RateLimit`) | rulesets-foundation | Free: 1 rule, 10 s period, counts by IP |
+| `feat/ip-list-controller` | `IPList` | shared-client | Free: 1 list, 10,000 items, IP lists only |
+| `feat/zero-trust-controllers` | `AccessGroup`, `AccessPolicy`, `AccessApplication` | shared-client | Blocked: Zero Trust is not enabled on the account (a free plan exists) |
+| `feat/managed-ruleset-controller` | `ManagedRuleset` (was `WAFPackage`) | rulesets-foundation | Free: only the Cloudflare Free Managed Ruleset |
+| `feat/managed-transform-controller` | `ManagedTransform` | zone-controller | Free: all six transforms |
+| `feat/transform-rule-controller` | `TransformRule` | rulesets-foundation | Free: 10 rules, no regex |
+| `feat/redirect-rule-controller` | `RedirectRule` | rulesets-foundation | Free: 10 rules, no regex |
+| `feat/cache-rule-controller` | `CacheRule` | rulesets-foundation | Free: 10 rules |
+| `feat/configuration-rule-controller` | `ConfigurationRule` | rulesets-foundation | Free: 10 rules |
+| `feat/origin-rule-controller` | `OriginRule` | rulesets-foundation | Free: 10 rules, destination port override only |
 | `feat/load-balancer-monitor-controller` | `LoadBalancerMonitor` | shared-client | ⏸ Deferred: needs Load Balancing add-on |
 | `feat/load-balancer-controller` | `LoadBalancer` (+ pools) | load-balancer-monitor-controller | ⏸ Deferred: needs Load Balancing add-on |
+
+Rows run top to bottom. The order decided on 2026-10-06 (WAF, then rate limiting, then Zero Trust) is kept. `IPList`
+comes before Zero Trust because it is free and can be tested today, while Zero Trust waits on a dashboard step. When a
+row is blocked, skip ahead: `IPList`, `ManagedTransform` and the five Rules rows do not depend on each other.
+
+`PageRule` is dropped (decided 2026-10-09): Page Rules is deprecated, and its API refuses account-owned tokens (see
+"Plan corrections" below). The Transform, Redirect, Cache, Configuration and Origin rows cover its settings.
 
 **Notes:**
 - `LoadBalancerMonitor` (renamed from `HealthCheck`, 2026-10-06) is Cloudflare's account-level load balancer monitor,
@@ -460,14 +479,64 @@ only partly built because of a paid plan, add-on or account setup is tracked in
   (~$5/month) Cloudflare rejects every monitor: the interval range collapses to [1, 1], which cannot satisfy
   interval > (retries+1) × timeout (verified live). The name `HealthCheck` stays free for Cloudflare's separate
   zone-level Health Checks product, which needs a Pro plan
-- Zero Trust resources require `Account`-scoped (not Zone-scoped) API tokens — separate CF token needed
-- R2 and KV are account-level — no `zoneRef`
+- Zero Trust resources are account-level (`/accounts/{id}/access/...`) and take an `accountRef`. One account-owned
+  token can hold them alongside zone permissions; the dev token already has the Access write permissions
+- R2, KV and IP lists are account-level — no `zoneRef`
+
+#### Token permissions for Phase 3
+
+Checked 2026-10-09 against the dev token. The Rulesets phases were checked with `dry_run=true`, which runs the same
+authorization, plan and quota checks as a real write but stores nothing. The token's zone policy has only Read for
+these products, yet the WAF and Transform phases were accepted: its account-level **Account WAF Write**, **Account
+Rulesets Write** and **Transform Rules Write** evidently cover zone rulesets too. The names below are the API's
+permission group names; deploy.md uses the dashboard's labels, so look those up when each branch adds its row there.
+
+| Resource | Permission to document (least privilege) | Dev token today |
+|---|---|---|
+| `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset` | Zone WAF Write | ✅ dry run accepted |
+| `TransformRule` | Zone Transform Rules Write | ✅ dry run accepted |
+| `RedirectRule` | Dynamic URL Redirects Write | ❌ 403, "request is not authorized" |
+| `CacheRule` | Cache Settings Write | ❌ 403 |
+| `ConfigurationRule` | Config Settings Write | ❌ 403 |
+| `OriginRule` | Origin Write | ❌ 403 |
+| `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run) |
+| `IPList` | Account Rule Lists Write (account) | ✅ |
+| `AccessGroup`, `AccessPolicy`, `AccessApplication` | Access: Organizations, Identity Providers, and Groups Write; Access: Apps and Policies Write (account) | ✅, but Access is not enabled |
+
+- Adding a permission to the dev token needs the user's OK first, as with Workers Routes Write on 2026-10-05
+- Before deploy.md recommends a zone-level permission, check that it is enough on its own. The dev token's
+  account-level permissions already cover these phases, so it cannot show that; a second, narrower token can (ask
+  before creating one)
+
+#### SDK decision
+**Status:** Proposed 2026-10-09; confirm before `feat/rulesets-foundation`
+
+kflare pins cloudflare-go **v0.89.0**, and its gaps keep costing features. Checked 2026-10-09:
+
+| | v0.89.0 (pinned) | v0.119.0 (newest v0, 2026-09-25) | v7.12.0 (generated SDK, 2026-10-01) |
+|---|---|---|---|
+| Create / edit / delete one rule in a ruleset | none | delete only | all three |
+| Reusable Access policies (`/access/policies`) | no: app-scoped policies only | yes | yes |
+| R2 jurisdictions (`cf-r2-jurisdiction`) | no | no | yes |
+| Tunnel rename (`UpdateTunnel` sends the tunnel ID) | no | no | yes |
+| Cost to adopt | — | one compile error: `DNSRecord.ZoneID` was removed (take the zone ID from the Zone), plus test fixtures | every controller's interface and fakes, and `errors.go` (different error types) |
+
+Proposed:
+1. **Bump to v0.119 now**, in its own PR (`feat/cloudflare-go-v0.119`). It is small, and brings `DeleteRulesetRule` and
+   reusable Access policies. Run the unit and live e2e suites: 30 minor versions can change behaviour without
+   breaking the build
+2. **Fill the remaining gaps with `API.Raw`** wrappers in `pkg/cloudflare`. For rulesets only the create and edit calls
+   are missing: v0's `cf.RulesetRule` and `cf.Ruleset` types already model rules, and `Raw` returns the same typed
+   errors as every other call
+3. **Move to the generated SDK later, controller by controller** (Phase 4, or sooner if the v0 line stops getting
+   releases). Each controller already sits behind its own narrow interface, so `pkg/cloudflare.Client` can embed both
+   SDKs during the move, with `errors.go` classifying both error types until it is done
 
 #### Deferred: paid plan, add-on or account setup
 
 Everything here was skipped, or built without live verification, because the dev account (Free zone `kflare.dev`, no
 add-ons besides R2) cannot exercise it. Before starting any item below, re-check the limits: Cloudflare changes them.
-Last checked 2026-10-07.
+Last checked 2026-10-07; the Free-plan limits and Zero Trust again on 2026-10-09.
 
 **Not built yet — needs something we don't have:**
 
@@ -493,29 +562,42 @@ Last checked 2026-10-07.
 
 | Item | Setup | Verified |
 |------|-------|----------|
-| Zero Trust (`AccessApplication`, `AccessPolicy`, `AccessGroup`) | Enable Zero Trust in the dashboard (pick a team name and the Free plan, up to 50 users). Not confirmed whether it asks for a payment method | Live, 2026-10-07: the API returns `Access is not enabled`. The token already has the Access: Apps/Policies/Groups Write permissions |
+| Zero Trust (`AccessApplication`, `AccessPolicy`, `AccessGroup`) | Enable Zero Trust in the dashboard (pick a team name and the Free plan, up to 50 users). Not confirmed whether it asks for a payment method | Live, 2026-10-07 and 2026-10-09: the API returns `Access is not enabled`. The token already has the Access: Apps/Policies/Groups Write permissions |
 
-**Free-plan limits to design around** (build for them; the e2e suite must stay within them):
+**Free-plan limits to design around** (build for them; the e2e suite must stay within them). From Cloudflare's docs,
+checked 2026-10-09; ✔ marks what a dry run on `kflare.dev` confirmed the same day:
 
 | Item | Free | Pro | Business |
 |------|------|-----|----------|
-| Rate limiting rules | 1 rule, IP only, 10 s period, 10 s–1 h mitigation | 2 rules, IP only, periods up to 1 min | 5 rules, periods up to 10 min |
-| WAF custom rules | 5 rules, no regex, no Log action, 1 zone-level custom ruleset | 20 rules | 100 rules, regex |
-| WAF managed rulesets | Cloudflare Free Managed Ruleset only | + Cloudflare Managed Ruleset, OWASP Core Ruleset | same as Pro |
-| Page Rules | 3 | 20 | 50 |
+| WAF custom rules | 5 rules ✔, no regex ✔, no Log action ✔, no custom block response ✔, 1 zone-level custom ruleset | 20 rules | 100 rules, regex |
+| Rate limiting rules | 1 rule ✔, period 10 s only ✔, counts by IP, no `managed_challenge` ✔, no throttling (`mitigation_timeout: 0`) ✔ | 2 rules, periods up to 1 min, mitigation up to 1 h | 5 rules, periods up to 10 min, mitigation up to 1 day |
+| WAF managed rulesets | Cloudflare Free Managed Ruleset only ✔ | + Cloudflare Managed Ruleset, OWASP Core Ruleset, Exposed Credentials Check | same as Pro |
+| Custom lists | 1 list, 10,000 items, IP lists only | 10 lists, 10,000 items in total | same as Pro |
+| Transform, redirect, cache, configuration and origin rules | 10 rules each; no regex in transform or redirect rules | 25 each | 50 each; regex in transform and redirect rules |
+| Origin rule overrides | destination port only (Host header, SNI and DNS record need Enterprise) | same | same |
+
+Rate limiting also requires `cf.colo.id` among the characteristics (code 20155) and a mitigation timeout of 0, equal
+to the period or longer (code 20156). The docs limit Free expressions to path and verified-bot fields, but a dry run
+accepted `http.host`; `http.user_agent` was refused.
 
 Controllers must not hard-code these limits: report Cloudflare's own rejection (`TerminalError`) instead, so higher plans
 work unchanged.
 
-**Plan corrections found while checking** (decide before starting these branches):
+**Plan corrections (resolved 2026-10-09):**
 
-- `FirewallRule`: Cloudflare Firewall Rules is deprecated and existing rules were moved to **WAF custom rules** (Rulesets
-  API, `http_request_firewall_custom` phase). Build a WAF custom rule CRD instead of `FirewallRule`.
-- `WAFPackage`: WAF packages belong to the previous WAF; the current product is **WAF managed rulesets** (Rulesets API,
-  `http_request_firewall_managed` phase, which `kflare.dev` already has as a managed entrypoint). Build managed-ruleset
-  configuration instead. Confirm the legacy API's status first: the docs checked did not say.
-- `PageRule`: Page Rules is marked deprecated. Its features moved to the Rules products (redirect, cache, configuration
-  and origin rules), so consider building those instead.
+- `FirewallRule` → `WAFCustomRule`. The Firewall Rules and Filters APIs now return **410 Gone** ("This API has been
+  deprecated. Please use the Rulesets API instead"). Custom rules live in the `http_request_firewall_custom` phase
+- `RateLimit` → `RateLimitRule`. The previous rate limiting API (`/zones/{id}/rate_limits`) returns 410 too. Rate
+  limiting rules live in the `http_ratelimit` phase
+- `WAFPackage` → `ManagedRuleset`. The WAF packages API still answers, but lists 0 packages for `kflare.dev`. Managed
+  rulesets are deployed by an `execute` rule in the `http_request_firewall_managed` phase. This corrects an earlier
+  note: `kflare.dev` has **no** entry point in that phase. The Cloudflare Managed Free Ruleset
+  (`77454fe2d30c4220b5701f6fdfb893ba`) only shows up as a managed ruleset; the docs say Cloudflare deploys it by
+  default on Free zones
+- `PageRule` → dropped. Page Rules is deprecated, and `GET /zones/{id}/pagerules` with the dev token returns code
+  1011, "Page Rules endpoint does not support account owned tokens": the kind of token deploy.md tells users to create.
+  Cloudflare's [migration guide](https://developers.cloudflare.com/rules/reference/page-rules-migration/) maps its
+  settings to Redirect, Cache, Configuration, Origin and Transform Rules
 
 #### Branch: `feat/kv-namespace-controller`
 **Status:** ✅ Complete
@@ -577,8 +659,202 @@ work unchanged.
 - Bucket configuration that Terraform models as separate resources: CORS, lifecycle rules, custom domains and the
   r2.dev public URL, event notifications, bucket locks, Sippy
 
+#### Branch: `feat/rulesets-foundation`
+**Depends on:** `feat/zone-controller` and the [SDK decision](#sdk-decision)
+**Merges into:** main, before any rule CRD branch starts (no stacked PRs)
+**Status:** 🔲 Not started
+
+Shared machinery for every resource that is one rule in a zone's phase entry point ruleset. It has no CRD of its own:
+it is unit-tested with fakes, then proven live by `WAFCustomRule`.
+
+- [ ] Live probes first, on `kflare.dev` with `kflare-probe-*` refs, deleting everything afterwards (the dev token can
+  already write `http_request_firewall_custom`):
+  - Does a rule keep its `id` across a PATCH? The docs describe the ID as identifying "a given version of a rule",
+    which is why kflare finds its rules by `ref`
+  - What Cloudflare adds or defaults on a rule it returns (`version`, `last_updated`, `logging`, action parameter
+    defaults), for the drift comparison
+  - Creating the entry point when one already exists (two resources racing to create it): status and error code
+  - Two concurrent POSTs to `/rules`: do both rules land?
+  - PATCH replaces the whole rule (per the docs): confirm that an omitted field is reset
+  - Deleting the last rule: does the entry point stay, empty?
+- [ ] `pkg/cloudflare/rulesets.go`: `CreateRulesetRule` and `UpdateRulesetRule` through `API.Raw` (POST
+  `/zones/{zone}/rulesets/{ruleset}/rules`, PATCH `.../rules/{rule}`), with an optional `position`. Each returns the
+  updated `cf.Ruleset`. `DeleteRulesetRule` comes with v0.119 (otherwise `Raw` as well). Unit tests against `httptest`
+- [ ] `internal/controller/rulesetrule.go` syncs one rule in any phase:
+  1. Resolve the Zone (its zone ID) and the account's token, as DNSRecord does
+  2. Get the phase entry point. On 404 (code 10003), create it: POST `/zones/{zone}/rulesets` with `kind: zone`, the
+     phase and this rule. **Never PUT the entry point**: a PUT replaces every rule in it, including rules kflare
+     does not manage. If the create loses a race, get the entry point again
+  3. Find the rule by its `ref`. Missing → POST it; different → PATCH the whole rule; same → no write
+  4. Record the ruleset ID, rule ID and rule version in status
+  - Deletion: DELETE the rule found by `ref` unless `retain`. Skip the call when the Zone is gone, as DNSRecord does.
+    The entry point stays, even when empty
+- [ ] Ownership on the Cloudflare side through `ref`: `kflare-` + the first 32 hex characters of SHA-256 over
+  `<kind>/<namespace>/<name>`. Refs are unique within a ruleset (duplicate: code 20023) and at most 128 bytes (code
+  20166). A ref derived from the name survives cluster loss and backup restores, which a UID would not. kflare never
+  touches a rule whose ref it did not derive, and does not adopt rules implicitly: rules have no natural key. Rules
+  will therefore not share the "no ownership marker on the Cloudflare side" limitation
+- [ ] Ordering: optional `spec.priority` (lower runs first; ties broken by namespace/name). kflare orders only the
+  rules it manages in a zone and phase, across every kind that writes to that phase. When the reconciled rule is out
+  of place among them, kflare moves that rule alone (PATCH with `position.before` or `position.after` a neighbouring
+  kflare rule). Rules created outside kflare keep their place. If this proves fragile, fall back to append-only and
+  document it
+- [ ] Drift: compare only the fields kflare sets (expression, action, action parameters, rate limit, enabled,
+  description), after normalizing what Cloudflare adds. An idle reconcile writes nothing; the e2e checks that the
+  ruleset version stays the same
+- [ ] Rule kinds join `zoneDependents`, so a Zone waits for its rules
+- [ ] ARCHITECTURE.md: drift and adoption rows, a rules ownership subsection, the known-limitations update
+
+**Rulesets facts (dry runs on `kflare.dev`, 2026-10-09; nothing written):**
+- `kflare.dev` has no zone entry point in any phase: `GET .../rulesets/phases/{phase}/entrypoint` returns 404, code
+  10003. Its zone rulesets are only Cloudflare's managed ones (DDoS L7, Managed Free, Normalization)
+- Rejections are 400 unless noted. Over the plan's rule quota: code 50001 ("exceeded the maximum number of rules in
+  the phase http_request_firewall_custom: 6 out of 5"). Plan entitlement (regex operator, Log action, custom block
+  response, paid managed ruleset, rate limiting period or action): `code: null`, with a message starting "not
+  entitled". A missing permission for the phase: 403, `code: null`, "request is not authorized"
+- `HasErrorCode` cannot tell `code: null` errors apart. They are all `TerminalError`, and the condition shows
+  Cloudflare's message, which is what the user needs
+- The rule-level calls take an optional `position` (`before` or `after` a rule ID, where `""` means first or last, or a
+  1-based `index`; by default the rule is appended) and return the whole ruleset. Every Rulesets write accepts
+  `dry_run=true`
+
+
+#### Branch: `feat/waf-custom-rule-controller`
+**Depends on:** `feat/rulesets-foundation`
+**Status:** 🔲 Not started
+
+- [ ] `api/v1alpha1/wafcustomrule_types.go`: `spec.zoneRef` (immutable), `expression`, `action` (`block`,
+  `managed_challenge`, `js_challenge`, `challenge`, `skip`, `log`), skip parameters (the rest of the current ruleset,
+  `phases` or `products`) allowed only with `action: skip` (CEL), optional `response` for `block` (a custom body; paid),
+  `enabled` (default true), `description`, `priority`. `status.cloudflareMetadata`: zone ID, ruleset ID, rule ID, ref,
+  version
+- [ ] Controller: the foundation in the `http_request_firewall_custom` phase; watches Zones
+- [ ] Unit tests for the spec → rule conversion (every action's parameters); envtest for the CEL rules
+- [ ] Live e2e: a `block` rule for `/kflare-e2e-<run>`, checked through the entry point; an idle reconcile leaves the
+  ruleset version alone; deletion removes the rule. It uses 1 of Free's 5 rules
+- [ ] Sample, deploy.md permission row, ARCHITECTURE.md rows
+
+
+#### Branch: `feat/rate-limit-rule-controller`
+**Depends on:** `feat/rulesets-foundation`
+**Status:** 🔲 Not started
+
+- [ ] `api/v1alpha1/ratelimitrule_types.go`: `spec.zoneRef` (immutable), `expression`, `action` (default `block`;
+  others need a paid plan), `characteristics` (default `[ip.src]`; kflare always adds `cf.colo.id`, which Cloudflare
+  requires), `period` (seconds, default 10), `requestsPerPeriod`, optional `mitigationTimeout` (kflare sends the
+  period when unset; CEL: 0 or at least the period), optional `countingExpression` and `requestsToOrigin`, `enabled`,
+  `description`, `priority`
+- [ ] Controller: the foundation in the `http_ratelimit` phase
+- [ ] Live e2e: one rule for `/kflare-e2e-<run>`. Free allows exactly one, so the suite must not run twice at once,
+  and `kflare.dev` must hold no other rate limiting rule
+
+
+#### Branch: `feat/ip-list-controller`
+**Depends on:** `feat/shared-client`
+**Status:** 🔲 Not started
+
+An account-level custom IP list, for expressions such as `ip.src in $office_ips` in WAF custom rules.
+
+- [ ] `api/v1alpha1/iplist_types.go`: `spec.accountRef` and `spec.name` (immutable; check Cloudflare's naming rules
+  live), `description`, `items[]` (`ip`: an IPv4 or IPv6 address or CIDR range; optional `comment`).
+  `status.cloudflareMetadata`: list ID, item count
+- [ ] Controller: by status ID → by name → create (`kind: ip`). Description drift through `UpdateList`, item drift
+  through `ReplaceListItems` (an asynchronous bulk operation; check how the SDK waits for it). Claims its list in a
+  `kflare.dev/ip-list-id` label, like KVNamespace
+- [ ] Deletion: check live whether Cloudflare refuses to delete a list that a rule references. If it does, report
+  `ListInUse` and retry every minute, like `BucketNotEmpty`
+- [ ] v0.89 already has the Lists calls (`CreateList`, `GetList`, `UpdateList`, `DeleteList`, `ReplaceListItems`)
+- [ ] Live e2e: one list (Free allows one; the account has none as of 2026-10-09), optionally referenced by the WAF e2e
+  rule
+
+
+#### Branch: `feat/zero-trust-controllers`
+**Depends on:** `feat/shared-client`
+**Blocked on:** enabling Zero Trust on the account, a dashboard step (still `Access is not enabled` on 2026-10-09)
+**Status:** 🔲 Not started
+
+- [ ] `AccessGroup` (include, exclude and require rules), `AccessPolicy` (a reusable, account-level policy that
+  references groups) and `AccessApplication` (self-hosted: domains, session duration, and policies by reference with a
+  precedence). One PR per kind if the branch grows large
+- [ ] Reusable policies need v0.119 or later; v0.89 creates only app-scoped policies (see the SDK decision)
+- [ ] Deletion order: an application before its policies, a policy before its groups, using `protection.go`. Check
+  live what Cloudflare refuses
+- [ ] Live e2e once Zero Trust is enabled (the free plan covers up to 50 users)
+
+
+#### Branch: `feat/managed-ruleset-controller`
+**Depends on:** `feat/rulesets-foundation`
+**Status:** 🔲 Not started
+
+Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `execute` rule in the
+`http_request_firewall_managed` phase.
+
+- [ ] **Verify first:** Cloudflare runs the Free Managed Ruleset on Free zones without any entry point. Does creating an
+  entry point in this phase, for example for a single exception, stop that default deployment? If it does, kflare must
+  keep an explicit `execute` rule in place, or a user who adds an exception silently loses the ruleset
+- [ ] Types: `spec.zoneRef` (immutable), the managed ruleset ID (Free: `77454fe2d30c4220b5701f6fdfb893ba`), overrides
+  (the whole ruleset's enabled state or action; per rule and per category), `enabled`, `priority`. Check with dry runs
+  which overrides Free accepts
+- [ ] Exceptions (`skip` rules in this phase; a dry run accepts them on Free): a separate small kind or part of this
+  one, decided in the branch. They must run before the `execute` rule, which the foundation's ordering has to
+  guarantee across kinds
+
+
+#### Branch: `feat/managed-transform-controller`
+**Depends on:** `feat/zone-controller`
+**Status:** 🔲 Not started
+
+- [ ] `api/v1alpha1/managedtransform_types.go`: `spec.zoneRef` (immutable), `requestHeaders[]` and
+  `responseHeaders[]`: the transforms to enable, by Cloudflare's ID. `kflare.dev` offers
+  `add_client_certificate_headers`, `add_visitor_location_headers`, `remove_visitor_ip_headers` and
+  `add_waf_credential_check_status_header` for requests, `remove_x-powered-by_header` and `add_security_headers` for
+  responses (2026-10-09). Every transform not listed is disabled
+- [ ] Controller: owns the zone's whole configuration, like TunnelConfiguration. The oldest ManagedTransform per zone
+  owns it; the others report `AlreadyConfigured`. `ListZoneManagedHeaders` → compare → `UpdateZoneManagedHeaders`;
+  surfaces Cloudflare's `has_conflict` / `conflicts_with`. Deletion disables every transform unless `retain`
+- [ ] Needs Managed headers Write on the dev token (ask the user)
+
+
+#### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)
+**Depend on:** `feat/rulesets-foundation`; one branch and PR each
+**Status:** 🔲 Not started
+
+Each is the foundation plus typed action parameters. Together they replace Page Rules.
+
+| CRD | Phase | Action | Free | Dev token |
+|-----|-------|--------|------|-----------|
+| `TransformRule` (`spec.type`, immutable: `urlRewrite`, `requestHeaders` or `responseHeaders`) | `http_request_transform`, `http_request_late_transform`, `http_response_headers_transform` | `rewrite` | 10 rules, no regex | ✅ |
+| `RedirectRule` (single redirects) | `http_request_dynamic_redirect` | `redirect` | 10 rules, no regex | needs Dynamic URL Redirects Write |
+| `CacheRule` | `http_request_cache_settings` | `set_cache_settings` | 10 rules | needs Cache Settings Write |
+| `ConfigurationRule` | `http_config_settings` | `set_config` | 10 rules | needs Config Settings Write |
+| `OriginRule` | `http_request_origin` | `route` | 10 rules, destination port only | needs Origin Write |
+
+- Spec fields mirror Cloudflare's action parameters, typed. Start with what Free and Pro can use and add the rest when
+  needed, rather than passing raw JSON through
+- Check whether Free's 10 transform rules are counted per phase or across the three
+- These five share one shape, which makes them the natural first target for the OpenAPI generator, if it is still
+  wanted (see below)
+- Not planned yet: Bulk Redirects (the account-level `http_request_redirect` phase plus redirect lists; Free: 15 rules,
+  5 lists, 10,000 URL redirects)
+
+
+#### Release and CI
+**Status:** 🔲 Open, alongside Phase 3
+
+- [ ] Run the live e2e suite in GitHub Actions. The repo has no Actions secrets or variables yet (2026-10-09). Use a
+  dedicated CI token holding only what the suite needs, not the dev token, which also holds Account API Tokens Write
+  and Registrar Domains Admin. Set the secrets `CF_API_TOKEN` and `CF_ACCOUNT_ID`, and the variable
+  `CF_E2E_ZONE=kflare.dev`
+- [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists. The release workflow publishes the image and
+  chart. Fix first: `docs/deploy.md` says "the six kflare CRDs", but there are nine
+- [ ] `kflare.dev` expires on 2027-10-04 with auto-renew off (registered 2026-10-04). The e2e zone disappears if it
+  lapses: decide on renewal before September 2027
+- [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, renewal, CI token, GitHub secrets)
+
 **Also in Phase 3:**
 - [ ] OpenAPI-to-CRD generator skeleton (`generator/` package) — parses the [Cloudflare OpenAPI spec](https://github.com/cloudflare/api-schemas) to generate CRD type definitions and reconciler skeletons; intended to accelerate the long tail of resources beyond what is hand-written in Phase 2
+  - Rescope before starting: the generated SDK (v7) already produces client code from the same spec, so the
+    generator would only need CRD types and controller skeletons. The five Rules CRDs are the natural first target
 
 ---
 
@@ -688,6 +964,6 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Current Status
 
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace` and `R2Bucket` done.**
-> Next: WAF custom rules (the `FirewallRule` row; rename it first, see "Plan corrections"). Items needing a paid
-> plan, add-on or account setup are tracked under "Deferred: paid plan, add-on or account setup" in Phase 3.
+> Next: confirm the SDK decision, then `feat/rulesets-foundation` and `WAFCustomRule` (see Phase 3). Items needing a
+> paid plan, add-on or account setup are tracked under "Deferred: paid plan, add-on or account setup" in Phase 3.
 > Last updated: October 2026

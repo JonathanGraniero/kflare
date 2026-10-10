@@ -32,7 +32,7 @@ Early development. Phase 1 (foundation) and Phase 2 (core resources) are complet
 
 - `R2Bucket` — creates or adopts an R2 bucket, with an optional location hint; WorkerScripts bind it with `r2BucketRef`. kflare never deletes objects: a bucket that still holds any is kept and reported as `BucketNotEmpty` (see [the sample](config/samples/cloudflare_v1alpha1_r2bucket.yaml))
 
-**Planned next:** more of Phase 3 — firewall and WAF rules, rate limiting and Zero Trust, then load balancers (see [CLAUDE.md](./CLAUDE.md)).
+**Planned next:** more of Phase 3 — WAF custom rules and rate limiting rules on the Rulesets API, IP lists and Zero Trust, then managed rulesets, managed transforms and the rules that replace Page Rules (transform, redirect, cache, configuration and origin rules); load balancers last (see [CLAUDE.md](./CLAUDE.md)).
 
 ## Install
 
