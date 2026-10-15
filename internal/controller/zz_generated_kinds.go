@@ -26,6 +26,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&KVNamespaceReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the KVNamespace controller: %w", err)
 	}
+	if err := (&RedirectRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the RedirectRule controller: %w", err)
+	}
 	if err := (&TransformRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the TransformRule controller: %w", err)
 	}
@@ -44,11 +47,13 @@ var generatedAccountDependents = []dependentKind{
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule
 // controller drives.
-var generatedRulesetRuleKinds = []rulesetRuleKind{transformRuleKind}
+var generatedRulesetRuleKinds = []rulesetRuleKind{redirectRuleKind, transformRuleKind}
 
 // generatedZoneDependents are the generated rule kinds, whose resources
 // reference a Zone in their namespace.
 var generatedZoneDependents = []dependentKind{
+	dependents("RedirectRule", func() client.ObjectList { return &cloudflarev1alpha1.RedirectRuleList{} },
+		func(obj *cloudflarev1alpha1.RedirectRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("TransformRule", func() client.ObjectList { return &cloudflarev1alpha1.TransformRuleList{} },
 		func(obj *cloudflarev1alpha1.TransformRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 }

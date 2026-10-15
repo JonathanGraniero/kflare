@@ -103,6 +103,7 @@ rules:
       # +kflare-gen:begin The kinds in generator/generator.yaml: make codegen keeps this block.
       - d1databases
       - kvnamespaces
+      - redirectrules
       - transformrules
       # +kflare-gen:end
     verbs: ["create", "update", "patch", "delete", "deletecollection"]

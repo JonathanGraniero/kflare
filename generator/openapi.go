@@ -9,8 +9,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -358,11 +360,17 @@ func (s *apiSpec) fieldSpec(prop *schema) (fieldSpec, error) {
 		}
 		if out.enum == nil && len(sch.Enum) > 0 {
 			for _, value := range sch.Enum {
-				str, ok := value.(string)
-				if !ok {
-					return fmt.Errorf("enum value %v is not a string", value)
+				switch v := value.(type) {
+				case string:
+					out.enum = append(out.enum, v)
+				case float64:
+					if v != math.Trunc(v) {
+						return fmt.Errorf("enum value %v is not a string or a whole number", value)
+					}
+					out.enum = append(out.enum, strconv.FormatInt(int64(v), 10))
+				default:
+					return fmt.Errorf("enum value %v is not a string or a whole number", value)
 				}
-				out.enum = append(out.enum, str)
 			}
 		}
 		if out.def == "" && sch.Default != nil {

@@ -76,6 +76,11 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestExecuteRule]{
 	},
 	invalid: []ruleSpecCase{
 		{
+			what:    "id left out",
+			spec:    `{"expression":"true","overrides":{"categories":[{"category":"wordpress","enabled":false}],"enabled":true,"rules":[{"action":"log","id":"9f7e454e4cad45abbcc40696037f70df","scoreThreshold":40}]}}`,
+			message: "spec.id: Required value",
+		},
+		{
 			what:    "id not matching its pattern",
 			spec:    `{"expression":"true","id":"kflare-not-matching","overrides":{"categories":[{"category":"wordpress","enabled":false}],"enabled":true,"rules":[{"action":"log","id":"9f7e454e4cad45abbcc40696037f70df","scoreThreshold":40}]}}`,
 			message: "spec.id",
@@ -91,9 +96,19 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestExecuteRule]{
 			message: "spec.overrides.rules",
 		},
 		{
+			what:    "overrides.categories[0].category left out",
+			spec:    `{"expression":"true","id":"77454fe2d30c4220b5701f6fdfb893ba","overrides":{"categories":[{"enabled":false}],"enabled":true,"rules":[{"action":"log","id":"9f7e454e4cad45abbcc40696037f70df","scoreThreshold":40}]}}`,
+			message: "spec.overrides.categories[0].category: Required value",
+		},
+		{
 			what:    "an empty overrides.categories[0].category",
 			spec:    `{"expression":"true","id":"77454fe2d30c4220b5701f6fdfb893ba","overrides":{"categories":[{"category":"","enabled":false}],"enabled":true,"rules":[{"action":"log","id":"9f7e454e4cad45abbcc40696037f70df","scoreThreshold":40}]}}`,
 			message: "spec.overrides.categories[0].category",
+		},
+		{
+			what:    "overrides.rules[0].id left out",
+			spec:    `{"expression":"true","id":"77454fe2d30c4220b5701f6fdfb893ba","overrides":{"categories":[{"category":"wordpress","enabled":false}],"enabled":true,"rules":[{"action":"log","scoreThreshold":40}]}}`,
+			message: "spec.overrides.rules[0].id: Required value",
 		},
 		{
 			what:    "overrides.rules[0].id not matching its pattern",

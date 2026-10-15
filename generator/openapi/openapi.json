@@ -1020,6 +1020,120 @@
         "title": "Sensitivity Level",
         "type": "string"
       },
+      "rulesets_RedirectFromList": {
+        "description": "A redirect based on a bulk list lookup.",
+        "properties": {
+          "key": {
+            "description": "An expression that evaluates to the list lookup key.",
+            "example": "http.request.full_uri",
+            "minLength": 1,
+            "title": "Lookup Key",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the list to match against.",
+            "example": "my_list",
+            "pattern": "^[a-zA-Z0-9_]+$",
+            "title": "List Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "key"
+        ],
+        "title": "Bulk Redirect",
+        "type": "object"
+      },
+      "rulesets_RedirectFromValue": {
+        "description": "A redirect based on the request properties.",
+        "properties": {
+          "preserve_query_string": {
+            "default": false,
+            "description": "Whether to keep the query string of the original request.",
+            "example": true,
+            "title": "Preserve Query String",
+            "type": "boolean"
+          },
+          "status_code": {
+            "description": "The status code to use for the redirect.",
+            "enum": [
+              301,
+              302,
+              303,
+              307,
+              308
+            ],
+            "example": 302,
+            "title": "Status Code",
+            "type": "integer"
+          },
+          "target_url": {
+            "description": "A URL to redirect the request to.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "properties": {
+              "expression": {
+                "description": "An expression that evaluates to a URL to redirect the request to.",
+                "example": "concat(\"https://example.com\", http.request.uri.path)",
+                "minLength": 1,
+                "title": "Redirect Expression",
+                "type": "string"
+              },
+              "value": {
+                "description": "A URL to redirect the request to.",
+                "example": "https://example.com",
+                "minLength": 1,
+                "title": "Redirect Value",
+                "type": "string"
+              }
+            },
+            "title": "Target URL",
+            "type": "object"
+          }
+        },
+        "required": [
+          "target_url"
+        ],
+        "title": "Single Redirect",
+        "type": "object"
+      },
+      "rulesets_RedirectRule": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/rulesets_Rule"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "redirect"
+                ],
+                "type": "string"
+              },
+              "action_parameters": {
+                "maxProperties": 1,
+                "minProperties": 1,
+                "properties": {
+                  "from_list": {
+                    "$ref": "#/components/schemas/rulesets_RedirectFromList"
+                  },
+                  "from_value": {
+                    "$ref": "#/components/schemas/rulesets_RedirectFromValue"
+                  }
+                },
+                "type": "object"
+              },
+              "description": {
+                "example": "Redirect the request.",
+                "type": "string"
+              }
+            },
+            "title": "Redirect Rule",
+            "type": "object"
+          }
+        ]
+      },
       "rulesets_RewriteHeaderExpression": {
         "description": "An expression that evaluates to a value for the header.",
         "example": "ip.src",

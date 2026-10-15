@@ -84,8 +84,8 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestSkipRule]{
 	full: []ruleSpecCase{
 		{
 			what: "every field set",
-			spec: `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phase":"current","phases":["http_request_sbfm"],"products":["waf"],"ruleset":"current","rulesets":["2f2feab2026849078ba485f918791bdc"]}`,
-			rule: `{"action":"skip","action_parameters":{"phase":"current","phases":["http_request_sbfm"],"products":["waf"],"ruleset":"current","rulesets":["2f2feab2026849078ba485f918791bdc"]},"description":"Skip the health check","enabled":true,"expression":"http.request.uri.path eq \"/health\""}`,
+			spec: `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phase":"current","phases":["ddos_l4"],"products":["bic"],"ruleset":"current","rulesets":["2f2feab2026849078ba485f918791bdc"]}`,
+			rule: `{"action":"skip","action_parameters":{"phase":"current","phases":["ddos_l4"],"products":["bic"],"ruleset":"current","rulesets":["2f2feab2026849078ba485f918791bdc"]},"description":"Skip the health check","enabled":true,"expression":"http.request.uri.path eq \"/health\""}`,
 		},
 	},
 })

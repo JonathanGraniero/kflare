@@ -97,6 +97,58 @@ kinds:
 # cloudflare-go v7's rule type for the action and the rule's OpenAPI schema; field paths are the API's names, with []
 # for the items of a list or map. Each entry rule says what Cloudflare refuses, and gives a spec it refuses.
 ruleKinds:
+  - kind: RedirectRule
+    rule: rulesets.RedirectRuleParam
+    shortName: cfredirect
+    noun: redirect rule
+    doc: |
+      RedirectRule is the Schema for the redirectrules API.
+      It manages one single redirect in a zone: Cloudflare answers the requests
+      its expression matches with a redirect to a URL, a static one or one an
+      expression computes.
+    phase: http_request_dynamic_redirect
+    samples:
+      - expression: 'http.host eq "www.example.com"'
+        description: Send www.example.com to example.com, keeping the path and query
+        fromValue:
+          targetURL:
+            expression: 'concat("https://example.com", http.request.uri.path)'
+          statusCode: 301
+          preserveQueryString: true
+    fields:
+      from_value:
+        doc: |
+          FromValue redirects the requests the rule matches to a URL: targetURL's,
+          with statusCode.
+      from_value.target_url:
+        doc: |
+          TargetURL is the URL requests are redirected to: a static value, or what
+          an expression computes for each request.
+      from_value.target_url.value:
+        doc: |
+          Value is a static URL, such as `https://example.com/new`. Cloudflare
+          takes it as given, a relative URL too.
+      from_value.target_url.expression:
+        doc: |
+          Expression computes the URL in Cloudflare's Rules language, such as
+          `concat("https://example.com", http.request.uri.path)`. Free plans
+          cannot use regex_replace; wildcard_replace works on every plan.
+      from_value.status_code:
+        doc: |
+          StatusCode is the redirect's status: 301 or 308 for a permanent
+          redirect, 302, 303 or 307 for a temporary one. Unset, Cloudflare
+          redirects with 301.
+      from_value.preserve_query_string:
+        doc: |
+          PreserveQueryString keeps the request's query string on the URL
+          redirected to. Unset, the query string is dropped.
+    ignore:
+      from_list: >-
+        Bulk Redirects look requests up in a redirect list, in the account-level http_request_redirect phase; Cloudflare
+        refuses from_list in http_request_dynamic_redirect (20080), verified live on 2026-10-15.
+      logging: Only skip rules log (20018 on a redirect rule, verified live on 2026-10-15).
+      ratelimit: Rate limits are refused in http_request_dynamic_redirect (20131, verified live on 2026-10-15).
+      exposed_credential_check: Refused in http_request_dynamic_redirect (20189, verified live on 2026-10-15).
   - kind: TransformRule
     rule: rulesets.RewriteRuleParam
     shortName: cftransform

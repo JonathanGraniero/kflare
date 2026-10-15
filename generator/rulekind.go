@@ -12,6 +12,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -427,6 +428,8 @@ func checkScalar(n *paramScalar, value any, path string) (any, error) {
 		switch {
 		case !ok:
 			return nil, fmt.Errorf("%s is not a whole number", path)
+		case len(n.enum) > 0 && !slices.Contains(n.enum, strconv.FormatInt(i, 10)):
+			return nil, fmt.Errorf("%s is %d, not one of %s", path, i, strings.Join(n.enum, ", "))
 		case v.minimum != nil && (float64(i) < *v.minimum || v.exclusiveMinimum && float64(i) == *v.minimum):
 			return nil, fmt.Errorf("%s is below its minimum", path)
 		case v.maximum != nil && (float64(i) > *v.maximum || v.exclusiveMaximum && float64(i) == *v.maximum):

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"go/types"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -220,7 +221,7 @@ func (b *paramBuilder) object(path, goName, prefix string, sdkType *types.Named,
 	if len(st.fields) == 0 {
 		return nil, fmt.Errorf("%s: every field is ignored", describePath(path))
 	}
-	st.rules = append(st.rules, propertyCountRules(resolved, st.fields)...)
+	st.rules = append(st.rules, countRules(resolved, st.fields)...)
 	return st, nil
 }
 
@@ -313,6 +314,11 @@ func (b *paramBuilder) scalar(path string, t types.Type, sch *schema, adjust rul
 		if fs.typ != typeInteger {
 			return nil, fmt.Errorf("%s is a number the OpenAPI spec does not say is an integer, which a CRD cannot "+
 				"hold well; ignore it with a reason", path)
+		}
+		for _, value := range out.enum {
+			if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+				return nil, fmt.Errorf("%s is an integer whose enum holds %q", path, value)
+			}
 		}
 		out.goType = typeInt64
 		v := fs.validation
@@ -494,7 +500,7 @@ func (b *paramBuilder) union(path, goName string, union *types.Named, sch *schem
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	st.rules = append(st.rules, rule)
-	st.rules = append(st.rules, propertyCountRules(resolved, st.fields)...)
+	st.rules = append(st.rules, countRules(resolved, st.fields)...)
 	return st, nil
 }
 
@@ -657,6 +663,26 @@ func (b *paramBuilder) variantRule(combinator string, st *paramStruct, props []m
 		rule.message = "must be one of: " + strings.Join(descriptions, "; ")
 	}
 	return rule, nil
+}
+
+// countRules returns the rules that bound how many of an object's fields are
+// set. An object left with one field, as when the entry ignores the others,
+// needs none: a minimum makes the field required instead, and a maximum holds
+// anyway.
+func countRules(sch *schema, fields []*paramField) []celRule {
+	var settable []*paramField
+	for _, f := range fields {
+		if !f.key {
+			settable = append(settable, f)
+		}
+	}
+	if len(settable) != 1 {
+		return propertyCountRules(sch, fields)
+	}
+	if sch != nil && sch.MinProperties != nil && *sch.MinProperties > 0 {
+		settable[0].required = true
+	}
+	return nil
 }
 
 // propertyCountRules returns the rules that bound how many of an object's
