@@ -159,10 +159,10 @@ var _ = Describe("WorkerScript Controller", func() {
 			CompatibilityDate:  "2024-09-23",
 			CompatibilityFlags: []string{"nodejs_compat"},
 			Bindings: []cloudflarev1alpha1.WorkerBinding{
-				{Name: "GREETING", PlainText: cf.StringPtr("hello")},
+				{Name: "GREETING", PlainText: new("hello")},
 				{Name: "API_KEY", SecretKeyRef: &cloudflarev1alpha1.WorkerKeyReference{Name: bindingSecret, Key: "api-key"}},
-				{Name: "CACHE", KVNamespaceID: cf.StringPtr("kv-123")},
-				{Name: "BUCKET", R2BucketName: cf.StringPtr("assets")},
+				{Name: "CACHE", KVNamespaceID: new("kv-123")},
+				{Name: "BUCKET", R2BucketName: new("assets")},
 			},
 		}
 	}
@@ -445,7 +445,7 @@ var _ = Describe("WorkerScript Controller", func() {
 			firstHash := getWorker().Status.AppliedHash
 
 			ws := getWorker()
-			ws.Spec.Bindings[0].PlainText = cf.StringPtr("changed")
+			ws.Spec.Bindings[0].PlainText = new("changed")
 			Expect(k8sClient.Update(ctx, ws)).To(Succeed())
 
 			_, err = reconcileWorker(r)
@@ -597,7 +597,7 @@ var _ = Describe("WorkerScript Controller", func() {
 				s.Script = nil
 			}, "exactly one of script or scriptConfigMapRef"),
 			Entry("a binding with two sources", func(s *cloudflarev1alpha1.WorkerScriptSpec) {
-				s.Bindings[0].KVNamespaceID = cf.StringPtr("kv")
+				s.Bindings[0].KVNamespaceID = new("kv")
 			}, "exactly one of plainText, secretKeyRef, kvNamespaceRef, kvNamespaceID, r2BucketRef or r2BucketName"),
 			Entry("a binding with both kvNamespaceRef and kvNamespaceID", func(s *cloudflarev1alpha1.WorkerScriptSpec) {
 				s.Bindings[2].KVNamespaceRef = &corev1.LocalObjectReference{Name: "kv"}

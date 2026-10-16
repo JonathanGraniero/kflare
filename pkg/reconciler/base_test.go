@@ -8,6 +8,7 @@ package reconciler_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -124,13 +125,7 @@ func TestEnsureFinalizer_AddsWhenAbsent(t *testing.T) {
 	// Verify the finalizer is present on the object in the fake store.
 	updated := &corev1.ConfigMap{}
 	_ = c.Get(context.Background(), client.ObjectKeyFromObject(cm), updated)
-	found := false
-	for _, f := range updated.Finalizers {
-		if f == reconciler.Finalizer {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(updated.Finalizers, reconciler.Finalizer)
 	if !found {
 		t.Errorf("finalizer %q not found in object after EnsureFinalizer", reconciler.Finalizer)
 	}

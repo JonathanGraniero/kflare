@@ -138,7 +138,7 @@ func wrapIndented(text string) []string {
 func wrapAt(text string, width int) []string {
 	var out []string
 	line := ""
-	for _, word := range strings.Fields(text) {
+	for word := range strings.FieldsSeq(text) {
 		if line != "" && len(line)+1+len(word) > width {
 			out = append(out, line)
 			line = ""

@@ -167,8 +167,8 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 						Hostname: "app.example.com",
 						Service:  "http://app.default:80",
 						OriginRequest: &cloudflarev1alpha1.TunnelOriginRequest{
-							HTTPHostHeader: cf.StringPtr("app.internal"),
-							NoTLSVerify:    cf.BoolPtr(true),
+							HTTPHostHeader: new("app.internal"),
+							NoTLSVerify:    new(true),
 						},
 					},
 					{Hostname: "api.example.com", Path: "^/v1/", Service: "https://api.default:443"},
@@ -196,8 +196,8 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 				Hostname: "app.example.com",
 				Service:  "http://app.default:80",
 				OriginRequest: &cf.OriginRequestConfig{
-					HTTPHostHeader: cf.StringPtr("app.internal"),
-					NoTLSVerify:    cf.BoolPtr(true),
+					HTTPHostHeader: new("app.internal"),
+					NoTLSVerify:    new(true),
 				},
 			},
 			{Hostname: "api.example.com", Path: "^/v1/", Service: "https://api.default:443"},
@@ -419,7 +419,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 				c.Ingress[1].OriginRequest = &cf.OriginRequestConfig{ConnectTimeout: &cf.TunnelDuration{Duration: 30 * time.Second}}
 			}),
 			Entry("top-level origin settings", func(c *cf.TunnelConfiguration) {
-				c.OriginRequest = cf.OriginRequestConfig{NoTLSVerify: cf.BoolPtr(true)}
+				c.OriginRequest = cf.OriginRequestConfig{NoTLSVerify: new(true)}
 			}),
 			Entry("warp routing enabled", func(c *cf.TunnelConfiguration) {
 				c.WarpRouting = &cf.WarpRoutingConfig{Enabled: true}

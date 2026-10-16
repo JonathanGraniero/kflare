@@ -491,26 +491,27 @@ func kindDoc(c *controller) string {
 			updatable = append(updatable, af.jsonName)
 		}
 	}
-	doc := fmt.Sprintf("%sKind describes %s to the shared CRUD reconciler. A %s adopts the account's %s with "+
+	var doc strings.Builder
+	fmt.Fprintf(&doc, "%sKind describes %s to the shared CRUD reconciler. A %s adopts the account's %s with "+
 		"the same %s, unless another %s manages it, or else creates one.", c.varName, pluralOf(c.name), c.name,
 		c.noun, c.key.jsonName, c.name)
 	if len(updatable) > 0 {
-		doc += fmt.Sprintf(" It changes %s in place.", prose(updatable))
+		fmt.Fprintf(&doc, " It changes %s in place.", prose(updatable))
 	}
 	if len(immutable) > 0 {
 		verb := "is"
 		if len(immutable) > 1 {
 			verb = "are"
 		}
-		doc += fmt.Sprintf(" %s %s set when the %s is created and cannot change.", upperCamel(prose(immutable)),
+		fmt.Fprintf(&doc, " %s %s set when the %s is created and cannot change.", upperCamel(prose(immutable)),
 			verb, c.noun)
 	}
-	doc += fmt.Sprintf(" A %s deleted outside kflare is created again.", c.noun)
+	fmt.Fprintf(&doc, " A %s deleted outside kflare is created again.", c.noun)
 	for _, d := range c.dependents {
-		doc += fmt.Sprintf(" A %s waits for the %s that use it before it is deleted: %s", c.name, pluralOf(d.Kind),
+		fmt.Fprintf(&doc, " A %s waits for the %s that use it before it is deleted: %s", c.name, pluralOf(d.Kind),
 			strings.TrimSpace(d.Reason))
 	}
-	return doc
+	return doc.String()
 }
 
 // emitControllerTest returns the Go source of a kind's envtest table: a fake

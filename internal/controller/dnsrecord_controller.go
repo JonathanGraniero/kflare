@@ -246,7 +246,7 @@ func buildCreateParams(record *cloudflarev1alpha1.DNSRecord) (cf.CreateDNSRecord
 		Tags:     record.Spec.Tags,
 	}
 	if record.Spec.Data != nil {
-		var data interface{}
+		var data any
 		if err := json.Unmarshal(record.Spec.Data.Raw, &data); err != nil {
 			return cf.CreateDNSRecordParams{}, fmt.Errorf("invalid data field: %w", err)
 		}
@@ -329,7 +329,7 @@ func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (b
 
 	// Data (JSON round-trip compare).
 	if dataDrifted(record, cfRecord) {
-		var data interface{}
+		var data any
 		if record.Spec.Data != nil {
 			// Unmarshal is safe here; it was validated in buildCreateParams.
 			_ = json.Unmarshal(record.Spec.Data.Raw, &data)
@@ -488,7 +488,7 @@ func dataDrifted(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) bo
 		return true
 	}
 	// Both have data — unmarshal spec JSON into interface{} and deep-compare.
-	var specData interface{}
+	var specData any
 	if err := json.Unmarshal(record.Spec.Data.Raw, &specData); err != nil {
 		return true
 	}

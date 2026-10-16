@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/types"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -299,9 +300,7 @@ func TestBuildRuleKindRefusesTheTestKindsUnmapped(t *testing.T) {
 // cloneMap returns a copy of m.
 func cloneMap[V any](m map[string]V) map[string]V {
 	out := make(map[string]V, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }
 

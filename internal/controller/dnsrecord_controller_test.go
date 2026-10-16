@@ -512,7 +512,7 @@ var _ = Describe("DNSRecord Controller", func() {
 
 			// Cloudflare always reports proxied, even for records that never set it.
 			cfRecord := cf.DNSRecord{ID: dnsFakeRecordID, Name: dnsRecordName, Type: dnsRecordType,
-				Content: dnsRecordIP, TTL: 300, Proxied: cf.BoolPtr(false), Tags: []string{}}
+				Content: dnsRecordIP, TTL: 300, Proxied: new(false), Tags: []string{}}
 			fake := &fakeDNSRecordAPI{getRecord: cfRecord}
 			r := reconcilerWithFakeDNSAPI(fake)
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
@@ -545,7 +545,7 @@ var _ = Describe("DNSRecord Controller", func() {
 
 			// What Cloudflare returns for a record created without ttl or proxied.
 			cfRecord := cf.DNSRecord{ID: dnsFakeRecordID, Name: dnsRecordName, Type: dnsRecordType,
-				Content: dnsRecordIP, TTL: 1, Proxied: cf.BoolPtr(false), Tags: []string{}}
+				Content: dnsRecordIP, TTL: 1, Proxied: new(false), Tags: []string{}}
 			fake := &fakeDNSRecordAPI{getRecord: cfRecord}
 			r := reconcilerWithFakeDNSAPI(fake)
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
@@ -747,7 +747,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			cfRecord := cf.DNSRecord{
 				ID:   dnsFakeRecordID,
 				Name: "_http._tcp.example.com", Type: "SRV", TTL: 300,
-				Data: map[string]interface{}{"port": float64(9000), "weight": float64(1)},
+				Data: map[string]any{"port": float64(9000), "weight": float64(1)},
 			}
 			fake := &fakeDNSRecordAPI{getRecord: cfRecord, updateRecord: cf.DNSRecord{ID: dnsFakeRecordID}}
 			r := reconcilerWithFakeDNSAPI(fake)
@@ -1077,7 +1077,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(k8sClient.Update(ctx, rec)).To(Succeed())
 
 			// CF returns the data field matching what was sent.
-			srvData := map[string]interface{}{"port": float64(8080), "weight": float64(1)}
+			srvData := map[string]any{"port": float64(8080), "weight": float64(1)}
 			created := cf.DNSRecord{ID: dnsFakeRecordID, Name: "_http._tcp.example.com", Type: "SRV", TTL: 300, Data: srvData}
 			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{}, createRecord: created}
 			r := reconcilerWithFakeDNSAPI(fake)

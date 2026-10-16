@@ -21,7 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
@@ -349,7 +348,7 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 
 		It("registers with a manager, and falls back to the production client", func() {
 			mgr, err := manager.New(cfg, manager.Options{
-				Controller: config.Controller{SkipNameValidation: ptr.To(true)},
+				Controller: config.Controller{SkipNameValidation: new(true)},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(specs.newReconciler(mgr.GetClient(), nil).SetupWithManager(mgr)).To(Succeed())

@@ -208,7 +208,7 @@ var _ = Describe("dataDrifted", func() {
 	})
 
 	It("returns true when spec data is nil but CF data is set", func() {
-		Expect(dataDrifted(makeRecord(nil), cf.DNSRecord{Data: map[string]interface{}{"port": float64(80)}})).To(BeTrue())
+		Expect(dataDrifted(makeRecord(nil), cf.DNSRecord{Data: map[string]any{"port": float64(80)}})).To(BeTrue())
 	})
 
 	It("returns true when spec data is set but CF data is nil", func() {
@@ -216,14 +216,14 @@ var _ = Describe("dataDrifted", func() {
 	})
 
 	It("returns false when both have equal data", func() {
-		cfData := map[string]interface{}{"port": float64(80), "weight": float64(1)}
+		cfData := map[string]any{"port": float64(80), "weight": float64(1)}
 		cfJSON, _ := json.Marshal(cfData)
 		Expect(dataDrifted(makeRecord(cfJSON), cf.DNSRecord{Data: cfData})).To(BeFalse())
 	})
 
 	It("returns true when data values differ", func() {
 		specJSON := []byte(`{"port":80}`)
-		cfData := map[string]interface{}{"port": float64(9000)}
+		cfData := map[string]any{"port": float64(9000)}
 		Expect(dataDrifted(makeRecord(specJSON), cf.DNSRecord{Data: cfData})).To(BeTrue())
 	})
 
@@ -357,7 +357,7 @@ var _ = Describe("driftDetect", func() {
 			Content: `0 issue "letsencrypt.org"`, // derived from data by Cloudflare
 			TTL:     300,
 			Proxied: makeProxy(false),
-			Data:    map[string]interface{}{"flags": float64(0), "tag": "issue", "value": "letsencrypt.org"},
+			Data:    map[string]any{"flags": float64(0), "tag": "issue", "value": "letsencrypt.org"},
 		}
 		drifted, _ := driftDetect(spec, cfRecord)
 		Expect(drifted).To(BeFalse())
@@ -432,8 +432,8 @@ var _ = Describe("adoptableRecord", func() {
 	It("matches data-based records on data", func() {
 		srv := &cloudflarev1alpha1.DNSRecord{Spec: cloudflarev1alpha1.DNSRecordSpec{
 			Type: "SRV", Data: &apiextensionsv1.JSON{Raw: []byte(`{"port":443}`)}}}
-		a := cf.DNSRecord{ID: "a", Type: "SRV", Data: map[string]interface{}{"port": float64(80)}}
-		b := cf.DNSRecord{ID: "b", Type: "SRV", Data: map[string]interface{}{"port": float64(443)}}
+		a := cf.DNSRecord{ID: "a", Type: "SRV", Data: map[string]any{"port": float64(80)}}
+		b := cf.DNSRecord{ID: "b", Type: "SRV", Data: map[string]any{"port": float64(443)}}
 		got, ok := adoptableRecord(srv, []cf.DNSRecord{a, b}, none)
 		Expect(ok).To(BeTrue())
 		Expect(got.ID).To(Equal("b"))
