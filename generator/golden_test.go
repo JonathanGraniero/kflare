@@ -158,13 +158,13 @@ func TestGoldenControllerCompiles(t *testing.T) {
 	for _, kind := range []string{"TestKVNamespace", "TestExecuteRule", "TestSkipRule"} {
 		lower := strings.ToLower(kind)
 		overlay[filepath.Join(root, typesFile(lower))] = read(filepath.Base(typesFile(lower)))
-		overlay[filepath.Join(root, apiDir, lower+"_deepcopy.go")] = []byte(fmt.Sprintf(`package v1alpha1
+		overlay[filepath.Join(root, apiDir, lower+"_deepcopy.go")] = fmt.Appendf(nil, `package v1alpha1
 
 import "k8s.io/apimachinery/pkg/runtime"
 
 func (in *%[1]s) DeepCopyObject() runtime.Object     { out := *in; return &out }
 func (in *%[1]sList) DeepCopyObject() runtime.Object { out := *in; return &out }
-`, kind))
+`, kind)
 		overlay[filepath.Join(root, controllerFile(lower))] = read(filepath.Base(controllerFile(lower)))
 		overlay[filepath.Join(root, controllerTestFile(lower))] = read(filepath.Base(controllerTestFile(lower)))
 	}

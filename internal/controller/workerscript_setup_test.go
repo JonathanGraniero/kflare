@@ -45,7 +45,7 @@ var _ = Describe("desiredUpload", func() {
 	It("uploads as an ES module when format is empty", func() {
 		ws := &cloudflarev1alpha1.WorkerScript{Spec: cloudflarev1alpha1.WorkerScriptSpec{
 			Name:   "no-format",
-			Script: cf.StringPtr("export default {};"),
+			Script: new("export default {};"),
 		}}
 		upload, hash, srcErr := (&WorkerScriptReconciler{}).desiredUpload(context.Background(), ws)
 		Expect(srcErr).To(BeNil())
@@ -134,9 +134,9 @@ var _ = Describe("WorkerScriptReconciler watch mappings", func() {
 				Spec: cloudflarev1alpha1.WorkerScriptSpec{
 					Name:       "wm-with-secret",
 					AccountRef: corev1.LocalObjectReference{Name: "wm-account-b"},
-					Script:     cf.StringPtr("export default {};"),
+					Script:     new("export default {};"),
 					Bindings: []cloudflarev1alpha1.WorkerBinding{
-						{Name: "PLAIN", PlainText: cf.StringPtr("x")},
+						{Name: "PLAIN", PlainText: new("x")},
 						{Name: "KEY", SecretKeyRef: &cloudflarev1alpha1.WorkerKeyReference{Name: "wm-secret", Key: "k"}},
 					},
 				},

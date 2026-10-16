@@ -326,7 +326,7 @@ var _ = Describe("Tunnel Controller", func() {
 			Expect(fake.calls).To(Equal([]string{"ListTunnels", "CreateTunnel", "GetTunnelToken"}))
 			Expect(fake.accountIDs).To(HaveEach(fakeAcctID))
 			Expect(fake.listParams.Name).To(Equal(cfTunnelName))
-			Expect(fake.listParams.IsDeleted).To(Equal(cf.BoolPtr(false)))
+			Expect(fake.listParams.IsDeleted).To(Equal(new(false)))
 			Expect(fake.createParams.Name).To(Equal(cfTunnelName))
 			Expect(fake.createParams.ConfigSrc).To(Equal("cloudflare"))
 			secretBytes, decodeErr := base64.StdEncoding.DecodeString(fake.createParams.Secret)

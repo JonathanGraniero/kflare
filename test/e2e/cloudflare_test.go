@@ -712,7 +712,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(cfRule.Description).To(Equal(deployment.Spec.Description))
 		Expect(cfRule.ActionParameters).NotTo(BeNil())
 		Expect(cfRule.ActionParameters.ID).To(Equal(freeManagedRulesetID))
-		Expect(cfRule.ActionParameters.Version).To(Equal(cf.StringPtr("latest")))
+		Expect(cfRule.ActionParameters.Version).To(Equal(new("latest")))
 		Expect(cfRule.ActionParameters.Overrides).To(Equal(&cf.RulesetRuleActionParametersOverrides{
 			Categories: []cf.RulesetRuleActionParametersCategories{
 				{Category: "log4j", Action: "managed_challenge"},
@@ -723,7 +723,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		By("turning a rule off, which updates the deployment in place")
 		patch := client.MergeFrom(deployment.DeepCopy())
 		deployment.Spec.Overrides.Rules = []cloudflarev1alpha1.ManagedRulesetRuleOverride{
-			{ID: "9f7e454e4cad45abbcc40696037f70df", Enabled: cf.BoolPtr(false)}, // Shellshock
+			{ID: "9f7e454e4cad45abbcc40696037f70df", Enabled: new(false)}, // Shellshock
 		}
 		Expect(k8s.Patch(ctx, deployment, patch)).To(Succeed())
 		Eventually(func(g Gomega) {
@@ -731,7 +731,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			g.Expect(ok).To(BeTrue(), "Cloudflare has no rule with ref %s", ref)
 			g.Expect(updated.ID).To(Equal(cfRule.ID))
 			g.Expect(updated.ActionParameters.Overrides.Rules).To(Equal([]cf.RulesetRuleActionParametersRules{
-				{ID: "9f7e454e4cad45abbcc40696037f70df", Enabled: cf.BoolPtr(false)},
+				{ID: "9f7e454e4cad45abbcc40696037f70df", Enabled: new(false)},
 			}))
 		}, e2eTimeout, e2ePoll).Should(Succeed())
 
@@ -960,7 +960,7 @@ func cleanupCloudflare(
 		}
 	}
 
-	tunnels, _, err := api.ListTunnels(ctx, rc, cf.TunnelListParams{Name: name, IsDeleted: cf.BoolPtr(false)})
+	tunnels, _, err := api.ListTunnels(ctx, rc, cf.TunnelListParams{Name: name, IsDeleted: new(false)})
 	report("listing tunnels", err)
 	for _, t := range tunnels {
 		report("removing tunnel connections", api.CleanupTunnelConnections(ctx, rc, t.ID))

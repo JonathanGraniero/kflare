@@ -151,7 +151,7 @@ func (r *TunnelReconciler) syncTunnel(
 	if cfTunnel.ID == "" {
 		tunnels, _, err := cfAPI.ListTunnels(ctx, rc, cf.TunnelListParams{
 			Name:      tunnel.Spec.Name,
-			IsDeleted: cf.BoolPtr(false),
+			IsDeleted: new(false),
 		})
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, tunnel, err)

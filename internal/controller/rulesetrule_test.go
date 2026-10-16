@@ -549,8 +549,8 @@ func peer(ref string, priority int32, name string) rulesetRulePeer {
 func fieldNames(v any) []string {
 	t := reflect.TypeOf(v)
 	names := make([]string, 0, t.NumField())
-	for i := range t.NumField() {
-		names = append(names, t.Field(i).Name)
+	for field := range t.Fields() {
+		names = append(names, field.Name)
 	}
 	return slices.Sorted(slices.Values(names))
 }
