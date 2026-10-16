@@ -30,6 +30,7 @@
   - managedrulesets
   - r2buckets
   - ratelimitrules
+  - redirectrules
   - transformrules
   - tunnelconfigurations
   - tunnels
@@ -56,6 +57,7 @@
   - managedrulesets/finalizers
   - r2buckets/finalizers
   - ratelimitrules/finalizers
+  - redirectrules/finalizers
   - transformrules/finalizers
   - tunnelconfigurations/finalizers
   - tunnels/finalizers
@@ -76,6 +78,7 @@
   - managedrulesets/status
   - r2buckets/status
   - ratelimitrules/status
+  - redirectrules/status
   - transformrules/status
   - tunnelconfigurations/status
   - tunnels/status

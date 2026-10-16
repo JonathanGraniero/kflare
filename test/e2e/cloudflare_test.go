@@ -53,6 +53,9 @@ const (
 	requestHeadersPhase  = "http_request_late_transform"
 	responseHeadersPhase = "http_response_headers_transform"
 
+	// redirectPhase is the Rulesets phase of RedirectRules, single redirects.
+	redirectPhase = "http_request_dynamic_redirect"
+
 	// freeManagedRulesetID is the Cloudflare Free Managed Ruleset, the
 	// managed ruleset a Free zone can deploy.
 	freeManagedRulesetID = "77454fe2d30c4220b5701f6fdfb893ba"
@@ -94,7 +97,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		accountKey, tunnelKey, tunnelConfigKey, workerKey, zoneKey, recordKey client.ObjectKey
 		routeKey, exclusionKey, kvKey, bucketKey, wafKey, wafSkipKey          client.ObjectKey
 		rateLimitKey, listKey, listRuleKey, managedKey, d1Key                 client.ObjectKey
-		urlRewriteKey, requestHeadersKey, responseHeadersKey                  client.ObjectKey
+		urlRewriteKey, requestHeadersKey, responseHeadersKey, redirectKey     client.ObjectKey
 
 		tunnelID, zoneID, recordID, routeID, exclusionID, kvNamespaceID, listID, databaseID string
 	)
@@ -170,6 +173,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		urlRewriteKey = client.ObjectKey{Namespace: e2eNamespace, Name: "url-rewrite"}
 		requestHeadersKey = client.ObjectKey{Namespace: e2eNamespace, Name: "request-headers"}
 		responseHeadersKey = client.ObjectKey{Namespace: e2eNamespace, Name: "response-headers"}
+		redirectKey = client.ObjectKey{Namespace: e2eNamespace, Name: "redirect"}
 
 		DeferCleanup(func() {
 			By("removing anything this run left behind in Cloudflare")
@@ -194,6 +198,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 					ruleRef("TransformRule", requestHeadersKey))
 				cleanupRules(ctx, cfAPI, ruleService, zoneID, responseHeadersPhase,
 					ruleRef("TransformRule", responseHeadersKey))
+				cleanupRules(ctx, cfAPI, ruleService, zoneID, redirectPhase, ruleRef("RedirectRule", redirectKey))
 				// An entry point in the managed phase, even an empty one,
 				// stops Cloudflare's default deployment of the Free Managed
 				// Ruleset; deleting it restores the zone as found.
@@ -678,6 +683,66 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}
 	})
 
+	It("writes a single redirect, updates it in place and then leaves it alone", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		path := "/" + resourceName()
+		redirect := &cloudflarev1alpha1.RedirectRule{
+			ObjectMeta: objectMeta(redirectKey),
+			Spec: cloudflarev1alpha1.RedirectRuleSpec{
+				RulesetRuleSpec: cloudflarev1alpha1.RulesetRuleSpec{
+					ZoneRef:     corev1.LocalObjectReference{Name: zoneKey.Name},
+					Expression:  `http.request.uri.path eq "` + path + `"`,
+					Description: "kflare e2e " + run,
+				},
+				FromValue: cloudflarev1alpha1.RedirectRuleFromValue{
+					TargetURL: cloudflarev1alpha1.RedirectRuleFromValueTargetURL{
+						Expression: `concat("https://", http.host, "` + path + `/redirected")`,
+					},
+					StatusCode:          new(int64(302)),
+					PreserveQueryString: new(true),
+				},
+			},
+		}
+		Expect(k8s.Create(ctx, redirect)).To(Succeed())
+		expectReady(redirectKey, redirect, func() []metav1.Condition { return redirect.Status.Conditions })
+		ref := ruleRef("RedirectRule", redirectKey)
+		Expect(redirect.Status.CloudflareMetadata.Ref).To(Equal(ref))
+		cfRule, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, redirectPhase), ref)
+		Expect(ok).To(BeTrue(), "the %s phase has no rule with ref %s", redirectPhase, ref)
+		Expect(cfRule.ID).To(Equal(redirect.Status.CloudflareMetadata.RuleID))
+		Expect(cfRule.Action).To(Equal("redirect"))
+		Expect(cfRule.Expression).To(Equal(redirect.Spec.Expression))
+		Expect(cfRule.Description).To(Equal(redirect.Spec.Description))
+		Expect(cfRule.ActionParameters).NotTo(BeNil())
+		target := redirect.Spec.FromValue.TargetURL.Expression
+		Expect(cfRule.ActionParameters.FromValue).To(Equal(&cf.RulesetRuleActionParametersFromValue{
+			StatusCode:          302,
+			TargetURL:           cf.RulesetRuleActionParametersTargetURL{Expression: target},
+			PreserveQueryString: new(true),
+		}))
+
+		By("switching to a static URL and a permanent redirect, which updates the rule in place")
+		moved := "https://" + zoneName + path + "/moved"
+		patch := client.MergeFrom(redirect.DeepCopy())
+		redirect.Spec.FromValue.TargetURL = cloudflarev1alpha1.RedirectRuleFromValueTargetURL{Value: moved}
+		redirect.Spec.FromValue.StatusCode = new(int64(308))
+		Expect(k8s.Patch(ctx, redirect, patch)).To(Succeed())
+		Eventually(func(g Gomega) {
+			updated, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, redirectPhase), ref)
+			g.Expect(ok).To(BeTrue(), "Cloudflare has no rule with ref %s", ref)
+			g.Expect(updated.ID).To(Equal(cfRule.ID))
+			g.Expect(updated.ActionParameters.FromValue).To(Equal(&cf.RulesetRuleActionParametersFromValue{
+				StatusCode:          308,
+				TargetURL:           cf.RulesetRuleActionParametersTargetURL{Value: moved},
+				PreserveQueryString: new(true),
+			}))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+
+		expectIdle(ctx, k8s, cfAPI, zoneID, redirectPhase, redirect)
+	})
+
 	It("deploys the Free Managed Ruleset, updates its overrides in place and then leaves it alone", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")
@@ -845,6 +910,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			&cloudflarev1alpha1.TransformRule{ObjectMeta: objectMeta(urlRewriteKey)},
 			&cloudflarev1alpha1.TransformRule{ObjectMeta: objectMeta(requestHeadersKey)},
 			&cloudflarev1alpha1.TransformRule{ObjectMeta: objectMeta(responseHeadersKey)},
+			&cloudflarev1alpha1.RedirectRule{ObjectMeta: objectMeta(redirectKey)},
 			&cloudflarev1alpha1.WAFCustomRule{ObjectMeta: objectMeta(listRuleKey)},
 			&cloudflarev1alpha1.IPList{ObjectMeta: objectMeta(listKey)},
 			&cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(recordKey)},
@@ -899,6 +965,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				_, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, phase), ruleRef("TransformRule", key))
 				Expect(ok).To(BeFalse(), "the transform rule in %s was not deleted", phase)
 			}
+			_, ok = ruleByRef(phaseRules(ctx, cfAPI, zoneID, redirectPhase), ruleRef("RedirectRule", redirectKey))
+			Expect(ok).To(BeFalse(), "the redirect rule was not deleted")
 			_, err = cfAPI.GetEntrypointRuleset(ctx, cf.ZoneIdentifier(zoneID), managedPhase)
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(),
 				"the managed phase's emptied entry point was not deleted, which leaves Cloudflare's default off: %v", err)

@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -157,6 +158,8 @@ func (k *ruleKind) edits(rules []ruleConfig) error {
 	if failed != nil {
 		return failed
 	}
+	values := k.sampleValues()
+	k.swaps(values, change)
 
 	for i := 1; i < len(k.samples); i++ {
 		k.retypes = append(k.retypes, ruleEdit{what: "type " + k.phases[i].typeName, spec: copySpec(k.samples[i]),
@@ -166,7 +169,6 @@ func (k *ruleKind) edits(rules []ruleConfig) error {
 	if err := k.invalidValues(); err != nil {
 		return err
 	}
-	values := k.sampleValues()
 	if err := k.ruleBreaches(values); err != nil {
 		return err
 	}
@@ -181,9 +183,52 @@ func (k *ruleKind) edits(rules []ruleConfig) error {
 	return k.fullSpecs(values)
 }
 
-// invalidValues adds the values the CRD refuses, each in the first sample
-// that holds the field: a type, enum value or key it does not allow, a value
-// out of bounds or not matching its pattern, and an empty or repeating list.
+// swaps adds, for each object that takes exactly one of its fields, the
+// changes that set each other scalar field in place of the one the first
+// sample holding the object sets, so that every alternative is written and
+// refused when invalid.
+func (k *ruleKind) swaps(values map[*paramField]any, change func(int, string, func(map[string]any))) {
+	swapped := map[*paramStruct]bool{}
+	for i, sample := range k.samples {
+		visitor{object: func(path []step, st *paramStruct, value map[string]any) {
+			if swapped[st] || !takesOne(st) {
+				return
+			}
+			swapped[st] = true
+			for _, f := range st.fields {
+				n, scalar := f.node.(*paramScalar)
+				if _, set := value[f.jsonName]; set || f.key || f.required || !scalar {
+					continue
+				}
+				other, ok := scalarValue(f, n, values)
+				if !ok {
+					continue
+				}
+				change(i, describeObject(path)+" holding "+f.jsonName+" instead", func(spec map[string]any) {
+					object := objectAt(spec, path)
+					for _, g := range st.fields {
+						if !g.key && !g.required {
+							delete(object, g.jsonName)
+						}
+					}
+					object[f.jsonName] = other
+				})
+			}
+		}}.visitStruct(nil, k.params, sample)
+	}
+}
+
+// takesOne reports whether an object takes exactly one of its fields.
+func takesOne(st *paramStruct) bool {
+	return slices.ContainsFunc(st.rules, func(r celRule) bool {
+		return strings.HasPrefix(r.message, "must set exactly one of")
+	})
+}
+
+// invalidValues adds the values the CRD refuses, each in the first spec that
+// holds the field, a sample or a change of one: a type, enum value or key it
+// does not allow, a value out of bounds or not matching its pattern, an empty
+// or repeating list, and a required field left out.
 func (k *ruleKind) invalidValues() error {
 	var sample map[string]any
 	invalid := func(what, message string, edit func(spec map[string]any)) {
@@ -198,15 +243,22 @@ func (k *ruleKind) invalidValues() error {
 		})
 	}
 	var failed error
-	seen, seenList := map[*paramField]bool{}, map[*paramField]bool{}
-	lists := func(path []step, st *paramStruct, value map[string]any) {
+	seen, seenField := map[*paramField]bool{}, map[*paramField]bool{}
+	fields := func(path []step, st *paramStruct, value map[string]any) {
 		for _, f := range st.fields {
-			items, ok := value[f.jsonName].([]any)
-			if !ok || seenList[f] {
+			if _, ok := value[f.jsonName]; !ok || seenField[f] {
 				continue
 			}
-			seenList[f] = true
+			seenField[f] = true
 			path := appendStep(path, step{field: f.jsonName})
+			if f.required && !f.key {
+				invalid(relativePath(path)+" left out", pathString(path)+": Required value",
+					func(spec map[string]any) { setAt(spec, path, nil) })
+			}
+			items, ok := value[f.jsonName].([]any)
+			if !ok {
+				continue
+			}
 			minItems, unique := listBounds(f.node)
 			if minItems != nil && *minItems > 0 {
 				invalid("an empty "+relativePath(path), pathString(path), func(spec map[string]any) {
@@ -234,7 +286,7 @@ func (k *ruleKind) invalidValues() error {
 			invalid("an empty "+relativePath(path), at, func(spec map[string]any) { setAt(spec, path, "") })
 		case len(n.enum) > 0:
 			invalid(relativePath(path)+" outside its enum", at+": Unsupported value", func(spec map[string]any) {
-				setAt(spec, path, "kflare-not-in-enum")
+				setAt(spec, path, outsideEnum(n))
 			})
 		case v.minLength != nil && *v.minLength > 0:
 			short, what := strings.Repeat("a", int(*v.minLength-1)), relativePath(path)+" too short"
@@ -269,10 +321,29 @@ func (k *ruleKind) invalidValues() error {
 			})
 		}
 	}
-	for _, sample = range k.samples {
-		visitor{object: lists, scalar: scalars}.visitStruct(nil, k.params, sample)
+	specs := slices.Clone(k.samples)
+	for _, c := range k.changes {
+		specs = append(specs, c.spec)
+	}
+	for _, sample = range specs {
+		visitor{object: fields, scalar: scalars}.visitStruct(nil, k.params, sample)
 	}
 	return failed
+}
+
+// outsideEnum returns a value of a scalar's type that its enum does not hold:
+// a string, or the integer after the enum's highest.
+func outsideEnum(n *paramScalar) any {
+	if n.goType != typeInt64 {
+		return "kflare-not-in-enum"
+	}
+	var highest int64
+	for _, value := range n.enum {
+		if i, err := strconv.ParseInt(value, 10, 64); err == nil && i > highest {
+			highest = i
+		}
+	}
+	return highest + 1
 }
 
 // listBounds returns the least number of items a list or map field takes, and
@@ -405,11 +476,38 @@ func fullNode(f *paramField, node paramNode, values map[*paramField]any, zero bo
 		}
 		return []any{item}, nil
 	}
-	if value, ok := scalarValue(f, node.(*paramScalar), values); ok {
+	if value, ok := fullScalar(f, node.(*paramScalar), values); ok {
 		return value, nil
 	}
 	return nil, fmt.Errorf("kflare-gen cannot make up a value of %s, which the OpenAPI spec gives no valid "+
 		"example of; set it in a sample", f.jsonName)
+}
+
+// fullScalar returns the value a spec that sets every field gives a scalar:
+// for an enum, a value the samples do not use, when it has one, so that a
+// conversion sending the samples' value whatever the spec says fails;
+// otherwise the value scalarValue returns.
+func fullScalar(f *paramField, n *paramScalar, values map[*paramField]any) (any, bool) {
+	if sampled, ok := values[f]; ok {
+		for _, value := range n.enum {
+			other, err := checkScalar(n, enumValue(n, value), "")
+			if err == nil && other != sampled {
+				return other, true
+			}
+		}
+	}
+	return scalarValue(f, n, values)
+}
+
+// enumValue returns a value of a scalar's enum as its type holds it: an
+// integer's as an int64.
+func enumValue(n *paramScalar, value string) any {
+	if n.goType == typeInt64 {
+		if i, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return i
+		}
+	}
+	return value
 }
 
 // zeroValue returns the zero value of a scalar's Go type.
@@ -601,6 +699,9 @@ func someValue(node paramNode) (any, bool) {
 		return nil, false
 	}
 	switch {
+	case len(n.enum) > 0 && n.goType == typeInt64:
+		value, err := strconv.ParseInt(n.enum[0], 10, 64)
+		return value, err == nil
 	case len(n.enum) > 0:
 		return n.enum[0], true
 	case n.goType == typeBool:

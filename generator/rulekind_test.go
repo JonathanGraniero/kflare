@@ -9,6 +9,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"go/types"
 	"maps"
 	"reflect"
 	"slices"
@@ -83,6 +84,15 @@ func TestBuildRuleKindMapsTheRewriteRule(t *testing.T) {
 	}
 	if k.rules[1]["action_parameters"].(map[string]any)["headers"].(map[string]any)["x-a"] == nil {
 		t.Errorf("the second sample's rule keys its headers by name: %v", k.rules[1])
+	}
+
+	swap := slices.IndexFunc(k.changes, func(e ruleEdit) bool { return e.what == "uri.path holding expression instead" })
+	if swap < 0 {
+		t.Fatalf("no change sets the path's expression in place of its value: %v", k.changes)
+	}
+	path := valueAt(k.changes[swap].spec, []step{{field: "uri"}, {field: "path"}}).(map[string]any)
+	if _, hasValue := path["value"]; hasValue || path["expression"] == nil {
+		t.Errorf("the swapped path = %v, want an expression and no value", path)
 	}
 
 	if len(k.full) != 2 {
@@ -549,6 +559,7 @@ func TestSomeValue(t *testing.T) {
 		ok   bool
 	}{
 		{"an enum", &paramScalar{goType: typeString, enum: []string{"b", "a"}}, "b", true},
+		{"an integer enum", &paramScalar{goType: typeInt64, enum: []string{"308", "301"}}, int64(308), true},
 		{"a bool", &paramScalar{goType: typeBool}, true, true},
 		{"an integer", &paramScalar{goType: typeInt64}, int64(1), true},
 		{"an integer with a minimum", &paramScalar{goType: typeInt64, validation: validation{minimum: new(9.0)}},
@@ -617,6 +628,73 @@ func TestCheckScalarBounds(t *testing.T) {
 	}
 	if _, err := checkScalar(&paramScalar{goType: typeBool}, "true", "x"); err == nil {
 		t.Error("a string for a bool: err = nil, want one")
+	}
+	status := &paramScalar{goType: typeInt64, enum: []string{"301", "308"}}
+	_, err := checkScalar(status, 302, "x")
+	if err == nil || !strings.Contains(err.Error(), "x is 302, not one of 301, 308") {
+		t.Errorf("an integer outside its enum: err = %v", err)
+	}
+	if got, err := checkScalar(status, 308, "x"); err != nil || got != int64(308) {
+		t.Errorf("an integer in its enum: %v, %v", got, err)
+	}
+}
+
+func TestFullScalarTakesAnEnumValueNoSampleUses(t *testing.T) {
+	f := &paramField{jsonName: "statusCode"}
+	status := &paramScalar{goType: typeInt64, enum: []string{"301", "302"}}
+	if got, ok := fullScalar(f, status, map[*paramField]any{f: int64(301)}); !ok || got != int64(302) {
+		t.Errorf("an integer enum the samples set to 301: %v, %t, want 302", got, ok)
+	}
+	one := &paramScalar{goType: typeString, enum: []string{"set"}}
+	if got, ok := fullScalar(f, one, map[*paramField]any{f: "set"}); !ok || got != "set" {
+		t.Errorf("an enum of one value: %v, %t", got, ok)
+	}
+	if got, ok := fullScalar(f, status, nil); !ok || got != int64(301) {
+		t.Errorf("an enum no sample sets: %v, %t, want its first value", got, ok)
+	}
+}
+
+func TestOutsideEnum(t *testing.T) {
+	if got := outsideEnum(&paramScalar{goType: typeString, enum: []string{"a"}}); got != "kflare-not-in-enum" {
+		t.Errorf("a string enum: %v", got)
+	}
+	if got := outsideEnum(&paramScalar{goType: typeInt64, enum: []string{"308", "301"}}); got != int64(309) {
+		t.Errorf("an integer enum: %v", got)
+	}
+}
+
+func TestCountRules(t *testing.T) {
+	one := new(int64(1))
+	only := &paramField{jsonName: "a"}
+	if rules := countRules(&schema{MinProperties: one, MaxProperties: one},
+		[]*paramField{{jsonName: "name", key: true}, only}); rules != nil || !only.required {
+		t.Errorf("one field left of at least one: rules = %v, required = %t, want none and required", rules,
+			only.required)
+	}
+	optional := &paramField{jsonName: "a"}
+	if rules := countRules(&schema{MaxProperties: one}, []*paramField{optional}); rules != nil || optional.required {
+		t.Errorf("one field left of at most one: rules = %v, required = %t, want none", rules, optional.required)
+	}
+	if rules := countRules(nil, []*paramField{{jsonName: "a"}}); rules != nil {
+		t.Errorf("one field without a schema: rules = %v", rules)
+	}
+	two := []*paramField{{jsonName: "a"}, {jsonName: "b"}}
+	if rules := countRules(&schema{MinProperties: one}, two); len(rules) != 1 || two[0].required || two[1].required {
+		t.Errorf("two fields: rules = %v, want the count rule", rules)
+	}
+}
+
+func TestScalarIntegerEnums(t *testing.T) {
+	b := &paramBuilder{spec: &apiSpec{}}
+	n, err := b.scalar("status_code", types.Typ[types.Int64], &schema{Type: typeInteger, Enum: []any{301.0, 308.0}},
+		ruleFieldConfig{})
+	if err != nil || n.goType != typeInt64 || !slices.Equal(n.enum, []string{"301", "308"}) {
+		t.Errorf("an integer enum: %+v, %v", n, err)
+	}
+	_, err = b.scalar("status_code", types.Typ[types.Int64], &schema{Type: typeInteger, Enum: []any{"permanent"}},
+		ruleFieldConfig{})
+	if err == nil || !strings.Contains(err.Error(), `status_code is an integer whose enum holds "permanent"`) {
+		t.Errorf("an integer whose enum holds a string: err = %v", err)
 	}
 }
 

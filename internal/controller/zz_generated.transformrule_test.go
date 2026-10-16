@@ -71,6 +71,11 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TransformRule]{
 			sample: 2,
 			rule:   `{"action":"rewrite","action_parameters":{"headers":{"x-frame-options":{"operation":"set","value":"DENZ"},"x-powered-by":{"operation":"remove"}}},"description":"Keep pages out of frames and stop revealing the server's stack","enabled":true,"expression":"true"}`,
 		},
+		{
+			what: "uri.path holding expression instead",
+			spec: `{"description":"Serve /old from /new","expression":"http.request.uri.path eq \"/old\"","type":"urlRewrite","uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")"}}}`,
+			rule: `{"action":"rewrite","action_parameters":{"uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")"}}},"description":"Serve /old from /new","enabled":true,"expression":"http.request.uri.path eq \"/old\""}`,
+		},
 	},
 	retypes: []ruleSpecCase{
 		{
@@ -111,6 +116,11 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TransformRule]{
 			message: "spec.headers[1]: Duplicate value",
 		},
 		{
+			what:    "headers[0].operation left out",
+			spec:    `{"description":"Tell the origin which country a request comes from","expression":"starts_with(http.request.uri.path, \"/api/\")","headers":[{"expression":"ip.src.country","name":"x-visitor-country"}],"type":"requestHeaders"}`,
+			message: "spec.headers[0].operation: Required value",
+		},
+		{
 			what:    "an empty headers[0].name",
 			spec:    `{"description":"Tell the origin which country a request comes from","expression":"starts_with(http.request.uri.path, \"/api/\")","headers":[{"expression":"ip.src.country","name":"","operation":"set"}],"type":"requestHeaders"}`,
 			message: "spec.headers[0].name",
@@ -129,6 +139,11 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TransformRule]{
 			what:    "an empty headers[0].value",
 			spec:    `{"description":"Keep pages out of frames and stop revealing the server's stack","expression":"true","headers":[{"name":"x-frame-options","operation":"set","value":""},{"name":"x-powered-by","operation":"remove"}],"type":"responseHeaders"}`,
 			message: "spec.headers[0].value",
+		},
+		{
+			what:    "an empty uri.path.expression",
+			spec:    `{"description":"Serve /old from /new","expression":"http.request.uri.path eq \"/old\"","type":"urlRewrite","uri":{"path":{"expression":""}}}`,
+			message: "spec.uri.path.expression",
 		},
 		{
 			what:    "the action parameters breaking: must set at least one of headers and uri",
@@ -194,13 +209,13 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TransformRule]{
 	full: []ruleSpecCase{
 		{
 			what: "every field set",
-			spec: `{"description":"Serve /old from /new","expression":"http.request.uri.path eq \"/old\"","headers":[{"expression":"ip.src.country","name":"x-visitor-country","operation":"set","value":"DENY"}],"type":"urlRewrite","uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"},"query":{"expression":"regex_replace(http.request.uri.query, \"foo=bar\", \"\")","value":"foo=bar"}}}`,
-			rule: `{"action":"rewrite","action_parameters":{"headers":{"x-visitor-country":{"expression":"ip.src.country","operation":"set","value":"DENY"}},"uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"},"query":{"expression":"regex_replace(http.request.uri.query, \"foo=bar\", \"\")","value":"foo=bar"}}},"description":"Serve /old from /new","enabled":true,"expression":"http.request.uri.path eq \"/old\""}`,
+			spec: `{"description":"Serve /old from /new","expression":"http.request.uri.path eq \"/old\"","headers":[{"expression":"ip.src.country","name":"x-visitor-country","operation":"add","value":"DENY"}],"type":"urlRewrite","uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"},"query":{"expression":"regex_replace(http.request.uri.query, \"foo=bar\", \"\")","value":"foo=bar"}}}`,
+			rule: `{"action":"rewrite","action_parameters":{"headers":{"x-visitor-country":{"expression":"ip.src.country","operation":"add","value":"DENY"}},"uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"},"query":{"expression":"regex_replace(http.request.uri.query, \"foo=bar\", \"\")","value":"foo=bar"}}},"description":"Serve /old from /new","enabled":true,"expression":"http.request.uri.path eq \"/old\""}`,
 		},
 		{
 			what: "every field set, optional scalars to their zero values where allowed",
-			spec: `{"description":"Serve /old from /new","expression":"http.request.uri.path eq \"/old\"","headers":[{"expression":"ip.src.country","name":"x-visitor-country","operation":"set","value":"DENY"}],"type":"urlRewrite","uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"},"query":{"expression":"regex_replace(http.request.uri.query, \"foo=bar\", \"\")","value":""}}}`,
-			rule: `{"action":"rewrite","action_parameters":{"headers":{"x-visitor-country":{"expression":"ip.src.country","operation":"set","value":"DENY"}},"uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"},"query":{"expression":"regex_replace(http.request.uri.query, \"foo=bar\", \"\")","value":""}}},"description":"Serve /old from /new","enabled":true,"expression":"http.request.uri.path eq \"/old\""}`,
+			spec: `{"description":"Serve /old from /new","expression":"http.request.uri.path eq \"/old\"","headers":[{"expression":"ip.src.country","name":"x-visitor-country","operation":"add","value":"DENY"}],"type":"urlRewrite","uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"},"query":{"expression":"regex_replace(http.request.uri.query, \"foo=bar\", \"\")","value":""}}}`,
+			rule: `{"action":"rewrite","action_parameters":{"headers":{"x-visitor-country":{"expression":"ip.src.country","operation":"add","value":"DENY"}},"uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"},"query":{"expression":"regex_replace(http.request.uri.query, \"foo=bar\", \"\")","value":""}}},"description":"Serve /old from /new","enabled":true,"expression":"http.request.uri.path eq \"/old\""}`,
 		},
 	},
 })

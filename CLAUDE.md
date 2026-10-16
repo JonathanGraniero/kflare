@@ -183,8 +183,9 @@ Shared infrastructure that all Phase 2 controllers will use.
     reconcile leaves the ruleset version alone), a RateLimitRule (checked field by field, then updated in place; an idle
     reconcile leaves it alone), a ManagedRuleset deploying the Free Managed Ruleset (overrides checked, a rule override
     added in place; an idle reconcile leaves it alone), three TransformRules, one of each type (each phase's rule
-    checked field by field, a response header changed in place; an idle reconcile leaves each phase alone), and a
-    WAFCustomRule that uses the IP list (refused while the
+    checked field by field, a response header changed in place; an idle reconcile leaves each phase alone), a
+    RedirectRule (checked field by field, then switched in place from an expression target and 302 to a static URL
+    and 308; an idle reconcile leaves it alone), and a WAFCustomRule that uses the IP list (refused while the
     list does not exist, written once it does). Then everything is deleted in one pass and Cloudflare is checked,
     including that the managed phase's emptied entry point is gone. Everything is named `kflare-e2e-<run>` (the list
     `kflare_e2e_<run>`) and cleaned up even on failure
@@ -472,7 +473,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/d1-database-controller` | `D1Database` | code generator (PR 6) | ✅ Generated end to end. Free: 10 databases, 500 MB each, 5 GB in total |
 | `feat/managed-transform-controller` | `ManagedTransform` | zone-controller | Free: all six transforms |
 | `feat/generator-rule-kinds` | `TransformRule` | code generator (rule kinds) | ✅ Generated, the first rule kind (the code generator's PR 8). Free: 10 rules across its three phases, no regex |
-| `feat/redirect-rule-controller` | `RedirectRule` | code generator (rule kinds) | Generated. Free: 10 rules, no regex |
+| `feat/redirect-rule-controller` | `RedirectRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔, no regex ✔ |
 | `feat/cache-rule-controller` | `CacheRule` | code generator (rule kinds) | Generated. Free: 10 rules |
 | `feat/configuration-rule-controller` | `ConfigurationRule` | code generator (rule kinds) | Generated. Free: 10 rules |
 | `feat/origin-rule-controller` | `OriginRule` | code generator (rule kinds) | Generated. Free: 10 rules, destination port override only |
@@ -509,11 +510,11 @@ permission group names; deploy.md uses the dashboard's labels, so look those up 
 | Resource | Permission to document (least privilege) | Dev token today |
 |---|---|---|
 | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset` | Zone WAF Write | ✅ dry run accepted; enough on its own (2026-10-13 and 2026-10-14, see below) |
-| `TransformRule` | Zone Transform Rules Write | ✅ written, updated and deleted by the e2e (2026-10-15, runs `7ed03a` and `9c869b`); not yet checked on its own |
-| `RedirectRule` | Dynamic URL Redirects Write | ❌ 403, "request is not authorized" |
-| `CacheRule` | Cache Settings Write | ❌ 403 |
-| `ConfigurationRule` | Config Settings Write | ❌ 403 |
-| `OriginRule` | Origin Write | ❌ 403 |
+| `TransformRule` | Zone Transform Rules Write | ✅ written, updated and deleted by the e2e (2026-10-15, runs `7ed03a` and `9c869b`); enough on its own (2026-10-15, see below) |
+| `RedirectRule` | Dynamic URL Redirects Write | ✅ added on `kflare.dev` 2026-10-15 (see below); written, updated and deleted by the e2e (run `5f9daf`); not yet checked on its own |
+| `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
+| `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
+| `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
 | `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run) |
 | `IPList` | Account Rule Lists Write (account) | ✅ create, replace and delete verified 2026-10-13; enough on its own |
 | `D1Database` | D1 Write (account) | ✅ create, read, list and delete verified 2026-10-15; enough on its own (2026-10-15, see below) |
@@ -534,6 +535,13 @@ permission group names; deploy.md uses the dashboard's labels, so look those up 
   them, and Zone Read ran the suite against main's manager, 15 of 15 (run `5a755b`), with no refusal in the manager's
   log. It was refused for API tokens, transform rules and account rulesets. So D1 Write covers `D1Database`. That
   token was deleted after the run as well
+- Repeated on 2026-10-15 for `TransformRule`, with the user's OK: deploy.md's permissions, Zone Transform Rules Write
+  among them, and Zone Read ran the suite against main's manager, 16 of 16 (run `1aaa68`), with no refusal in the
+  manager's log. It was refused for API tokens, account rulesets and the redirect phase. So Zone Transform Rules Write
+  covers `TransformRule`. That token was deleted after the run as well
+- On 2026-10-15, with the user's OK for the four remaining Rules kinds, the dev token gained Dynamic URL Redirects
+  Write, Cache Settings Write, Config Settings Write and Origin Write, in a new policy scoped to `kflare.dev` alone (its
+  other policies are unchanged). A dry run in each of the four phases was accepted
 - The dev token's account-level permissions cover more than deploy.md lists, so it cannot show that a permission is
   enough. Check a new one with a short-lived token holding only deploy.md's permissions, as above (ask first)
 
@@ -649,7 +657,7 @@ checked 2026-10-09; ✔ marks what a dry run on `kflare.dev` confirmed the same 
 | Rate limiting rules | 1 rule ✔, period and mitigation timeout 10 s only ✔, counts by IP ✔, block only ✔, no counting expression ✔, no throttling (`mitigation_timeout: 0`) ✔, custom block response ✔ | 2 rules, periods up to 1 min, mitigation up to 1 h | 5 rules, periods up to 10 min, mitigation up to 1 day |
 | WAF managed rulesets | Cloudflare Free Managed Ruleset only ✔, with overrides for the whole ruleset, a category or a rule ✔; no payload logging ✔ | + Cloudflare Managed Ruleset, OWASP Core Ruleset, Exposed Credentials Check | same as Pro |
 | Custom lists | 1 IP list ✔, 10,000 items in the account ✔; the quota is per kind (a hostname list was accepted alongside) | 10 lists, 10,000 items in total | same as Pro |
-| Transform, redirect, cache, configuration and origin rules | 10 rules each, transform rules counted across their three phases ✔; no regex in transform ✔ or redirect rules | 25 each | 50 each; regex in transform and redirect rules |
+| Transform, redirect, cache, configuration and origin rules | 10 rules each, transform rules counted across their three phases ✔, single redirects ✔; no regex in transform ✔ or redirect rules ✔ | 25 each | 50 each; regex in transform and redirect rules |
 | Origin rule overrides | destination port only (Host header, SNI and DNS record need Enterprise) | same | same |
 
 Rate limiting also requires `cf.colo.id` among the characteristics (code 20155) and a mitigation timeout of 0, equal
@@ -1047,8 +1055,8 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
 
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)
 **Depend on:** the code generator's rule kinds (`feat/generator-rule-kinds`); one branch and PR each
-**Status:** 🚧 `TransformRule` ✅, generated in `feat/generator-rule-kinds` (the code generator's PR 8); the other four
-not started
+**Status:** 🚧 `TransformRule` ✅, generated in `feat/generator-rule-kinds` (the code generator's PR 8); `RedirectRule`
+✅ (`feat/redirect-rule-controller`); `CacheRule`, `ConfigurationRule` and `OriginRule` not started
 
 Each is the foundation plus typed action parameters. Together they replace Page Rules. They are generated (decided
 2026-10-13): each is a `generator.yaml` entry plus hooks for what Cloudflare's schema leaves out (see
@@ -1057,10 +1065,10 @@ Each is the foundation plus typed action parameters. Together they replace Page 
 | CRD | Phase | Action | Free | Dev token |
 |-----|-------|--------|------|-----------|
 | `TransformRule` (`spec.type`, immutable: `urlRewrite`, `requestHeaders` or `responseHeaders`) ✅ | `http_request_transform`, `http_request_late_transform`, `http_response_headers_transform` | `rewrite` | 10 rules across the three phases ✔, no regex ✔ | ✅ |
-| `RedirectRule` (single redirects) | `http_request_dynamic_redirect` | `redirect` | 10 rules, no regex | needs Dynamic URL Redirects Write |
-| `CacheRule` | `http_request_cache_settings` | `set_cache_settings` | 10 rules | needs Cache Settings Write |
-| `ConfigurationRule` | `http_config_settings` | `set_config` | 10 rules | needs Config Settings Write |
-| `OriginRule` | `http_request_origin` | `route` | 10 rules, destination port only | needs Origin Write |
+| `RedirectRule` (single redirects) ✅ | `http_request_dynamic_redirect` | `redirect` | 10 rules ✔, no regex ✔ | ✅ since 2026-10-15 |
+| `CacheRule` | `http_request_cache_settings` | `set_cache_settings` | 10 rules | ✅ since 2026-10-15 |
+| `ConfigurationRule` | `http_config_settings` | `set_config` | 10 rules | ✅ since 2026-10-15 |
+| `OriginRule` | `http_request_origin` | `route` | 10 rules, destination port only | ✅ since 2026-10-15 |
 
 - Spec fields are v7's typed action parameters (`rulesets.RewriteRuleParam`, `RedirectRuleParam`,
   `SetCacheSettingsRuleParam`, `SetConfigRuleParam`, `RouteRuleParam`), never raw JSON. Fields are opt-out (decided
@@ -1094,8 +1102,40 @@ each deleted afterwards):**
   URI. So the raw-JSON comparison holds: the e2e's idle reconciles write nothing in any of the three phases
 - `logging` (20018), `ratelimit` (20131) and `exposed_credential_check` (20189) are refused in the transform phases;
   the entry ignores them
-- deploy.md documents Zone · Transform Rules · Edit (the API's Zone Transform Rules Write); not yet checked on its own
+- deploy.md documents Zone · Transform Rules · Edit (the API's Zone Transform Rules Write), which is enough on its own
+  (verified 2026-10-15, see Token permissions)
+
+**RedirectRule design notes (verified live on `kflare.dev`, 2026-10-15, with dry runs, `kflare-probe-*` rules and a
+proxied `kflare-probe-*` hostname, each deleted afterwards):**
+- Its spec: `fromValue`, required, with `targetURL` (a static `value` or an `expression`, exactly one), `statusCode`
+  (301, 302, 303, 307 or 308) and `preserveQueryString`. kflare-gen builds it from v7's `rulesets.RedirectRuleParam`:
+  the schema's action parameters take exactly one of `from_value` and `from_list`, and with `from_list` ignored,
+  `from_value` is required. `statusCode` is an integer enum, the first kflare-gen maps
+- Refused (400): a target with both a value and an expression, or neither, or an empty expression (20083, "target_url
+  should be either value or expression"); a status code outside the five (20083); no action parameters (20078);
+  `from_list`, which Bulk Redirects use in the account-level `http_request_redirect` phase (20080); `regex_replace` in
+  the target and `matches` in the rule's expression on Free ("not entitled", a Business plan). Accepted: any static
+  value, even a relative URL, one without a scheme, one with a space or an empty one (the CRD keeps the schema's
+  minimum length of 1); `wildcard_replace` in the target and the `wildcard` operator in the expression on Free
+- Traffic through the edge: a rule without a status code redirects with 301 and drops the query string;
+  `preserveQueryString` keeps it; an expression target is computed per request. A new rule took a few seconds to
+  reach every edge server, so a first request may miss it
+- Free allows 10 single redirects (11: 50001)
+- Stored as sent: an omitted status code stays omitted, `preserve_query_string: false` stays false, and only `enabled`
+  defaults (to true, which the comparison already counts). So the e2e's idle reconcile writes nothing (run `5f9daf`,
+  17 of 17)
+- `logging` (20018), `ratelimit` (20131) and `exposed_credential_check` (20189) are refused in the phase; the entry
+  ignores them, with `from_list`
+- deploy.md documents Zone · Single Redirect · Edit (the API's Dynamic URL Redirects Write); not yet checked on its own
   with a short-lived token (see Token permissions)
+- kflare-gen gained, for it: integer enums (`+kubebuilder:validation:Enum=301;302;...`, an invalid case one past the
+  highest value), and an object left with one field after the entry's ignores (no count rule; a minimum makes the field
+  required). For every rule kind, the generated specs gained a refusal of each required field left out (`Required
+  value`), a change for each object that takes exactly one of its fields that sets each other field in its place
+  (so `targetURL.value`, which no sample sets, is written and refused like `targetURL.expression`), refusals drawn from
+  the changes as well as the samples, and full specs that give an enum a value no sample uses. A mutation check (27
+  mutations of the generated conversion, the CRD and the new generator paths) caught all but a conversion that always
+  sent 301, the sample's status code; the last change closed it
 
 
 #### Code generator (`kflare-gen`)
@@ -1357,8 +1397,8 @@ kinds:
   `9c869b`, 16 of 16. A first run (`c951aa`) failed on the e2e's own header expression, `cf.colo.name`, which is no
   field (kflare reported Cloudflare's 20087 as `TerminalError`); the sample held it too. Both use `ip.src.country`
   now, and every sample's rule passed a dry run
-- **Next:** the other four Rules kinds, one entry and PR each; each needs a token permission the dev token lacks (ask
-  first)
+- **Next:** the other Rules kinds, one entry and PR each: RedirectRule ✅ (`feat/redirect-rule-controller`), then
+  CacheRule, ConfigurationRule and OriginRule. The dev token can write all four phases since 2026-10-15
 - **Later:** a runtime for settings-style singletons (the shape of TunnelConfiguration and ManagedTransform; the 90
   singletons include zone settings), cross-kind references such as `kvNamespaceRef`, generated live e2e specs, and
   deploy.md permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; the
@@ -1548,11 +1588,11 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Current Status
 
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
-> `ManagedRuleset`, `D1Database` and `TransformRule` done.** cloudflare-go is at v0.119, with v7.12.0 next to it for the
-> generated kinds and the rule kinds; rule kinds share the Rulesets foundation and controller. The code generator,
-> `kflare-gen`, is complete: KVNamespace and D1Database are generated in full on the shared CRUD reconciler, and
-> TransformRule on the shared rule controller. Next: the other four Rules kinds, each a `generator.yaml` entry (see
-> Phase 3).
+> `ManagedRuleset`, `D1Database`, `TransformRule` and `RedirectRule` done.** cloudflare-go is at v0.119, with v7.12.0
+> next to it for the generated kinds and the rule kinds; rule kinds share the Rulesets foundation and controller. The
+> code generator, `kflare-gen`, is complete: KVNamespace and D1Database are generated in full on the shared CRUD
+> reconciler, and TransformRule and RedirectRule on the shared rule controller. Next: CacheRule, ConfigurationRule and
+> OriginRule, each a `generator.yaml` entry (see Phase 3).
 > Zero Trust still waits on account setup. Items needing a paid plan, add-on or account setup are tracked under
 > "Deferred: paid plan, add-on or account setup" in Phase 3.
 > Last updated: October 2026
