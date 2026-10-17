@@ -101,6 +101,7 @@ rules:
       - iplists
       - managedrulesets
       # +kflare-gen:begin The kinds in generator/generator.yaml: make codegen keeps this block.
+      - cacherules
       - d1databases
       - kvnamespaces
       - redirectrules

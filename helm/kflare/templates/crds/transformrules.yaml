@@ -190,8 +190,8 @@ spec:
                     type: object
                     x-kubernetes-validations:
                     - message: must set exactly one of expression and value
-                      rule: '[has(self.expression), has(self.value)].exists_one(x,
-                        x)'
+                      rule: '(has(self.expression) ? 1 : 0) + (has(self.value) ? 1
+                        : 0) == 1'
                   query:
                     description: |-
                       Query rewrites the URL's query string, to a static value or to what an
@@ -209,8 +209,8 @@ spec:
                     type: object
                     x-kubernetes-validations:
                     - message: must set exactly one of expression and value
-                      rule: '[has(self.expression), has(self.value)].exists_one(x,
-                        x)'
+                      rule: '(has(self.expression) ? 1 : 0) + (has(self.value) ? 1
+                        : 0) == 1'
                 type: object
                 x-kubernetes-validations:
                 - message: must set at least one of path and query

@@ -1702,6 +1702,702 @@
         "title": "Phase",
         "type": "string"
       },
+      "rulesets_SetCacheSettingsAdditionalCacheablePorts": {
+        "description": "A list of additional ports that caching should be enabled on.",
+        "items": {
+          "description": "A port to enable caching on.",
+          "example": 8080,
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Additional Cacheable Port",
+          "type": "integer"
+        },
+        "minItems": 1,
+        "title": "Additional Cacheable Ports (Enterprise-Only)",
+        "type": "array",
+        "uniqueItems": true
+      },
+      "rulesets_SetCacheSettingsBrowserTTL": {
+        "description": "How long client browsers should cache the response. Cloudflare cache purge will not purge content cached on client browsers, so high browser TTLs may lead to stale content.",
+        "properties": {
+          "default": {
+            "description": "The browser TTL (in seconds) if you choose the \"override_origin\" mode.",
+            "example": 60,
+            "minimum": 0,
+            "title": "Default TTL",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "The browser TTL mode.",
+            "enum": [
+              "respect_origin",
+              "bypass_by_default",
+              "override_origin",
+              "bypass"
+            ],
+            "example": "override_origin",
+            "title": "TTL Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "Browser TTL",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsCache": {
+        "description": "Whether the request's response from the origin is eligible for caching. Caching itself will still depend on the cache control header and your other caching configurations.",
+        "example": true,
+        "title": "Cache",
+        "type": "boolean"
+      },
+      "rulesets_SetCacheSettingsCacheKey": {
+        "description": "Which components of the request are included in or excluded from the cache key Cloudflare uses to store the response in cache.",
+        "properties": {
+          "cache_by_device_type": {
+            "description": "Whether to separate cached content based on the visitor's device type.",
+            "example": true,
+            "title": "Cache by Device Type",
+            "type": "boolean"
+          },
+          "cache_deception_armor": {
+            "description": "Whether to protect from web cache deception attacks, while allowing static assets to be cached.",
+            "example": true,
+            "title": "Cache Deception Armor",
+            "type": "boolean"
+          },
+          "custom_key": {
+            "$ref": "#/components/schemas/rulesets_SetCacheSettingsCustomCacheKey"
+          },
+          "ignore_query_strings_order": {
+            "description": "Whether to treat requests with the same query parameters the same, regardless of the order those query parameters are in.",
+            "example": true,
+            "title": "Ignore Query Strings Order",
+            "type": "boolean"
+          }
+        },
+        "title": "Cache Key",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsCacheReserve": {
+        "description": "Settings to determine whether the request's response from origin is eligible for Cache Reserve (requires a Cache Reserve add-on plan).",
+        "properties": {
+          "eligible": {
+            "description": "Whether Cache Reserve is enabled. If this is true and a request meets eligibility criteria, Cloudflare will write the resource to Cache Reserve.",
+            "example": true,
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "minimum_file_size": {
+            "description": "The minimum file size eligible for storage in Cache Reserve.",
+            "example": 1024,
+            "minimum": 0,
+            "title": "Minimum File Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "eligible"
+        ],
+        "title": "Cache Reserve",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsCustomCacheKey": {
+        "description": "Which components of the request are included or excluded from the cache key.",
+        "properties": {
+          "cookie": {
+            "$ref": "#/components/schemas/rulesets_SetCacheSettingsCustomCacheKeyCookie"
+          },
+          "header": {
+            "$ref": "#/components/schemas/rulesets_SetCacheSettingsCustomCacheKeyHeader"
+          },
+          "host": {
+            "$ref": "#/components/schemas/rulesets_SetCacheSettingsCustomCacheKeyHost"
+          },
+          "query_string": {
+            "$ref": "#/components/schemas/rulesets_SetCacheSettingsCustomCacheKeyQueryString"
+          },
+          "user": {
+            "$ref": "#/components/schemas/rulesets_SetCacheSettingsCustomCacheKeyUser"
+          }
+        },
+        "title": "Custom Cache Key",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsCustomCacheKeyCookie": {
+        "description": "Which cookies to include in the cache key.",
+        "properties": {
+          "check_presence": {
+            "description": "A list of cookies to check for the presence of. The presence of these cookies is included in the cache key.",
+            "items": {
+              "description": "The name of the cookie to check for the presence of.",
+              "example": "myCookie",
+              "minLength": 1,
+              "title": "Cookie Name",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Check Presence",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "include": {
+            "description": "A list of cookies to include in the cache key.",
+            "items": {
+              "description": "The name of the cookie to include.",
+              "example": "myCookie",
+              "minLength": 1,
+              "title": "Cookie Name",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Include",
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "title": "Cookies",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsCustomCacheKeyHeader": {
+        "description": "Which headers to include in the cache key.",
+        "properties": {
+          "check_presence": {
+            "description": "A list of headers to check for the presence of. The presence of these headers is included in the cache key.",
+            "items": {
+              "description": "The name of the header to check for the presence of.",
+              "example": "my-header",
+              "minLength": 1,
+              "title": "Header",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Check Presence",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "contains": {
+            "additionalProperties": {
+              "description": "A list of values to match the header against.",
+              "items": {
+                "description": "The header value to match against.",
+                "example": "my-header-value",
+                "minLength": 1,
+                "title": "Header Value",
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Header Values",
+              "type": "array",
+              "uniqueItems": true
+            },
+            "description": "A mapping of header names to a list of values. If a header is present in the request and contains any of the values provided, its value is included in the cache key.",
+            "example": {
+              "my-header": [
+                "my-header-value-1",
+                "my-header-value-2"
+              ]
+            },
+            "minProperties": 1,
+            "title": "Contains",
+            "type": "object"
+          },
+          "exclude_origin": {
+            "description": "Whether to exclude the origin header in the cache key.",
+            "example": true,
+            "title": "Exclude Origin",
+            "type": "boolean"
+          },
+          "include": {
+            "description": "A list of headers to include in the cache key.",
+            "items": {
+              "description": "The name of the header to include.",
+              "example": "my-header",
+              "minLength": 1,
+              "title": "Header",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Include",
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "title": "Headers",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsCustomCacheKeyHost": {
+        "description": "How to use the host in the cache key.",
+        "properties": {
+          "resolved": {
+            "description": "Whether to use the resolved host in the cache key.",
+            "example": true,
+            "title": "Use Resolved Host",
+            "type": "boolean"
+          }
+        },
+        "title": "Host",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsCustomCacheKeyQueryString": {
+        "description": "Which query string parameters to include in or exclude from the cache key.",
+        "maxProperties": 1,
+        "properties": {
+          "exclude": {
+            "description": "Which query string parameters to exclude from the cache key.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "properties": {
+              "all": {
+                "description": "Whether to exclude all query string parameters from the cache key.",
+                "enum": [
+                  true
+                ],
+                "title": "Exclude All",
+                "type": "boolean"
+              },
+              "list": {
+                "description": "A list of query string parameters to exclude from the cache key.",
+                "items": {
+                  "description": "The name of the query string parameter to exclude.",
+                  "example": "foo",
+                  "minLength": 1,
+                  "title": "Parameter Name",
+                  "type": "string"
+                },
+                "minItems": 1,
+                "title": "Exclude List",
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "title": "Exclude",
+            "type": "object"
+          },
+          "include": {
+            "description": "Which query string parameters to include in the cache key.",
+            "maxProperties": 1,
+            "minProperties": 1,
+            "properties": {
+              "all": {
+                "description": "Whether to include all query string parameters in the cache key.",
+                "enum": [
+                  true
+                ],
+                "title": "Include All",
+                "type": "boolean"
+              },
+              "list": {
+                "description": "A list of query string parameters to include in the cache key.",
+                "items": {
+                  "description": "The name of the query string parameter to include.",
+                  "example": "foo",
+                  "minLength": 1,
+                  "title": "Parameter Name",
+                  "type": "string"
+                },
+                "minItems": 1,
+                "title": "Include List",
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "title": "Include",
+            "type": "object"
+          }
+        },
+        "title": "Query String Parameters",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsCustomCacheKeyUser": {
+        "description": "How to use characteristics of the request user agent in the cache key.",
+        "properties": {
+          "device_type": {
+            "description": "Whether to use the user agent's device type in the cache key.",
+            "example": true,
+            "title": "Device Type",
+            "type": "boolean"
+          },
+          "geo": {
+            "description": "Whether to use the user agents's country in the cache key.",
+            "example": true,
+            "title": "Country",
+            "type": "boolean"
+          },
+          "lang": {
+            "description": "Whether to use the user agent's language in the cache key.",
+            "example": true,
+            "title": "Language",
+            "type": "boolean"
+          }
+        },
+        "title": "User",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsEdgeTTL": {
+        "description": "How long the Cloudflare edge network should cache the response.",
+        "properties": {
+          "default": {
+            "description": "The edge TTL (in seconds) if you choose the \"override_origin\" mode.",
+            "example": 60,
+            "minimum": 0,
+            "title": "Default TTL",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "The edge TTL mode.",
+            "enum": [
+              "respect_origin",
+              "bypass_by_default",
+              "override_origin"
+            ],
+            "example": "override_origin",
+            "title": "TTL Mode",
+            "type": "string"
+          },
+          "status_code_ttl": {
+            "$ref": "#/components/schemas/rulesets_SetCacheSettingsStatusCodeTTL"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "Edge TTL",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsOriginCacheControl": {
+        "description": "Whether Cloudflare will aim to strictly adhere to RFC 7234.",
+        "example": true,
+        "title": "Origin Cache Control (Enterprise-Only)",
+        "type": "boolean"
+      },
+      "rulesets_SetCacheSettingsOriginErrorPagePassthru": {
+        "description": "Whether to generate Cloudflare error pages for issues from the origin server.",
+        "example": true,
+        "title": "Origin Error Page Passthrough",
+        "type": "boolean"
+      },
+      "rulesets_SetCacheSettingsOriginRangeRequests": {
+        "description": "Controls whether Cloudflare fetches a large asset from the origin as a series of range requests instead of one whole-body request.",
+        "properties": {
+          "mode": {
+            "description": "Whether to use range requests. `default` is the behaviour the zone gets without this rule.",
+            "enum": [
+              "on",
+              "off",
+              "default"
+            ],
+            "example": "on",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "Origin Range Requests",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsReadTimeout": {
+        "description": "A timeout value between two successive read operations to use for your origin server. Historically, the timeout value between two read options from Cloudflare to an origin server is 100 seconds. If you are attempting to reduce HTTP 524 errors because of timeouts from an origin server, try increasing this timeout value.",
+        "example": 900,
+        "maximum": 6000,
+        "minimum": 100,
+        "title": "Read Timeout (Enterprise-Only)",
+        "type": "integer"
+      },
+      "rulesets_SetCacheSettingsRespectStrongEtags": {
+        "description": "Whether Cloudflare should respect strong ETag (entity tag) headers. If false, Cloudflare converts strong ETag headers to weak ETag headers.",
+        "example": true,
+        "title": "Respect Strong ETags",
+        "type": "boolean"
+      },
+      "rulesets_SetCacheSettingsRule": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/rulesets_Rule"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "set_cache_settings"
+                ],
+                "type": "string"
+              },
+              "action_parameters": {
+                "minProperties": 1,
+                "properties": {
+                  "additional_cacheable_ports": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsAdditionalCacheablePorts"
+                  },
+                  "browser_ttl": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsBrowserTTL"
+                  },
+                  "cache": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsCache"
+                  },
+                  "cache_key": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsCacheKey"
+                  },
+                  "cache_reserve": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsCacheReserve"
+                  },
+                  "edge_ttl": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsEdgeTTL"
+                  },
+                  "origin_cache_control": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsOriginCacheControl"
+                  },
+                  "origin_error_page_passthru": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsOriginErrorPagePassthru"
+                  },
+                  "origin_range_requests": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsOriginRangeRequests"
+                  },
+                  "read_timeout": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsReadTimeout"
+                  },
+                  "respect_strong_etags": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsRespectStrongEtags"
+                  },
+                  "serve_stale": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsServeStale"
+                  },
+                  "shared_dictionary": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsSharedDictionary"
+                  },
+                  "strip_etags": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsStripETags"
+                  },
+                  "strip_last_modified": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsStripLastModified"
+                  },
+                  "strip_set_cookie": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsStripSetCookie"
+                  },
+                  "vary": {
+                    "$ref": "#/components/schemas/rulesets_SetCacheSettingsVary"
+                  }
+                },
+                "type": "object"
+              },
+              "description": {
+                "example": "Configure settings for how the response is cached.",
+                "type": "string"
+              }
+            },
+            "title": "Set Cache Settings Rule",
+            "type": "object"
+          }
+        ]
+      },
+      "rulesets_SetCacheSettingsServeStale": {
+        "description": "When to serve stale content from cache.",
+        "properties": {
+          "disable_stale_while_updating": {
+            "description": "Whether Cloudflare should disable serving stale content while getting the latest content from the origin.",
+            "example": true,
+            "title": "Disable Stale While Updating",
+            "type": "boolean"
+          }
+        },
+        "title": "Serve Stale",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsSharedDictionary": {
+        "description": "Configuration for shared dictionary compression. When set, Cloudflare injects Use-As-Dictionary headers on matching cacheable responses.",
+        "properties": {
+          "match_pattern": {
+            "description": "URL pattern for the Use-As-Dictionary match field. This pattern specifies which URLs can use this response as a dictionary.",
+            "example": "/static/js/*.js",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Match Pattern",
+            "type": "string"
+          }
+        },
+        "required": [
+          "match_pattern"
+        ],
+        "title": "Shared Dictionary",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsStatusCodeTTL": {
+        "description": "A list of TTLs to apply to specific status codes or status code ranges.",
+        "items": {
+          "maxProperties": 2,
+          "minProperties": 2,
+          "properties": {
+            "status_code": {
+              "description": "A single status code to apply the TTL to.",
+              "example": 200,
+              "maximum": 999,
+              "minimum": 100,
+              "title": "Status Code",
+              "type": "integer"
+            },
+            "status_code_range": {
+              "description": "A range of status codes to apply the TTL to.",
+              "minProperties": 1,
+              "properties": {
+                "from": {
+                  "description": "The lower bound of the range.",
+                  "example": 200,
+                  "maximum": 999,
+                  "minimum": 100,
+                  "title": "From",
+                  "type": "integer"
+                },
+                "to": {
+                  "description": "The upper bound of the range.",
+                  "example": 299,
+                  "maximum": 999,
+                  "minimum": 100,
+                  "title": "To",
+                  "type": "integer"
+                }
+              },
+              "title": "Status Code Range",
+              "type": "object"
+            },
+            "value": {
+              "description": "The time to cache the response for (in seconds). A value of 0 is equivalent to setting the cache control header with the value \"no-cache\". A value of -1 is equivalent to setting the cache control header with the value of \"no-store\".",
+              "example": 0,
+              "title": "TTL Value",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        },
+        "minItems": 1,
+        "title": "Status Code TTLs",
+        "type": "array",
+        "uniqueItems": true
+      },
+      "rulesets_SetCacheSettingsStripETags": {
+        "description": "Whether to strip ETag headers from the origin response before caching.",
+        "example": true,
+        "title": "Strip ETags",
+        "type": "boolean"
+      },
+      "rulesets_SetCacheSettingsStripLastModified": {
+        "description": "Whether to strip Last-Modified headers from the origin response before caching.",
+        "example": true,
+        "title": "Strip Last-Modified",
+        "type": "boolean"
+      },
+      "rulesets_SetCacheSettingsStripSetCookie": {
+        "description": "Whether to strip Set-Cookie headers from the origin response before caching.",
+        "example": true,
+        "title": "Strip Set-Cookie",
+        "type": "boolean"
+      },
+      "rulesets_SetCacheSettingsVary": {
+        "description": "Controls how cached responses vary based on request headers. `default` is required by the API and applies to any Vary response header that does not have a per-header override.",
+        "minProperties": 1,
+        "properties": {
+          "default": {
+            "$ref": "#/components/schemas/rulesets_SetCacheSettingsVaryDefault"
+          },
+          "headers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/rulesets_SetCacheSettingsVaryHeader"
+            },
+            "description": "A mapping of lowercase request header names to their vary configuration.",
+            "example": {
+              "accept": {
+                "action": "normalize",
+                "media_types": [
+                  "image/webp",
+                  "image/png"
+                ]
+              }
+            },
+            "maxProperties": 50,
+            "title": "Headers",
+            "type": "object"
+          }
+        },
+        "title": "Vary",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsVaryDefault": {
+        "description": "Controls how response Vary headers without a per-header override contribute to the cache key.",
+        "properties": {
+          "action": {
+            "description": "How the header value is treated when building the cache key.",
+            "enum": [
+              "bypass",
+              "passthrough",
+              "normalize"
+            ],
+            "example": "normalize",
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "Vary Default",
+        "type": "object"
+      },
+      "rulesets_SetCacheSettingsVaryHeader": {
+        "description": "Controls how a single request header contributes to the cache key.",
+        "properties": {
+          "action": {
+            "description": "How the header value is treated when building the cache key.",
+            "enum": [
+              "bypass",
+              "passthrough",
+              "normalize"
+            ],
+            "example": "normalize",
+            "title": "Action",
+            "type": "string"
+          },
+          "languages": {
+            "description": "The set of languages to normalize against. Only valid for the `accept-language` header.",
+            "items": {
+              "description": "A language tag to normalize against. Must be printable ASCII.",
+              "example": "en",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[ -~]+$",
+              "title": "Language",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Languages",
+            "type": "array"
+          },
+          "media_types": {
+            "description": "The set of media types to normalize against. Only valid for the `accept` header.",
+            "items": {
+              "description": "A media type to normalize against. Must be printable ASCII.",
+              "example": "image/webp",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[ -~]+$",
+              "title": "Media Type",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Media Types",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "Vary Header",
+        "type": "object"
+      },
       "rulesets_SkipPhase": {
         "description": "A phase to skip the execution of. This option is only compatible with the products option.",
         "enum": [

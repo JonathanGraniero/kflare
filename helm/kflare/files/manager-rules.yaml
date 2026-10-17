@@ -22,6 +22,7 @@
 - apiGroups:
   - kflare.dev
   resources:
+  - cacherules
   - cloudflareaccounts
   - d1databases
   - dnsrecords
@@ -49,6 +50,7 @@
 - apiGroups:
   - kflare.dev
   resources:
+  - cacherules/finalizers
   - cloudflareaccounts/finalizers
   - d1databases/finalizers
   - dnsrecords/finalizers
@@ -70,6 +72,7 @@
 - apiGroups:
   - kflare.dev
   resources:
+  - cacherules/status
   - cloudflareaccounts/status
   - d1databases/status
   - dnsrecords/status

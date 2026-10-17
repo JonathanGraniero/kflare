@@ -157,7 +157,7 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TransformRule]{
 		},
 		{
 			what:    "uri.path breaking: must set exactly one of expression and value",
-			spec:    `{"description":"Serve /old from /new","expression":"http.request.uri.path eq \"/old\"","type":"urlRewrite","uri":{"path":{"expression":"x","value":"/new"}}}`,
+			spec:    `{"description":"Serve /old from /new","expression":"http.request.uri.path eq \"/old\"","type":"urlRewrite","uri":{"path":{"expression":"regex_replace(http.request.uri.path, \"/foo$\", \"/bar\")","value":"/new"}}}`,
 			message: "must set exactly one of expression and value",
 		},
 		{

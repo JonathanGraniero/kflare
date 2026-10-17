@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -128,12 +129,21 @@ func setAt(spec map[string]any, path []step, value any) {
 }
 
 // edits builds the generated specs' edits of the samples.
-func (k *ruleKind) edits(rules []ruleConfig) error {
-	first := k.samples[0]
+func (k *ruleKind) edits(rules []entryRule) error {
+	first, specs := k.samples[0], k.specs()
+	var failed error
+	// change adds an edit of a spec, unless it breaks a CEL rule, as flipping
+	// a bool that another field needs would.
 	change := func(sample int, what string, edit func(spec map[string]any)) {
-		spec := copySpec(k.samples[sample])
+		spec := copySpec(specs[sample])
 		edit(spec)
-		k.changes = append(k.changes, ruleEdit{what: what, sample: sample, spec: spec, rule: k.apiRule(spec)})
+		broken, err := k.broken(spec)
+		switch {
+		case err != nil:
+			failed = cmp.Or(failed, fmt.Errorf("%s, %s: %w", k.specName(sample), what, err))
+		case len(broken) == 0:
+			k.changes = append(k.changes, ruleEdit{what: what, sample: sample, spec: spec, rule: k.apiRule(spec)})
+		}
 	}
 	change(0, "a new description", func(spec map[string]any) { spec[fieldDescription] = "changed by kflare-gen" })
 	if enabled, ok := first[fieldEnabled].(bool); ok && !enabled {
@@ -141,15 +151,14 @@ func (k *ruleKind) edits(rules []ruleConfig) error {
 	} else {
 		change(0, "the rule disabled", func(spec map[string]any) { spec[fieldEnabled] = false })
 	}
-	var failed error
-	for i, sample := range k.samples {
+	for i, sample := range specs {
 		visitor{scalar: func(path []step, f *paramField, n *paramScalar, value any) {
 			if f.key || len(n.enum) > 0 || failed != nil {
 				return
 			}
 			other, err := otherScalar(n, value)
 			if err != nil {
-				failed = fmt.Errorf("samples[%d]: %s: %w", i, pathString(path), err)
+				failed = fmt.Errorf("%s: %s: %w", k.specName(i), pathString(path), err)
 				return
 			}
 			change(i, "a new "+relativePath(path), func(spec map[string]any) { setAt(spec, path, other) })
@@ -160,6 +169,9 @@ func (k *ruleKind) edits(rules []ruleConfig) error {
 	}
 	values := k.sampleValues()
 	k.swaps(values, change)
+	if failed != nil {
+		return failed
+	}
 
 	for i := 1; i < len(k.samples); i++ {
 		k.retypes = append(k.retypes, ruleEdit{what: "type " + k.phases[i].typeName, spec: copySpec(k.samples[i]),
@@ -172,11 +184,14 @@ func (k *ruleKind) edits(rules []ruleConfig) error {
 	if err := k.ruleBreaches(values); err != nil {
 		return err
 	}
-	for i, r := range rules {
+	for _, r := range rules {
 		typeName, _ := r.Invalid[fieldType].(string)
 		spec, err := k.checkSpec(r.Invalid, typeName)
 		if err != nil {
-			return fmt.Errorf("rules[%d].invalid: %w", i, err)
+			return fmt.Errorf("%s.invalid: %w", r.where, err)
+		}
+		if err := k.breaks(spec, r.Message); err != nil {
+			return fmt.Errorf("%s.invalid: %w", r.where, err)
 		}
 		k.invalid = append(k.invalid, ruleEdit{what: "a breach of: " + r.Message, spec: spec, message: r.Message})
 	}
@@ -189,7 +204,7 @@ func (k *ruleKind) edits(rules []ruleConfig) error {
 // refused when invalid.
 func (k *ruleKind) swaps(values map[*paramField]any, change func(int, string, func(map[string]any))) {
 	swapped := map[*paramStruct]bool{}
-	for i, sample := range k.samples {
+	for i, sample := range k.specs() {
 		visitor{object: func(path []step, st *paramStruct, value map[string]any) {
 			if swapped[st] || !takesOne(st) {
 				return
@@ -285,9 +300,11 @@ func (k *ruleKind) invalidValues() error {
 		case f.key:
 			invalid("an empty "+relativePath(path), at, func(spec map[string]any) { setAt(spec, path, "") })
 		case len(n.enum) > 0:
-			invalid(relativePath(path)+" outside its enum", at+": Unsupported value", func(spec map[string]any) {
-				setAt(spec, path, outsideEnum(n))
-			})
+			if outside, ok := outsideEnum(n); ok {
+				invalid(relativePath(path)+" outside its enum", at+": Unsupported value", func(spec map[string]any) {
+					setAt(spec, path, outside)
+				})
+			}
 		case v.minLength != nil && *v.minLength > 0:
 			short, what := strings.Repeat("a", int(*v.minLength-1)), relativePath(path)+" too short"
 			if short == "" {
@@ -321,7 +338,7 @@ func (k *ruleKind) invalidValues() error {
 			})
 		}
 	}
-	specs := slices.Clone(k.samples)
+	specs := k.specs()
 	for _, c := range k.changes {
 		specs = append(specs, c.spec)
 	}
@@ -332,18 +349,27 @@ func (k *ruleKind) invalidValues() error {
 }
 
 // outsideEnum returns a value of a scalar's type that its enum does not hold:
-// a string, or the integer after the enum's highest.
-func outsideEnum(n *paramScalar) any {
-	if n.goType != typeInt64 {
-		return "kflare-not-in-enum"
-	}
-	var highest int64
-	for _, value := range n.enum {
-		if i, err := strconv.ParseInt(value, 10, 64); err == nil && i > highest {
-			highest = i
+// a string, the integer after the enum's highest, or the bool it leaves out;
+// none for an enum of both bools.
+func outsideEnum(n *paramScalar) (any, bool) {
+	switch n.goType {
+	case typeBool:
+		for _, b := range []bool{false, true} {
+			if !slices.Contains(n.enum, strconv.FormatBool(b)) {
+				return b, true
+			}
 		}
+		return nil, false
+	case typeInt64:
+		var highest int64
+		for _, value := range n.enum {
+			if i, err := strconv.ParseInt(value, 10, 64); err == nil && i > highest {
+				highest = i
+			}
+		}
+		return highest + 1, true
 	}
-	return highest + 1
+	return "kflare-not-in-enum", true
 }
 
 // listBounds returns the least number of items a list or map field takes, and
@@ -363,7 +389,8 @@ func listBounds(node paramNode) (minItems *int64, unique bool) {
 func mismatch(n *paramScalar) (string, bool) {
 	v := n.validation
 	pattern := regexp.MustCompile(v.pattern)
-	for _, s := range []string{"kflare-not-matching", "kflare not matching!", "", "-", "0", "/"} {
+	for _, s := range []string{"kflare-not-matching", "KFLARE-NOT-MATCHING", "kflare not matching!", "kflare-nöt-matching",
+		"", "-", "0", "/"} {
 		length := int64(len(s))
 		if (v.minLength == nil || length >= *v.minLength) && (v.maxLength == nil || length <= *v.maxLength) &&
 			!pattern.MatchString(s) {
@@ -377,7 +404,7 @@ func mismatch(n *paramScalar) (string, bool) {
 // each item of a list of scalars.
 func (k *ruleKind) sampleValues() map[*paramField]any {
 	values := map[*paramField]any{}
-	for _, sample := range k.samples {
+	for _, sample := range k.specs() {
 		visitor{scalar: func(_ []step, f *paramField, _ *paramScalar, value any) {
 			if _, ok := values[f]; !ok {
 				values[f] = value
@@ -500,11 +527,17 @@ func fullScalar(f *paramField, n *paramScalar, values map[*paramField]any) (any,
 }
 
 // enumValue returns a value of a scalar's enum as its type holds it: an
-// integer's as an int64.
+// integer's as an int64, a bool's as a bool. A value the type cannot hold
+// stays a string, which checkScalar refuses.
 func enumValue(n *paramScalar, value string) any {
-	if n.goType == typeInt64 {
+	switch n.goType {
+	case typeInt64:
 		if i, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return i
+		}
+	case typeBool:
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
 		}
 	}
 	return value
@@ -530,9 +563,9 @@ func (k *ruleKind) ruleBreaches(values map[*paramField]any) error {
 		sample int
 		path   []step
 	}
-	first := map[*paramStruct]site{}
+	first, specs := map[*paramStruct]site{}, k.specs()
 	var order []*paramStruct
-	for i, sample := range k.samples {
+	for i, sample := range specs {
 		visitor{object: func(path []step, st *paramStruct, _ map[string]any) {
 			if _, seen := first[st]; !seen && len(st.rules) > 0 {
 				first[st] = site{sample: i, path: path}
@@ -543,12 +576,18 @@ func (k *ruleKind) ruleBreaches(values map[*paramField]any) error {
 	for _, st := range order {
 		s := first[st]
 		for _, rule := range st.rules {
-			if len(rule.variants) > 0 {
+			switch {
+			case rule.fromEntry:
+				continue
+			case len(rule.variants) > 0:
 				k.variantBreaches(st, rule, s.sample, s.path, values)
 				continue
 			}
-			spec := copySpec(k.samples[s.sample])
-			if err := breakRule(st, rule, objectAt(spec, s.path)); err != nil {
+			spec := copySpec(specs[s.sample])
+			if err := breakRule(st, rule, objectAt(spec, s.path), values); err != nil {
+				return fmt.Errorf("%s: %w", pathString(s.path), err)
+			}
+			if err := k.breaks(spec, rule.message); err != nil {
 				return fmt.Errorf("%s: %w", pathString(s.path), err)
 			}
 			k.invalid = append(k.invalid, ruleEdit{what: describeObject(s.path) + " breaking: " + rule.message,
@@ -568,13 +607,13 @@ func (k *ruleKind) variantBreaches(st *paramStruct, rule celRule, sample int, pa
 	where := describeObject(path)
 	seen := map[string]bool{}
 	for _, v := range rule.variants {
-		base := objectAt(copySpec(k.samples[sample]), path)
+		base := objectAt(copySpec(k.specs()[sample]), path)
 		object, ok := variantObject(st, v, base, values)
 		if !ok {
 			continue
 		}
 		breach := func(what string, edit func(object map[string]any)) {
-			spec := copySpec(k.samples[sample])
+			spec := copySpec(k.specs()[sample])
 			target := objectAt(spec, path)
 			clear(target)
 			maps.Copy(target, object)
@@ -657,8 +696,9 @@ func variantObject(st *paramStruct, v variant, base map[string]any,
 // breakRule changes an object so that it breaks rule, one of its struct's: a
 // rule that a value matches an anyOf's variant, or one that bounds how many
 // fields are set. Fields that must be set at least once are all unset; a rule
-// that allows one at most gets the object's unset fields set.
-func breakRule(st *paramStruct, rule celRule, object map[string]any) error {
+// that allows one at most gets the object's unset fields set, an object field
+// to an object that sets everything.
+func breakRule(st *paramStruct, rule celRule, object map[string]any, values map[*paramField]any) error {
 	optional := func(f *paramField) bool { return !f.key && !f.required }
 	switch {
 	case strings.HasPrefix(rule.message, "must set at least") || strings.HasPrefix(rule.message, "must match at least"):
@@ -674,8 +714,8 @@ func breakRule(st *paramStruct, rule celRule, object map[string]any) error {
 			if _, set := object[f.jsonName]; set || !optional(f) {
 				continue
 			}
-			value, ok := someValue(f.node)
-			if !ok {
+			value, err := fullNode(f, f.node, values, false)
+			if err != nil {
 				continue
 			}
 			object[f.jsonName] = value
@@ -699,11 +739,10 @@ func someValue(node paramNode) (any, bool) {
 		return nil, false
 	}
 	switch {
-	case len(n.enum) > 0 && n.goType == typeInt64:
-		value, err := strconv.ParseInt(n.enum[0], 10, 64)
-		return value, err == nil
 	case len(n.enum) > 0:
-		return n.enum[0], true
+		value := enumValue(n, n.enum[0])
+		_, err := checkScalar(n, value, "")
+		return value, err == nil
 	case n.goType == typeBool:
 		return true, true
 	case n.goType == typeInt64:

@@ -91,7 +91,7 @@ type TransformRuleURI struct {
 }
 
 // TransformRuleURIPath is uri.path in a TransformRule.
-// +kubebuilder:validation:XValidation:rule="[has(self.expression), has(self.value)].exists_one(x, x)",message="must set exactly one of expression and value"
+// +kubebuilder:validation:XValidation:rule="(has(self.expression) ? 1 : 0) + (has(self.value) ? 1 : 0) == 1",message="must set exactly one of expression and value"
 type TransformRuleURIPath struct {
 	// Expression computes the new path, for example
 	// `concat("/new", http.request.uri.path)`. Free plans cannot use
@@ -108,7 +108,7 @@ type TransformRuleURIPath struct {
 }
 
 // TransformRuleURIQuery is uri.query in a TransformRule.
-// +kubebuilder:validation:XValidation:rule="[has(self.expression), has(self.value)].exists_one(x, x)",message="must set exactly one of expression and value"
+// +kubebuilder:validation:XValidation:rule="(has(self.expression) ? 1 : 0) + (has(self.value) ? 1 : 0) == 1",message="must set exactly one of expression and value"
 type TransformRuleURIQuery struct {
 	// Expression computes the new query string.
 	// +optional

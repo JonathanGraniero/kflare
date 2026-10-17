@@ -163,10 +163,13 @@ func TestFieldSpec(t *testing.T) {
 		!slices.Equal(fs.enum, []string{"301", "308"}) {
 		t.Errorf("an enum of whole numbers: %+v, %v", fs, err)
 	}
+	if fs, err := spec.fieldSpec(&schema{Enum: []any{true}}); err != nil || !slices.Equal(fs.enum, []string{"true"}) {
+		t.Errorf("an enum of bools: %+v, %v", fs, err)
+	}
 
 	for name, sch := range map[string]*schema{
 		"an enum of fractions":      {Enum: []any{1.5}},
-		"an enum of bools":          {Enum: []any{true}},
+		"an enum of objects":        {Enum: []any{map[string]any{}}},
 		"a default of another type": {Default: []any{}},
 		"a dangling $ref":           {Ref: "#/components/schemas/missing"},
 		"a $ref elsewhere":          {Ref: "#/paths/x"},

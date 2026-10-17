@@ -73,6 +73,8 @@ type celRule struct {
 	// variants are a oneOf's variants, for the rule that a value matches one
 	// of them; the generated specs break each.
 	variants []variant
+	// fromEntry marks an entry's rule, whose invalid spec the entry gives.
+	fromEntry bool
 }
 
 // variant is a oneOf's variant as its rule tells it apart, by the JSON names
@@ -222,7 +224,22 @@ func (b *paramBuilder) object(path, goName, prefix string, sdkType *types.Named,
 		return nil, fmt.Errorf("%s: every field is ignored", describePath(path))
 	}
 	st.rules = append(st.rules, countRules(resolved, st.fields)...)
+	st.rules = append(st.rules, b.entryRules(path)...)
 	return st, nil
+}
+
+// entryRules returns the CEL rules the entry puts on the object at path.
+func (b *paramBuilder) entryRules(path string) []celRule {
+	adjust := b.adjust[path]
+	if len(adjust.Rules) == 0 {
+		return nil
+	}
+	b.used[path] = true
+	rules := make([]celRule, 0, len(adjust.Rules))
+	for _, r := range adjust.Rules {
+		rules = append(rules, celRule{rule: r.Rule, message: r.Message, fromEntry: true})
+	}
+	return rules
 }
 
 // describePath names a path in messages.
@@ -254,6 +271,10 @@ func (b *paramBuilder) field(path, prefix string, f sdkField, t types.Type, sch 
 		return nil, err
 	}
 	pf.node = node
+	if _, isStruct := node.(*paramStruct); !isStruct && len(adjust.Rules) > 0 {
+		return nil, fmt.Errorf("fields.%s.rules: %s is not an object; put a list's or a map's rules on %s[]", path,
+			path, path)
+	}
 	if _, isMap := node.(*paramMap); !isMap && adjust.Key != "" {
 		return nil, fmt.Errorf("fields.%s.key: %s is not a map", path, path)
 	}
@@ -309,6 +330,11 @@ func (b *paramBuilder) scalar(path string, t types.Type, sch *schema, adjust rul
 		out.validation = validation{minLength: fs.validation.minLength, maxLength: fs.validation.maxLength,
 			pattern: fs.validation.pattern}
 	case types.IsBoolean:
+		for _, value := range out.enum {
+			if _, err := strconv.ParseBool(value); err != nil {
+				return nil, fmt.Errorf("%s is a bool whose enum holds %q", path, value)
+			}
+		}
 		out.goType = typeBool
 	case types.IsNumeric:
 		if fs.typ != typeInteger {
@@ -400,9 +426,13 @@ func (b *paramBuilder) mapOf(path, prefix, goName string, m *types.Map, sch *sch
 			"reason", path)
 	}
 	keyLength := int64(1)
+	keyValidation := validation{minLength: &keyLength}
+	if adjust.KeyValidation != nil {
+		keyValidation = adjust.KeyValidation.validation()
+	}
 	key := &paramField{
 		goName: upperCamel(adjust.Key), jsonName: adjust.Key, required: true, key: true,
-		doc: lines(adjust.KeyDoc), node: &paramScalar{goType: typeString, validation: validation{minLength: &keyLength}},
+		doc: lines(adjust.KeyDoc), node: &paramScalar{goType: typeString, validation: keyValidation},
 	}
 	for _, f := range value.fields {
 		if f.jsonName == key.jsonName {
@@ -501,6 +531,7 @@ func (b *paramBuilder) union(path, goName string, union *types.Named, sch *schem
 	}
 	st.rules = append(st.rules, rule)
 	st.rules = append(st.rules, countRules(resolved, st.fields)...)
+	st.rules = append(st.rules, b.entryRules(path)...)
 	return st, nil
 }
 
@@ -691,29 +722,32 @@ func propertyCountRules(sch *schema, fields []*paramField) []celRule {
 	if sch == nil || (sch.MinProperties == nil && sch.MaxProperties == nil) {
 		return nil
 	}
-	var set, names []string
+	var set, counts, names []string
 	for _, f := range fields {
 		if f.key {
 			continue
 		}
 		set = append(set, "has(self."+f.jsonName+")")
+		counts = append(counts, "(has(self."+f.jsonName+") ? 1 : 0)")
 		names = append(names, f.jsonName)
 	}
-	minimum, maximum := sch.MinProperties, sch.MaxProperties
-	list := "[" + strings.Join(set, ", ") + "]"
+	// The count is a sum rather than a filtered list: CEL's cost estimate,
+	// which the API server checks against a budget, is far lower for it, and
+	// an object in a list without maxItems may be checked many times over.
+	minimum, maximum, count := sch.MinProperties, sch.MaxProperties, strings.Join(counts, " + ")
 	switch {
 	case minimum != nil && maximum != nil && *minimum == 1 && *maximum == 1:
-		return []celRule{{rule: list + ".exists_one(x, x)", message: "must set exactly one of " + prose(names)}}
+		return []celRule{{rule: count + " == 1", message: "must set exactly one of " + prose(names)}}
 	case minimum != nil && *minimum == 1 && maximum == nil:
 		return []celRule{{rule: strings.Join(set, " || "), message: "must set at least one of " + prose(names)}}
 	}
 	var rules []celRule
 	if minimum != nil && *minimum > 0 {
-		rules = append(rules, celRule{rule: fmt.Sprintf("%s.filter(x, x).size() >= %d", list, *minimum),
+		rules = append(rules, celRule{rule: fmt.Sprintf("%s >= %d", count, *minimum),
 			message: fmt.Sprintf("must set at least %d of %s", *minimum, prose(names))})
 	}
 	if maximum != nil {
-		rules = append(rules, celRule{rule: fmt.Sprintf("%s.filter(x, x).size() <= %d", list, *maximum),
+		rules = append(rules, celRule{rule: fmt.Sprintf("%s <= %d", count, *maximum),
 			message: fmt.Sprintf("must set at most %d of %s", *maximum, prose(names))})
 	}
 	return rules

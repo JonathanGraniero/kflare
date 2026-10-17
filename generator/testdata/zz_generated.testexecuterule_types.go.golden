@@ -69,7 +69,7 @@ type TestExecuteRuleOverrides struct {
 
 // TestExecuteRuleOverridesCategory is overrides.categories[] in a
 // TestExecuteRule.
-// +kubebuilder:validation:XValidation:rule="[has(self.category), has(self.action), has(self.enabled), has(self.sensitivityLevel)].filter(x, x).size() >= 2",message="must set at least 2 of category, action, enabled and sensitivityLevel"
+// +kubebuilder:validation:XValidation:rule="(has(self.category) ? 1 : 0) + (has(self.action) ? 1 : 0) + (has(self.enabled) ? 1 : 0) + (has(self.sensitivityLevel) ? 1 : 0) >= 2",message="must set at least 2 of category, action, enabled and sensitivityLevel"
 type TestExecuteRuleOverridesCategory struct {
 	// The name of the category to override.
 	// +kubebuilder:validation:MinLength=1
@@ -92,7 +92,7 @@ type TestExecuteRuleOverridesCategory struct {
 }
 
 // TestExecuteRuleOverridesRule is overrides.rules[] in a TestExecuteRule.
-// +kubebuilder:validation:XValidation:rule="[has(self.id), has(self.action), has(self.enabled), has(self.scoreThreshold), has(self.sensitivityLevel)].filter(x, x).size() >= 2",message="must set at least 2 of id, action, enabled, scoreThreshold and sensitivityLevel"
+// +kubebuilder:validation:XValidation:rule="(has(self.id) ? 1 : 0) + (has(self.action) ? 1 : 0) + (has(self.enabled) ? 1 : 0) + (has(self.scoreThreshold) ? 1 : 0) + (has(self.sensitivityLevel) ? 1 : 0) >= 2",message="must set at least 2 of id, action, enabled, scoreThreshold and sensitivityLevel"
 type TestExecuteRuleOverridesRule struct {
 	// The ID of the rule to override.
 	// +kubebuilder:validation:Pattern=`^[0-9a-f]{32}$`

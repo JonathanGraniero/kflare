@@ -492,15 +492,23 @@ func emitRuleKindTest(k *ruleKind, header string) ([]byte, error) {
 	f.printf("newReconciler: func(c %s.Client, newAPI func(string) (RulesetRuleAPI, error)) ruleKindReconciler {\n",
 		client)
 	f.printf("return &%sReconciler{Client: c, Scheme: c.Scheme(), NewRulesetRuleAPI: newAPI}\n},\n", k.name)
-	samples := make([]ruleEdit, len(k.samples))
-	for i, sample := range k.samples {
+	specs := k.specs()
+	samples := make([]ruleEdit, len(specs))
+	for i, spec := range specs {
 		what := "the sample"
 		if k.typeDoc != nil {
-			what = "type " + k.phases[i].typeName
+			what = "type " + k.phaseOf(spec).typeName
 		}
-		samples[i] = ruleEdit{what: what, spec: sample, rule: k.rules[i]}
+		if i >= len(k.samples) {
+			what = fmt.Sprintf("test %d", i-len(k.samples)+1)
+			if k.typeDoc != nil {
+				what += ", of type " + k.phaseOf(spec).typeName
+			}
+		}
+		samples[i] = ruleEdit{what: what, spec: spec, rule: k.rules[i]}
 	}
-	if err := cases("samples", samples, func(i int) string { return rs + "." + k.phases[i].constant }); err != nil {
+	phase := func(i int) string { return rs + "." + k.phaseOf(specs[i]).constant }
+	if err := cases("samples", samples, phase); err != nil {
 		return nil, err
 	}
 	for _, c := range []struct {
