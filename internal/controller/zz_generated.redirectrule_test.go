@@ -86,7 +86,7 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.RedirectRule]{
 		},
 		{
 			what:    "fromValue.targetURL breaking: must set exactly one of expression and value",
-			spec:    `{"description":"Send www.example.com to example.com, keeping the path and query","expression":"http.host eq \"www.example.com\"","fromValue":{"preserveQueryString":true,"statusCode":301,"targetURL":{"expression":"concat(\"https://example.com\", http.request.uri.path)","value":"x"}}}`,
+			spec:    `{"description":"Send www.example.com to example.com, keeping the path and query","expression":"http.host eq \"www.example.com\"","fromValue":{"preserveQueryString":true,"statusCode":301,"targetURL":{"expression":"concat(\"https://example.com\", http.request.uri.path)","value":"https://example.com"}}}`,
 			message: "must set exactly one of expression and value",
 		},
 	},

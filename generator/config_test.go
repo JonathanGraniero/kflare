@@ -193,6 +193,14 @@ func TestLoadConfigRefusesRuleKinds(t *testing.T) {
 		{"a key in capitals", replace("{key: name,", "{key: Name,"), "not a lowerCamel name"},
 		{"a validation without a reason", replace("{key: name, keyDoc: Name is the header's name.}",
 			"{validation: {minLength: 1}}"), "gives no reason"},
+		{"a field's rule without a message", replace("{key: name, keyDoc: Name is the header's name.}",
+			"{key: name, keyDoc: Name is the header's name., rules: [{rule: 'true', message: '', reason: r, "+
+				"invalid: {expression: 'true'}}]}"), "fields.headers.rules[0]: needs a rule and a message"},
+		{"a key validation without a key", replace("{key: name, keyDoc: Name is the header's name.}",
+			"{keyValidation: {minLength: 1, reason: r}}"), "fields.headers: keyValidation without a key"},
+		{"a key validation without a reason", replace("{key: name, keyDoc: Name is the header's name.}",
+			"{key: name, keyDoc: Name is the header's name., keyValidation: {minLength: 1}}"),
+			"fields.headers.keyValidation: gives no reason"},
 	}
 	for _, tc := range tests {
 		if _, err := loadConfig(writeConfig(t, tc.config)); err == nil || !strings.Contains(err.Error(), tc.want) {

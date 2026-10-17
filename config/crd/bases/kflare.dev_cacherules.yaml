@@ -1,0 +1,542 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: cacherules.kflare.dev
+spec:
+  group: kflare.dev
+  names:
+    kind: CacheRule
+    listKind: CacheRuleList
+    plural: cacherules
+    shortNames:
+    - cfcache
+    singular: cacherule
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.priority
+      name: Priority
+      type: integer
+    - jsonPath: .status.cloudflareMetadata.ruleID
+      name: Rule ID
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CacheRule is the Schema for the cacherules API.
+          It manages one cache rule in a zone: how Cloudflare caches the responses
+          to the requests its expression matches, at the edge and in browsers.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CacheRuleSpec defines the desired state of CacheRule: the fields every rule
+              kind shares, and the parameters of its set_cache_settings action.
+            properties:
+              additionalCacheablePorts:
+                description: |-
+                  AdditionalCacheablePorts are more ports Cloudflare caches responses
+                  on. Cloudflare's documentation lists them for Enterprise plans; Free
+                  zones accept and store them.
+                items:
+                  format: int64
+                  maximum: 65535
+                  minimum: 1
+                  type: integer
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              browserTTL:
+                description: |-
+                  BrowserTTL is how long browsers cache the response. A purge does not
+                  reach browsers, so a long one can leave them with stale content.
+                properties:
+                  default:
+                    description: Default is the browser TTL, in seconds, with mode
+                      override_origin.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  mode:
+                    description: |-
+                      Mode is where the browser TTL comes from: respect_origin keeps the
+                      origin's, override_origin sets default's, bypass_by_default bypasses
+                      the browser cache unless the origin says otherwise, and bypass always
+                      bypasses it.
+                    enum:
+                    - respect_origin
+                    - bypass_by_default
+                    - override_origin
+                    - bypass
+                    type: string
+                required:
+                - mode
+                type: object
+                x-kubernetes-validations:
+                - message: set default with mode override_origin, and only with it
+                  rule: (self.mode == 'override_origin') == has(self.default)
+              cache:
+                description: |-
+                  Cache makes the response eligible for Cloudflare's cache. Whether it is
+                  cached still depends on its cache control headers and the zone's other
+                  cache settings.
+                type: boolean
+              cacheKey:
+                description: |-
+                  Which components of the request are included in or excluded from the cache key
+                  Cloudflare uses to store the response in cache.
+                properties:
+                  cacheByDeviceType:
+                    description: Whether to separate cached content based on the visitor's
+                      device type.
+                    type: boolean
+                  cacheDeceptionArmor:
+                    description: |-
+                      Whether to protect from web cache deception attacks, while allowing static
+                      assets to be cached.
+                    type: boolean
+                  customKey:
+                    description: |-
+                      CustomKey changes the request's parts the cache key holds. Free
+                      plans may only leave out the query string.
+                    properties:
+                      queryString:
+                        description: QueryString leaves the query string out of the
+                          cache key.
+                        properties:
+                          exclude:
+                            description: Which query string parameters to exclude
+                              from the cache key.
+                            properties:
+                              all:
+                                description: All leaves every query string parameter
+                                  out of the cache key.
+                                enum:
+                                - true
+                                type: boolean
+                            required:
+                            - all
+                            type: object
+                        type: object
+                        x-kubernetes-validations:
+                        - message: queryString sets exclude
+                          rule: has(self.exclude)
+                    type: object
+                    x-kubernetes-validations:
+                    - message: customKey sets queryString
+                      rule: has(self.queryString)
+                  ignoreQueryStringsOrder:
+                    description: |-
+                      Whether to treat requests with the same query parameters the same, regardless of
+                      the order those query parameters are in.
+                    type: boolean
+                type: object
+              cacheReserve:
+                description: |-
+                  CacheReserve makes the response eligible for Cache Reserve, which
+                  needs the Cache Reserve add-on to take effect; Free zones accept and
+                  store it.
+                properties:
+                  eligible:
+                    description: |-
+                      Whether Cache Reserve is enabled. If this is true and a request meets
+                      eligibility criteria, Cloudflare will write the resource to Cache Reserve.
+                    type: boolean
+                  minimumFileSize:
+                    description: The minimum file size eligible for storage in Cache
+                      Reserve.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                required:
+                - eligible
+                type: object
+                x-kubernetes-validations:
+                - message: minimumFileSize needs eligible
+                  rule: self.eligible || !has(self.minimumFileSize)
+              description:
+                description: Description is shown with the rule in the Cloudflare
+                  dashboard.
+                maxLength: 4096
+                type: string
+              edgeTTL:
+                description: EdgeTTL is how long Cloudflare's edge caches the response.
+                properties:
+                  default:
+                    description: Default is the edge TTL, in seconds, with mode override_origin.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  mode:
+                    description: |-
+                      Mode is where the edge TTL comes from: respect_origin keeps the
+                      origin's, override_origin sets default's, and bypass_by_default does
+                      not cache unless the origin says otherwise.
+                    enum:
+                    - respect_origin
+                    - bypass_by_default
+                    - override_origin
+                    type: string
+                  statusCodeTTL:
+                    description: |-
+                      StatusCodeTTL sets the edge TTL of responses by their status code,
+                      each item for one code or a range of them. Cloudflare refuses ranges
+                      that overlap.
+                    items:
+                      description: CacheRuleEdgeTTLStatusCodeTTL is edge_ttl.status_code_ttl[]
+                        in a CacheRule.
+                      properties:
+                        statusCode:
+                          description: A single status code to apply the TTL to.
+                          format: int64
+                          maximum: 999
+                          minimum: 100
+                          type: integer
+                        statusCodeRange:
+                          description: |-
+                            StatusCodeRange is the range of status codes the TTL is for: from
+                            and to, each optional, a range without one is open on that side.
+                          properties:
+                            from:
+                              description: The lower bound of the range.
+                              format: int64
+                              maximum: 999
+                              minimum: 100
+                              type: integer
+                            to:
+                              description: The upper bound of the range.
+                              format: int64
+                              maximum: 999
+                              minimum: 100
+                              type: integer
+                          type: object
+                          x-kubernetes-validations:
+                          - message: must set at least one of from and to
+                            rule: has(self.from) || has(self.to)
+                          - message: from is below to
+                            rule: '!has(self.from) || !has(self.to) || self.from <
+                              self.to'
+                        value:
+                          description: 'Value is the TTL, in seconds: 0 for no-cache,
+                            -1 for no-store.'
+                          format: int64
+                          type: integer
+                      required:
+                      - value
+                      type: object
+                      x-kubernetes-validations:
+                      - message: must set at least 2 of value, statusCode and statusCodeRange
+                        rule: '(has(self.value) ? 1 : 0) + (has(self.statusCode) ?
+                          1 : 0) + (has(self.statusCodeRange) ? 1 : 0) >= 2'
+                      - message: must set at most 2 of value, statusCode and statusCodeRange
+                        rule: '(has(self.value) ? 1 : 0) + (has(self.statusCode) ?
+                          1 : 0) + (has(self.statusCodeRange) ? 1 : 0) <= 2'
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - mode
+                type: object
+                x-kubernetes-validations:
+                - message: set default with mode override_origin, and only with it
+                  rule: (self.mode == 'override_origin') == has(self.default)
+              enabled:
+                default: true
+                description: Enabled turns the rule on or off without deleting it.
+                type: boolean
+              expression:
+                description: |-
+                  Expression selects the requests the rule applies to, in Cloudflare's
+                  Rules language, for example `http.request.uri.path eq "/admin"`.
+                  Cloudflare validates it; the fields and operators it may use depend on
+                  the zone's plan.
+                maxLength: 4096
+                minLength: 1
+                type: string
+              originCacheControl:
+                description: |-
+                  OriginCacheControl makes Cloudflare follow RFC 7234 strictly.
+                  Cloudflare's documentation lists it for Enterprise plans; Free zones
+                  accept and store it.
+                type: boolean
+              originErrorPagePassthru:
+                description: Whether to generate Cloudflare error pages for issues
+                  from the origin server.
+                type: boolean
+              originRangeRequests:
+                description: |-
+                  Controls whether Cloudflare fetches a large asset from the origin as a series of
+                  range requests instead of one whole-body request.
+                properties:
+                  mode:
+                    description: |-
+                      Mode is whether Cloudflare fetches a large asset from the origin in
+                      ranges: on, off, or default, the zone's behavior without the rule.
+                      Quote on and off in YAML, which would read them as booleans.
+                    enum:
+                    - "on"
+                    - "off"
+                    - default
+                    type: string
+                required:
+                - mode
+                type: object
+              priority:
+                description: |-
+                  Priority orders the rules kflare manages in a zone and phase: lower runs
+                  first, and rules with the same priority run in order of namespace and
+                  name. Rules created outside kflare keep their place.
+                format: int32
+                type: integer
+              respectStrongEtags:
+                description: |-
+                  Whether Cloudflare should respect strong ETag (entity tag) headers. If false,
+                  Cloudflare converts strong ETag headers to weak ETag headers.
+                type: boolean
+              serveStale:
+                description: When to serve stale content from cache.
+                properties:
+                  disableStaleWhileUpdating:
+                    description: |-
+                      Whether Cloudflare should disable serving stale content while getting the latest
+                      content from the origin.
+                    type: boolean
+                type: object
+              vary:
+                description: |-
+                  Vary is how a response's Vary header shapes the cache key: default for
+                  every header, and headers for some of them.
+                properties:
+                  default:
+                    description: |-
+                      Controls how response Vary headers without a per-header override contribute to
+                      the cache key.
+                    properties:
+                      action:
+                        description: How the header value is treated when building
+                          the cache key.
+                        enum:
+                        - bypass
+                        - passthrough
+                        - normalize
+                        type: string
+                    required:
+                    - action
+                    type: object
+                  headers:
+                    description: |-
+                      Headers are what the cache key takes from some request headers, at
+                      most 50.
+                    items:
+                      description: CacheRuleVaryHeader is an item of vary.headers
+                        in a CacheRule.
+                      properties:
+                        action:
+                          description: How the header value is treated when building
+                            the cache key.
+                          enum:
+                          - bypass
+                          - passthrough
+                          - normalize
+                          type: string
+                        languages:
+                          description: |-
+                            The set of languages to normalize against. Only valid for the `accept-language`
+                            header.
+                          items:
+                            maxLength: 64
+                            minLength: 1
+                            pattern: ^[ -~]+$
+                            type: string
+                          maxItems: 20
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        mediaTypes:
+                          description: The set of media types to normalize against.
+                            Only valid for the `accept` header.
+                          items:
+                            maxLength: 255
+                            minLength: 1
+                            pattern: ^[ -~]+$
+                            type: string
+                          maxItems: 10
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        name:
+                          description: Name is the request header's name, in lower
+                            case.
+                          minLength: 1
+                          pattern: ^[^A-Z]+$
+                          type: string
+                      required:
+                      - action
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: languages are for the accept-language header only
+                        rule: '!has(self.languages) || self.name == ''accept-language'''
+                      - message: mediaTypes are for the accept header only
+                        rule: '!has(self.mediaTypes) || self.name == ''accept'''
+                    maxItems: 50
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
+                x-kubernetes-validations:
+                - message: must set at least one of default and headers
+                  rule: has(self.default) || has(self.headers)
+                - message: headers need a default
+                  rule: '!has(self.headers) || has(self.default)'
+              zoneRef:
+                description: |-
+                  ZoneRef references the Zone, in the same namespace, the rule belongs to.
+                  Immutable after creation.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: zoneRef is immutable
+                  rule: self == oldSelf
+            required:
+            - expression
+            - zoneRef
+            type: object
+            x-kubernetes-validations:
+            - message: must set at least one of additionalCacheablePorts, browserTTL,
+                cache, cacheKey, cacheReserve, edgeTTL, originCacheControl, originErrorPagePassthru,
+                originRangeRequests, respectStrongEtags, serveStale and vary
+              rule: has(self.additionalCacheablePorts) || has(self.browserTTL) ||
+                has(self.cache) || has(self.cacheKey) || has(self.cacheReserve) ||
+                has(self.edgeTTL) || has(self.originCacheControl) || has(self.originErrorPagePassthru)
+                || has(self.originRangeRequests) || has(self.respectStrongEtags) ||
+                has(self.serveStale) || has(self.vary)
+          status:
+            description: RulesetRuleStatus is the observed state of a rule.
+            properties:
+              cloudflareMetadata:
+                description: CloudflareMetadata identifies the rule in Cloudflare.
+                properties:
+                  ref:
+                    description: |-
+                      Ref is the rule's ref, which kflare derives from the resource's kind,
+                      namespace and name. kflare finds the rule it manages by its ref.
+                    type: string
+                  ruleID:
+                    description: RuleID is the rule's Cloudflare ID.
+                    type: string
+                  rulesetID:
+                    description: RulesetID is the zone's entry point ruleset for the
+                      rule's phase.
+                    type: string
+                  version:
+                    description: |-
+                      Version is the rule's version, which Cloudflare increments whenever the
+                      rule changes.
+                    type: string
+                  zoneID:
+                    description: ZoneID is the Cloudflare zone the rule is in.
+                    type: string
+                type: object
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the rule's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

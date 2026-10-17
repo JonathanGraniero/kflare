@@ -11,6 +11,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -56,6 +58,9 @@ const (
 	// redirectPhase is the Rulesets phase of RedirectRules, single redirects.
 	redirectPhase = "http_request_dynamic_redirect"
 
+	// cachePhase is the Rulesets phase of CacheRules.
+	cachePhase = "http_request_cache_settings"
+
 	// freeManagedRulesetID is the Cloudflare Free Managed Ruleset, the
 	// managed ruleset a Free zone can deploy.
 	freeManagedRulesetID = "77454fe2d30c4220b5701f6fdfb893ba"
@@ -98,6 +103,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		routeKey, exclusionKey, kvKey, bucketKey, wafKey, wafSkipKey          client.ObjectKey
 		rateLimitKey, listKey, listRuleKey, managedKey, d1Key                 client.ObjectKey
 		urlRewriteKey, requestHeadersKey, responseHeadersKey, redirectKey     client.ObjectKey
+		cacheKey                                                              client.ObjectKey
 
 		tunnelID, zoneID, recordID, routeID, exclusionID, kvNamespaceID, listID, databaseID string
 	)
@@ -174,6 +180,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		requestHeadersKey = client.ObjectKey{Namespace: e2eNamespace, Name: "request-headers"}
 		responseHeadersKey = client.ObjectKey{Namespace: e2eNamespace, Name: "response-headers"}
 		redirectKey = client.ObjectKey{Namespace: e2eNamespace, Name: "redirect"}
+		cacheKey = client.ObjectKey{Namespace: e2eNamespace, Name: "cache"}
 
 		DeferCleanup(func() {
 			By("removing anything this run left behind in Cloudflare")
@@ -199,6 +206,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				cleanupRules(ctx, cfAPI, ruleService, zoneID, responseHeadersPhase,
 					ruleRef("TransformRule", responseHeadersKey))
 				cleanupRules(ctx, cfAPI, ruleService, zoneID, redirectPhase, ruleRef("RedirectRule", redirectKey))
+				cleanupRules(ctx, cfAPI, ruleService, zoneID, cachePhase, ruleRef("CacheRule", cacheKey))
 				// An entry point in the managed phase, even an empty one,
 				// stops Cloudflare's default deployment of the Free Managed
 				// Ruleset; deleting it restores the zone as found.
@@ -743,6 +751,82 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		expectIdle(ctx, k8s, cfAPI, zoneID, redirectPhase, redirect)
 	})
 
+	It("writes a cache rule, updates it in place and then leaves it alone", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		path := "/" + resourceName()
+		rule := &cloudflarev1alpha1.CacheRule{
+			ObjectMeta: objectMeta(cacheKey),
+			Spec: cloudflarev1alpha1.CacheRuleSpec{
+				RulesetRuleSpec: cloudflarev1alpha1.RulesetRuleSpec{
+					ZoneRef:     corev1.LocalObjectReference{Name: zoneKey.Name},
+					Expression:  `starts_with(http.request.uri.path, "` + path + `/")`,
+					Description: "kflare e2e " + run,
+				},
+				Cache: new(true),
+				EdgeTTL: &cloudflarev1alpha1.CacheRuleEdgeTTL{
+					Mode: "override_origin", Default: new(int64(86400)),
+					StatusCodeTTL: []cloudflarev1alpha1.CacheRuleEdgeTTLStatusCodeTTL{
+						{StatusCode: new(int64(404)), Value: 60},
+						{StatusCodeRange: &cloudflarev1alpha1.CacheRuleEdgeTTLStatusCodeTTLStatusCodeRange{
+							From: new(int64(500)),
+						}},
+					},
+				},
+				BrowserTTL: &cloudflarev1alpha1.CacheRuleBrowserTTL{Mode: "override_origin", Default: new(int64(3600))},
+				CacheKey: &cloudflarev1alpha1.CacheRuleCacheKey{
+					CustomKey: &cloudflarev1alpha1.CacheRuleCacheKeyCustomKey{
+						QueryString: &cloudflarev1alpha1.CacheRuleCacheKeyCustomKeyQueryString{
+							Exclude: &cloudflarev1alpha1.CacheRuleCacheKeyCustomKeyQueryStringExclude{All: true},
+						},
+					},
+				},
+				Vary: &cloudflarev1alpha1.CacheRuleVary{
+					Default: &cloudflarev1alpha1.CacheRuleVaryDefault{Action: "passthrough"},
+					Headers: []cloudflarev1alpha1.CacheRuleVaryHeader{
+						{Name: "accept", Action: "normalize", MediaTypes: []string{"image/avif", "image/webp"}},
+					},
+				},
+			},
+		}
+		Expect(k8s.Create(ctx, rule)).To(Succeed())
+		expectReady(cacheKey, rule, func() []metav1.Condition { return rule.Status.Conditions })
+		ref := ruleRef("CacheRule", cacheKey)
+		Expect(rule.Status.CloudflareMetadata.Ref).To(Equal(ref))
+		cfRule, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, cachePhase), ref)
+		Expect(ok).To(BeTrue(), "the %s phase has no rule with ref %s", cachePhase, ref)
+		Expect(cfRule.ID).To(Equal(rule.Status.CloudflareMetadata.RuleID))
+		Expect(cfRule.Action).To(Equal("set_cache_settings"))
+		Expect(cfRule.Expression).To(Equal(rule.Spec.Expression))
+		Expect(cfRule.Description).To(Equal(rule.Spec.Description))
+		const settings = `"cache": true,
+			"cache_key": {"custom_key": {"query_string": {"exclude": {"all": true}}}},
+			"vary": {"default": {"action": "passthrough"},
+				"headers": {"accept": {"action": "normalize", "media_types": ["image/avif", "image/webp"]}}}`
+		const statusCodes = `"status_code_ttl": [{"status_code": 404, "value": 60},
+			{"status_code_range": {"from": 500}, "value": 0}]`
+		Expect(rawActionParameters(ctx, cfAPI, zoneID, cachePhase, ref)).To(MatchJSON(`{` + settings + `,
+			"edge_ttl": {"mode": "override_origin", "default": 86400, ` + statusCodes + `},
+			"browser_ttl": {"mode": "override_origin", "default": 3600}}`))
+
+		By("respecting the origin's browser TTL and caching for two hours at the edge, which updates the rule in place")
+		patch := client.MergeFrom(rule.DeepCopy())
+		rule.Spec.BrowserTTL = &cloudflarev1alpha1.CacheRuleBrowserTTL{Mode: "respect_origin"}
+		rule.Spec.EdgeTTL.Default = new(int64(7200))
+		Expect(k8s.Patch(ctx, rule, patch)).To(Succeed())
+		Eventually(func(g Gomega) {
+			updated, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, cachePhase), ref)
+			g.Expect(ok).To(BeTrue(), "Cloudflare has no rule with ref %s", ref)
+			g.Expect(updated.ID).To(Equal(cfRule.ID))
+			g.Expect(rawActionParameters(ctx, cfAPI, zoneID, cachePhase, ref)).To(MatchJSON(`{` + settings + `,
+				"edge_ttl": {"mode": "override_origin", "default": 7200, ` + statusCodes + `},
+				"browser_ttl": {"mode": "respect_origin"}}`))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+
+		expectIdle(ctx, k8s, cfAPI, zoneID, cachePhase, rule)
+	})
+
 	It("deploys the Free Managed Ruleset, updates its overrides in place and then leaves it alone", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")
@@ -911,6 +995,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			&cloudflarev1alpha1.TransformRule{ObjectMeta: objectMeta(requestHeadersKey)},
 			&cloudflarev1alpha1.TransformRule{ObjectMeta: objectMeta(responseHeadersKey)},
 			&cloudflarev1alpha1.RedirectRule{ObjectMeta: objectMeta(redirectKey)},
+			&cloudflarev1alpha1.CacheRule{ObjectMeta: objectMeta(cacheKey)},
 			&cloudflarev1alpha1.WAFCustomRule{ObjectMeta: objectMeta(listRuleKey)},
 			&cloudflarev1alpha1.IPList{ObjectMeta: objectMeta(listKey)},
 			&cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(recordKey)},
@@ -967,6 +1052,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			}
 			_, ok = ruleByRef(phaseRules(ctx, cfAPI, zoneID, redirectPhase), ruleRef("RedirectRule", redirectKey))
 			Expect(ok).To(BeFalse(), "the redirect rule was not deleted")
+			_, ok = ruleByRef(phaseRules(ctx, cfAPI, zoneID, cachePhase), ruleRef("CacheRule", cacheKey))
+			Expect(ok).To(BeFalse(), "the cache rule was not deleted")
 			_, err = cfAPI.GetEntrypointRuleset(ctx, cf.ZoneIdentifier(zoneID), managedPhase)
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(),
 				"the managed phase's emptied entry point was not deleted, which leaves Cloudflare's default off: %v", err)
@@ -1094,6 +1181,29 @@ func phaseRules(ctx context.Context, api *cf.API, zoneID, phase string) []cf.Rul
 	}
 	Expect(err).NotTo(HaveOccurred())
 	return ruleset.Rules
+}
+
+// rawActionParameters returns the action parameters of the rule with ref in
+// the zone's entry point for phase, as the JSON Cloudflare returns: the
+// settings of a cache rule that cloudflare-go v0's types lack, such as vary,
+// are checked too.
+func rawActionParameters(ctx context.Context, api *cf.API, zoneID, phase, ref string) string {
+	raw, err := api.Raw(ctx, http.MethodGet, "/zones/"+zoneID+"/rulesets/phases/"+phase+"/entrypoint", nil, nil)
+	Expect(err).NotTo(HaveOccurred())
+	var ruleset struct {
+		Rules []struct {
+			Ref              string          `json:"ref"`
+			ActionParameters json.RawMessage `json:"action_parameters"`
+		} `json:"rules"`
+	}
+	Expect(json.Unmarshal(raw.Result, &ruleset)).To(Succeed())
+	for _, rule := range ruleset.Rules {
+		if rule.Ref == ref {
+			return string(rule.ActionParameters)
+		}
+	}
+	Fail("the " + phase + " phase has no rule with ref " + ref)
+	return ""
 }
 
 // phaseVersion returns the version of the zone's entry point in phase, which

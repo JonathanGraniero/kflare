@@ -365,11 +365,13 @@ func (s *apiSpec) fieldSpec(prop *schema) (fieldSpec, error) {
 					out.enum = append(out.enum, v)
 				case float64:
 					if v != math.Trunc(v) {
-						return fmt.Errorf("enum value %v is not a string or a whole number", value)
+						return fmt.Errorf("enum value %v is not a string, a whole number or a bool", value)
 					}
 					out.enum = append(out.enum, strconv.FormatInt(int64(v), 10))
+				case bool:
+					out.enum = append(out.enum, strconv.FormatBool(v))
 				default:
-					return fmt.Errorf("enum value %v is not a string or a whole number", value)
+					return fmt.Errorf("enum value %v is not a string, a whole number or a bool", value)
 				}
 			}
 		}

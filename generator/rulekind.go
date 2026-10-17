@@ -39,15 +39,19 @@ type ruleKind struct {
 	// specRules are CEL rules on the spec: the action parameters' own, then
 	// the entry's.
 	specRules []celRule
-	// samples are the entry's samples, checked, and rules the rule each asks
-	// for, as Cloudflare stores it, its ref aside.
-	samples, rules []map[string]any
+	// samples are the entry's samples, checked, and tests its tests; rules
+	// are the rule each of them asks for, the samples' first, as Cloudflare
+	// stores it, its ref aside.
+	samples, tests, rules []map[string]any
 	// changes are edits of the samples that change their rule, with the rule
 	// each asks for; retypes are specs a resource of the first sample may
 	// not change to; invalid are specs the CRD refuses; full are specs that
 	// set every field, with the rule each asks for.
 	changes, retypes, invalid, full []ruleEdit
 	printColumns                    []printColumn
+	// cel evaluates the kind's CEL rules on the specs the generated specs
+	// write.
+	cel *celChecker
 }
 
 // rulePhase is a phase of a rule kind, and the type that picks it.
@@ -170,18 +174,86 @@ func (b *ruleKindBuilder) build() (*ruleKind, error) {
 		printColumn{name: "Ready", typ: typeString, jsonPath: `.status.conditions[?(@.type=="Ready")].status`},
 		printColumn{name: "Age", typ: "date", jsonPath: ".metadata.creationTimestamp"})
 
+	if k.cel, err = newCELChecker(); err != nil {
+		return nil, err
+	}
 	for i, sample := range e.Samples {
 		checked, err := k.checkSpec(sample, k.phases[i].typeName)
+		if err == nil {
+			err = k.valid(checked)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("samples[%d]: %w", i, err)
 		}
 		k.samples = append(k.samples, checked)
 		k.rules = append(k.rules, k.apiRule(checked))
 	}
-	if err := k.edits(e.Rules); err != nil {
+	for i, test := range e.Tests {
+		typeName, _ := test[fieldType].(string)
+		if k.typeDoc != nil && !slices.ContainsFunc(k.phases, func(p rulePhase) bool { return p.typeName == typeName }) {
+			return nil, fmt.Errorf("tests[%d]: type %v is none of the kind's types", i, test[fieldType])
+		}
+		checked, err := k.checkSpec(test, typeName)
+		if err == nil {
+			err = k.valid(checked)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("tests[%d]: %w", i, err)
+		}
+		k.tests = append(k.tests, checked)
+		k.rules = append(k.rules, k.apiRule(checked))
+	}
+	if err := k.edits(entryRules(e)); err != nil {
 		return nil, err
 	}
 	return k, nil
+}
+
+// specs returns the specs the generated specs write: the samples, then the
+// tests.
+func (k *ruleKind) specs() []map[string]any {
+	return append(slices.Clone(k.samples), k.tests...)
+}
+
+// specName names the spec specs returns at i in messages: a sample or a test
+// of the entry.
+func (k *ruleKind) specName(i int) string {
+	if i < len(k.samples) {
+		return fmt.Sprintf("samples[%d]", i)
+	}
+	return fmt.Sprintf("tests[%d]", i-len(k.samples))
+}
+
+// phaseOf returns the phase of a checked spec's rule: its type's, or the
+// kind's only one.
+func (k *ruleKind) phaseOf(spec map[string]any) rulePhase {
+	for _, p := range k.phases {
+		if p.typeName != "" && p.typeName == spec[fieldType] {
+			return p
+		}
+	}
+	return k.phases[0]
+}
+
+// entryRule is a CEL rule of an entry, with where the entry gives it.
+type entryRule struct {
+	where string
+	ruleConfig
+}
+
+// entryRules returns an entry's CEL rules: those on the spec, then those on
+// objects of its fields, by path.
+func entryRules(e ruleKindConfig) []entryRule {
+	out := make([]entryRule, 0, len(e.Rules))
+	for i, r := range e.Rules {
+		out = append(out, entryRule{where: fmt.Sprintf("rules[%d]", i), ruleConfig: r})
+	}
+	for _, path := range slices.Sorted(maps.Keys(e.Fields)) {
+		for i, r := range e.Fields[path].Rules {
+			out = append(out, entryRule{where: fmt.Sprintf("fields.%s.rules[%d]", path, i), ruleConfig: r})
+		}
+	}
+	return out
 }
 
 // keySet returns a map's keys as a set.
@@ -418,8 +490,12 @@ func checkNode(node paramNode, value any, path string) (any, error) {
 func checkScalar(n *paramScalar, value any, path string) (any, error) {
 	switch n.goType {
 	case typeBool:
-		if _, ok := value.(bool); !ok {
+		b, ok := value.(bool)
+		switch {
+		case !ok:
 			return nil, fmt.Errorf("%s is not a bool", path)
+		case len(n.enum) > 0 && !slices.Contains(n.enum, strconv.FormatBool(b)):
+			return nil, fmt.Errorf("%s is %t, not one of %s", path, b, strings.Join(n.enum, ", "))
 		}
 		return value, nil
 	case typeInt64:

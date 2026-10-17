@@ -15,6 +15,7 @@ resources:
 - bases/kflare.dev_iplists.yaml
 - bases/kflare.dev_managedrulesets.yaml
 # +kflare-gen:begin The CRDs of the kinds in generator/generator.yaml: make codegen keeps this block.
+- bases/kflare.dev_cacherules.yaml
 - bases/kflare.dev_d1databases.yaml
 - bases/kflare.dev_kvnamespaces.yaml
 - bases/kflare.dev_redirectrules.yaml

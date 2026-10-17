@@ -42,7 +42,7 @@ type RedirectRuleFromValue struct {
 }
 
 // RedirectRuleFromValueTargetURL is from_value.target_url in a RedirectRule.
-// +kubebuilder:validation:XValidation:rule="[has(self.expression), has(self.value)].exists_one(x, x)",message="must set exactly one of expression and value"
+// +kubebuilder:validation:XValidation:rule="(has(self.expression) ? 1 : 0) + (has(self.value) ? 1 : 0) == 1",message="must set exactly one of expression and value"
 type RedirectRuleFromValueTargetURL struct {
 	// Expression computes the URL in Cloudflare's Rules language, such as
 	// `concat("https://example.com", http.request.uri.path)`. Free plans

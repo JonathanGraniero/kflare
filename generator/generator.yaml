@@ -97,6 +97,279 @@ kinds:
 # cloudflare-go v7's rule type for the action and the rule's OpenAPI schema; field paths are the API's names, with []
 # for the items of a list or map. Each entry rule says what Cloudflare refuses, and gives a spec it refuses.
 ruleKinds:
+  - kind: CacheRule
+    rule: rulesets.SetCacheSettingsRuleParam
+    shortName: cfcache
+    noun: cache rule
+    doc: |
+      CacheRule is the Schema for the cacherules API.
+      It manages one cache rule in a zone: how Cloudflare caches the responses
+      to the requests its expression matches, at the edge and in browsers.
+    phase: http_request_cache_settings
+    samples:
+      - expression: 'http.request.uri.path.extension in {"css" "js" "png" "jpg" "svg" "woff2"}'
+        description: Cache static assets, whose names carry their version, for a day
+        cache: true
+        edgeTTL:
+          mode: override_origin
+          default: 86400
+          statusCodeTTL:
+            - statusCode: 404
+              value: 60
+            - statusCodeRange:
+                from: 500
+              value: 0
+        browserTTL:
+          mode: override_origin
+          default: 3600
+        cacheKey:
+          customKey:
+            queryString:
+              exclude:
+                all: true
+        vary:
+          default:
+            action: passthrough
+          headers:
+            - name: accept
+              action: normalize
+              mediaTypes: [image/avif, image/webp]
+    tests:
+      - expression: 'starts_with(http.request.uri.path, "/media/")'
+        description: The settings the sample leaves out
+        cache: false
+        edgeTTL:
+          mode: bypass_by_default
+        browserTTL:
+          mode: bypass
+        cacheKey:
+          cacheByDeviceType: true
+          cacheDeceptionArmor: true
+          ignoreQueryStringsOrder: true
+        cacheReserve:
+          eligible: true
+          minimumFileSize: 1024
+        originCacheControl: true
+        originErrorPagePassthru: true
+        respectStrongEtags: true
+        serveStale:
+          disableStaleWhileUpdating: true
+        additionalCacheablePorts: [8443, 8080]
+        originRangeRequests:
+          mode: 'on'
+        vary:
+          default:
+            action: normalize
+          headers:
+            - name: accept-language
+              action: passthrough
+              languages: [fr, en]
+      - expression: 'starts_with(http.request.uri.path, "/archive/")'
+        cacheReserve:
+          eligible: false
+    fields:
+      cache:
+        doc: |
+          Cache makes the response eligible for Cloudflare's cache. Whether it is
+          cached still depends on its cache control headers and the zone's other
+          cache settings.
+      browser_ttl:
+        doc: |
+          BrowserTTL is how long browsers cache the response. A purge does not
+          reach browsers, so a long one can leave them with stale content.
+        rules:
+          - rule: "(self.mode == 'override_origin') == has(self.default)"
+            message: set default with mode override_origin, and only with it
+            reason: >-
+              Cloudflare refuses override_origin without a default, and a default in another mode (20108), verified
+              live on 2026-10-16.
+            invalid:
+              expression: 'true'
+              browserTTL:
+                mode: respect_origin
+                default: 60
+      browser_ttl.mode:
+        doc: |
+          Mode is where the browser TTL comes from: respect_origin keeps the
+          origin's, override_origin sets default's, bypass_by_default bypasses
+          the browser cache unless the origin says otherwise, and bypass always
+          bypasses it.
+      browser_ttl.default:
+        doc: Default is the browser TTL, in seconds, with mode override_origin.
+      edge_ttl:
+        doc: |
+          EdgeTTL is how long Cloudflare's edge caches the response.
+        rules:
+          - rule: "(self.mode == 'override_origin') == has(self.default)"
+            message: set default with mode override_origin, and only with it
+            reason: >-
+              Cloudflare refuses override_origin without a default, and a default in another mode (20107), verified
+              live on 2026-10-16.
+            invalid:
+              expression: 'true'
+              edgeTTL:
+                mode: override_origin
+      edge_ttl.mode:
+        doc: |
+          Mode is where the edge TTL comes from: respect_origin keeps the
+          origin's, override_origin sets default's, and bypass_by_default does
+          not cache unless the origin says otherwise.
+      edge_ttl.default:
+        doc: Default is the edge TTL, in seconds, with mode override_origin.
+      edge_ttl.status_code_ttl:
+        doc: |
+          StatusCodeTTL sets the edge TTL of responses by their status code,
+          each item for one code or a range of them. Cloudflare refuses ranges
+          that overlap.
+      edge_ttl.status_code_ttl[].value:
+        doc: |
+          Value is the TTL, in seconds: 0 for no-cache, -1 for no-store.
+      edge_ttl.status_code_ttl[].status_code_range:
+        doc: |
+          StatusCodeRange is the range of status codes the TTL is for: from
+          and to, each optional, a range without one is open on that side.
+        rules:
+          - rule: '!has(self.from) || !has(self.to) || self.from < self.to'
+            message: from is below to
+            reason: Cloudflare refuses a range whose from is not below its to (20110), verified live on 2026-10-16.
+            invalid:
+              expression: 'true'
+              edgeTTL:
+                mode: respect_origin
+                statusCodeTTL:
+                  - statusCodeRange:
+                      from: 500
+                      to: 500
+                    value: 1
+      cache_key.custom_key:
+        doc: |
+          CustomKey changes the request's parts the cache key holds. Free
+          plans may only leave out the query string.
+        rules:
+          - rule: has(self.queryString)
+            message: customKey sets queryString
+            reason: >-
+              Cloudflare refuses an empty custom key ("not entitled to use the custom cache key override", verified
+              live on 2026-10-16), and kflare leaves out its other parts.
+            invalid:
+              expression: 'true'
+              cacheKey:
+                customKey: {}
+      cache_key.custom_key.query_string:
+        doc: QueryString leaves the query string out of the cache key.
+        rules:
+          - rule: has(self.exclude)
+            message: queryString sets exclude
+            reason: >-
+              Cloudflare refuses an empty query string key ("not entitled to use the custom cache key override",
+              verified live on 2026-10-16), and kflare leaves out include.
+            invalid:
+              expression: 'true'
+              cacheKey:
+                customKey:
+                  queryString: {}
+      cache_key.custom_key.query_string.exclude.all:
+        doc: All leaves every query string parameter out of the cache key.
+      origin_range_requests.mode:
+        doc: |
+          Mode is whether Cloudflare fetches a large asset from the origin in
+          ranges: on, off, or default, the zone's behavior without the rule.
+          Quote on and off in YAML, which would read them as booleans.
+      cache_reserve:
+        doc: |
+          CacheReserve makes the response eligible for Cache Reserve, which
+          needs the Cache Reserve add-on to take effect; Free zones accept and
+          store it.
+        rules:
+          - rule: self.eligible || !has(self.minimumFileSize)
+            message: minimumFileSize needs eligible
+            reason: Cloudflare refuses a minimum file size without eligible (20197), verified live on 2026-10-16.
+            invalid:
+              expression: 'true'
+              cacheReserve:
+                eligible: false
+                minimumFileSize: 1024
+      origin_cache_control:
+        doc: |
+          OriginCacheControl makes Cloudflare follow RFC 7234 strictly.
+          Cloudflare's documentation lists it for Enterprise plans; Free zones
+          accept and store it.
+      additional_cacheable_ports:
+        doc: |
+          AdditionalCacheablePorts are more ports Cloudflare caches responses
+          on. Cloudflare's documentation lists them for Enterprise plans; Free
+          zones accept and store them.
+      vary:
+        doc: |
+          Vary is how a response's Vary header shapes the cache key: default for
+          every header, and headers for some of them.
+        rules:
+          - rule: '!has(self.headers) || has(self.default)'
+            message: headers need a default
+            reason: Cloudflare refuses headers without a default (20289), verified live on 2026-10-16.
+            invalid:
+              expression: 'true'
+              vary:
+                headers:
+                  - name: accept
+                    action: normalize
+      vary.headers:
+        key: name
+        keyDoc: Name is the request header's name, in lower case.
+        keyValidation:
+          minLength: 1
+          pattern: ^[^A-Z]+$
+          reason: Cloudflare refuses a header name with a capital (20289), verified live on 2026-10-16.
+        doc: |
+          Headers are what the cache key takes from some request headers, at
+          most 50.
+      vary.headers[]:
+        rules:
+          - rule: "!has(self.languages) || self.name == 'accept-language'"
+            message: languages are for the accept-language header only
+            reason: Cloudflare refuses languages on another header (20289), verified live on 2026-10-16.
+            invalid:
+              expression: 'true'
+              vary:
+                default:
+                  action: normalize
+                headers:
+                  - name: accept
+                    action: normalize
+                    languages: [en]
+          - rule: "!has(self.mediaTypes) || self.name == 'accept'"
+            message: mediaTypes are for the accept header only
+            reason: Cloudflare refuses media types on another header (20289), verified live on 2026-10-16.
+            invalid:
+              expression: 'true'
+              vary:
+                default:
+                  action: normalize
+                headers:
+                  - name: x-example
+                    action: normalize
+                    mediaTypes: [image/webp]
+    ignore:
+      read_timeout: >-
+        Free plans are not entitled to an extended read timeout (verified live on 2026-10-16); add it once a plan that
+        is can check it.
+      shared_dictionary: >-
+        Free plans are not entitled to shared dictionaries (verified live on 2026-10-16); add it once a plan that is
+        can check it.
+      strip_etags: Cloudflare refuses it in http_request_cache_settings (20250), verified live on 2026-10-16.
+      strip_last_modified: Cloudflare refuses it in http_request_cache_settings (20250), verified live on 2026-10-16.
+      strip_set_cookie: Cloudflare refuses it in http_request_cache_settings (20250), verified live on 2026-10-16.
+      cache_key.custom_key.cookie: &customKey >-
+        Free plans may only leave the whole query string out of a custom cache key (verified live on 2026-10-16); add
+        it once a plan that may can check it.
+      cache_key.custom_key.header: *customKey
+      cache_key.custom_key.host: *customKey
+      cache_key.custom_key.user: *customKey
+      cache_key.custom_key.query_string.include: *customKey
+      cache_key.custom_key.query_string.exclude.list: *customKey
+      logging: Only skip rules log (20018 on a cache rule, verified live on 2026-10-16).
+      ratelimit: Rate limits are refused in http_request_cache_settings (20131, verified live on 2026-10-16).
+      exposed_credential_check: Refused in http_request_cache_settings (20189, verified live on 2026-10-16).
   - kind: RedirectRule
     rule: rulesets.RedirectRuleParam
     shortName: cfredirect

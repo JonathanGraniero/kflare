@@ -86,6 +86,9 @@ func TestBuildRuleKindMapsTheRewriteRule(t *testing.T) {
 		t.Errorf("the second sample's rule keys its headers by name: %v", k.rules[1])
 	}
 
+	if names := []string{k.specName(0), k.specName(2)}; !slices.Equal(names, []string{"samples[0]", "tests[0]"}) {
+		t.Errorf("spec names = %v", names)
+	}
 	swap := slices.IndexFunc(k.changes, func(e ruleEdit) bool { return e.what == "uri.path holding expression instead" })
 	if swap < 0 {
 		t.Fatalf("no change sets the path's expression in place of its value: %v", k.changes)
@@ -157,6 +160,36 @@ func TestBuildRuleKindRefuses(t *testing.T) {
 		{"a key a value already has", func(e *ruleKindConfig, _ *apiSpec) {
 			e.Fields["headers"] = ruleFieldConfig{Key: "value", KeyDoc: "x"}
 		}, "the values already have a field value"},
+		{"rules on a field that is not an object", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Fields["uri.path.value"] = ruleFieldConfig{Rules: []ruleConfig{{Rule: "true", Message: "m"}}}
+		}, "fields.uri.path.value.rules: uri.path.value is not an object"},
+		{"a field's rule whose invalid spec breaks no rule", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Fields["uri.path"] = ruleFieldConfig{Rules: []ruleConfig{{Rule: "true", Message: "never", Reason: "r",
+				Invalid: map[string]any{"type": "url", "expression": "true", "uri": map[string]any{
+					"path": map[string]any{"value": "/x"}}}}}}
+		}, `fields.uri.path.rules[0].invalid: breaks no rule with the message "never"`},
+		{"a sample that breaks a field's rule", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Fields["uri.path"] = ruleFieldConfig{Rules: []ruleConfig{{Rule: "!has(self.value)", Message: "no value"}}}
+		}, `samples[0]: breaks the rule "no value"`},
+		{"a test of none of the types", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Tests = []map[string]any{{"type": "nope", "expression": "true"}}
+		}, "tests[0]: type nope is none of the kind's types"},
+		{"a test that breaks a rule", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Tests = []map[string]any{{"type": "url", "expression": "true", "uri": map[string]any{
+				"path": map[string]any{"value": "/x", "expression": "y"}}}}
+		}, `tests[0]: breaks the rule "must set exactly one of expression and value"`},
+		{"a test that is not a spec", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Tests = []map[string]any{{"type": "url"}}
+		}, "tests[0]: sets no expression"},
+		{"a rule that does not compile", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Rules = []ruleConfig{{Rule: "self.", Message: "m"}}
+		}, `samples[0]: the rule "self."`},
+		{"a rule that gives no bool", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Rules = []ruleConfig{{Rule: "1", Message: "m"}}
+		}, `samples[0]: the rule "1" gives 1, not a bool`},
+		{"a rule that fails on a sample", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Rules = []ruleConfig{{Rule: "self.nope == 1", Message: "m"}}
+		}, `samples[0]: the rule "self.nope == 1"`},
 		{"a pattern every made-up value matches", func(e *ruleKindConfig, _ *apiSpec) {
 			e.Fields["uri.path.value"] = ruleFieldConfig{Validation: &validationConfig{Pattern: ".*", Reason: "x"}}
 		}, "spec.uri.path.value: kflare-gen finds no value its pattern .* refuses"},
@@ -327,15 +360,15 @@ func TestPropertyCountRules(t *testing.T) {
 	}{
 		{"none", nil, nil, nil},
 		{"exactly one", new(int64(1)), new(int64(1)),
-			[]celRule{{rule: "[has(self.a), has(self.b)].exists_one(x, x)", message: "must set exactly one of a and b"}}},
+			[]celRule{{rule: "(has(self.a) ? 1 : 0) + (has(self.b) ? 1 : 0) == 1", message: "must set exactly one of a and b"}}},
 		{"at least one", new(int64(1)), nil,
 			[]celRule{{rule: "has(self.a) || has(self.b)", message: "must set at least one of a and b"}}},
 		{"at least two, at most two", new(int64(2)), new(int64(2)), []celRule{
-			{rule: "[has(self.a), has(self.b)].filter(x, x).size() >= 2", message: "must set at least 2 of a and b"},
-			{rule: "[has(self.a), has(self.b)].filter(x, x).size() <= 2", message: "must set at most 2 of a and b"},
+			{rule: "(has(self.a) ? 1 : 0) + (has(self.b) ? 1 : 0) >= 2", message: "must set at least 2 of a and b"},
+			{rule: "(has(self.a) ? 1 : 0) + (has(self.b) ? 1 : 0) <= 2", message: "must set at most 2 of a and b"},
 		}},
 		{"at most one", nil, new(int64(1)),
-			[]celRule{{rule: "[has(self.a), has(self.b)].filter(x, x).size() <= 1", message: "must set at most 1 of a and b"}}},
+			[]celRule{{rule: "(has(self.a) ? 1 : 0) + (has(self.b) ? 1 : 0) <= 1", message: "must set at most 1 of a and b"}}},
 	}
 	for _, tc := range tests {
 		got := propertyCountRules(&schema{MinProperties: tc.min, MaxProperties: tc.max}, fields)
@@ -364,23 +397,42 @@ func TestBreakRule(t *testing.T) {
 		{"must set exactly one of x and y", map[string]any{"kind": "a", "x": "1"},
 			map[string]any{"kind": "a", "x": "1", "y": "x"}},
 		{"must set at most 1 of x and y", map[string]any{"kind": "a"},
-			map[string]any{"kind": "a", "x": "x", "y": "x"}},
+			map[string]any{"kind": "a", "x": "x", "y": "x", "z": map[string]any{}}},
 	}
 	for _, tc := range tests {
-		if err := breakRule(st, celRule{message: tc.message}, tc.object); err != nil {
+		if err := breakRule(st, celRule{message: tc.message}, tc.object, nil); err != nil {
 			t.Errorf("%s: %v", tc.message, err)
 		} else if !reflect.DeepEqual(tc.object, tc.want) {
 			t.Errorf("%s: object = %v, want %v", tc.message, tc.object, tc.want)
 		}
 	}
 	if err := breakRule(st, celRule{message: "must set exactly one of x and y"},
-		map[string]any{"kind": "a", "x": "1", "y": "2", "z": map[string]any{}}); err == nil {
+		map[string]any{"kind": "a", "x": "1", "y": "2", "z": map[string]any{}}, nil); err == nil {
 		t.Error("an object with every field set: err = nil, want one")
 	}
 	for _, message := range []string{"something else", "must be one of: kind a with x"} {
-		if err := breakRule(st, celRule{message: message}, map[string]any{}); err == nil {
+		if err := breakRule(st, celRule{message: message}, map[string]any{}, nil); err == nil {
 			t.Errorf("%s: err = nil, want one", message)
 		}
+	}
+}
+
+func TestRuleBreachesMustBreakTheRule(t *testing.T) {
+	text := &paramScalar{goType: typeString}
+	params := &paramStruct{fields: []*paramField{
+		{jsonName: "a", required: true, node: text}, {jsonName: "b", required: true, node: text},
+	}, rules: []celRule{{rule: "has(self.a) || has(self.b)", message: "must set at least one of a and b"}}}
+	checker, err := newCELChecker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := &ruleKind{params: params, cel: checker, phases: []rulePhase{{}},
+		samples: []map[string]any{{"expression": "true", "a": "x", "b": "y"}}}
+	// Both fields are required, so the breach leaves them set, and the rule
+	// still holds.
+	if err := k.ruleBreaches(nil); err == nil || !strings.Contains(err.Error(),
+		`breaks no rule with the message "must set at least one of a and b"`) {
+		t.Errorf("a breach that breaks nothing: err = %v", err)
 	}
 }
 
@@ -501,7 +553,9 @@ func TestMismatchAndListBounds(t *testing.T) {
 		ok   bool
 	}{
 		{pattern("^/", nil), "kflare-not-matching", true},
-		{pattern("^[a-z-]+$", nil), "kflare not matching!", true},
+		{pattern("^[a-z-]+$", nil), "KFLARE-NOT-MATCHING", true},
+		{pattern("^[A-Za-z-]+$", nil), "kflare not matching!", true},
+		{pattern("^[ -~]+$", nil), "kflare-nöt-matching", true},
 		{pattern("^/", new(int64(3))), "", true},
 		{pattern(".*", nil), "", false},
 	}
@@ -655,11 +709,22 @@ func TestFullScalarTakesAnEnumValueNoSampleUses(t *testing.T) {
 }
 
 func TestOutsideEnum(t *testing.T) {
-	if got := outsideEnum(&paramScalar{goType: typeString, enum: []string{"a"}}); got != "kflare-not-in-enum" {
-		t.Errorf("a string enum: %v", got)
+	tests := []struct {
+		name string
+		n    *paramScalar
+		want any
+		ok   bool
+	}{
+		{"a string enum", &paramScalar{goType: typeString, enum: []string{"a"}}, "kflare-not-in-enum", true},
+		{"an integer enum", &paramScalar{goType: typeInt64, enum: []string{"308", "301"}}, int64(309), true},
+		{"an enum of true", &paramScalar{goType: typeBool, enum: []string{"true"}}, false, true},
+		{"an enum of false", &paramScalar{goType: typeBool, enum: []string{"false"}}, true, true},
+		{"an enum of both bools", &paramScalar{goType: typeBool, enum: []string{"true", "false"}}, nil, false},
 	}
-	if got := outsideEnum(&paramScalar{goType: typeInt64, enum: []string{"308", "301"}}); got != int64(309) {
-		t.Errorf("an integer enum: %v", got)
+	for _, tc := range tests {
+		if got, ok := outsideEnum(tc.n); got != tc.want || ok != tc.ok {
+			t.Errorf("%s: %v, %t, want %v, %t", tc.name, got, ok, tc.want, tc.ok)
+		}
 	}
 }
 
@@ -684,6 +749,64 @@ func TestCountRules(t *testing.T) {
 	}
 }
 
+func TestBuildRuleKindTestsRulesAndKeys(t *testing.T) {
+	e := parseEntry(t, rewriteEntry)
+	e.Tests = []map[string]any{{"type": "headers", "expression": "true",
+		"headers": []any{map[string]any{"name": "x-b", "operation": "set", "value": "2"}}}}
+	e.Fields["headers"] = ruleFieldConfig{Key: "name", KeyDoc: "Name.",
+		KeyValidation: &validationConfig{MinLength: new(int64(1)), Pattern: "^[a-z-]+$", Reason: "r"}}
+	e.Fields["uri.path"] = ruleFieldConfig{Rules: []ruleConfig{{Rule: "!has(self.value) || self.value != '/'",
+		Message: "a path other than /", Reason: "r", Invalid: map[string]any{"type": "url", "expression": "true",
+			"uri": map[string]any{"path": map[string]any{"value": "/"}}}}}}
+	e.Rules = []ruleConfig{{Rule: "!has(self.description) || self.description != 'changed by kflare-gen'",
+		Message: "kept description", Reason: "r", Invalid: map[string]any{"type": "url", "expression": "true",
+			"description": "changed by kflare-gen", "uri": map[string]any{"path": map[string]any{"value": "/x"}}}}}
+	k, err := buildRuleKind(e, loadTestRule(t, "rulesets.RewriteRuleParam"), loadTestSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(k.samples) != 2 || len(k.tests) != 1 || len(k.specs()) != 3 || len(k.rules) != 3 {
+		t.Errorf("samples, tests, specs and rules = %d, %d, %d, %d", len(k.samples), len(k.tests), len(k.specs()),
+			len(k.rules))
+	}
+	if p := k.phaseOf(k.tests[0]); p.constant != "PhaseHTTPResponseHeadersTransform" {
+		t.Errorf("the test's phase = %s", p.constant)
+	}
+	if slices.ContainsFunc(k.changes, func(c ruleEdit) bool { return c.what == "a new description" }) {
+		t.Error("a change that breaks a rule is kept")
+	}
+	if !slices.ContainsFunc(k.changes, func(c ruleEdit) bool { return c.sample == 2 }) {
+		t.Error("the test gets no change")
+	}
+	pathStruct := k.structs[2]
+	entry := slices.IndexFunc(pathStruct.rules, func(r celRule) bool { return r.fromEntry })
+	if pathStruct.path != "uri.path" || entry < 0 || pathStruct.rules[entry].message != "a path other than /" {
+		t.Errorf("uri.path's rules = %+v", pathStruct.rules)
+	}
+	for _, message := range []string{"a path other than /", "kept description"} {
+		if !slices.ContainsFunc(k.invalid, func(c ruleEdit) bool { return c.what == "a breach of: "+message }) {
+			t.Errorf("no invalid spec breaks %q", message)
+		}
+	}
+	key := k.structs[0].fields[0].node.(*paramScalar)
+	if key.validation.pattern != "^[a-z-]+$" {
+		t.Errorf("the key's validation = %+v", key.validation)
+	}
+	pattern := func(c ruleEdit) bool { return c.what == "headers[0].name not matching its pattern" }
+	if !slices.ContainsFunc(k.invalid, pattern) {
+		t.Error("no invalid spec breaks the key's pattern")
+	}
+
+	source, err := emitRuleKindTest(k, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), `"test 1, of type headers"`) {
+		t.Errorf("the table names no test of its type:\n%s", source)
+	}
+}
+
 func TestScalarIntegerEnums(t *testing.T) {
 	b := &paramBuilder{spec: &apiSpec{}}
 	n, err := b.scalar("status_code", types.Typ[types.Int64], &schema{Type: typeInteger, Enum: []any{301.0, 308.0}},
@@ -695,6 +818,25 @@ func TestScalarIntegerEnums(t *testing.T) {
 		ruleFieldConfig{})
 	if err == nil || !strings.Contains(err.Error(), `status_code is an integer whose enum holds "permanent"`) {
 		t.Errorf("an integer whose enum holds a string: err = %v", err)
+	}
+
+	all, err := b.scalar("all", types.Typ[types.Bool], &schema{Type: "boolean", Enum: []any{true}}, ruleFieldConfig{})
+	if err != nil || all.goType != typeBool || !slices.Equal(all.enum, []string{"true"}) {
+		t.Fatalf("a bool enum: %+v, %v", all, err)
+	}
+	if value, ok := someValue(all); !ok || value != true {
+		t.Errorf("a value of the bool enum: %v, %t", value, ok)
+	}
+	if _, err := checkScalar(all, false, "all"); err == nil ||
+		!strings.Contains(err.Error(), "all is false, not one of true") {
+		t.Errorf("false for a bool enum of true: err = %v", err)
+	}
+	if enumValue(all, "maybe") != "maybe" {
+		t.Error("a bool enum value that is not a bool does not stay a string")
+	}
+	_, err = b.scalar("all", types.Typ[types.Bool], &schema{Type: "boolean", Enum: []any{"maybe"}}, ruleFieldConfig{})
+	if err == nil || !strings.Contains(err.Error(), `all is a bool whose enum holds "maybe"`) {
+		t.Errorf("a bool whose enum holds a string: err = %v", err)
 	}
 }
 

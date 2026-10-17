@@ -70,9 +70,9 @@ type ruleKindSpecs[O rulesetRuleObject] struct {
 	kind          rulesetRuleKind
 	newObject     func() O
 	newReconciler func(c client.Client, newAPI func(string) (RulesetRuleAPI, error)) ruleKindReconciler
-	// samples are valid specs, one per phase; changes edit them; retypes are
-	// specs of another type, which the first sample's resource may not take;
-	// invalid are specs the CRD refuses.
+	// samples are valid specs: the entry's samples, one per phase, then its
+	// tests; changes edit them; retypes are specs of another type, which the
+	// first sample's resource may not take; invalid are specs the CRD refuses.
 	samples, changes, retypes, invalid []ruleSpecCase
 	// full are specs that set every field of the action parameters, which
 	// the specs convert without the API server, which may refuse them: they
@@ -287,6 +287,13 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				Expect(rule.id()).To(Equal(ruleID))
 				Expect(comparableStoredRule(rule)).To(Equal(comparableJSONRule(change.rule)))
 				Expect(get(name).GetRulesetRuleStatus().CloudflareMetadata.Version).To(Equal("2"))
+
+				// The resource goes again, so that a kind with many changes in a
+				// phase stays within its quota.
+				Expect(k8sClient.Delete(ctx, get(name))).To(Succeed())
+				_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key(name)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(holdsRule(sample.phase, name)).To(BeFalse())
 			}
 		})
 

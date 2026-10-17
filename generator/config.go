@@ -309,6 +309,10 @@ type ruleKindConfig struct {
 	// for each type, in the order of Types, or one. config/samples holds them
 	// and the generated specs start from them.
 	Samples []map[string]any `json:"samples"`
+	// Tests are more valid specs, of any type, that the generated specs write
+	// and edit as they do the samples, for fields no sample sets. They are
+	// not published as samples.
+	Tests []map[string]any `json:"tests,omitempty"`
 	// Fields adjusts fields of the action parameters, by their path of API
 	// names, such as uri.path.
 	Fields map[string]ruleFieldConfig `json:"fields,omitempty"`
@@ -339,15 +343,23 @@ type ruleFieldConfig struct {
 	Key string `json:"key,omitempty"`
 	// KeyDoc documents the key field.
 	KeyDoc string `json:"keyDoc,omitempty"`
+	// KeyValidation replaces the key field's validation, a minimum length of
+	// one: what Cloudflare takes as a key.
+	KeyValidation *validationConfig `json:"keyValidation,omitempty"`
 	// Validation replaces what the OpenAPI spec says the field's value may
 	// be.
 	Validation *validationConfig `json:"validation,omitempty"`
+	// Rules are CEL rules on the object at the path, such as browser_ttl, or
+	// on an item of a list or map, such as vary.headers[]: what Cloudflare
+	// refuses that its API description does not say.
+	Rules []ruleConfig `json:"rules,omitempty"`
 }
 
-// ruleConfig is a CEL rule on a rule kind's spec.
+// ruleConfig is a CEL rule on a rule kind's spec, or on an object in it.
 type ruleConfig struct {
-	// Rule is the CEL expression, on the spec. It quotes strings with single
-	// quotes: a kubebuilder marker holds it in double quotes.
+	// Rule is the CEL expression, on the spec or the object. It quotes
+	// strings with single quotes: a kubebuilder marker holds it in double
+	// quotes.
 	Rule string `json:"rule"`
 	// Message is what a resource that breaks the rule is refused with.
 	Message string `json:"message"`
@@ -413,19 +425,27 @@ func (k *ruleKindConfig) validateTypes() error {
 	return nil
 }
 
-// validateRules checks a rule kind's CEL rules.
+// validateRules checks a rule kind's CEL rules on the spec.
 func (k *ruleKindConfig) validateRules() error {
 	for i, r := range k.Rules {
-		switch {
-		case strings.TrimSpace(r.Rule) == "" || strings.TrimSpace(r.Message) == "":
-			return fmt.Errorf("rules[%d]: needs a rule and a message", i)
-		case strings.ContainsAny(r.Rule+r.Message, "\"`"):
-			return fmt.Errorf("rules[%d]: holds a double quote or a backquote; quote strings with single quotes", i)
-		case strings.TrimSpace(r.Reason) == "":
-			return fmt.Errorf("rules[%d]: gives no reason", i)
-		case len(r.Invalid) == 0:
-			return fmt.Errorf("rules[%d]: gives no invalid spec", i)
+		if err := r.validate(); err != nil {
+			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
+	}
+	return nil
+}
+
+// validate checks a CEL rule.
+func (r ruleConfig) validate() error {
+	switch {
+	case strings.TrimSpace(r.Rule) == "" || strings.TrimSpace(r.Message) == "":
+		return fmt.Errorf("needs a rule and a message")
+	case strings.ContainsAny(r.Rule+r.Message, "\"`"):
+		return fmt.Errorf("holds a double quote or a backquote; quote strings with single quotes")
+	case strings.TrimSpace(r.Reason) == "":
+		return fmt.Errorf("gives no reason")
+	case len(r.Invalid) == 0:
+		return fmt.Errorf("gives no invalid spec")
 	}
 	return nil
 }
@@ -450,6 +470,19 @@ func (k *ruleKindConfig) validateFields() error {
 		if f.Validation != nil {
 			if err := f.Validation.validate(); err != nil {
 				return fmt.Errorf("fields.%s.validation: %w", name, err)
+			}
+		}
+		if f.KeyValidation != nil {
+			if f.Key == "" {
+				return fmt.Errorf("fields.%s: keyValidation without a key", name)
+			}
+			if err := f.KeyValidation.validate(); err != nil {
+				return fmt.Errorf("fields.%s.keyValidation: %w", name, err)
+			}
+		}
+		for i, r := range f.Rules {
+			if err := r.validate(); err != nil {
+				return fmt.Errorf("fields.%s.rules[%d]: %w", name, i, err)
 			}
 		}
 	}
