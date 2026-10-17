@@ -184,8 +184,9 @@ Shared infrastructure that all Phase 2 controllers will use.
     reconcile leaves it alone), a ManagedRuleset deploying the Free Managed Ruleset (overrides checked, a rule override
     added in place; an idle reconcile leaves it alone), three TransformRules, one of each type (each phase's rule
     checked field by field, a response header changed in place; an idle reconcile leaves each phase alone), a
-    RedirectRule (checked field by field, then switched in place from an expression target and 302 to a static URL
-    and 308; an idle reconcile leaves it alone), and a WAFCustomRule that uses the IP list (refused while the
+    RedirectRule (checked field by field, then switched in place from an expression target and 302 to a static URL and
+    308; an idle reconcile leaves it alone), a CacheRule (its settings checked as the JSON Cloudflare stores, its TTLs
+    changed in place; an idle reconcile leaves it alone), and a WAFCustomRule that uses the IP list (refused while the
     list does not exist, written once it does). Then everything is deleted in one pass and Cloudflare is checked,
     including that the managed phase's emptied entry point is gone. Everything is named `kflare-e2e-<run>` (the list
     `kflare_e2e_<run>`) and cleaned up even on failure
@@ -474,7 +475,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/managed-transform-controller` | `ManagedTransform` | zone-controller | Free: all six transforms |
 | `feat/generator-rule-kinds` | `TransformRule` | code generator (rule kinds) | ✅ Generated, the first rule kind (the code generator's PR 8). Free: 10 rules across its three phases, no regex |
 | `feat/redirect-rule-controller` | `RedirectRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔, no regex ✔ |
-| `feat/cache-rule-controller` | `CacheRule` | code generator (rule kinds) | Generated. Free: 10 rules |
+| `feat/cache-rule-controller` | `CacheRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔; of a custom cache key, only leaving out the query string ✔ |
 | `feat/configuration-rule-controller` | `ConfigurationRule` | code generator (rule kinds) | Generated. Free: 10 rules |
 | `feat/origin-rule-controller` | `OriginRule` | code generator (rule kinds) | Generated. Free: 10 rules, destination port override only |
 | `feat/managed-ruleset-exception-controller` | `ManagedRulesetException` | managed-ruleset-controller | Not scheduled (decided 2026-10-14, see `ManagedRuleset`). Free: skip rules accepted |
@@ -512,7 +513,7 @@ permission group names; deploy.md uses the dashboard's labels, so look those up 
 | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset` | Zone WAF Write | ✅ dry run accepted; enough on its own (2026-10-13 and 2026-10-14, see below) |
 | `TransformRule` | Zone Transform Rules Write | ✅ written, updated and deleted by the e2e (2026-10-15, runs `7ed03a` and `9c869b`); enough on its own (2026-10-15, see below) |
 | `RedirectRule` | Dynamic URL Redirects Write | ✅ added on `kflare.dev` 2026-10-15 (see below); written, updated and deleted by the e2e (run `5f9daf`); not yet checked on its own |
-| `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
+| `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `fd8de2`); not yet checked on its own |
 | `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
 | `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
 | `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run) |
@@ -657,7 +658,7 @@ checked 2026-10-09; ✔ marks what a dry run on `kflare.dev` confirmed the same 
 | Rate limiting rules | 1 rule ✔, period and mitigation timeout 10 s only ✔, counts by IP ✔, block only ✔, no counting expression ✔, no throttling (`mitigation_timeout: 0`) ✔, custom block response ✔ | 2 rules, periods up to 1 min, mitigation up to 1 h | 5 rules, periods up to 10 min, mitigation up to 1 day |
 | WAF managed rulesets | Cloudflare Free Managed Ruleset only ✔, with overrides for the whole ruleset, a category or a rule ✔; no payload logging ✔ | + Cloudflare Managed Ruleset, OWASP Core Ruleset, Exposed Credentials Check | same as Pro |
 | Custom lists | 1 IP list ✔, 10,000 items in the account ✔; the quota is per kind (a hostname list was accepted alongside) | 10 lists, 10,000 items in total | same as Pro |
-| Transform, redirect, cache, configuration and origin rules | 10 rules each, transform rules counted across their three phases ✔, single redirects ✔; no regex in transform ✔ or redirect rules ✔ | 25 each | 50 each; regex in transform and redirect rules |
+| Transform, redirect, cache, configuration and origin rules | 10 rules each, transform rules counted across their three phases ✔, single redirects ✔, cache rules ✔; no regex in transform ✔ or redirect rules ✔ | 25 each | 50 each; regex in transform and redirect rules |
 | Origin rule overrides | destination port only (Host header, SNI and DNS record need Enterprise) | same | same |
 
 Rate limiting also requires `cf.colo.id` among the characteristics (code 20155) and a mitigation timeout of 0, equal
@@ -1056,7 +1057,8 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)
 **Depend on:** the code generator's rule kinds (`feat/generator-rule-kinds`); one branch and PR each
 **Status:** 🚧 `TransformRule` ✅, generated in `feat/generator-rule-kinds` (the code generator's PR 8); `RedirectRule`
-✅ (`feat/redirect-rule-controller`); `CacheRule`, `ConfigurationRule` and `OriginRule` not started
+✅ (`feat/redirect-rule-controller`); `CacheRule` ✅ (`feat/cache-rule-controller`); `ConfigurationRule` and
+`OriginRule` not started
 
 Each is the foundation plus typed action parameters. Together they replace Page Rules. They are generated (decided
 2026-10-13): each is a `generator.yaml` entry plus hooks for what Cloudflare's schema leaves out (see
@@ -1066,7 +1068,7 @@ Each is the foundation plus typed action parameters. Together they replace Page 
 |-----|-------|--------|------|-----------|
 | `TransformRule` (`spec.type`, immutable: `urlRewrite`, `requestHeaders` or `responseHeaders`) ✅ | `http_request_transform`, `http_request_late_transform`, `http_response_headers_transform` | `rewrite` | 10 rules across the three phases ✔, no regex ✔ | ✅ |
 | `RedirectRule` (single redirects) ✅ | `http_request_dynamic_redirect` | `redirect` | 10 rules ✔, no regex ✔ | ✅ since 2026-10-15 |
-| `CacheRule` | `http_request_cache_settings` | `set_cache_settings` | 10 rules | ✅ since 2026-10-15 |
+| `CacheRule` ✅ | `http_request_cache_settings` | `set_cache_settings` | 10 rules ✔ | ✅ since 2026-10-15 |
 | `ConfigurationRule` | `http_config_settings` | `set_config` | 10 rules | ✅ since 2026-10-15 |
 | `OriginRule` | `http_request_origin` | `route` | 10 rules, destination port only | ✅ since 2026-10-15 |
 
@@ -1136,6 +1138,47 @@ proxied `kflare-probe-*` hostname, each deleted afterwards):**
   the changes as well as the samples, and full specs that give an enum a value no sample uses. A mutation check (27
   mutations of the generated conversion, the CRD and the new generator paths) caught all but a conversion that always
   sent 301, the sample's status code; the last change closed it
+
+**CacheRule design notes (verified live on `kflare.dev`, 2026-10-16, with dry runs and `kflare-probe-*` rules, each
+deleted afterwards):**
+- Its spec: what v7's `rulesets.SetCacheSettingsRuleParam` holds, but for what Free zones cannot use and what the phase
+  refuses: `cache`; `browserTTL` and `edgeTTL` (a `mode`, and a `default` with `override_origin`); `edgeTTL`'s
+  `statusCodeTTL` (a `value` for a `statusCode` or a `statusCodeRange`); `cacheKey` (`cacheByDeviceType`,
+  `cacheDeceptionArmor`, `ignoreQueryStringsOrder`, and `customKey.queryString.exclude.all`); `cacheReserve`;
+  `originCacheControl`; `originErrorPagePassthru`; `respectStrongEtags`; `serveStale`; `additionalCacheablePorts`;
+  `originRangeRequests`; and `vary` (a `default`, and `headers`, a list keyed by lower-case `name`)
+- Refused (400), each a CEL rule or a pattern in the CRD: a TTL `default` without `override_origin`, or none with it
+  (20107 edge, 20108 browser); a status code range whose `from` is not below its `to` (20110); a Cache Reserve
+  `minimumFileSize` without `eligible` (20197); vary `headers` without a `default`, a header name with a capital,
+  `languages` on another header than `accept-language` and `mediaTypes` on another than `accept` (20289). From the
+  schema: status codes outside 100–999, a code and a range together or neither, an empty range (20110), no action
+  parameters (20106). Left to Cloudflare: overlapping ranges and a code listed twice (20110, "status_code ranges should
+  not overlap")
+- Free: of a custom cache key only `query_string.exclude.all: true` ("not entitled to use the custom cache key
+  override" for its cookie, header, host, user, include and exclude list parts, and for an empty one); no extended
+  `read_timeout` and no `shared_dictionary` ("not entitled"). Refused in the phase on any plan: `strip_etags`,
+  `strip_last_modified` and `strip_set_cookie` (20250). The entry ignores them all, with their reasons. Accepted and
+  stored on Free though Cloudflare documents them for Enterprise or an add-on: `origin_cache_control`,
+  `additional_cacheable_ports` and `cache_reserve`; their docs say so
+- Free allows 10 cache rules (11: 50001)
+- Stored as sent, a rule with every accepted setting among the probes: lists keep their order (kflare sorts the ports,
+  a set), an empty `serve_stale` stays `{}`, and only `enabled` defaults. The e2e's idle reconcile writes nothing (run
+  `fd8de2`)
+- `logging` (20018), `ratelimit` (20131) and `exposed_credential_check` (20189) are refused in the phase; the entry
+  ignores them
+- deploy.md documents Zone · Cache Rules · Edit (the label Cloudflare's documentation gives the API's Cache Settings
+  Write); not yet checked on its own with a short-lived token (see Token permissions)
+- kflare-gen gained, for it: CEL rules on an object of the spec (`fields.<path>.rules`, on the object at the path or on
+  an item of a list or map, `<path>[]`); a map key's validation (`keyValidation`); `tests`, specs the generated specs
+  write and edit besides the samples, for fields a sample should not set, which are not published; boolean enums
+  (`exclude.all` takes only `true`); and CEL evaluation in kflare-gen itself, with cel-go: samples and tests must hold
+  every rule, a change or swap that breaks one is left out (as flipping `cacheReserve.eligible` would), and every
+  invalid spec must break the rule it is for. Count rules are now sums (`(has(self.a) ? 1 : 0) + ...`): the API server
+  refused the CRD when they filtered a list, on the items of `statusCodeTTL`, a list without `maxItems`, as over its
+  CEL cost budget. A mutation check (40 mutations of the generated conversion, phase and action, the CRD's rules and
+  markers, and the new generator paths) caught all but two: one did not compile as written and was caught once
+  rewritten, and disabling the check that a generated breach breaks its rule survived until a unit test gave a rule
+  that no breach can break
 
 
 #### Code generator (`kflare-gen`)
@@ -1363,42 +1406,43 @@ kinds:
   immutable `spec.type`, each picking a phase), one sample per type (a resource's spec), field adjustments by path
   (`headers[].value`), the field a map's entries are listed by (`key`), and CEL `rules`, each with its reason and an
   `invalid` spec it refuses. The rule type's other fields (logging, rate limit, exposed credential check) must be
-  ignored with a reason. TransformRule went first because the dev token can already write its phases. kflare-gen
-  walks the action parameters' v7 types together with the rule's OpenAPI schema (`rulesets_<Rule>`, which sync-spec now
+  ignored with a reason. TransformRule went first because the dev token can already write its phases. kflare-gen walks
+  the action parameters' v7 types together with the rule's OpenAPI schema (`rulesets_<Rule>`, which sync-spec now
   copies): an object becomes a struct (required from the schema or the SDK's `api:"required"`; `minProperties` and
   `maxProperties` a CEL count), an array a list (`listType=set`, sorted in the conversion, for unique scalars; their
   enums and patterns as `items:` markers), a map a list keyed by the entry's field (`listType=map`), and a union (an
   interface v7 declares, whose variants kflare-gen finds by type) one struct with every variant's fields, built as the
-  variant that holds them all, with a CEL rule from the schema's `oneOf` (closed variants, as the live API treats
-  them) or `anyOf`; enums merge across variants. An optional string that cannot be empty (an enum, a minimum length,
-  or a pattern that refuses "") stays a plain string; other optional fields are pointers, so an empty query value
-  differs from none. Per rule kind it writes the types (the spec embeds `RulesetRuleSpec`, status is
-  `RulesetRuleStatus`), the controller (reconciler, RBAC, a type-to-phase map, the `rulesetRuleKind`, and one
-  conversion function per struct, into the action's v7 params, which `rulesetRuleDefinition` wraps), the envtest table
-  and a sample per type. `zz_generated_kinds.go` adds them to `rulesetRuleKinds` and to the Zone's dependents. In the
-  foundation, a rule kind now lists its `phases`, and `phaseFor` picks a resource's from its spec; peers, deletion and
-  the emptied-phase watches (`deletionsWatched`) go by the resource's phase. `rulesetrule_specs_test.go` runs shared
-  specs on each table, from JSON specs decoded strictly into the API types: each sample's rule in its phase, as JSON
-  kflare-gen renders itself (so the generated conversion is checked against a second rendering), and among its
-  phase's peers; an idle reconcile; a change of every string leaf of every sample, plus the description and enabled,
-  updated in place; deletion and retain in each sample's phase; the Zone waiting; zoneRef and type immutability;
-  specs that set every field (to the samples' values, the OpenAPI schema's `example`, or values kflare-gen makes up;
-  then again with each optional scalar at its zero value), converted without the API server, which would refuse
-  them; and the CRD's refusals, sent as raw JSON so that an empty value or list reaches the API server: enums, empty
-  keys, lengths, patterns, ranges, empty lists, a map or set listing an item twice, a breach of each schema rule (for
-  a oneOf, each variant alone given each field outside it or left without each field it requires), and each entry
-  rule's invalid spec. Golden tests add TestExecuteRule (nested objects, lists of objects, bools, integers, count
-  rules) and TestSkipRule (sets of enums and patterns) from real rule types; `TestGoldenControllerCompiles`
-  type-checks them in `internal/controller`, and `TestRuleKindRulesParse` parses every generated CEL rule with cel-go,
-  now a test dependency. A mutation check (of the foundation's phase handling, the generated conversion, the CRD and
-  kflare-gen's edits) first left 12 of 26 mutations alive: deletion in another phase, the emptied-phase watches, a
-  kind missing from the peers, fields no sample set, and the CRD's lengths, patterns, list bounds, map keys and
+  variant that holds them all, with a CEL rule from the schema's `oneOf` (closed variants, as the live API treats them)
+  or `anyOf`; enums merge across variants. An optional string that cannot be empty (an enum, a minimum length, or a
+  pattern that refuses "") stays a plain string; other optional fields are pointers, so an empty query value differs
+  from none. Per rule kind it writes the types (the spec embeds `RulesetRuleSpec`, status is `RulesetRuleStatus`), the
+  controller (reconciler, RBAC, a type-to-phase map, the `rulesetRuleKind`, and one conversion function per struct, into
+  the action's v7 params, which `rulesetRuleDefinition` wraps), the envtest table and a sample per type.
+  `zz_generated_kinds.go` adds them to `rulesetRuleKinds` and to the Zone's dependents. In the foundation, a rule kind
+  now lists its `phases`, and `phaseFor` picks a resource's from its spec; peers, deletion and the emptied-phase watches
+  (`deletionsWatched`) go by the resource's phase. `rulesetrule_specs_test.go` runs shared specs on each table, from
+  JSON specs decoded strictly into the API types: each sample's rule in its phase, as JSON kflare-gen renders itself (so
+  the generated conversion is checked against a second rendering), and among its phase's peers; an idle reconcile; a
+  change of every string leaf of every sample, plus the description and enabled, updated in place; deletion and retain
+  in each sample's phase; the Zone waiting; zoneRef and type immutability; specs that set every field (to the samples'
+  values, the OpenAPI schema's `example`, or values kflare-gen makes up; then again with each optional scalar at its
+  zero value), converted without the API server, which would refuse them; and the CRD's refusals, sent as raw JSON so
+  that an empty value or list reaches the API server: enums, empty keys, lengths, patterns, ranges, empty lists, a map
+  or set listing an item twice, a breach of each schema rule (for a oneOf, each variant alone given each field outside
+  it or left without each field it requires), and each entry rule's invalid spec. Golden tests add TestExecuteRule
+  (nested objects, lists of objects, bools, integers, count rules) and TestSkipRule (sets of enums and patterns) from
+  real rule types; `TestGoldenControllerCompiles` type-checks them in `internal/controller`, and
+  `TestRuleKindRulesParse` parses every generated CEL rule with cel-go (since `feat/cache-rule-controller`, kflare-gen
+  also evaluates the rules with it). A mutation check (of the foundation's phase handling, the generated conversion, the
+  CRD and kflare-gen's edits) first left 12 of 26 mutations alive: deletion in another phase, the emptied-phase watches,
+  a kind missing from the peers, fields no sample set, and the CRD's lengths, patterns, list bounds, map keys and
   variants. With the specs above, all 39 are caught. Live: run `7ed03a`, 16 of 16, and again with the final code, run
   `9c869b`, 16 of 16. A first run (`c951aa`) failed on the e2e's own header expression, `cf.colo.name`, which is no
-  field (kflare reported Cloudflare's 20087 as `TerminalError`); the sample held it too. Both use `ip.src.country`
-  now, and every sample's rule passed a dry run
-- **Next:** the other Rules kinds, one entry and PR each: RedirectRule ✅ (`feat/redirect-rule-controller`), then
-  CacheRule, ConfigurationRule and OriginRule. The dev token can write all four phases since 2026-10-15
+  field (kflare reported Cloudflare's 20087 as `TerminalError`); the sample held it too. Both use `ip.src.country` now,
+  and every sample's rule passed a dry run
+- **Next:** the other Rules kinds, one entry and PR each: RedirectRule ✅ (`feat/redirect-rule-controller`), CacheRule ✅
+  (`feat/cache-rule-controller`), then ConfigurationRule and OriginRule. The dev token can write all four phases since
+  2026-10-15
 - **Later:** a runtime for settings-style singletons (the shape of TunnelConfiguration and ManagedTransform; the 90
   singletons include zone settings), cross-kind references such as `kvNamespaceRef`, generated live e2e specs, and
   deploy.md permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; the
@@ -1588,11 +1632,11 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Current Status
 
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
-> `ManagedRuleset`, `D1Database`, `TransformRule` and `RedirectRule` done.** cloudflare-go is at v0.119, with v7.12.0
-> next to it for the generated kinds and the rule kinds; rule kinds share the Rulesets foundation and controller. The
-> code generator, `kflare-gen`, is complete: KVNamespace and D1Database are generated in full on the shared CRUD
-> reconciler, and TransformRule and RedirectRule on the shared rule controller. Next: CacheRule, ConfigurationRule and
-> OriginRule, each a `generator.yaml` entry (see Phase 3).
+> `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule` and `CacheRule` done.** cloudflare-go is at v0.119,
+> with v7.12.0 next to it for the generated kinds and the rule kinds; rule kinds share the Rulesets foundation and
+> controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are generated in full on the
+> shared CRUD reconciler, and TransformRule, RedirectRule and CacheRule on the shared rule controller. Next:
+> ConfigurationRule and OriginRule, each a `generator.yaml` entry (see Phase 3).
 > Zero Trust still waits on account setup. Items needing a paid plan, add-on or account setup are tracked under
 > "Deferred: paid plan, add-on or account setup" in Phase 3.
 > Last updated: October 2026

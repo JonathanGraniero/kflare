@@ -16,7 +16,8 @@ Secret (API token)
        │    ├─ RateLimitRule (same namespace, via zoneRef)
        │    ├─ ManagedRuleset (same namespace, via zoneRef)
        │    ├─ TransformRule (same namespace, via zoneRef)
-       │    └─ RedirectRule (same namespace, via zoneRef)
+       │    ├─ RedirectRule (same namespace, via zoneRef)
+       │    └─ CacheRule (same namespace, via zoneRef)
        ├─ Tunnel (namespaced)
        │    └─ TunnelConfiguration (same namespace, via tunnelRef)
        ├─ WorkerScript (namespaced; binds KVNamespaces via kvNamespaceRef, R2Buckets via r2BucketRef)
@@ -50,17 +51,17 @@ Every controller follows the same shape:
 6. Record IDs and metadata in status and set `Ready=True`.
 
 The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace and D1Database through the shared
-CRUD reconciler (`internal/controller/crudresource_controller.go`), and TransformRule and RedirectRule through the
-shared rule controller (see [Rules](#rules)). A generated kind only describes its Cloudflare calls, its adoption
-key, what it compares and what depends on it. Adoption finds the object in the account's list by its key, then reads it
-by its ID: a list may show less than a read, as D1's does. kflare-gen writes that description from the kind's entry in
-`generator/generator.yaml`, cloudflare-go v7 and Cloudflare's OpenAPI spec: its API types
+CRUD reconciler (`internal/controller/crudresource_controller.go`), and TransformRule, RedirectRule and CacheRule
+through the shared rule controller (see [Rules](#rules)). A generated kind only describes its Cloudflare calls, its
+adoption key, what it compares and what depends on it. Adoption finds the object in the account's list by its key, then
+reads it by its ID: a list may show less than a read, as D1's does. kflare-gen writes that description from the kind's
+entry in `generator/generator.yaml`, cloudflare-go v7 and Cloudflare's OpenAPI spec: its API types
 (`api/v1alpha1/zz_generated.<kind>_types.go`), its controller (`internal/controller/zz_generated.<kind>.go`), and a
 table of envtest specs that the shared CRUD specs run on (`zz_generated.<kind>_test.go`). The generated kinds register
 together (`SetupGeneratedReconcilers`), and each counts as a user of its CloudflareAccount.
 
 Step 5 is deliberate: an idle reconcile makes read calls only. The live e2e suite checks this for DNSRecord,
-WAFCustomRule, RateLimitRule, ManagedRuleset, TransformRule (each type), RedirectRule and IPList, and
+WAFCustomRule, RateLimitRule, ManagedRuleset, TransformRule (each type), RedirectRule, CacheRule and IPList, and
 TunnelConfiguration's comparison ignores fields Cloudflare adds on its own so an unchanged config does not bump its
 version.
 
@@ -100,7 +101,7 @@ What each controller compares when it does reconcile:
 | `D1Database` | Existence only: recreated, empty, if deleted externally. Its name, jurisdiction and location hint are fixed at creation |
 | `R2Bucket` | Existence only: recreated, empty, if deleted externally. Its name cannot change and its location is fixed at creation. Workers bind a bucket by name, so they keep working with the recreated bucket without a re-upload (verified live) |
 | `WorkerRoute` | Pattern and the Worker it runs; recreated if deleted externally, including when Cloudflare deletes it together with its Worker |
-| `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule` | The rule's whole definition: expression, action and its parameters, enabled, description, for a rate limiting rule how it counts (characteristics, period, requests per period, mitigation timeout, counting expression, origin requests only), for a managed ruleset deployment the ruleset and its overrides, and for a transform rule its URL rewrite or header changes. Also its place among kflare's rules in the zone and phase (see [Rules](#rules)). Recreated if deleted externally |
+| `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule` | The rule's whole definition: expression, action and its parameters, enabled, description, for a rate limiting rule how it counts (characteristics, period, requests per period, mitigation timeout, counting expression, origin requests only), for a managed ruleset deployment the ruleset and its overrides, and for a transform rule its URL rewrite or header changes. Also its place among kflare's rules in the zone and phase (see [Rules](#rules)). Recreated if deleted externally |
 
 ## Adoption and ownership
 
@@ -124,7 +125,7 @@ retain policy first (see [Deletion](#deletion)).
 | `D1Database` | The database named `spec.name` in the account (names are unique per account) unless another D1Database manages it, in which case it reports `NameConflict` and retries every minute. An adopted database keeps its jurisdiction and location; `spec.jurisdiction` and `spec.primaryLocationHint` only apply when kflare creates the database. |
 | `R2Bucket` | The bucket named `spec.name` in the account's default jurisdiction (names are unique per account) unless another R2Bucket for the same Cloudflare account manages it, in which case it reports `NameConflict` and retries every minute. An adopted bucket keeps its location; `spec.locationHint` only applies when kflare creates the bucket. |
 | `WorkerRoute` | The route with the same pattern in the zone (patterns are unique per zone) unless another WorkerRoute manages it, in which case the WorkerRoute reports `PatternConflict` and retries every minute. |
-| `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule` | Nothing. A rule is kflare's only if it carries the ref kflare derives for the resource (see [Rules](#rules)); rules created outside kflare are never touched. A zone deploys a managed ruleset at most once, so while a rule kflare does not manage deploys it, the ManagedRuleset reports `RulesetConflict` and checks again every minute. |
+| `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule` | Nothing. A rule is kflare's only if it carries the ref kflare derives for the resource (see [Rules](#rules)); rules created outside kflare are never touched. A zone deploys a managed ruleset at most once, so while a rule kflare does not manage deploys it, the ManagedRuleset reports `RulesetConflict` and checks again every minute. |
 
 ### DNSRecord, WorkerRoute, KVNamespace, D1Database, IPList and R2Bucket ownership
 
@@ -152,9 +153,10 @@ Each rule kind manages one rule per resource in its zone's entry point ruleset f
 its rate limiting rules, `ManagedRuleset` in `http_request_firewall_managed`, where an `execute` rule deploys a
 managed ruleset, and `TransformRule` in the phase its immutable `spec.type` picks: `http_request_transform` for a URL
 rewrite, `http_request_late_transform` for request headers, `http_response_headers_transform` for response headers,
-and `RedirectRule` in `http_request_dynamic_redirect`, the zone's single redirects. They share one controller
-(`internal/controller/rulesetrule.go`, `rulesetrule_controller.go`). kflare-gen generates TransformRule, RedirectRule
-and the Rules kinds planned next, from cloudflare-go v7's rule type for the kind's action: its action
+`RedirectRule` in `http_request_dynamic_redirect`, the zone's single redirects, and `CacheRule` in
+`http_request_cache_settings`. They share one controller (`internal/controller/rulesetrule.go`,
+`rulesetrule_controller.go`). kflare-gen generates TransformRule, RedirectRule, CacheRule and the Rules kinds planned
+next, from cloudflare-go v7's rule type for the kind's action: its action
 parameters become the spec's fields, its unions a struct whose CEL rules say which combinations Cloudflare takes. A
 zone has one entry point per phase, shared by every rule in that phase, kflare's or not, so kflare:
 
@@ -251,8 +253,8 @@ Per-resource details:
 - **KVNamespace** deletion deletes the namespace **and all of its data**. Set the retain policy on namespaces holding data
   you need to keep.
 - **D1Database** deletion deletes the database **and all of its data**, likewise.
-- **WAFCustomRule**, **RateLimitRule**, **TransformRule** and **RedirectRule** deletion deletes the resource's rule,
-  found by its ref. The zone's other rules and its entry point stay.
+- **WAFCustomRule**, **RateLimitRule**, **TransformRule**, **RedirectRule** and **CacheRule** deletion deletes the
+  resource's rule, found by its ref. The zone's other rules and its entry point stay.
 - **ManagedRuleset** deletion deletes its `execute` rule, and with it the phase's entry point once no rule is left in
   it, which brings back Cloudflare's default deployment (see [Managed rulesets](#managed-rulesets)).
 - **IPList** deletion deletes the list. Cloudflare refuses while a rule uses it (400, code 10041): the IPList keeps its
@@ -270,7 +272,7 @@ resource that still needs its parent for its own cleanup. Parents therefore keep
 - A `CloudflareAccount` waits for the Zones, Tunnels, WorkerScripts, R2Buckets and IPLists that reference it, and for
   the resources of every generated kind, KVNamespaces among them.
 - A `Zone` waits for its DNSRecords, WorkerRoutes, WAFCustomRules, RateLimitRules, ManagedRulesets and the resources
-  of every generated rule kind, TransformRules and RedirectRules among them.
+  of every generated rule kind, TransformRules, RedirectRules and CacheRules among them.
 - A `Tunnel` waits for its TunnelConfigurations.
 - A `KVNamespace` waits for the WorkerScripts bound to it through `kvNamespaceRef`. Cloudflare deletes a namespace a
   Worker is bound to, but every later upload of that Worker then fails. (Its entry in `generator/generator.yaml` lists
