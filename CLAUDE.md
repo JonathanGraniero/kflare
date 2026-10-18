@@ -195,6 +195,14 @@ Shared infrastructure that all Phase 2 controllers will use.
   - Needs repo secrets `CF_API_TOKEN`, `CF_ACCOUNT_ID` and variable `CF_E2E_ZONE` (`kflare.dev`, the project's
     own zone, is the test zone)
 - [x] CI also runs `make lint` and `make docker-build` (the Dockerfile copies source directories explicitly)
+- [x] Security (`feat/security-scanning`, 2026-10-17): CodeQL through GitHub's default setup (Go and Actions, the
+  `security-extended` suite; on pull requests, pushes and weekly), `dependency-review.yml` on pull requests,
+  `.github/dependabot.yml` (Go modules, with the `k8s.io/*` and `sigs.k8s.io/*` modules in one group; Actions; the
+  Dockerfile's images; a 7-day cooldown), read-only `permissions` on every workflow, third-party actions pinned to
+  commit SHAs with the version in a comment (Dependabot updates both), and `SECURITY.md` (private
+  vulnerability reporting). In the repo settings: Dependabot alerts and security updates, secret scanning and push
+  protection. CodeQL's `go/weak-sensitive-data-hashing` on WorkerScript's `appliedHash` is a false positive: it is a
+  change-detection hash, and a secret binding contributes the Secret's resourceVersion, never the value
 
 **Test locally:** push branch and verify Actions run green
 
