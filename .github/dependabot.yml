@@ -1,0 +1,33 @@
+# Weekly version updates. Security updates for vulnerable dependencies come
+# separately, as soon as an advisory is published (enabled in the repo settings).
+# Cooldown: skip releases younger than a week, so a hijacked release is
+# usually caught and pulled before it reaches a pull request here.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      # client-go, api, apimachinery and controller-runtime have to move together.
+      kubernetes:
+        patterns: ["k8s.io/*", "sigs.k8s.io/*"]
+      go-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # The builder and runtime base images in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
