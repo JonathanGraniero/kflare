@@ -23,6 +23,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&CacheRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the CacheRule controller: %w", err)
 	}
+	if err := (&ConfigurationRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the ConfigurationRule controller: %w", err)
+	}
 	if err := (&D1DatabaseReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the D1Database controller: %w", err)
 	}
@@ -50,13 +53,15 @@ var generatedAccountDependents = []dependentKind{
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule
 // controller drives.
-var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, redirectRuleKind, transformRuleKind}
+var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, redirectRuleKind, transformRuleKind}
 
 // generatedZoneDependents are the generated rule kinds, whose resources
 // reference a Zone in their namespace.
 var generatedZoneDependents = []dependentKind{
 	dependents("CacheRule", func() client.ObjectList { return &cloudflarev1alpha1.CacheRuleList{} },
 		func(obj *cloudflarev1alpha1.CacheRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
+	dependents("ConfigurationRule", func() client.ObjectList { return &cloudflarev1alpha1.ConfigurationRuleList{} },
+		func(obj *cloudflarev1alpha1.ConfigurationRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("RedirectRule", func() client.ObjectList { return &cloudflarev1alpha1.RedirectRuleList{} },
 		func(obj *cloudflarev1alpha1.RedirectRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("TransformRule", func() client.ObjectList { return &cloudflarev1alpha1.TransformRuleList{} },

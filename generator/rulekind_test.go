@@ -708,6 +708,35 @@ func TestFullScalarTakesAnEnumValueNoSampleUses(t *testing.T) {
 	}
 }
 
+func TestTooMany(t *testing.T) {
+	two := new(int64(2))
+	pack := &paramScalar{goType: typeString, validation: validation{pattern: "^[a-z0-9]+$"}}
+	long, ok := tooMany(&paramList{items: pack, maxItems: two, set: true}, []any{"a"})
+	if !ok || !reflect.DeepEqual(long, []any{"a0", "a1", "a2"}) {
+		t.Errorf("a set of strings: %v, %t", long, ok)
+	}
+	if _, ok := tooMany(&paramList{items: pack, maxItems: two}, []any{"A"}); ok {
+		t.Error("copies the pattern refuses: ok, want none")
+	}
+	if _, ok := tooMany(&paramList{items: pack}, []any{"a"}); ok {
+		t.Error("a list without a maximum: ok, want none")
+	}
+	if _, ok := tooMany(&paramList{items: &paramStruct{}, maxItems: two}, []any{map[string]any{}}); ok {
+		t.Error("a list of objects: ok, want none")
+	}
+	key := &paramField{jsonName: "name", key: true, node: &paramScalar{goType: typeString}}
+	entries := &paramMap{value: &paramStruct{fields: []*paramField{key}}, maxItems: new(int64(1))}
+	long, ok = tooMany(entries, []any{map[string]any{"name": "accept", "action": "normalize"}})
+	want := []any{map[string]any{"name": "accept0", "action": "normalize"}, map[string]any{"name": "accept1",
+		"action": "normalize"}}
+	if !ok || !reflect.DeepEqual(long, want) {
+		t.Errorf("a map: %v, %t", long, ok)
+	}
+	if _, ok := tooMany(&paramScalar{}, []any{"a"}); ok {
+		t.Error("a scalar: ok, want none")
+	}
+}
+
 func TestOutsideEnum(t *testing.T) {
 	tests := []struct {
 		name string
