@@ -287,6 +287,11 @@ func (k *ruleKind) invalidValues() error {
 					setAt(spec, path, append(list, list[0]))
 				})
 			}
+			if long, ok := tooMany(f.node, items); ok {
+				invalid(relativePath(path)+" with too many items", pathString(path)+": Too many", func(spec map[string]any) {
+					setAt(spec, path, long)
+				})
+			}
 		}
 	}
 	scalars := func(path []step, f *paramField, n *paramScalar, value any) {
@@ -382,6 +387,54 @@ func listBounds(node paramNode) (minItems *int64, unique bool) {
 		return n.minItems, true
 	}
 	return nil, false
+}
+
+// tooMany returns a list one item longer than a list or map field allows,
+// made of distinct copies of its first item: a string with a number after it,
+// or a map's entry with a number after its key. None for a field without a
+// maximum, a list of objects, or copies the field's validation refuses.
+func tooMany(node paramNode, items []any) ([]any, bool) {
+	var maximum *int64
+	var copyOf func(i int) (any, bool)
+	switch n := node.(type) {
+	case *paramList:
+		first, isString := items[0].(string)
+		scalar, isScalar := n.items.(*paramScalar)
+		if !isString || !isScalar {
+			return nil, false
+		}
+		maximum = n.maxItems
+		copyOf = func(i int) (any, bool) {
+			value := fmt.Sprintf("%s%d", first, i)
+			_, err := checkScalar(scalar, value, "")
+			return value, err == nil
+		}
+	case *paramMap:
+		maximum = n.maxItems
+		key := n.value.fields[0]
+		first := items[0].(map[string]any)
+		copyOf = func(i int) (any, bool) {
+			entry := maps.Clone(first)
+			name := fmt.Sprintf("%v%d", first[key.jsonName], i)
+			entry[key.jsonName] = name
+			_, err := checkScalar(key.node.(*paramScalar), name, "")
+			return entry, err == nil
+		}
+	default:
+		return nil, false
+	}
+	if maximum == nil {
+		return nil, false
+	}
+	long := make([]any, 0, *maximum+1)
+	for i := range int(*maximum) + 1 {
+		item, ok := copyOf(i)
+		if !ok {
+			return nil, false
+		}
+		long = append(long, item)
+	}
+	return long, true
 }
 
 // mismatch returns a string of a length a scalar allows that its pattern

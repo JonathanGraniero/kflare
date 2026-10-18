@@ -370,6 +370,125 @@ ruleKinds:
       logging: Only skip rules log (20018 on a cache rule, verified live on 2026-10-16).
       ratelimit: Rate limits are refused in http_request_cache_settings (20131, verified live on 2026-10-16).
       exposed_credential_check: Refused in http_request_cache_settings (20189, verified live on 2026-10-16).
+  - kind: ConfigurationRule
+    rule: rulesets.SetConfigRuleParam
+    shortName: cfconfig
+    noun: configuration rule
+    doc: |
+      ConfigurationRule is the Schema for the configurationrules API.
+      It manages one configuration rule in a zone: settings, such as the SSL
+      mode or the security level, changed for the requests its expression
+      matches.
+    phase: http_config_settings
+    samples:
+      - expression: 'starts_with(http.request.uri.path, "/admin/")'
+        description: Challenge more readily, and leave scripts alone, on the admin pages
+        securityLevel: high
+        bic: true
+        rocketLoader: false
+        ssl: strict
+    tests:
+      - expression: 'starts_with(http.request.uri.path, "/static/")'
+        description: The settings the sample leaves out
+        automaticHTTPSRewrites: true
+        emailObfuscation: true
+        fonts: true
+        hotlinkProtection: true
+        opportunisticEncryption: false
+        serverSideExcludes: true
+        webmcpEnabled: true
+        webmcpPacks: [mcp-server-client, c2pa]
+        contentConverter: false
+        redirectsForAITraining: false
+        disableRUM: true
+        disableZaraz: true
+        polish: 'off'
+        requestBodyBuffering: full
+        responseBodyBuffering: standard
+    fields:
+      automatic_https_rewrites:
+        doc: AutomaticHTTPSRewrites rewrites links to HTTP URLs in HTML responses to HTTPS.
+      bic:
+        doc: |
+          BIC turns Browser Integrity Check on or off: it challenges requests whose
+          headers spammers and bots commonly abuse.
+      content_converter:
+        doc: |
+          ContentConverter converts content, such as HTML to Markdown, for the
+          clients that ask for it. Free plans may only turn it off.
+      disable_rum:
+        doc: DisableRUM turns Real User Monitoring off. It takes only true.
+      disable_zaraz:
+        doc: DisableZaraz turns Zaraz off. It takes only true.
+      email_obfuscation:
+        doc: EmailObfuscation hides the email addresses in HTML responses from bots.
+      fonts:
+        doc: Fonts serves the page's Google Fonts from Cloudflare (Cloudflare Fonts).
+      hotlink_protection:
+        doc: HotlinkProtection stops other sites from embedding the zone's images.
+      opportunistic_encryption:
+        doc: |
+          OpportunisticEncryption lets browsers fetch HTTP URLs over an encrypted
+          connection.
+      polish:
+        doc: |
+          Polish is how Cloudflare optimizes images: off, lossless, lossy or webp.
+          Free plans may only turn it off; quote off in YAML, which would read it
+          as a boolean.
+      redirects_for_ai_training:
+        doc: |
+          RedirectsForAITraining redirects verified AI training crawlers to the
+          canonical URLs the HTML response names. Free plans may only turn it off.
+      request_body_buffering:
+        doc: |
+          RequestBodyBuffering is how much of a request's body Cloudflare buffers
+          before the origin gets it: none, standard or full.
+      response_body_buffering:
+        doc: |
+          ResponseBodyBuffering is how much of a response's body Cloudflare buffers:
+          none or standard.
+      rocket_loader:
+        doc: RocketLoader loads the page's JavaScript without blocking its rendering.
+      security_level:
+        doc: |
+          SecurityLevel is how readily Cloudflare challenges visitors by their IP
+          address's reputation, from essentially_off to under_attack. Free plans
+          may not turn it off.
+      server_side_excludes:
+        doc: |
+          ServerSideExcludes hides the content an HTML response marks with SSE tags
+          from suspicious visitors.
+      ssl:
+        doc: |
+          SSL is how Cloudflare connects to the origin: off, flexible (HTTP), full
+          (HTTPS, any certificate), strict (HTTPS, a valid certificate) or
+          origin_pull. Free plans may not use origin_pull; quote off in YAML.
+      webmcp_enabled:
+        doc: |
+          WebmcpEnabled serves the WebMCP bridge script, which exposes the page's
+          tools to browser AI agents.
+      webmcp_packs:
+        doc: |
+          WebmcpPacks are the WebMCP tool packs to turn on for the requests the rule
+          matches, at most 100. They do not serve the bridge script itself. Unset,
+          the packs stay as they are: kflare does not send an empty list, which
+          would turn them all off.
+    ignore:
+      autominify: >-
+        Cloudflare retired Auto Minify in August 2024, per its documentation; the API still accepts the setting.
+      disable_apps: >-
+        Cloudflare Apps are deprecated, and Cloudflare refuses the setting (20251; false: 20114), verified live on
+        2026-10-17.
+      disable_pay_per_crawl: >-
+        Free plans are not entitled to it, and it takes only true (20114), verified live on 2026-10-17; add it once a
+        plan that is can check it.
+      mirage: Mirage is deprecated, and Free plans are not entitled to it (verified live on 2026-10-17).
+      sxg: >-
+        Signed Exchanges are deprecated, and Cloudflare refuses the setting either way (20259), verified live on
+        2026-10-17.
+      logging: Only skip rules log (20018 on a configuration rule, verified live on 2026-10-17).
+      ratelimit: Rate limits are refused in http_config_settings (20131, verified live on 2026-10-17).
+      exposed_credential_check: Refused in http_config_settings (20189, verified live on 2026-10-17).
   - kind: RedirectRule
     rule: rulesets.RedirectRuleParam
     shortName: cfredirect

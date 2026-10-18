@@ -29,6 +29,7 @@ rules:
   resources:
   - cacherules
   - cloudflareaccounts
+  - configurationrules
   - d1databases
   - dnsrecords
   - iplists
@@ -57,6 +58,7 @@ rules:
   resources:
   - cacherules/finalizers
   - cloudflareaccounts/finalizers
+  - configurationrules/finalizers
   - d1databases/finalizers
   - dnsrecords/finalizers
   - iplists/finalizers
@@ -79,6 +81,7 @@ rules:
   resources:
   - cacherules/status
   - cloudflareaccounts/status
+  - configurationrules/status
   - d1databases/status
   - dnsrecords/status
   - iplists/status
