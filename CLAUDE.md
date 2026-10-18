@@ -46,7 +46,9 @@ Decided 2026-10-13; the plan is [Code generator (`kflare-gen`)](#code-generator-
 - `kflare-gen` reads a per-kind `generator.yaml`, the Go types of cloudflare-go v7 (the SDK Cloudflare generates from
   its OpenAPI spec) and a pinned subset of that spec (`api-schemas` repo). It generates CRD types and each kind's
   controller glue for a shared reconciler. It generates no client code: v7 is the client
-- What the API description cannot express, such as behavior verified live, stays hand-written as Go hooks
+- What the API description cannot express, such as behavior verified live, goes into the kind's entry: validations,
+  CEL rules, ignores with their reasons, and test specs. Go hooks, for logic an entry cannot express, are planned but
+  no kind has needed one yet
 - Controllers written before the generator stay hand-written unless moving them buys something
 
 ### Authentication Model
@@ -166,7 +168,7 @@ Shared infrastructure that all Phase 2 controllers will use.
 
 - [x] `.github/workflows/ci.yml`
   - `go mod tidy` check, `go build ./...`
-  - `make test` (runs manifests, generate, fmt, vet, unit and envtest suites)
+  - `make test` (runs manifests, generate, fmt, fix, vet, unit and envtest suites; `fix`, `go fix ./...`, since #38)
   - `git diff --exit-code` afterwards (ensures generated and formatted files are committed)
   - `GOTOOLCHAIN=local` with Go 1.26; a second job runs the envtest suites on the newest Kubernetes (1.37.0)
   - Tool versions (controller-gen, setup-envtest, golangci-lint v2, kustomize, kind) are pinned in the Makefile;
@@ -485,7 +487,8 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 Rows run top to bottom. The order decided on 2026-10-06 (WAF, then rate limiting, then Zero Trust) is kept. `IPList`
 comes before Zero Trust because it is free and can be tested today, while Zero Trust waits on a dashboard step. When a
 row is blocked, skip ahead: `ManagedTransform` depends on no other row. The five Rules rows are generated (decided
-2026-10-13), so they wait for the code generator's rule kinds.
+2026-10-13): TransformRule, RedirectRule and CacheRule are done, ConfigurationRule and OriginRule are next. What may
+come after them is in [Next wave](#next-wave-proposed-2026-10-17).
 
 `PageRule` is dropped (decided 2026-10-09): Page Rules is deprecated, and its API refuses account-owned tokens (see
 "Plan corrections" below). The Transform, Redirect, Cache, Configuration and Origin rows cover its settings.
@@ -503,20 +506,21 @@ row is blocked, skip ahead: `ManagedTransform` depends on no other row. The five
 #### Token permissions for Phase 3
 
 Checked 2026-10-09 against the dev token. The Rulesets phases were checked with `dry_run=true`, which runs the same
-authorization, plan and quota checks as a real write but stores nothing. The token's zone policy has only Read for
-these products, yet the WAF and Transform phases were accepted: its account-level **Account WAF Write**, **Account
-Rulesets Write** and **Transform Rules Write** evidently cover zone rulesets too. The names below are the API's
-permission group names; deploy.md uses the dashboard's labels, so look those up when each branch adds its row there.
+authorization, plan and quota checks as a real write but stores nothing. The token's zone policy had only Read for these
+products (it gained Write on `kflare.dev` for the redirect, cache, configuration and origin phases on 2026-10-15, see
+below), yet the WAF and Transform phases were accepted: its account-level **Account WAF Write**, **Account Rulesets
+Write** and **Transform Rules Write** evidently cover zone rulesets too. The names below are the API's permission group
+names; deploy.md uses the dashboard's labels, so look those up when each branch adds its row there.
 
 | Resource | Permission to document (least privilege) | Dev token today |
 |---|---|---|
 | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset` | Zone WAF Write | ✅ dry run accepted; enough on its own (2026-10-13 and 2026-10-14, see below) |
 | `TransformRule` | Zone Transform Rules Write | ✅ written, updated and deleted by the e2e (2026-10-15, runs `7ed03a` and `9c869b`); enough on its own (2026-10-15, see below) |
-| `RedirectRule` | Dynamic URL Redirects Write | ✅ added on `kflare.dev` 2026-10-15 (see below); written, updated and deleted by the e2e (run `5f9daf`); not yet checked on its own |
-| `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `fd8de2`); not yet checked on its own |
+| `RedirectRule` | Dynamic URL Redirects Write | ✅ added on `kflare.dev` 2026-10-15 (see below); written, updated and deleted by the e2e (run `5f9daf`); enough on its own (2026-10-17, see below) |
+| `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `fd8de2`); enough on its own (2026-10-17, see below) |
 | `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
 | `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
-| `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run) |
+| `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run). An empty PATCH was refused on 2026-10-17, so Config Settings Write, which the OpenAPI spec lists for it, is not enough |
 | `IPList` | Account Rule Lists Write (account) | ✅ create, replace and delete verified 2026-10-13; enough on its own |
 | `D1Database` | D1 Write (account) | ✅ create, read, list and delete verified 2026-10-15; enough on its own (2026-10-15, see below) |
 | `AccessGroup`, `AccessPolicy`, `AccessApplication` | Access: Organizations, Identity Providers, and Groups Write; Access: Apps and Policies Write (account) | ✅, but Access is not enabled |
@@ -540,6 +544,11 @@ permission group names; deploy.md uses the dashboard's labels, so look those up 
   among them, and Zone Read ran the suite against main's manager, 16 of 16 (run `1aaa68`), with no refusal in the
   manager's log. It was refused for API tokens, account rulesets and the redirect phase. So Zone Transform Rules Write
   covers `TransformRule`. That token was deleted after the run as well
+- Repeated on 2026-10-17 for `RedirectRule` and `CacheRule`, with the user's OK: deploy.md's permissions, Dynamic URL
+  Redirects Write and Cache Settings Write among them, and Zone Read ran the suite against main's manager, 18 of 18
+  (run `2660d4`), with no refusal in the manager's log. It was refused for API tokens, account rulesets and the
+  configuration phase. So Dynamic URL Redirects Write covers `RedirectRule`, and Cache Settings Write `CacheRule`. That
+  token was deleted after the run as well
 - On 2026-10-15, with the user's OK for the four remaining Rules kinds, the dev token gained Dynamic URL Redirects
   Write, Cache Settings Write, Config Settings Write and Origin Write, in a new policy scoped to `kflare.dev` alone (its
   other policies are unchanged). A dry run in each of the four phases was accepted
@@ -620,7 +629,7 @@ Decided:
 
 Everything here was skipped, or built without live verification, because the dev account (Free zone `kflare.dev`, no
 add-ons besides R2) cannot exercise it. Before starting any item below, re-check the limits: Cloudflare changes them.
-Last checked 2026-10-07; the Free-plan limits and Zero Trust again on 2026-10-09.
+Last checked 2026-10-07; the Free-plan limits and Zero Trust again on 2026-10-09, and Zero Trust on 2026-10-17.
 
 **Not built yet — needs something we don't have:**
 
@@ -647,7 +656,7 @@ Last checked 2026-10-07; the Free-plan limits and Zero Trust again on 2026-10-09
 
 | Item | Setup | Verified |
 |------|-------|----------|
-| Zero Trust (`AccessApplication`, `AccessPolicy`, `AccessGroup`) | Enable Zero Trust in the dashboard (pick a team name and the Free plan, up to 50 users). Not confirmed whether it asks for a payment method | Live, 2026-10-07 and 2026-10-09: the API returns `Access is not enabled`. The token already has the Access: Apps/Policies/Groups Write permissions |
+| Zero Trust (`AccessApplication`, `AccessPolicy`, `AccessGroup`) | Enable Zero Trust in the dashboard (pick a team name and the Free plan, up to 50 users). Not confirmed whether it asks for a payment method | Live, 2026-10-07, 2026-10-09 and 2026-10-17: the API returns `Access is not enabled`. The token already has the Access: Apps/Policies/Groups Write permissions |
 
 **Free-plan limits to design around** (build for them; the e2e suite must stay within them). From Cloudflare's docs,
 checked 2026-10-09; ✔ marks what a dry run on `kflare.dev` confirmed the same day:
@@ -1051,7 +1060,10 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
 - [ ] Controller: owns the zone's whole configuration, like TunnelConfiguration. The oldest ManagedTransform per zone
   owns it; the others report `AlreadyConfigured`. `ListZoneManagedHeaders` → compare → `UpdateZoneManagedHeaders`;
   surfaces Cloudflare's `has_conflict` / `conflicts_with`. Deletion disables every transform unless `retain`
-- [ ] Needs Managed headers Write on the dev token (ask the user)
+- [ ] Needs Managed headers Write on the dev token (ask the user). Config Settings Write, which the dev token has on
+  `kflare.dev` and the OpenAPI spec lists for the endpoint, was refused for an empty PATCH on 2026-10-17
+- [ ] A settings-style singleton: build it on kflare-gen's singleton runtime rather than by hand (see
+  [Next wave](#next-wave-proposed-2026-10-17))
 
 
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)
@@ -1249,7 +1261,8 @@ CRD defaults, so nothing is late-initialized.
     fills in itself (`computed_optional` without a default) is compared only when the resource sets it: DNSRecord's
     `priority` rule, generalized
   - Sets → `+listType=set`, sorted in the conversion (as WAFCustomRule and RateLimitRule do by hand); `x-sensitive` →
-    a `SecretKeySelector`; the ID and computed fields → `status.cloudflareMetadata`
+    a `SecretKeySelector` (not built yet: kflare-gen refuses an `x-sensitive` field until then); the ID and computed
+    fields → `status.cloudflareMetadata`
   - Unions → one struct with the fields of every variant and a CEL rule that a value matches a variant (built for rule
     kinds' action parameters; see the rule kinds' notes below). Maps of objects → a list keyed by the field the entry
     names (`listType=map`)
@@ -1260,8 +1273,9 @@ CRD defaults, so nothing is late-initialized.
   - `api/v1alpha1/zz_generated.<kind>_types.go`: spec, status, list, markers, print columns, `Get/SetConditions`
   - `internal/controller/zz_generated.<kind>.go`: the narrow v7 interface, spec → create and update params, response →
     status, the drift comparison, RBAC markers and the kind's descriptor
-  - `internal/controller/zz_generated_kinds.go`: registration (`cmd/main.go` calls `SetupGeneratedReconcilers` once)
-    and the kinds' entries as users of their account; the kinds' lines in the CRD kustomization and the Helm `edit`
+  - `internal/controller/zz_generated_kinds.go`: registration (`cmd/main.go` calls `SetupGeneratedReconcilers` once),
+    the CRUD kinds' entries as users of their account, and the rule kinds' with the shared rule controller and as
+    dependents of their Zone; the kinds' lines in the CRD kustomization and the Helm `edit`
     role, between `+kflare-gen:begin` and `+kflare-gen:end`; and a sample in `config/samples`
   - `internal/controller/zz_generated.<kind>_test.go`: an envtest table per kind, for the lifecycle specs above and the
     immutability and validation cases (`crudresource_specs_test.go`)
@@ -1269,10 +1283,12 @@ CRD defaults, so nothing is late-initialized.
   `rulesetrule_controller.go`): ARCHITECTURE.md's reconcile loop for any kind a `crudResourceKind` describes, with
   adoption by key and claim labels (`claimedIDs`/`claimID`), recreation after a 404, writes only on drift, the retain
   policy and waiting for dependents. Deletion blockers are data: `{code: 10008, reason: BucketNotEmpty}`,
-  `{code: 10041, reason: ListInUse}`. It carries the coverage target, which excludes generated files
+  `{code: 10041, reason: ListInUse}` (not built yet: they come with the first generated kind that needs one). It
+  carries the coverage target, which excludes generated files
 - **Hooks:** optional Go functions in a hand-written `<kind>_hooks.go`, compiled and linted like any other code: adjust
   the desired params, normalize Cloudflare's copy before comparing, extra steps after a sync, extra watches. IPList's
-  bulk operation and RateLimitRule's `cf.colo.id` are this kind of logic
+  bulk operation and RateLimitRule's `cf.colo.id` are this kind of logic. Not built yet: no generated kind has needed
+  one, since entry validations, CEL rules, ignores and tests covered every rule kind
 
 ```yaml
 kinds:
@@ -1443,10 +1459,11 @@ kinds:
 - **Next:** the other Rules kinds, one entry and PR each: RedirectRule ✅ (`feat/redirect-rule-controller`), CacheRule ✅
   (`feat/cache-rule-controller`), then ConfigurationRule and OriginRule. The dev token can write all four phases since
   2026-10-15
-- **Later:** a runtime for settings-style singletons (the shape of TunnelConfiguration and ManagedTransform; the 90
-  singletons include zone settings), cross-kind references such as `kvNamespaceRef`, generated live e2e specs, and
-  deploy.md permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; the
-  shared Rulesets endpoints list every phase's permission)
+- **Later:** the capabilities the next kinds need, in [Next wave](#next-wave-proposed-2026-10-17): a runtime for
+  settings-style singletons, zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without
+  `New`, and secrets. Also cross-kind references such as `kvNamespaceRef`, generated live e2e specs, and deploy.md
+  permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is
+  not reliable: for managed transforms it lists a permission that is refused, see Token permissions)
 - **Stays hand-written:** `Zone`, `DNSRecord`, `Tunnel`, `TunnelConfiguration`, `WorkerScript` and `WorkerRoute`, which
   are mostly behavior verified live. Moving a hand-written kind needs a reason: R2Bucket would gain jurisdictions and
   storage class
@@ -1502,19 +1519,64 @@ afterwards):**
   2026-10-15, see Token permissions)
 
 
+#### Next wave (proposed 2026-10-17)
+**Status:** 🔲 Proposed, not decided: the user picks what comes after OriginRule, and in what order
+
+Phase 3's table ends with the Rules kinds. Below is what else this account can build and live-test, checked on
+2026-10-17. The probes created a `kflare-probe-*` queue, Vectorize index and Turnstile widget and deleted each. Each
+row also says what kflare-gen needs before it can generate the kind.
+
+| Candidate | What it manages | Free, on this account | Dev token | What kflare-gen needs first |
+|---|---|---|---|---|
+| `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ❌ needs Managed headers Write (ask) | a runtime for settings-style singletons |
+| Zone settings (one kind, or one per group of settings) | SSL mode, Always Use HTTPS, minimum TLS version, HSTS, and the other settings a zone has | most settings (to check one by one) | ❌ needs Zone Settings Write (ask) | the singleton runtime |
+| `Queue` | a Workers queue (consumers later) | ✔ probe queue created and deleted | ✔ Queues Write | `SinglePage` lists: the shared CRUD reconciler pages only `V4PagePaginationArray` |
+| `VectorizeIndex` | a Vectorize index | ✔ probe index (dimensions 32 to 1,536) | ✔ Vectorize Write | objects identified by name (no ID, like R2 buckets), `SinglePage` lists |
+| `TurnstileWidget` | a Turnstile widget | ✔ probe widget | ✔ Turnstile Sites Write | lists of strings in CRUD kinds (domains); the widget's secret written to a Kubernetes Secret; adoption without unique names |
+| `WorkerDomain` | a Worker on a custom domain, next to `WorkerRoute` | not probed: needs a hostname in the zone | ✔ Workers Scripts Write | a service without `New` (a PUT attaches), `SinglePage` lists |
+| `HyperdriveConfig` | a Hyperdrive connection to a database | not probed: a create checks that the database answers | ✔ Hyperdrive Write | an input secret (the password, from a Secret) |
+| Bulk Redirects (`RedirectList` and a rule kind) | account-level redirects from lists | per the docs: 15 rules, 5 lists, 10,000 redirects | ✔ Mass URL Redirects Write; the list permission to check | account-level phases in the Rulesets foundation; a redirect list like `IPList` |
+| `ManagedRulesetException` (planned above) | skip rules in the managed phase | ✔ skip rules accepted (2026-10-14) | ✔ Zone WAF Write | a rank per kind in the foundation's rule ordering |
+
+Not on this table: Zero Trust (waits on enabling Access, still off on 2026-10-17), load balancing (a paid add-on),
+and products Free zones lack (custom error pages, Page Shield, Logpush).
+
+kflare-gen capabilities, in the order the candidates above need them:
+1. **A runtime for settings-style singletons** (v7 services with `Get` and `Update` or `Edit`, without `New` or
+   `Delete`, 90 of them): one resource owns the configuration, the oldest per zone, as with TunnelConfiguration; the
+   others report `AlreadyConfigured`; deletion resets the settings unless retain. ManagedTransform, zone settings, URL
+   normalization and DNSSEC have this shape (DNSSEC only on a zone that is not the e2e zone)
+2. **`SinglePage` lists and objects identified by name** in the shared CRUD reconciler: queues, Vectorize indexes,
+   Workers custom domains
+3. **Secrets:** an `x-sensitive` field written to a Kubernetes Secret (the Turnstile secret), or read from one (the
+   Hyperdrive password)
+4. **Services without `New`** (a PUT that creates or replaces), and **zone-scoped CRUD kinds** (the shared CRUD
+   reconciler handles account-scoped kinds only)
+5. For rule kinds, when a plan that can use them can also check them: maps of lists (a cache key's `header.contains`)
+   and union variants told apart by a number or a bool
+
+Cross-cutting, from ARCHITECTURE.md's known limitations:
+- **Drift correction period:** out-of-band changes wait for the next trigger, at worst the 10-hour resync. A
+  configurable requeue after a successful sync would bound it, within Cloudflare's rate limits
+- **R2Bucket and Tunnel onto v7:** jurisdictions and storage class for buckets, renames for tunnels (both blocked on
+  v0.119), as SDK decision step 3 foresees
+
 #### Release and CI
 **Status:** 🔲 Open, alongside Phase 3
 
-- [ ] Run the live e2e suite in GitHub Actions. The repo has no Actions secrets or variables yet (2026-10-09). Use a
+- [ ] Run the live e2e suite in GitHub Actions. The repo has no Actions secrets or variables yet (2026-10-09, still
+  none on 2026-10-17). Use a
   dedicated CI token holding only what the suite needs, not the dev token, which also holds Account API Tokens Write
   and Registrar Domains Admin. What the suite needs is deploy.md's permissions, with Zone Read (verified 2026-10-13,
   see Token permissions). Set the secrets `CF_API_TOKEN` and `CF_ACCOUNT_ID`, and the variable
   `CF_E2E_ZONE=kflare.dev`. A Free zone holds one rate limiting rule and a Free account one IP list, so runs must
   not overlap: give the workflow a `concurrency` group, and avoid local runs while it runs
-- [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists. The release workflow publishes the image and
-  chart. (`docs/deploy.md`'s stale "the six kflare CRDs" was fixed with WAFCustomRule)
-- [ ] `kflare.dev` expires on 2027-10-04 with auto-renew off (registered 2026-10-04). The e2e zone disappears if it
-  lapses: decide on renewal before September 2027
+- [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists (still none on 2026-10-17). The release workflow
+  publishes the image and chart. (`docs/deploy.md`'s stale "the six kflare CRDs" was fixed with WAFCustomRule).
+  Proposed: tag it once OriginRule lands, when the Rules products that replace Page Rules are complete (the user
+  decides)
+- [ ] `kflare.dev` expires on 2027-10-04 with auto-renew off (registered 2026-10-04; unchanged on 2026-10-17). The e2e
+  zone disappears if it lapses: decide on renewal before September 2027
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, renewal, CI token, GitHub secrets)
 
 ---
@@ -1591,6 +1653,9 @@ make run
 # Run unit tests
 make test
 
+# go fix (make test runs it too)
+make fix
+
 # Lint (also run in CI)
 make lint
 
@@ -1636,7 +1701,8 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 > with v7.12.0 next to it for the generated kinds and the rule kinds; rule kinds share the Rulesets foundation and
 > controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are generated in full on the
 > shared CRUD reconciler, and TransformRule, RedirectRule and CacheRule on the shared rule controller. Next:
-> ConfigurationRule and OriginRule, each a `generator.yaml` entry (see Phase 3).
+> ConfigurationRule and OriginRule, each a `generator.yaml` entry; after them, the proposed next wave (see Phase 3).
+> deploy.md's permissions are verified on their own up to CacheRule.
 > Zero Trust still waits on account setup. Items needing a paid plan, add-on or account setup are tracked under
 > "Deferred: paid plan, add-on or account setup" in Phase 3.
 > Last updated: October 2026
