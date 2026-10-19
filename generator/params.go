@@ -207,7 +207,7 @@ func (b *paramBuilder) object(path, goName, prefix string, sdkType *types.Named,
 	st := &paramStruct{goName: goName, path: path, sdk: sdkType}
 	if path != "" {
 		b.structs = append(b.structs, st)
-		st.doc = wrap(fmt.Sprintf("%s is %s in a %s.", goName, path, b.kind))
+		st.doc = wrap(fmt.Sprintf("%s is %s in %s.", goName, path, article(b.kind)))
 	}
 	for _, f := range fields {
 		fieldPath := joinPath(path, f.apiName)
@@ -440,7 +440,7 @@ func (b *paramBuilder) mapOf(path, prefix, goName string, m *types.Map, sch *sch
 		}
 	}
 	value.fields = append([]*paramField{key}, value.fields...)
-	value.doc = wrap(fmt.Sprintf("%s is an item of %s in a %s.", value.goName, path, b.kind))
+	value.doc = wrap(fmt.Sprintf("%s is an item of %s in %s.", value.goName, path, article(b.kind)))
 	out.value = value
 	return out, nil
 }
@@ -499,7 +499,7 @@ func (b *paramBuilder) union(path, goName string, union *types.Named, sch *schem
 
 	st := &paramStruct{goName: goName, path: path, sdk: full}
 	b.structs = append(b.structs, st)
-	st.doc = wrap(fmt.Sprintf("%s is %s in a %s.", goName, path, b.kind))
+	st.doc = wrap(fmt.Sprintf("%s is %s in %s.", goName, path, article(b.kind)))
 	for _, f := range fieldsOf[full] {
 		fieldPath := joinPath(path, f.apiName)
 		if b.ignored(fieldPath) {

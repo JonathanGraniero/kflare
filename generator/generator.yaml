@@ -489,6 +489,39 @@ ruleKinds:
       logging: Only skip rules log (20018 on a configuration rule, verified live on 2026-10-17).
       ratelimit: Rate limits are refused in http_config_settings (20131, verified live on 2026-10-17).
       exposed_credential_check: Refused in http_config_settings (20189, verified live on 2026-10-17).
+  - kind: OriginRule
+    rule: rulesets.RouteRuleParam
+    shortName: cforigin
+    noun: origin rule
+    doc: |
+      OriginRule is the Schema for the originrules API.
+      It manages one origin rule in a zone: the requests its expression
+      matches reach the origin on another destination port.
+    phase: http_request_origin
+    samples:
+      - expression: 'starts_with(http.request.uri.path, "/api/")'
+        description: Send API requests to the origin's port 8443
+        origin:
+          port: 8443
+    fields:
+      origin:
+        doc: |
+          Origin is where Cloudflare sends the requests the rule matches. Free
+          plans may only change the destination port.
+      origin.port:
+        doc: |
+          Port is the destination port Cloudflare connects to the origin on,
+          from 1 to 65535, in place of the request's own.
+    ignore:
+      host_header: &enterprise >-
+        Free plans are not entitled to Host header, origin host (DNS record) or SNI overrides, which Cloudflare's
+        documentation lists for Enterprise plans (verified live on 2026-10-18); add them once a plan that is can check
+        them.
+      origin.host: *enterprise
+      sni: *enterprise
+      logging: Only skip rules log (20018 on an origin rule, verified live on 2026-10-18).
+      ratelimit: Rate limits are refused in http_request_origin (20131, verified live on 2026-10-18).
+      exposed_credential_check: Refused in http_request_origin (20189, verified live on 2026-10-18).
   - kind: RedirectRule
     rule: rulesets.RedirectRuleParam
     shortName: cfredirect

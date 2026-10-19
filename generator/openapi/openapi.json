@@ -1426,6 +1426,91 @@
         "title": "URI Query",
         "type": "object"
       },
+      "rulesets_RouteHostHeader": {
+        "description": "A value to rewrite the HTTP host header to.",
+        "example": "static.example.com",
+        "minLength": 1,
+        "title": "Host Header",
+        "type": "string"
+      },
+      "rulesets_RouteOrigin": {
+        "description": "An origin to route to.",
+        "minProperties": 1,
+        "properties": {
+          "host": {
+            "description": "A resolved host to route to.",
+            "example": "static.example.com",
+            "minLength": 1,
+            "title": "Host",
+            "type": "string"
+          },
+          "port": {
+            "description": "A destination port to route to.",
+            "example": 80,
+            "maximum": 65535,
+            "minimum": 1,
+            "title": "Port",
+            "type": "integer"
+          }
+        },
+        "title": "Origin",
+        "type": "object"
+      },
+      "rulesets_RouteRule": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/rulesets_Rule"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "route"
+                ],
+                "type": "string"
+              },
+              "action_parameters": {
+                "minProperties": 1,
+                "properties": {
+                  "host_header": {
+                    "$ref": "#/components/schemas/rulesets_RouteHostHeader"
+                  },
+                  "origin": {
+                    "$ref": "#/components/schemas/rulesets_RouteOrigin"
+                  },
+                  "sni": {
+                    "$ref": "#/components/schemas/rulesets_RouteSNI"
+                  }
+                },
+                "type": "object"
+              },
+              "description": {
+                "example": "Select an origin server to route the request to.",
+                "type": "string"
+              }
+            },
+            "title": "Route Rule",
+            "type": "object"
+          }
+        ]
+      },
+      "rulesets_RouteSNI": {
+        "description": "A Server Name Indication (SNI) override.",
+        "properties": {
+          "value": {
+            "description": "A value to override the SNI to.",
+            "example": "static.example.com",
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "Server Name Indication",
+        "type": "object"
+      },
       "rulesets_Rule": {
         "properties": {
           "action": {

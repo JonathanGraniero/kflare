@@ -32,6 +32,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&KVNamespaceReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the KVNamespace controller: %w", err)
 	}
+	if err := (&OriginRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the OriginRule controller: %w", err)
+	}
 	if err := (&RedirectRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the RedirectRule controller: %w", err)
 	}
@@ -53,7 +56,7 @@ var generatedAccountDependents = []dependentKind{
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule
 // controller drives.
-var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, redirectRuleKind, transformRuleKind}
+var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, originRuleKind, redirectRuleKind, transformRuleKind}
 
 // generatedZoneDependents are the generated rule kinds, whose resources
 // reference a Zone in their namespace.
@@ -62,6 +65,8 @@ var generatedZoneDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.CacheRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ConfigurationRule", func() client.ObjectList { return &cloudflarev1alpha1.ConfigurationRuleList{} },
 		func(obj *cloudflarev1alpha1.ConfigurationRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
+	dependents("OriginRule", func() client.ObjectList { return &cloudflarev1alpha1.OriginRuleList{} },
+		func(obj *cloudflarev1alpha1.OriginRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("RedirectRule", func() client.ObjectList { return &cloudflarev1alpha1.RedirectRuleList{} },
 		func(obj *cloudflarev1alpha1.RedirectRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("TransformRule", func() client.ObjectList { return &cloudflarev1alpha1.TransformRuleList{} },

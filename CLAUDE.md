@@ -189,10 +189,10 @@ Shared infrastructure that all Phase 2 controllers will use.
     RedirectRule (checked field by field, then switched in place from an expression target and 302 to a static URL and
     308; an idle reconcile leaves it alone), a CacheRule (its settings checked as the JSON Cloudflare stores, its TTLs
     changed in place; an idle reconcile leaves it alone), a ConfigurationRule (likewise, with settings changed and its
-    WebMCP packs dropped in place), and a WAFCustomRule that uses the IP list (refused while the
-    list does not exist, written once it does). Then everything is deleted in one pass and Cloudflare is checked,
-    including that the managed phase's emptied entry point is gone. Everything is named `kflare-e2e-<run>` (the list
-    `kflare_e2e_<run>`) and cleaned up even on failure
+    WebMCP packs dropped in place), an OriginRule (likewise, moved to another destination port in place), and a
+    WAFCustomRule that uses the IP list (refused while the list does not exist, written once it does). Then everything
+    is deleted in one pass and Cloudflare is checked, including that the managed phase's emptied entry point is gone.
+    Everything is named `kflare-e2e-<run>` (the list `kflare_e2e_<run>`) and cleaned up even on failure
   - `KFLARE_E2E_MANAGER=external` uses an already running manager (e.g. `make run`) instead of deploying one
     (first green live run: 2026-10-05, this way, on kind-kflare-dev)
   - Needs repo secrets `CF_API_TOKEN`, `CF_ACCOUNT_ID` and variable `CF_E2E_ZONE` (`kflare.dev`, the project's
@@ -488,7 +488,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/redirect-rule-controller` | `RedirectRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔, no regex ✔ |
 | `feat/cache-rule-controller` | `CacheRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔; of a custom cache key, only leaving out the query string ✔ |
 | `feat/configuration-rule-controller` | `ConfigurationRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔; some values need a higher plan ✔ |
-| `feat/origin-rule-controller` | `OriginRule` | code generator (rule kinds) | Generated. Free: 10 rules, destination port override only |
+| `feat/origin-rule-controller` | `OriginRule` | code generator (rule kinds) | 🚧 Generated, live e2e pending. Free: 10 rules (per the docs), destination port override only ✔ |
 | `feat/managed-ruleset-exception-controller` | `ManagedRulesetException` | managed-ruleset-controller | Not scheduled (decided 2026-10-14, see `ManagedRuleset`). Free: skip rules accepted |
 | `feat/load-balancer-monitor-controller` | `LoadBalancerMonitor` | shared-client | ⏸ Deferred: needs Load Balancing add-on |
 | `feat/load-balancer-controller` | `LoadBalancer` (+ pools) | load-balancer-monitor-controller | ⏸ Deferred: needs Load Balancing add-on |
@@ -496,8 +496,8 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 Rows run top to bottom. The order decided on 2026-10-06 (WAF, then rate limiting, then Zero Trust) is kept. `IPList`
 comes before Zero Trust because it is free and can be tested today, while Zero Trust waits on a dashboard step. When a
 row is blocked, skip ahead: `ManagedTransform` depends on no other row. The five Rules rows are generated (decided
-2026-10-13): TransformRule, RedirectRule and CacheRule are done, ConfigurationRule and OriginRule are next. What may
-come after them is in [Next wave](#next-wave-proposed-2026-10-17).
+2026-10-13): TransformRule, RedirectRule, CacheRule and ConfigurationRule are done, and OriginRule is generated, its
+live e2e pending. What may come after them is in [Next wave](#next-wave-proposed-2026-10-17).
 
 `PageRule` is dropped (decided 2026-10-09): Page Rules is deprecated, and its API refuses account-owned tokens (see
 "Plan corrections" below). The Transform, Redirect, Cache, Configuration and Origin rows cover its settings.
@@ -528,7 +528,7 @@ names; deploy.md uses the dashboard's labels, so look those up when each branch 
 | `RedirectRule` | Dynamic URL Redirects Write | ✅ added on `kflare.dev` 2026-10-15 (see below); written, updated and deleted by the e2e (run `5f9daf`); enough on its own (2026-10-17, see below) |
 | `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `fd8de2`); enough on its own (2026-10-17, see below) |
 | `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `e9994a`); not yet checked on its own |
-| `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry run accepted |
+| `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry runs and ten probe rules written and deleted (2026-10-18); not yet run by the e2e |
 | `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run). An empty PATCH was refused on 2026-10-17, so Config Settings Write, which the OpenAPI spec lists for it, is not enough |
 | `IPList` | Account Rule Lists Write (account) | ✅ create, replace and delete verified 2026-10-13; enough on its own |
 | `D1Database` | D1 Write (account) | ✅ create, read, list and delete verified 2026-10-15; enough on its own (2026-10-15, see below) |
@@ -677,7 +677,7 @@ checked 2026-10-09; ✔ marks what a dry run on `kflare.dev` confirmed the same 
 | WAF managed rulesets | Cloudflare Free Managed Ruleset only ✔, with overrides for the whole ruleset, a category or a rule ✔; no payload logging ✔ | + Cloudflare Managed Ruleset, OWASP Core Ruleset, Exposed Credentials Check | same as Pro |
 | Custom lists | 1 IP list ✔, 10,000 items in the account ✔; the quota is per kind (a hostname list was accepted alongside) | 10 lists, 10,000 items in total | same as Pro |
 | Transform, redirect, cache, configuration and origin rules | 10 rules each, transform rules counted across their three phases ✔, single redirects ✔, cache rules ✔, configuration rules ✔; no regex in transform ✔ or redirect rules ✔ | 25 each | 50 each; regex in transform and redirect rules |
-| Origin rule overrides | destination port only (Host header, SNI and DNS record need Enterprise) | same | same |
+| Origin rule overrides | destination port only ✔ (Host header, SNI and DNS record need Enterprise; refused on Free ✔) | same | same |
 
 Rate limiting also requires `cf.colo.id` among the characteristics (code 20155) and a mitigation timeout of 0, equal
 to the period or longer (code 20156). The docs limit Free expressions to path and verified-bot fields, but dry runs
@@ -1077,9 +1077,9 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
 
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)
 **Depend on:** the code generator's rule kinds (`feat/generator-rule-kinds`); one branch and PR each
-**Status:** 🚧 `TransformRule` ✅, generated in `feat/generator-rule-kinds` (the code generator's PR 8); `RedirectRule`
-✅ (`feat/redirect-rule-controller`); `CacheRule` ✅ (`feat/cache-rule-controller`); `ConfigurationRule` ✅
-(`feat/configuration-rule-controller`); `OriginRule` not started
+**Status:** 🚧 `TransformRule` ✅, generated in `feat/generator-rule-kinds` (the code generator's PR 8); `RedirectRule` ✅
+(`feat/redirect-rule-controller`); `CacheRule` ✅ (`feat/cache-rule-controller`); `ConfigurationRule` ✅
+(`feat/configuration-rule-controller`); `OriginRule` 🚧 (`feat/origin-rule-controller`), generated, its live e2e pending
 
 Each is the foundation plus typed action parameters. Together they replace Page Rules. They are generated (decided
 2026-10-13): each is a `generator.yaml` entry plus hooks for what Cloudflare's schema leaves out (see
@@ -1091,7 +1091,7 @@ Each is the foundation plus typed action parameters. Together they replace Page 
 | `RedirectRule` (single redirects) ✅ | `http_request_dynamic_redirect` | `redirect` | 10 rules ✔, no regex ✔ | ✅ since 2026-10-15 |
 | `CacheRule` ✅ | `http_request_cache_settings` | `set_cache_settings` | 10 rules ✔ | ✅ since 2026-10-15 |
 | `ConfigurationRule` ✅ | `http_config_settings` | `set_config` | 10 rules ✔ | ✅ since 2026-10-15 |
-| `OriginRule` | `http_request_origin` | `route` | 10 rules, destination port only | ✅ since 2026-10-15 |
+| `OriginRule` 🚧 | `http_request_origin` | `route` | 10 rules (per the docs, see below), destination port only ✔ | ✅ since 2026-10-15 |
 
 - Spec fields are v7's typed action parameters (`rulesets.RewriteRuleParam`, `RedirectRuleParam`,
   `SetCacheSettingsRuleParam`, `SetConfigRuleParam`, `RouteRuleParam`), never raw JSON. Fields are opt-out (decided
@@ -1229,6 +1229,41 @@ each deleted afterwards):**
   refusal one item over each list's or map's maximum (`Too many`), for `webmcpPacks` and, untested before, CacheRule's
   vary headers, media types and languages. A mutation check (21 mutations of the conversion, the CRD and the new case)
   caught all but a conversion that does not sort the packs, as the test listed them sorted; it lists them unsorted now
+
+**OriginRule design notes (verified live on `kflare.dev`, 2026-10-18, with dry runs and ten `kflare-probe-*` rules,
+deleted afterwards with their entry point):**
+- Its spec: `origin.port`, the destination port (1 to 65535), required, as is `origin`. v7's `rulesets.RouteRuleParam`
+  also holds `host_header`, `origin.host` (a DNS record to resolve) and `sni`, which Free zones cannot use. With those
+  ignored, `origin` keeps one field, so kflare-gen makes it and the port required, as with RedirectRule's `fromValue`.
+  The entry gives no CEL rules
+- Free: the destination port only. `host_header`, `origin.host` and `sni` are refused ("not entitled to use the
+  HostHeader override", "the Origin Host override", "SNI override"), as Cloudflare's documentation says: Enterprise
+  plans only. The entry ignores them, with that reason
+- Refused (400): port 0 (20093) and 65536 ("invalid JSON"), both outside the CRD's range; an empty `origin` (20092,
+  "either host or port should not be empty"); no action parameters, or empty ones (20090); an empty host header (20091)
+  or SNI value (20094). Accepted: ports 1, 8443 and 65535
+- Stored as sent: the ten probe rules, one disabled and with a description, came back as sent, with only `enabled`
+  defaulted (to true)
+- Quota, not settled: Cloudflare's documentation gives Free 10 origin rules, yet with ten probe rules stored (one
+  disabled), a dry run of an 11th single-rule POST was accepted. Writing an 11th rule for real was not done (the
+  session's permission check stopped it; the probe rules were deleted). Hypotheses, most likely first: a dry run of a
+  single-rule POST does not count the quota; a disabled rule does not count; the Free quota is above 10
+- `logging` (20018), `ratelimit` (20131) and `exposed_credential_check` (20189) are refused in the phase; the entry
+  ignores them
+- deploy.md documents Zone · Origin Rules · Edit (the label Cloudflare's origin rules API documentation gives the API's
+  Origin Write); not yet checked on its own with a short-lived token (see Token permissions)
+- Live e2e spec: one rule on port 8443, checked as the JSON Cloudflare stores, moved to port 8080 in place, then left
+  alone by an idle reconcile. Not run yet
+- It needed nothing new from kflare-gen's mapping. Its docs did need "an" before a name that starts with a vowel ("an
+  OriginRule", and for the test IP list kind "an IP list"): kflare-gen's `article` now picks it wherever a generated
+  doc names a kind or noun, tested by generating the test and committed rule kinds, and a CRUD controller, under names
+  that start with a vowel. A mutation check (`hack/mutate.sh`, 31 mutations of the generated conversion, phase, action
+  and kind name, the registration, the CRD's bounds and required fields, and kflare-gen's articles) first left three
+  alive: a wrong kind name (the rule kind tables were named after it, so a focus on the kind ran nothing, and their
+  expected refs came from it), the kind missing from `SetupGeneratedReconcilers` (its spec only checked that setup
+  succeeded), and the ID label's article. The tables are now named after the API type, which the kind's name must
+  match; the setup spec checks that every generated kind's controller is registered, by name; and the vowel test
+  covers a CRUD kind's types. All 31 are caught
 
 #### Code generator (`kflare-gen`)
 **Depends on:** `feat/shared-client`, `feat/rulesets-foundation`; eight PRs, in order
@@ -1494,8 +1529,8 @@ kinds:
   field (kflare reported Cloudflare's 20087 as `TerminalError`); the sample held it too. Both use `ip.src.country` now,
   and every sample's rule passed a dry run
 - **Next:** the other Rules kinds, one entry and PR each: RedirectRule ✅ (`feat/redirect-rule-controller`), CacheRule ✅
-  (`feat/cache-rule-controller`), ConfigurationRule ✅ (`feat/configuration-rule-controller`), then OriginRule. The dev
-  token can write all four phases since 2026-10-15
+  (`feat/cache-rule-controller`), ConfigurationRule ✅ (`feat/configuration-rule-controller`), and OriginRule 🚧
+  (`feat/origin-rule-controller`, its live e2e pending). The dev token can write all four phases since 2026-10-15
 - **Later:** the capabilities the next kinds need, in [Next wave](#next-wave-proposed-2026-10-17): a runtime for
   settings-style singletons, zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without
   `New`, and secrets. Also cross-kind references such as `kvNamespaceRef`, generated live e2e specs, and deploy.md
@@ -1745,12 +1780,13 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Current Status
 
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
-> `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule` and `ConfigurationRule` done.**
+> `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule` and `ConfigurationRule` done;
+> `OriginRule` generated, its live e2e pending.**
 > cloudflare-go is at v0.119, with v7.12.0 next to it for the generated kinds and the rule kinds; rule kinds share the
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
-> generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule and ConfigurationRule on
-> the shared rule controller. Next: OriginRule, a `generator.yaml` entry; after it, the proposed next wave (see Phase
-> 3). deploy.md's permissions are verified on their own up to CacheRule. Zero Trust still waits on account setup. Items
+> generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
+> OriginRule on the shared rule controller. Next: OriginRule's live e2e; after it, the proposed next wave (see Phase 3).
+> deploy.md's permissions are verified on their own up to CacheRule. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under "Deferred: paid plan, add-on or account setup" in Phase
 > 3.
 > Last updated: October 2026

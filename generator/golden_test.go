@@ -110,6 +110,39 @@ func goldenFiles(t *testing.T) map[string][]byte {
 	return files
 }
 
+// TestRuleKindPutsAnBeforeAVowel generates the test rule kinds and the committed
+// ones, between them a phase map, unions, maps and lists of objects, under names
+// that start with a vowel, and checks that no file they get says "a" before one.
+func TestRuleKindPutsAnBeforeAVowel(t *testing.T) {
+	var entries []ruleKindConfig
+	for _, path := range []string{filepath.Join("testdata", "generator.yaml"), "generator.yaml"} {
+		cfg, err := loadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, cfg.RuleKinds...)
+	}
+	spec := loadTestSpec(t)
+	for _, entry := range entries {
+		entry.Kind = "Every" + strings.TrimPrefix(entry.Kind, "Test")
+		k, err := buildRuleKind(entry, loadTestRule(t, entry.Rule), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := &outputs{files: map[string][]byte{}}
+		if err := out.addRuleKind(k, testHeader); err != nil {
+			t.Fatal(err)
+		}
+		for path, src := range out.files {
+			// The docs are wrapped, so read them as one line of words.
+			text := " " + strings.Join(strings.Fields(strings.ReplaceAll(string(src), "//", "")), " ")
+			if strings.Contains(text, " a "+entry.Kind) {
+				t.Errorf("%s says \"a %s\"", filepath.Base(path), entry.Kind)
+			}
+		}
+	}
+}
+
 // TestGolden compares what kflare-gen generates for the test kinds with their
 // golden files.
 func TestGolden(t *testing.T) {

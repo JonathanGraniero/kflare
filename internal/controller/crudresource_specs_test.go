@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -640,12 +641,44 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 	})
 }
 
+// recordingManager records the runnables added to a manager, among them the
+// controllers a setup registers.
+type recordingManager struct {
+	manager.Manager
+	added []manager.Runnable
+}
+
+func (m *recordingManager) Add(r manager.Runnable) error {
+	m.added = append(m.added, r)
+	return m.Manager.Add(r)
+}
+
 var _ = Describe("SetupGeneratedReconcilers", func() {
 	It("registers the reconciler of every generated kind", func() {
 		mgr, err := manager.New(cfg, manager.Options{
 			Controller: config.Controller{SkipNameValidation: new(true)},
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(SetupGeneratedReconcilers(mgr)).To(Succeed())
+		recording := &recordingManager{Manager: mgr}
+		Expect(SetupGeneratedReconcilers(recording)).To(Succeed())
+
+		// controller-runtime names a controller after its kind, in lower case,
+		// in the Name field of a type it does not export.
+		names := make([]string, 0, len(recording.added))
+		for _, r := range recording.added {
+			v := reflect.Indirect(reflect.ValueOf(r))
+			Expect(v.Kind()).To(Equal(reflect.Struct), "%T is not a controller", r)
+			name := v.FieldByName("Name")
+			Expect(name.IsValid()).To(BeTrue(), "%T has no Name field", r)
+			names = append(names, name.String())
+		}
+		want := make([]string, 0, len(generatedRulesetRuleKinds)+len(generatedAccountDependents))
+		for _, k := range generatedRulesetRuleKinds {
+			want = append(want, strings.ToLower(k.name))
+		}
+		for _, d := range generatedAccountDependents {
+			want = append(want, strings.ToLower(d.kind))
+		}
+		Expect(names).To(ConsistOf(want))
 	})
 })

@@ -35,6 +35,7 @@ rules:
   - iplists
   - kvnamespaces
   - managedrulesets
+  - originrules
   - r2buckets
   - ratelimitrules
   - redirectrules
@@ -64,6 +65,7 @@ rules:
   - iplists/finalizers
   - kvnamespaces/finalizers
   - managedrulesets/finalizers
+  - originrules/finalizers
   - r2buckets/finalizers
   - ratelimitrules/finalizers
   - redirectrules/finalizers
@@ -87,6 +89,7 @@ rules:
   - iplists/status
   - kvnamespaces/status
   - managedrulesets/status
+  - originrules/status
   - r2buckets/status
   - ratelimitrules/status
   - redirectrules/status

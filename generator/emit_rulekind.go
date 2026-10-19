@@ -224,8 +224,8 @@ func emitRuleController(k *ruleKind, header string) ([]byte, error) {
 	rs := f.use(rulesetsPackage, "rulesets")
 	ctx := f.use("context", "context")
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles a %s object, with the shared rule controller "+
-		"(rulesetrule_controller.go): one rule in its zone's entry point ruleset for the %s.", k.name, k.name,
+	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles %s object, with the shared rule controller "+
+		"(rulesetrule_controller.go): one rule in its zone's entry point ruleset for the %s.", k.name, article(k.name),
 		phrasePhases(k))))
 	f.printf("type %sReconciler struct {\n%s.Client\nScheme *%s.Scheme\n\n", k.name, client,
 		f.use("k8s.io/apimachinery/pkg/runtime", "runtime"))
@@ -249,8 +249,8 @@ func emitRuleController(k *ruleKind, header string) ([]byte, error) {
 		phases[i] = rs + "." + p.constant
 	}
 	if k.typeDoc != nil {
-		comment(&f.Builder, "", wrap(fmt.Sprintf("%sPhases maps a %s's type to the phase of its rule.", k.varName,
-			k.name)))
+		comment(&f.Builder, "", wrap(fmt.Sprintf("%sPhases maps %s's type to the phase of its rule.", k.varName,
+			article(k.name))))
 		f.printf("var %sPhases = map[string]%s.Phase{\n", k.varName, rs)
 		for _, p := range k.phases {
 			f.printf("%q: %s.%s,\n", p.typeName, rs, p.constant)
@@ -282,8 +282,8 @@ func emitRuleController(k *ruleKind, header string) ([]byte, error) {
 	f.printf("if newAPI == nil {\nnewAPI = defaultRulesetRuleAPI\n}\n")
 	f.printf("return &rulesetRuleReconciler{Client: r.Client, kind: %sKind, newAPI: newAPI}\n}\n\n", k.varName)
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sDefinition is the Cloudflare rule a %s asks for: a rule with the "+
-		"%s action and the action parameters its spec holds.", k.varName, k.name, k.rule.action)))
+	comment(&f.Builder, "", wrap(fmt.Sprintf("%sDefinition is the Cloudflare rule %s asks for: a rule with the "+
+		"%s action and the action parameters its spec holds.", k.varName, article(k.name), k.rule.action)))
 	f.printf("func %sDefinition(rule *%s.%s) %s.RulesetNewParamsRule {\n", k.varName, api, k.name, rs)
 	f.printf("definition := rulesetRuleDefinition(%s.%s, rule.Spec.RulesetRuleSpec)\n", rs, k.actionConst)
 	f.printf("params := %s(rule.Spec)\n", k.conversionName(k.params))
@@ -311,14 +311,14 @@ func phrasePhases(k *ruleKind) string {
 // parameters into its SDK struct: it sets each field the spec sets.
 func emitConversion(f *goFile, k *ruleKind, st *paramStruct) error {
 	in := f.api() + "." + st.goName
-	what := fmt.Sprintf("%s of a %s as cloudflare-go v7 sends it", st.path, k.name)
+	what := fmt.Sprintf("%s of %s as cloudflare-go v7 sends it", st.path, article(k.name))
 	switch {
 	case st == k.params:
 		in = f.api() + "." + k.name + "Spec"
-		what = fmt.Sprintf("the action parameters of a %s as cloudflare-go v7 sends them", k.name)
+		what = fmt.Sprintf("the action parameters of %s as cloudflare-go v7 sends them", article(k.name))
 	case strings.HasSuffix(st.path, "[]"):
-		what = fmt.Sprintf("an item of %s in a %s as cloudflare-go v7 sends it", strings.TrimSuffix(st.path, "[]"),
-			k.name)
+		what = fmt.Sprintf("an item of %s in %s as cloudflare-go v7 sends it", strings.TrimSuffix(st.path, "[]"),
+			article(k.name))
 	}
 	sdk := f.typ(st.sdk)
 	name := k.conversionName(st)

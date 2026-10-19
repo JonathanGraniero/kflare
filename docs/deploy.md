@@ -43,11 +43,12 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 | `RedirectRule` | Zone · Single Redirect · Edit |
 | `CacheRule` | Zone · Cache Rules · Edit |
 | `ConfigurationRule` | Zone · Config Rules · Edit |
+| `OriginRule` | Zone · Origin Rules · Edit |
 | `IPList` | Account · Account Rule Lists · Edit |
 
 These are enough on their own: in October 2026 a token holding only them (with Zone · Zone · Read, and without Billing)
-ran kflare's full live test suite against an existing zone, before `ConfigurationRule` was added. Scope zone permissions
-to the zones kflare should manage. Note the account ID, shown on the account's overview page.
+ran kflare's full live test suite against an existing zone, before `ConfigurationRule` and `OriginRule` were added.
+Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's overview page.
 
 ## 2. Install the chart
 
@@ -143,6 +144,7 @@ Every other kind references the account (or a resource that does). Examples are 
 | `RedirectRule` | Namespaced | `zoneRef` (same namespace) | [www to the apex domain](../config/samples/cloudflare_v1alpha1_redirectrule.yaml) |
 | `CacheRule` | Namespaced | `zoneRef` (same namespace) | [static assets for a day](../config/samples/cloudflare_v1alpha1_cacherule.yaml) |
 | `ConfigurationRule` | Namespaced | `zoneRef` (same namespace) | [stricter settings for admin pages](../config/samples/cloudflare_v1alpha1_configurationrule.yaml) |
+| `OriginRule` | Namespaced | `zoneRef` (same namespace) | [API requests to port 8443](../config/samples/cloudflare_v1alpha1_originrule.yaml) |
 
 Things to know before pointing kflare at existing infrastructure:
 
@@ -200,6 +202,11 @@ Things to know before pointing kflare at existing infrastructure:
   plan (Polish other than `off`, `ssl: origin_pull`, `securityLevel: off`), and Cloudflare refuses them on Free.
   kflare leaves out the deprecated settings (Auto Minify, Cloudflare Apps, Mirage, Signed Exchanges) and Pay Per
   Crawl, which Free zones cannot set.
+- **Origin rules.** Each `OriginRule` manages one origin rule in its zone, marked and ordered like WAF custom rules: the
+  requests its expression matches reach the origin on another destination port (`origin.port`, 1 to 65535). The port is
+  the only override Free, Pro and Business zones may use: Cloudflare's documentation lists the Host header, SNI and DNS
+  record overrides for Enterprise plans, and Cloudflare refuses them on Free, so kflare leaves them out. Cloudflare's
+  documentation gives Free zones 10 origin rules.
 - **Immutable fields.** Names and references (`spec.name`, `accountRef`, `zoneRef`, DNS `type`, ...) cannot be
   changed. Create a new resource instead.
 
@@ -286,7 +293,7 @@ Order matters, because kflare's finalizers need the controller running to clean 
    R2Bucket `retain`.
 
    ```sh
-   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,wafcustomrules.kflare.dev,ratelimitrules.kflare.dev,managedrulesets.kflare.dev,transformrules.kflare.dev,redirectrules.kflare.dev,cacherules.kflare.dev,configurationrules.kflare.dev,iplists.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev,kvnamespaces.kflare.dev,r2buckets.kflare.dev,d1databases.kflare.dev --all -A
+   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,wafcustomrules.kflare.dev,ratelimitrules.kflare.dev,managedrulesets.kflare.dev,transformrules.kflare.dev,redirectrules.kflare.dev,cacherules.kflare.dev,configurationrules.kflare.dev,originrules.kflare.dev,iplists.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev,kvnamespaces.kflare.dev,r2buckets.kflare.dev,d1databases.kflare.dev --all -A
    kubectl delete cloudflareaccounts.kflare.dev --all
    ```
 

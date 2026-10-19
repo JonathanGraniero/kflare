@@ -197,12 +197,12 @@ func emitController(c *controller, header string) ([]byte, error) {
 	}
 	f.printf("}\n\nvar _ %s = (*%s)(nil)\n\n", api, service)
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles a %s object, with the shared CRUD reconciler "+
-		"(crudresource_controller.go).", name, name)))
+	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles %s object, with the shared CRUD reconciler "+
+		"(crudresource_controller.go).", name, article(name))))
 	f.printf("type %sReconciler struct {\n\t%s.Client\n\tScheme *%s.Scheme\n\n", name, client,
 		f.use("k8s.io/apimachinery/pkg/runtime", "runtime"))
-	comment(&f.Builder, "\t", wrapIndented(fmt.Sprintf("New%s constructs a %s from a raw API token. Defaults to "+
-		"default%s; tests inject a fake.", api, api, api)))
+	comment(&f.Builder, "\t", wrapIndented(fmt.Sprintf("New%s constructs %s from a raw API token. Defaults to "+
+		"default%s; tests inject a fake.", api, article(api), api)))
 	f.printf("\tNew%s func(token string) (%s, error)\n}\n\n", api, api)
 
 	for _, marker := range rbacMarkers(c) {
@@ -303,8 +303,8 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("}\n\n")
 
 	if len(c.dependents) > 0 {
-		comment(&f.Builder, "", wrap(fmt.Sprintf("%sDependents use a %s, which waits for them before it is deleted.",
-			v, name)))
+		comment(&f.Builder, "", wrap(fmt.Sprintf("%sDependents use %s, which waits for them before it is deleted.",
+			v, article(name))))
 		f.printf("var %sDependents = []dependentKind{\n", v)
 		for _, d := range c.dependents {
 			comment(&f.Builder, "\t", wrapIndented(d.Reason))
@@ -319,13 +319,13 @@ func emitController(c *controller, header string) ([]byte, error) {
 		ctrl)
 	f.printf("return r.crud().reconcile(ctx, req)\n}\n\n")
 	setupDoc := fmt.Sprintf("SetupWithManager registers %sReconciler with the manager. It watches CloudflareAccounts, "+
-		"so a %s waiting for its account is reconciled once the account is ready", name, name)
+		"so %s waiting for its account is reconciled once the account is ready", name, article(name))
 	if len(c.dependents) > 0 {
 		var kinds []string
 		for _, d := range c.dependents {
 			kinds = append(kinds, pluralOf(d.Kind))
 		}
-		setupDoc += fmt.Sprintf(", and deleted %s, so a %s waiting for them is released", prose(kinds), name)
+		setupDoc += fmt.Sprintf(", and deleted %s, so %s waiting for them is released", prose(kinds), article(name))
 	}
 	comment(&f.Builder, "", wrap(setupDoc+"."))
 	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nreturn r.crud().setup(mgr, r)\n}\n\n",
