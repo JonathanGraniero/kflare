@@ -1668,6 +1668,17 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 
 ---
 
+## Development workflow
+
+- Every new controller needs: unit tests, a live e2e spec, docs, and a mutation-testing run where all mutations are
+  caught.
+- Keep doc and markdown lines at 120 characters or fewer.
+- Before pushing, run tests, the linter and codegen checks. Merge main and resolve conflicts if the branch is behind.
+- Keep tooling such as the mutation runner in the repo (e.g. `hack/`), not in the scratchpad.
+- Verify token-permission claims against live specs, not old notes.
+
+---
+
 ## Development Commands
 
 ```bash
