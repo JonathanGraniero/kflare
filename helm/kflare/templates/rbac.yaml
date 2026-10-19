@@ -105,6 +105,7 @@ rules:
       - configurationrules
       - d1databases
       - kvnamespaces
+      - originrules
       - redirectrules
       - transformrules
       # +kflare-gen:end

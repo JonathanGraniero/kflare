@@ -64,6 +64,9 @@ const (
 	// configurationPhase is the Rulesets phase of ConfigurationRules.
 	configurationPhase = "http_config_settings"
 
+	// originPhase is the Rulesets phase of OriginRules.
+	originPhase = "http_request_origin"
+
 	// freeManagedRulesetID is the Cloudflare Free Managed Ruleset, the
 	// managed ruleset a Free zone can deploy.
 	freeManagedRulesetID = "77454fe2d30c4220b5701f6fdfb893ba"
@@ -106,7 +109,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		routeKey, exclusionKey, kvKey, bucketKey, wafKey, wafSkipKey          client.ObjectKey
 		rateLimitKey, listKey, listRuleKey, managedKey, d1Key                 client.ObjectKey
 		urlRewriteKey, requestHeadersKey, responseHeadersKey, redirectKey     client.ObjectKey
-		cacheKey, configurationKey                                            client.ObjectKey
+		cacheKey, configurationKey, originKey                                 client.ObjectKey
 
 		tunnelID, zoneID, recordID, routeID, exclusionID, kvNamespaceID, listID, databaseID string
 	)
@@ -185,6 +188,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		redirectKey = client.ObjectKey{Namespace: e2eNamespace, Name: "redirect"}
 		cacheKey = client.ObjectKey{Namespace: e2eNamespace, Name: "cache"}
 		configurationKey = client.ObjectKey{Namespace: e2eNamespace, Name: "configuration"}
+		originKey = client.ObjectKey{Namespace: e2eNamespace, Name: "origin"}
 
 		DeferCleanup(func() {
 			By("removing anything this run left behind in Cloudflare")
@@ -213,6 +217,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				cleanupRules(ctx, cfAPI, ruleService, zoneID, cachePhase, ruleRef("CacheRule", cacheKey))
 				cleanupRules(ctx, cfAPI, ruleService, zoneID, configurationPhase,
 					ruleRef("ConfigurationRule", configurationKey))
+				cleanupRules(ctx, cfAPI, ruleService, zoneID, originPhase, ruleRef("OriginRule", originKey))
 				// An entry point in the managed phase, even an empty one,
 				// stops Cloudflare's default deployment of the Free Managed
 				// Ruleset; deleting it restores the zone as found.
@@ -887,6 +892,49 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		expectIdle(ctx, k8s, cfAPI, zoneID, configurationPhase, rule)
 	})
 
+	It("writes an origin rule, updates it in place and then leaves it alone", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		path := "/" + resourceName()
+		rule := &cloudflarev1alpha1.OriginRule{
+			ObjectMeta: objectMeta(originKey),
+			Spec: cloudflarev1alpha1.OriginRuleSpec{
+				RulesetRuleSpec: cloudflarev1alpha1.RulesetRuleSpec{
+					ZoneRef:     corev1.LocalObjectReference{Name: zoneKey.Name},
+					Expression:  `starts_with(http.request.uri.path, "` + path + `/")`,
+					Description: "kflare e2e " + run,
+				},
+				Origin: cloudflarev1alpha1.OriginRuleOrigin{Port: 8443},
+			},
+		}
+		Expect(k8s.Create(ctx, rule)).To(Succeed())
+		expectReady(originKey, rule, func() []metav1.Condition { return rule.Status.Conditions })
+		ref := ruleRef("OriginRule", originKey)
+		Expect(rule.Status.CloudflareMetadata.Ref).To(Equal(ref))
+		cfRule, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, originPhase), ref)
+		Expect(ok).To(BeTrue(), "the %s phase has no rule with ref %s", originPhase, ref)
+		Expect(cfRule.ID).To(Equal(rule.Status.CloudflareMetadata.RuleID))
+		Expect(cfRule.Action).To(Equal("route"))
+		Expect(cfRule.Expression).To(Equal(rule.Spec.Expression))
+		Expect(cfRule.Description).To(Equal(rule.Spec.Description))
+		Expect(rawActionParameters(ctx, cfAPI, zoneID, originPhase, ref)).To(MatchJSON(`{"origin": {"port": 8443}}`))
+
+		By("moving the requests to port 8080, in place")
+		patch := client.MergeFrom(rule.DeepCopy())
+		rule.Spec.Origin.Port = 8080
+		Expect(k8s.Patch(ctx, rule, patch)).To(Succeed())
+		Eventually(func(g Gomega) {
+			updated, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, originPhase), ref)
+			g.Expect(ok).To(BeTrue(), "Cloudflare has no rule with ref %s", ref)
+			g.Expect(updated.ID).To(Equal(cfRule.ID))
+			g.Expect(rawActionParameters(ctx, cfAPI, zoneID, originPhase, ref)).To(
+				MatchJSON(`{"origin": {"port": 8080}}`))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+
+		expectIdle(ctx, k8s, cfAPI, zoneID, originPhase, rule)
+	})
+
 	It("deploys the Free Managed Ruleset, updates its overrides in place and then leaves it alone", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")
@@ -1057,6 +1105,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			&cloudflarev1alpha1.RedirectRule{ObjectMeta: objectMeta(redirectKey)},
 			&cloudflarev1alpha1.CacheRule{ObjectMeta: objectMeta(cacheKey)},
 			&cloudflarev1alpha1.ConfigurationRule{ObjectMeta: objectMeta(configurationKey)},
+			&cloudflarev1alpha1.OriginRule{ObjectMeta: objectMeta(originKey)},
 			&cloudflarev1alpha1.WAFCustomRule{ObjectMeta: objectMeta(listRuleKey)},
 			&cloudflarev1alpha1.IPList{ObjectMeta: objectMeta(listKey)},
 			&cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(recordKey)},
@@ -1118,6 +1167,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			_, ok = ruleByRef(phaseRules(ctx, cfAPI, zoneID, configurationPhase),
 				ruleRef("ConfigurationRule", configurationKey))
 			Expect(ok).To(BeFalse(), "the configuration rule was not deleted")
+			_, ok = ruleByRef(phaseRules(ctx, cfAPI, zoneID, originPhase), ruleRef("OriginRule", originKey))
+			Expect(ok).To(BeFalse(), "the origin rule was not deleted")
 			_, err = cfAPI.GetEntrypointRuleset(ctx, cf.ZoneIdentifier(zoneID), managedPhase)
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(),
 				"the managed phase's emptied entry point was not deleted, which leaves Cloudflare's default off: %v", err)

@@ -700,6 +700,44 @@ func TestEmitControllerTestRefusesWhatItCannotConvert(t *testing.T) {
 	}
 }
 
+func TestEmitKindPutsAnBeforeAVowel(t *testing.T) {
+	entry := kvControllerEntry()
+	entry.Kind, entry.Noun = "IPNamespace", "IP namespace"
+	entry.Dependents = []dependentConfig{{Kind: "WorkerScript", Refs: "boundIPNamespaces", Reason: "A reason."}}
+	svc, spec := loadTestService(t, "kv.NamespaceService"), loadTestSpec(t)
+	k, err := buildKind(entry, svc, spec)
+	if err != nil {
+		t.Fatalf("buildKind: %v", err)
+	}
+	c, err := buildController(k, entry, svc, spec)
+	if err != nil {
+		t.Fatalf("buildController: %v", err)
+	}
+	types, err := emitTypes(k, "")
+	if err != nil {
+		t.Fatalf("emitTypes: %v", err)
+	}
+	controller, err := emitController(c, "")
+	if err != nil {
+		t.Fatalf("emitController: %v", err)
+	}
+	// The docs are wrapped, so compare them as one line of words.
+	text := strings.Join(strings.Fields(strings.ReplaceAll(string(types)+string(controller), "//", "")), " ")
+	for _, want := range []string{
+		"the Cloudflare IP namespace an IPNamespace manages",
+		"never adopts an IP namespace that another IPNamespace already carries",
+		"IPNamespaceReconciler reconciles an IPNamespace object",
+		"NewIPNamespaceAPI constructs an IPNamespaceAPI from a raw API token",
+		"Dependents use an IPNamespace, which waits",
+		"so an IPNamespace waiting for its account",
+		"so an IPNamespace waiting for them is released",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the controller does not say %q", want)
+		}
+	}
+}
+
 func TestGoFileSource(t *testing.T) {
 	f := newGoFile()
 	f.use("example.com/a/things", "things")

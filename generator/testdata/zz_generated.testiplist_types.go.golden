@@ -10,7 +10,7 @@ import (
 )
 
 // TestIPListIDLabel holds the ID of the Cloudflare IP list a TestIPList
-// manages. kflare sets it, and never adopts a IP list that another TestIPList
+// manages. kflare sets it, and never adopts an IP list that another TestIPList
 // already carries in this label.
 const TestIPListIDLabel = "kflare.dev/test-ip-list-id"
 

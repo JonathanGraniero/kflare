@@ -30,8 +30,9 @@ func emitTypes(k *kind, header string) ([]byte, error) {
 	write("%s\n\n%s\n\npackage v1alpha1\n\n", strings.TrimRight(header, "\n"), generatedMarker)
 	write("import (\n\tcorev1 %q\n\tmetav1 %q\n)\n\n", "k8s.io/api/core/v1", "k8s.io/apimachinery/pkg/apis/meta/v1")
 
-	comment(&b, "", wrap(fmt.Sprintf("%sIDLabel holds the ID of the Cloudflare %s a %s manages. kflare sets it, "+
-		"and never adopts a %s that another %s already carries in this label.", k.name, k.noun, k.name, k.noun, k.name)))
+	comment(&b, "", wrap(fmt.Sprintf("%sIDLabel holds the ID of the Cloudflare %s %s manages. kflare sets it, "+
+		"and never adopts %s that another %s already carries in this label.", k.name, k.noun, article(k.name),
+		article(k.noun), k.name)))
 	write("const %sIDLabel = %q\n\n", k.name, k.claimLabel)
 
 	comment(&b, "", []string{fmt.Sprintf("%sSpec defines the desired state of %s.", k.name, k.name)})

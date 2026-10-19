@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/cloudflare/cloudflare-go/v7/rulesets"
@@ -23,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -100,7 +102,9 @@ func comparableJSONRule(rule string) any {
 }
 
 func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
-	kind := specs.kind.name
+	// The kind as its API type names it, which the specs expect refs and
+	// objects to carry; one spec checks that the rule kind goes by it too.
+	kind := reflect.TypeOf(specs.newObject()).Elem().Name()
 	return Describe(kind+" (generated rule kind)", func() {
 		const ns = "default"
 		ctx := context.Background()
@@ -361,6 +365,13 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			Expect(specs.newReconciler(mgr.GetClient(), nil).SetupWithManager(mgr)).To(Succeed())
 			_, err = specs.newReconciler(k8sClient, nil).rules().newAPI("")
 			Expect(err).To(HaveOccurred(), "the production client rejects an empty token")
+		})
+
+		It("is named after its API type, which its rules' refs are derived from", func() {
+			gvk, err := apiutil.GVKForObject(specs.newObject(), k8sClient.Scheme())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(gvk.Kind).To(Equal(kind))
+			Expect(specs.kind.name).To(Equal(kind), "another name would change the ref of every rule the kind manages")
 		})
 	})
 }
