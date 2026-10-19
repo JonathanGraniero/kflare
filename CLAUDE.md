@@ -1643,13 +1643,161 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   see Token permissions). Set the secrets `CF_API_TOKEN` and `CF_ACCOUNT_ID`, and the variable
   `CF_E2E_ZONE=kflare.dev`. A Free zone holds one rate limiting rule and a Free account one IP list, so runs must
   not overlap: give the workflow a `concurrency` group, and avoid local runs while it runs
-- [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists (still none on 2026-10-17). The release workflow
+- [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists (still none on 2026-10-19). The release workflow
   publishes the image and chart. (`docs/deploy.md`'s stale "the six kflare CRDs" was fixed with WAFCustomRule).
-  Proposed: tag it once OriginRule lands, when the Rules products that replace Page Rules are complete (the user
-  decides)
+  Proposed 2026-10-19 instead of tagging once OriginRule lands: tag as L5 of [Launch readiness](#launch-readiness),
+  after L1 to L4 (the user decides)
 - [ ] `kflare.dev` expires on 2027-10-04 with auto-renew off (registered 2026-10-04; unchanged on 2026-10-17). The e2e
   zone disappears if it lapses: decide on renewal before September 2027
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, renewal, CI token, GitHub secrets)
+
+#### Launch readiness
+**Status:** 🔲 Proposed 2026-10-19, not started. Goal: announce kflare on Reddit (r/kubernetes first, then
+r/CloudFlare) as a v0.1 alpha, to find its first users
+
+**Where it stands** (checked 2026-10-19 against main, `7005841`):
+- No tag and no GitHub release, so the release workflow has never run: no image or chart is published, and the
+  README's `helm install ... --version <version>` cannot work yet
+- Adoption is implicit and adopted objects are deleted with their resource by default (ARCHITECTURE.md, "Adoption and
+  ownership"). Someone trying kflare on their real account can delete a zone, a record or a database they already had
+- Exposing a Service through a Tunnel, the first thing most people will try, needs the tunnel's ID copied by hand from
+  status into a DNSRecord (the TunnelConfiguration sample says so), against convention 3, and a cloudflared Deployment
+  that nothing in the repo provides
+- The README is written for contributors (kind and `make run`), opens with a 15-item feature list, and links this
+  file as the roadmap. This file also states operational details about the maintainer's own Cloudflare account
+- The repo page: 1 star, no topics, no website, no CONTRIBUTING.md. A stray `.golangci.bck.yml` sits at the root
+- The engineering is not the gap: 19 resource kinds, live e2e against a real account, mutation testing, a Helm chart
+  with a deploy guide and least-privilege token permissions verified live
+
+**Order:** L1 to L5 come before the announcement, in order; L6 and L7 go with it. L2, L3 and L4 can be built side by
+side but merge one at a time (no stacked PRs). L5 waits for all of them.
+
+**Decisions for the user:**
+1. L1: OK to create a short-lived token with deploy.md's permissions for one live run
+2. L2: whether adopted objects are kept on deletion by default (proposed) or deleted, as ACK does
+3. L3: before the announcement (proposed), or after it, with the quickstart showing the copy step meanwhile
+4. L4: where the operational details removed from this file are kept (private notes)
+
+##### L1. Finish the live checks
+No branch unless a run fails.
+- [ ] Run OriginRule's live e2e spec against main, its last open item
+- [ ] Run the whole suite with a short-lived token holding only deploy.md's permissions and Zone Read, as in
+  [Token permissions](#token-permissions-for-phase-3), so the `ConfigurationRule` and `OriginRule` rows are checked on
+  their own too. The token needs the user's OK, and is deleted after the run
+- [ ] Record the run IDs here and drop deploy.md's caveat ("before `ConfigurationRule` and `OriginRule` were added")
+- Done when: both runs pass with no refusal in the manager's log
+
+##### L2. Adoption on opt-in, ACK style (`feat/adoption-policy`)
+Today a `Zone` applied for an existing domain adopts the zone, and deleting the `Zone` deletes it from Cloudflare with
+every record in it. The same holds for an adopted DNS record, tunnel, Worker route, IP list, R2 bucket, KV namespace
+or D1 database (the last two with their data). `WorkerScript` replaces a Worker with the same name on its first upload
+and deletes it with the resource. Changing this before v0.1.0 changes no released behavior.
+
+Proposed design (the user preferred it on 2026-10-19 to retaining implicitly adopted objects): ACK's adoption
+annotations under kflare's prefix. kflare's `deletion-policy` annotation already has ACK's shape; ARCHITECTURE.md
+credits ACK for both. Checked 2026-10-19: ACK documents `services.k8s.aws/adoption-policy` (`adopt`,
+`adopt-or-create`), `services.k8s.aws/adoption-fields`, an `adopted` annotation its controller sets, and deletes
+adopted resources unless `retain`.
+- `kflare.dev/adoption-policy`, set by the user:
+  - unset: create only. An existing object with the resource's key (a zone, a name, a title, a pattern) that kflare
+    did not create is left untouched, and the resource reports `Ready=False`, reason `AlreadyExists`, naming it
+  - `adopt`: adopt the existing object; never create one (`NotFound` while there is none)
+  - `adopt-or-create`: today's behavior
+- `kflare.dev/adopted: "true"`, set by kflare when it adopts, in the same patch as the claim label where the kind has
+  one (`ownership.go`); Zone and Tunnel, which have none, patch it before writing status
+- Adopted objects are kept on deletion unless `kflare.dev/deletion-policy: delete` is set: a deliberate difference
+  from ACK, since deleting something kflare did not make is the one step that cannot be undone. `delete` becomes a
+  value kflare checks (`DeletionPolicyDelete`), as convention 6 documents. Alternative: delete them by default, as ACK
+  does (the user decides)
+- Recovery: a reconcile that created an object but lost its claim or status write must still find it as its own, not
+  report `AlreadyExists`. kflare records its intent before the create call (for example a `kflare.dev/creating`
+  annotation holding the key) and treats an object with that key as created by the resource
+- Per kind: `WorkerScript` checks, with the `ListWorkers` call it already makes, whether a Worker with its name exists
+  before its first upload. `TunnelConfiguration` counts a tunnel whose ingress holds more than the catch-all rule as
+  existing. `DNSRecord` counts an identical record as existing, while a record of the same name and type with other
+  content stays a separate member of a record set. Rule kinds are unchanged: they never adopt
+- `kflare.dev/adoption-fields` (ACK's adoption by identifier) is left out: every adopting kind has a natural key.
+  Revisit for kinds whose names are not unique (Tunnel, Turnstile widgets). The planned `AdoptedResource` CRD (Phase 4)
+  may no longer be needed; decide then
+
+- [ ] Unit and envtest specs for every adopting kind and each policy: unset with an existing object reports
+  `AlreadyExists` and writes nothing; `adopt` without one reports `NotFound`; an adopted object is annotated and kept
+  on deletion, and deleted with `delete`; a created object is deleted as before; the recovery case is not refused
+- [ ] Live e2e: the Zone and D1Database adoption specs set the policy; an existing object without it is refused and
+  left as it was; an adopted object outlives its resource
+- [ ] A mutation run with every mutation caught (`hack/mutate.sh`)
+- [ ] ARCHITECTURE.md (Adoption and ownership, Deletion, Known limitations), deploy.md, README's "Import existing
+  resources" line, the samples (the Zone sample adopts), conventions 4 and 6
+- Done when: all of the above pass, and kflare touches no existing object unless a resource asks it to
+
+##### L3. A DNSRecord points at a Tunnel by reference (`feat/dnsrecord-tunnel-ref`)
+The closest alternative, adyanth/cloudflare-operator, exposes a Service through a tunnel with one resource. kflare
+should not need an ID copied from status to do the same: manifests must be writable before the first apply.
+- [ ] `spec.tunnelRef` on DNSRecord (a Tunnel in the same namespace): the record is a proxied CNAME to
+  `<tunnelID>.cfargotunnel.com`. CEL: exactly one of `content`, `data` and `tunnelRef`; `tunnelRef` only with type
+  `CNAME`. Check live what Cloudflare does with an unproxied one before deciding whether `proxied: false` is refused
+- [ ] Waits for the Tunnel to be ready, and watches Tunnels, so a recreated tunnel (a new ID) corrects the record
+- [ ] A Tunnel waits for the DNSRecords that reference it before it is deleted (`protection.go`), as it waits for its
+  TunnelConfigurations; otherwise their hostnames would point at nothing
+- [ ] `examples/expose-a-service/`: a Zone adopting the reader's existing domain (`kflare.dev/adoption-policy: adopt`,
+  L2), a Tunnel, a cloudflared Deployment reading `TUNNEL_TOKEN` from the Tunnel's Secret (image pinned), a
+  TunnelConfiguration and a DNSRecord with `tunnelRef`. kflare does not run cloudflared; the example does
+- [ ] Unit and envtest specs, CEL cases, a live e2e spec (the record follows the Tunnel, including after the tunnel is
+  recreated), a mutation run, ARCHITECTURE.md, deploy.md and the samples
+- Done when: the example works on kind with a real account, and no sample asks for a copied ID
+
+##### L4. Launch docs (`docs/launch`)
+- [ ] README, rewritten for someone arriving from Reddit:
+  - What kflare is, in two sentences, and its status: alpha, API `v1alpha1`, Kubernetes 1.34+
+  - A quickstart: install the released chart, connect an account, run `examples/expose-a-service/`
+  - The resource kinds as a short table, each linking its sample and naming its token permission
+  - "Why kflare", one paragraph, fair to the alternatives: adyanth/cloudflare-operator for tunnels and DNS,
+    external-dns for DNS, Terraform or Crossplane for everything. kflare is Kubernetes-native and also covers Workers,
+    storage, WAF and the Rules products
+  - "How it's built", stated plainly rather than left for commenters to find: developed with AI assistance (Claude
+    Code), and kept honest by the live e2e suite against a real Cloudflare account, mutation testing on every
+    controller, and a record of what was verified live
+  - Links to ROADMAP.md, ARCHITECTURE.md and docs/deploy.md; contributor setup moves to CONTRIBUTING.md
+- [ ] ROADMAP.md, short and written for users: done, next (the [Next wave](#next-wave-proposed-2026-10-17)), and
+  deferred with the reason (paid plans, Zero Trust setup). The README links it instead of this file
+- [ ] CONTRIBUTING.md (build, test, `make codegen`, the live e2e and the token it needs, branch and PR conventions),
+  a bug report template (kflare and Kubernetes versions, the resource's status and conditions), and 3 to 5 good first
+  issues from the Next wave and the known limitations
+- [ ] Take out of this file the three operational details about the maintainer's own account: the dev token's extra
+  permissions (Release and CI), a database on the dev account that is not kflare's (D1Database notes) and the
+  domain's renewal setting (Release and CI). None is a secret, so git history stays as it is
+- [ ] Delete `.golangci.bck.yml` (nothing references it) and add a CI badge
+- Done when: someone who has never seen the repo gets from the README to a working tunnel without opening another
+  file, and the README links no file written for agents
+
+##### L5. Release v0.1.0
+- [ ] Once L2, L3 and L4 are merged: tag `v0.1.0` (Chart.yaml is at 0.1.0) and check the release workflow is green
+- [ ] Both packages on GHCR (`ghcr.io/jonathangraniero/kflare` and `charts/kflare`) are public: the image pull and
+  `helm install` work from a machine not logged in to ghcr.io
+- [ ] Run the README's quickstart verbatim on a new kind cluster against a real account, then upgrade and uninstall as
+  deploy.md describes
+- [ ] A GitHub release with notes: the resource kinds, the alpha status, adoption and deletion (L2), and the known
+  limitations from ARCHITECTURE.md
+- Done when: the quickstart works on a clean machine with nothing but the README
+
+##### L6. Repository settings
+In GitHub's settings, no branch.
+- [ ] About: a description that says what kflare manages, topics (`kubernetes`, `kubernetes-operator`, `cloudflare`,
+  `gitops`, `crd`, `cloudflare-tunnel`, `dns`, `waf`), and a website once `kflare.dev` serves one
+- [ ] Discussions on, so questions from the announcement do not land in issues (optional)
+- [ ] The chart listed on ArtifactHub (a Phase 4 item, cheap once v0.1.0 exists)
+
+##### L7. Announcement
+- [ ] r/kubernetes first, r/CloudFlare a few days later. r/selfhosted asks that promoted projects be production-ready
+  with docs (its rule 2, checked 2026-10-19), so wait for a later release there
+- [ ] Frame it as a v0.1 alpha looking for early users, not as production-grade. Ask for specific feedback: which
+  resources people need next, and how adoption and deletion should behave
+- [ ] Lead with the quickstart and what kflare covers that the alternatives do not; mention the AI assistance and the
+  verification behind it in the post itself
+- [ ] Be around for the first hours to answer comments, and file issues for the bugs people report
+
+**After the announcement**, not blocking it: the live e2e suite in GitHub Actions (Release and CI above), whose green
+badge against the real API would help credibility, and the drift correction period (Known limitations).
 
 ---
 
@@ -1785,7 +1933,8 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 > cloudflare-go is at v0.119, with v7.12.0 next to it for the generated kinds and the rule kinds; rule kinds share the
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
-> OriginRule on the shared rule controller. Next: OriginRule's live e2e; after it, the proposed next wave (see Phase 3).
+> OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order,
+> starting with OriginRule's live e2e; the proposed next wave (see Phase 3) comes after the announcement.
 > deploy.md's permissions are verified on their own up to CacheRule. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under "Deferred: paid plan, add-on or account setup" in Phase
 > 3.
