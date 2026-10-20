@@ -9,9 +9,11 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7/rulesets"
 	. "github.com/onsi/ginkgo/v2"
@@ -27,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -333,11 +336,55 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			}
 		})
 
-		It("makes its Zone wait for it before the Zone is deleted", func() {
+		It("makes its Zone wait for it before the Zone is deleted, and releases the Zone once it is gone", func() {
 			create(object("dependent", specs.samples[0].spec))
 			dependents, err := dependentsOf(ctx, k8sClient, ns, zoneName, zoneDependents)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(dependents).To(ContainElement(kind + " " + ns + "/dependent"))
+
+			By("running the Zone controller, which must hear of the " + kind + "'s deletion")
+			mgr, err := manager.New(cfg, manager.Options{
+				Controller: config.Controller{SkipNameValidation: new(true)},
+				Metrics:    metricsserver.Options{BindAddress: "0"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect((&ZoneReconciler{
+				Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+				NewZoneAPI: func(string) (ZoneAPI, error) { return nil, errors.New("this spec calls no Cloudflare API") },
+			}).SetupWithManager(mgr)).To(Succeed())
+			mgrCtx, stop := context.WithCancel(ctx)
+			stopped := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				defer close(stopped)
+				Expect(mgr.Start(mgrCtx)).To(Succeed())
+			}()
+			// Stop it before the next spec, which may reconcile Zones itself.
+			DeferCleanup(func() {
+				stop()
+				Eventually(stopped).Should(BeClosed())
+			})
+
+			By("deleting the Zone, retained, which waits for the " + kind)
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, key(zoneName), zone)).To(Succeed())
+			patch := client.MergeFrom(zone.DeepCopy())
+			zone.Finalizers = append(zone.Finalizers, reconciler.Finalizer)
+			zone.Annotations = map[string]string{reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyRetain}
+			Expect(k8sClient.Patch(ctx, zone, patch)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, zone)).To(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, key(zoneName), zone)).To(Succeed())
+				ready := meta.FindStatusCondition(zone.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Reason).To(Equal("InUse"))
+			}).WithTimeout(10 * time.Second).Should(Succeed())
+
+			By("deleting the " + kind + ", which releases the Zone")
+			Expect(k8sClient.Delete(ctx, get("dependent"))).To(Succeed())
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8sClient.Get(ctx, key(zoneName), &cloudflarev1alpha1.Zone{}))
+			}).WithTimeout(10*time.Second).Should(BeTrue(), "the Zone was not re-triggered by the %s's deletion", kind)
 		})
 
 		It("converts specs that set every field into the rules they ask for", func() {

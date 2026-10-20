@@ -488,7 +488,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/redirect-rule-controller` | `RedirectRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔, no regex ✔ |
 | `feat/cache-rule-controller` | `CacheRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔; of a custom cache key, only leaving out the query string ✔ |
 | `feat/configuration-rule-controller` | `ConfigurationRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔; some values need a higher plan ✔ |
-| `feat/origin-rule-controller` | `OriginRule` | code generator (rule kinds) | 🚧 Generated, live e2e pending. Free: 10 rules (per the docs), destination port override only ✔ |
+| `feat/origin-rule-controller` | `OriginRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules (per the docs), destination port override only ✔ |
 | `feat/managed-ruleset-exception-controller` | `ManagedRulesetException` | managed-ruleset-controller | Not scheduled (decided 2026-10-14, see `ManagedRuleset`). Free: skip rules accepted |
 | `feat/load-balancer-monitor-controller` | `LoadBalancerMonitor` | shared-client | ⏸ Deferred: needs Load Balancing add-on |
 | `feat/load-balancer-controller` | `LoadBalancer` (+ pools) | load-balancer-monitor-controller | ⏸ Deferred: needs Load Balancing add-on |
@@ -496,8 +496,8 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 Rows run top to bottom. The order decided on 2026-10-06 (WAF, then rate limiting, then Zero Trust) is kept. `IPList`
 comes before Zero Trust because it is free and can be tested today, while Zero Trust waits on a dashboard step. When a
 row is blocked, skip ahead: `ManagedTransform` depends on no other row. The five Rules rows are generated (decided
-2026-10-13): TransformRule, RedirectRule, CacheRule and ConfigurationRule are done, and OriginRule is generated, its
-live e2e pending. What may come after them is in [Next wave](#next-wave-proposed-2026-10-17).
+2026-10-13) and done: TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule. What may come after
+them is in [Next wave](#next-wave-proposed-2026-10-17).
 
 `PageRule` is dropped (decided 2026-10-09): Page Rules is deprecated, and its API refuses account-owned tokens (see
 "Plan corrections" below). The Transform, Redirect, Cache, Configuration and Origin rows cover its settings.
@@ -527,8 +527,8 @@ names; deploy.md uses the dashboard's labels, so look those up when each branch 
 | `TransformRule` | Zone Transform Rules Write | ✅ written, updated and deleted by the e2e (2026-10-15, runs `7ed03a` and `9c869b`); enough on its own (2026-10-15, see below) |
 | `RedirectRule` | Dynamic URL Redirects Write | ✅ added on `kflare.dev` 2026-10-15 (see below); written, updated and deleted by the e2e (run `5f9daf`); enough on its own (2026-10-17, see below) |
 | `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `fd8de2`); enough on its own (2026-10-17, see below) |
-| `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `e9994a`); not yet checked on its own |
-| `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry runs and ten probe rules written and deleted (2026-10-18); not yet run by the e2e |
+| `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `e9994a`); enough on its own (2026-10-19, see below) |
+| `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry runs and ten probe rules written and deleted (2026-10-18); written, updated and deleted by the e2e (run `2748f8`); enough on its own (2026-10-19, see below) |
 | `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run). An empty PATCH was refused on 2026-10-17, so Config Settings Write, which the OpenAPI spec lists for it, is not enough |
 | `IPList` | Account Rule Lists Write (account) | ✅ create, replace and delete verified 2026-10-13; enough on its own |
 | `D1Database` | D1 Write (account) | ✅ create, read, list and delete verified 2026-10-15; enough on its own (2026-10-15, see below) |
@@ -558,6 +558,14 @@ names; deploy.md uses the dashboard's labels, so look those up when each branch 
   (run `2660d4`), with no refusal in the manager's log. It was refused for API tokens, account rulesets and the
   configuration phase. So Dynamic URL Redirects Write covers `RedirectRule`, and Cache Settings Write `CacheRule`. That
   token was deleted after the run as well
+- Repeated on 2026-10-19 for `ConfigurationRule` and `OriginRule` (Launch readiness L1), with the user's OK: deploy.md's
+  permissions, Config Settings Write and Origin Write among them, and Zone Read ran the suite against main's manager
+  (run `e79693`). Every resource spec passed, 19 of 19, with no refusal in the manager's log, and the token deleted
+  every rule, list, database, bucket, namespace, Worker, route, record and tunnel the run made. The last spec, the
+  all-at-once deletion, timed out on a kflare bug the run found, not on a permission: the Zone controller did not watch
+  the generated rule kinds, so a Zone whose last dependent was a TransformRule was never re-triggered (fixed in
+  `fix/zone-watches-generated-rule-kinds`; run `f1f17f`, with the dev token, 20 of 20). So Config Settings Write covers
+  `ConfigurationRule`, and Origin Write `OriginRule`. That token was deleted after the run as well
 - On 2026-10-15, with the user's OK for the four remaining Rules kinds, the dev token gained Dynamic URL Redirects
   Write, Cache Settings Write, Config Settings Write and Origin Write, in a new policy scoped to `kflare.dev` alone (its
   other policies are unchanged). A dry run in each of the four phases was accepted
@@ -1077,9 +1085,9 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
 
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)
 **Depend on:** the code generator's rule kinds (`feat/generator-rule-kinds`); one branch and PR each
-**Status:** 🚧 `TransformRule` ✅, generated in `feat/generator-rule-kinds` (the code generator's PR 8); `RedirectRule` ✅
+**Status:** ✅ `TransformRule` ✅, generated in `feat/generator-rule-kinds` (the code generator's PR 8); `RedirectRule` ✅
 (`feat/redirect-rule-controller`); `CacheRule` ✅ (`feat/cache-rule-controller`); `ConfigurationRule` ✅
-(`feat/configuration-rule-controller`); `OriginRule` 🚧 (`feat/origin-rule-controller`), generated, its live e2e pending
+(`feat/configuration-rule-controller`); `OriginRule` ✅ (`feat/origin-rule-controller`)
 
 Each is the foundation plus typed action parameters. Together they replace Page Rules. They are generated (decided
 2026-10-13): each is a `generator.yaml` entry plus hooks for what Cloudflare's schema leaves out (see
@@ -1149,8 +1157,8 @@ proxied `kflare-probe-*` hostname, each deleted afterwards):**
   17 of 17)
 - `logging` (20018), `ratelimit` (20131) and `exposed_credential_check` (20189) are refused in the phase; the entry
   ignores them, with `from_list`
-- deploy.md documents Zone · Single Redirect · Edit (the API's Dynamic URL Redirects Write); not yet checked on its own
-  with a short-lived token (see Token permissions)
+- deploy.md documents Zone · Single Redirect · Edit (the API's Dynamic URL Redirects Write), which is enough on its own
+  (verified 2026-10-17, see Token permissions)
 - kflare-gen gained, for it: integer enums (`+kubebuilder:validation:Enum=301;302;...`, an invalid case one past the
   highest value), and an object left with one field after the entry's ignores (no count rule; a minimum makes the field
   required). For every rule kind, the generated specs gained a refusal of each required field left out (`Required
@@ -1188,7 +1196,7 @@ deleted afterwards):**
 - `logging` (20018), `ratelimit` (20131) and `exposed_credential_check` (20189) are refused in the phase; the entry
   ignores them
 - deploy.md documents Zone · Cache Rules · Edit (the label Cloudflare's documentation gives the API's Cache Settings
-  Write); not yet checked on its own with a short-lived token (see Token permissions)
+  Write), which is enough on its own (verified 2026-10-17, see Token permissions)
 - kflare-gen gained, for it: CEL rules on an object of the spec (`fields.<path>.rules`, on the object at the path or on
   an item of a list or map, `<path>[]`); a map key's validation (`keyValidation`); `tests`, specs the generated specs
   write and edit besides the samples, for fields a sample should not set, which are not published; boolean enums
@@ -1224,7 +1232,7 @@ each deleted afterwards):**
 - `logging` (20018), `ratelimit` (20131) and `exposed_credential_check` (20189) are refused in the phase; the entry
   ignores them
 - deploy.md documents Zone · Config Rules · Edit (the label Cloudflare's documentation gives the API's Config Settings
-  Write); not yet checked on its own with a short-lived token (see Token permissions)
+  Write), which is enough on its own (verified 2026-10-19, see Token permissions)
 - It needed nothing new from kflare-gen: the boolean enums and tests CacheRule brought were enough. kflare-gen gained a
   refusal one item over each list's or map's maximum (`Too many`), for `webmcpPacks` and, untested before, CacheRule's
   vary headers, media types and languages. A mutation check (21 mutations of the conversion, the CRD and the new case)
@@ -1251,9 +1259,10 @@ deleted afterwards with their entry point):**
 - `logging` (20018), `ratelimit` (20131) and `exposed_credential_check` (20189) are refused in the phase; the entry
   ignores them
 - deploy.md documents Zone · Origin Rules · Edit (the label Cloudflare's origin rules API documentation gives the API's
-  Origin Write); not yet checked on its own with a short-lived token (see Token permissions)
+  Origin Write), which is enough on its own (verified 2026-10-19, see Token permissions)
 - Live e2e spec: one rule on port 8443, checked as the JSON Cloudflare stores, moved to port 8080 in place, then left
-  alone by an idle reconcile. Not run yet
+  alone by an idle reconcile. Passed on 2026-10-19 (run `2748f8`, 20 of 20, and run `e79693` with deploy.md's
+  permissions)
 - It needed nothing new from kflare-gen's mapping. Its docs did need "an" before a name that starts with a vowel ("an
   OriginRule", and for the test IP list kind "an IP list"): kflare-gen's `article` now picks it wherever a generated
   doc names a kind or noun, tested by generating the test and committed rule kinds, and a CRUD controller, under names
@@ -1529,8 +1538,8 @@ kinds:
   field (kflare reported Cloudflare's 20087 as `TerminalError`); the sample held it too. Both use `ip.src.country` now,
   and every sample's rule passed a dry run
 - **Next:** the other Rules kinds, one entry and PR each: RedirectRule ✅ (`feat/redirect-rule-controller`), CacheRule ✅
-  (`feat/cache-rule-controller`), ConfigurationRule ✅ (`feat/configuration-rule-controller`), and OriginRule 🚧
-  (`feat/origin-rule-controller`, its live e2e pending). The dev token can write all four phases since 2026-10-15
+  (`feat/cache-rule-controller`), ConfigurationRule ✅ (`feat/configuration-rule-controller`), and OriginRule ✅
+  (`feat/origin-rule-controller`). The dev token can write all four phases since 2026-10-15
 - **Later:** the capabilities the next kinds need, in [Next wave](#next-wave-proposed-2026-10-17): a runtime for
   settings-style singletons, zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without
   `New`, and secrets. Also cross-kind references such as `kvNamespaceRef`, generated live e2e specs, and deploy.md
@@ -1679,12 +1688,22 @@ side but merge one at a time (no stacked PRs). L5 waits for all of them.
 4. L4: where the operational details removed from this file are kept (private notes)
 
 ##### L1. Finish the live checks
-No branch unless a run fails.
-- [ ] Run OriginRule's live e2e spec against main, its last open item
-- [ ] Run the whole suite with a short-lived token holding only deploy.md's permissions and Zone Read, as in
+**Status:** ✅ 2026-10-19 but for a rerun of the least-privilege run. No branch unless a run fails: one did, so
+`fix/zone-watches-generated-rule-kinds` carries the fix and these notes.
+- [x] Run OriginRule's live e2e spec against main, its last open item: run `2748f8`, 20 of 20 with the dev token, no
+  error in the manager's log but optimistic-concurrency conflicts, which are retried
+- [x] Run the whole suite with a short-lived token holding only deploy.md's permissions and Zone Read, as in
   [Token permissions](#token-permissions-for-phase-3), so the `ConfigurationRule` and `OriginRule` rows are checked on
-  their own too. The token needs the user's OK, and is deleted after the run
-- [ ] Record the run IDs here and drop deploy.md's caveat ("before `ConfigurationRule` and `OriginRule` were added")
+  their own too. The token needs the user's OK, and is deleted after the run: run `e79693` (OK given 2026-10-19,
+  token deleted), 19 of 20, with no refusal. The all-at-once deletion spec failed: the Zone stayed, reporting `InUse`
+  for a TransformRule that was already gone. The Zone controller watched only the hand-written kinds a Zone waits for,
+  so nothing re-triggered it when a generated rule kind went last; run `2748f8` passed only because a hand-written
+  dependent happened to go last. `SetupWithManager` now watches every kind in `zoneDependents`, and the generated rule
+  kinds' shared specs run the Zone controller in a manager and check that deleting the rule releases its Zone (they
+  fail without the fix). With the fix, run `f1f17f` passed, 20 of 20, with the dev token
+- [x] Record the run IDs here and drop deploy.md's caveat ("before `ConfigurationRule` and `OriginRule` were added")
+- [ ] Optional, needs the user's OK for another short-lived token: rerun the least-privilege suite with the fix, so
+  that its deletion spec passes too
 - Done when: both runs pass with no refusal in the manager's log
 
 ##### L2. Adoption on opt-in, ACK style (`feat/adoption-policy`)
@@ -1928,14 +1947,14 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Current Status
 
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
-> `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule` and `ConfigurationRule` done;
-> `OriginRule` generated, its live e2e pending.**
+> `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule` and `OriginRule`
+> done.**
 > cloudflare-go is at v0.119, with v7.12.0 next to it for the generated kinds and the rule kinds; rule kinds share the
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
-> OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order,
-> starting with OriginRule's live e2e; the proposed next wave (see Phase 3) comes after the announcement.
-> deploy.md's permissions are verified on their own up to CacheRule. Zero Trust still waits on account setup. Items
+> OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
+> L1 is done but for one rerun. The proposed next wave (see Phase 3) comes after the announcement.
+> deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under "Deferred: paid plan, add-on or account setup" in Phase
 > 3.
 > Last updated: October 2026
