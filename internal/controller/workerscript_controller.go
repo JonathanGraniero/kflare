@@ -122,15 +122,50 @@ func (r *WorkerScriptReconciler) syncWorker(
 	logger := log.FromContext(ctx)
 	rc := cf.AccountIdentifier(account.Spec.AccountID)
 
-	reason, observed := "", ""
+	workers, _, err := cfAPI.ListWorkers(ctx, rc, cf.ListWorkersParams{})
+	if err != nil {
+		return handleCloudflareError(ctx, r.Client, ws, err)
+	}
+	reason, observed := workerDrift(workers.WorkerList, ws.Spec.Name, ws.Status.CloudflareMetadata.ModifiedOn)
 	if hash != ws.Status.AppliedHash {
 		reason = "desired state changed"
-	} else {
-		workers, _, err := cfAPI.ListWorkers(ctx, rc, cf.ListWorkersParams{})
-		if err != nil {
-			return handleCloudflareError(ctx, r.Client, ws, err)
+	}
+
+	// Uploading replaces a Worker with the same name, so a Worker this
+	// resource has not uploaded yet is an existing one: replacing it takes
+	// the adoption policy, unless this resource uploaded it and did not
+	// record that. A missing Worker is uploaded, unless the policy is adopt.
+	uploaded := ws.Status.CloudflareMetadata.ModifiedOn != ""
+	what := fmt.Sprintf("Worker %q", ws.Spec.Name)
+	adopting := false
+	switch {
+	case !workerListed(workers.WorkerList, ws.Spec.Name):
+		if condErr := mayCreate(ws, what); condErr != nil {
+			return notReadyRetryAfter(ctx, r.Client, ws, condErr)
 		}
-		reason, observed = workerDrift(workers.WorkerList, ws.Spec.Name, ws.Status.CloudflareMetadata.ModifiedOn)
+		if err := markCreating(ctx, r.Client, ws, ws.Spec.Name); err != nil {
+			return ctrl.Result{}, err
+		}
+	case !uploaded && !creating(ws, ws.Spec.Name):
+		if condErr := mayAdopt(ws, what); condErr != nil {
+			return notReadyRetryAfter(ctx, r.Client, ws, condErr)
+		}
+		adopting = true
+		logger.Info("Adopted existing Worker", "script", ws.Spec.Name, "observedModifiedOn", observed)
+	}
+
+	// Record an adoption before the upload replaces the Worker; the patch
+	// re-reads the WorkerScript, so it comes before status is set. Once status
+	// records an upload, the creating annotation can go.
+	switch {
+	case adopting:
+		if err := markAdopted(ctx, r.Client, ws); err != nil {
+			return ctrl.Result{}, err
+		}
+	case uploaded:
+		if err := clearCreating(ctx, r.Client, ws); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if reason != "" {
@@ -164,6 +199,16 @@ func workerDrift(workers []cf.WorkerMetaData, scriptName, appliedModifiedOn stri
 		return "", observed
 	}
 	return "missing from Cloudflare", ""
+}
+
+// workerListed reports whether workers include the Worker named scriptName.
+func workerListed(workers []cf.WorkerMetaData, scriptName string) bool {
+	for _, w := range workers {
+		if w.ID == scriptName {
+			return true
+		}
+	}
+	return false
 }
 
 // formatModifiedOn renders a modification time at full precision, so a

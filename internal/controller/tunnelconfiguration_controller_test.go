@@ -378,6 +378,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 
 		It("does not write when Cloudflare already has the desired configuration", func() {
 			readyEnv(nil)
+			setStatusTunnelID(fakeTunnelID)
 			fake := &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{
 				TunnelID: fakeTunnelID,
 				Version:  7,
@@ -397,6 +398,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		DescribeTable("overwrites drift made outside kflare",
 			func(mutate func(*cf.TunnelConfiguration)) {
 				readyEnv(nil)
+				setStatusTunnelID(fakeTunnelID)
 				actual := cf.TunnelConfiguration{Ingress: expectedRules("http_status:404")}
 				mutate(&actual)
 				fake := &fakeTunnelConfigurationAPI{
@@ -428,6 +430,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 
 		It("treats an empty originRequest object as absent", func() {
 			readyEnv(nil)
+			setStatusTunnelID(fakeTunnelID)
 			actual := expectedRules("http_status:404")
 			actual[1].OriginRequest = &cf.OriginRequestConfig{}
 			fake := &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{
@@ -436,6 +439,80 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+		})
+
+		// configuredOutside is a tunnel's configuration that routes a hostname,
+		// as one written outside kflare would.
+		configuredOutside := cf.TunnelConfigurationResult{TunnelID: fakeTunnelID, Version: 5,
+			Config: cf.TunnelConfiguration{Ingress: []cf.UnvalidatedIngressRule{
+				{Hostname: "legacy.example.com", Service: "http://legacy:80"}, {Service: "http_status:404"},
+			}}}
+		adoptPolicy := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt}
+
+		It("reports AlreadyExists for a tunnel configured outside kflare without an adoption policy, and leaves it",
+			func() {
+				readyEnv(nil)
+				fake := &fakeTunnelConfigurationAPI{getResult: configuredOutside}
+				result, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+				Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+				expectReady(configKey, metav1.ConditionFalse, "AlreadyExists")
+				Expect(getConfig().Status.CloudflareMetadata.TunnelID).To(BeEmpty())
+			})
+
+		It("replaces a tunnel's configuration with the adopt policy, and records the adoption", func() {
+			readyEnv(adoptPolicy)
+			fake := &fakeTunnelConfigurationAPI{getResult: configuredOutside,
+				updateResult: cf.TunnelConfigurationResult{TunnelID: fakeTunnelID, Version: 6}}
+			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration", "UpdateTunnelConfiguration"}))
+			Expect(fake.updates[0].Config.Ingress).To(Equal(expectedRules("http_status:404")))
+			Expect(getConfig().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+			Expect(getConfig().Status.CloudflareMetadata.TunnelID).To(Equal(fakeTunnelID))
+		})
+
+		It("reports NotFound with the adopt policy for a tunnel with nothing to adopt", func() {
+			readyEnv(adoptPolicy)
+			fake := &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{TunnelID: fakeTunnelID,
+				Config: cf.TunnelConfiguration{Ingress: []cf.UnvalidatedIngressRule{{Service: "http_status:404"}}}}}
+			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+			expectReady(configKey, metav1.ConditionFalse, "NotFound")
+		})
+
+		It("marks the configuration it is about to write, and finds it on the next reconcile as its own", func() {
+			readyEnv(nil)
+			fake := &fakeTunnelConfigurationAPI{updateErr: errors.New("lost response")}
+			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).To(HaveOccurred())
+			Expect(getConfig().Annotations).To(HaveKeyWithValue(reconciler.CreatingAnnotation, fakeTunnelID))
+
+			By("finding the rules the lost write stored, without an adoption policy")
+			fake = &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{TunnelID: fakeTunnelID,
+				Version: 2, Config: cf.TunnelConfiguration{Ingress: expectedRules("http_status:404")}}}
+			_, err = reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+			expectReady(configKey, metav1.ConditionTrue, "Synced")
+			Expect(getConfig().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+
+			By("dropping the mark once status records the tunnel")
+			_, err = reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getConfig().Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation))
+		})
+
+		It("reports AlreadyExists when a recreated Tunnel's new tunnel is configured outside kflare", func() {
+			readyEnv(nil)
+			setStatusTunnelID("tun-old")
+			fake := &fakeTunnelConfigurationAPI{getResult: configuredOutside}
+			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}), "what it wrote to the old tunnel is no claim")
+			expectReady(configKey, metav1.ConditionFalse, "AlreadyExists")
 		})
 
 		It("writes to the new tunnel when the Tunnel was recreated with another ID", func() {
@@ -519,6 +596,18 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			expectConfigGone()
 		})
 
+		It("resets an adopted configuration with deletion-policy=delete", func() {
+			readyEnv(map[string]string{reconciler.AdoptedAnnotation: "true", deletionPolicy: "delete"})
+			setStatusTunnelID(fakeTunnelID)
+			startDeletion()
+
+			fake := &fakeTunnelConfigurationAPI{}
+			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"UpdateTunnelConfiguration"}))
+			expectConfigGone()
+		})
+
 		It("resets the tunnel it last wrote to, not the Tunnel's current ID", func() {
 			readyEnv(nil)
 			setStatusTunnelID("tun-written")
@@ -551,6 +640,8 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 				expectConfigGone()
 			},
 			Entry("deletion-policy=retain", map[string]string{deletionPolicy: "retain"}, fakeTunnelID, false),
+			Entry("an adopted configuration", map[string]string{reconciler.AdoptedAnnotation: "true"}, fakeTunnelID,
+				false),
 			Entry("nothing was ever written", nil, "", false),
 			Entry("the Tunnel resource is gone", nil, fakeTunnelID, true),
 		)

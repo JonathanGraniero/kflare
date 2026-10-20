@@ -62,12 +62,12 @@ type KVNamespaceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // kvNamespaceKind describes KVNamespaces to the shared CRUD reconciler. A
-// KVNamespace adopts the account's KV namespace with the same title, unless
-// another KVNamespace manages it, or else creates one. It changes title in
-// place. A KV namespace deleted outside kflare is created again. A KVNamespace
-// waits for the WorkerScripts that use it before it is deleted: Cloudflare
-// deletes a namespace a Worker is bound to, but every later upload of that
-// Worker then fails.
+// KVNamespace creates its KV namespace or, as its adoption policy allows,
+// adopts the account's KV namespace with the same title, unless another
+// KVNamespace manages it. It changes title in place. A KV namespace deleted
+// outside kflare is created again. A KVNamespace waits for the WorkerScripts
+// that use it before it is deleted: Cloudflare deletes a namespace a Worker is
+// bound to, but every later upload of that Worker then fails.
 var kvNamespaceKind = crudResourceKind[*cloudflarev1alpha1.KVNamespace, KVNamespaceAPI, kv.Namespace, kv.Namespace]{
 	name:      "KVNamespace",
 	noun:      "KV namespace",

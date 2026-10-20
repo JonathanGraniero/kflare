@@ -276,6 +276,10 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			return r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		}
 
+		// adopt and adoptOrCreate are the adoption policies' annotations.
+		adopt := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt}
+		adoptOrCreate := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate}
+
 		// synced creates a resource and the object it manages.
 		synced := func(annotations map[string]string) string {
 			createAccount(true)
@@ -372,7 +376,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("adopts the "+k.noun+" with the same "+t.keyField+" from a later page of the list", func() {
 				createAccount(true)
-				obj := create(key, nil)
+				obj := create(key, adopt)
 				// A full first page of other objects; the one to adopt sorts last.
 				for i := range t.pageSize {
 					id := fmt.Sprintf("a-%04d", i)
@@ -385,11 +389,112 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(store.objects).To(HaveLen(int(t.pageSize)+1), "nothing is created")
 				Expect(k.statusID(get())).To(Equal("z-last"))
 				Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, "z-last"))
+				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+				Expect(store.writes).To(BeZero(), "the adopted object is what the spec asks for")
+			})
+
+			It("reports AlreadyExists for a "+k.noun+" with the same "+t.keyField+" without an adoption policy, "+
+				"and leaves it alone", func() {
+				createAccount(true)
+				obj := create(key, nil)
+				store.objects["existing"] = t.seed("existing", k.key(obj))
+				result, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+				Expect(ready().Reason).To(Equal(reasonAlreadyExists))
+				Expect(ready().Message).To(ContainSubstring(k.key(obj)))
+				Expect(ready().Message).To(ContainSubstring(reconciler.AdoptionPolicyAnnotation))
+				Expect(store.writes).To(BeZero())
+				Expect(store.objects).To(HaveLen(1))
+				Expect(k.statusID(get())).To(BeEmpty())
+				Expect(get().GetLabels()).NotTo(HaveKey(k.claimLabel))
+			})
+
+			It("reports NotFound with the adopt policy when there is no "+k.noun+" to adopt, and creates none",
+				func() {
+					createAccount(true)
+					create(key, adopt)
+					result, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+					Expect(ready().Reason).To(Equal(reasonNotFound))
+					Expect(store.writes).To(BeZero())
+					Expect(store.objects).To(BeEmpty())
+				})
+
+			It("reports an unknown adoption policy instead of creating or adopting", func() {
+				createAccount(true)
+				obj := create(key, map[string]string{reconciler.AdoptionPolicyAnnotation: "Adopt"})
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready().Reason).To(Equal(reasonInvalidAdoptionPolicy))
+				Expect(store.objects).To(BeEmpty(), "nothing is created")
+
+				store.objects["existing"] = t.seed("existing", k.key(obj))
+				_, err = reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready().Reason).To(Equal(reasonInvalidAdoptionPolicy))
+				Expect(store.writes).To(BeZero())
+				Expect(get().GetLabels()).NotTo(HaveKey(k.claimLabel), "nothing is adopted")
+			})
+
+			It("creates the "+k.noun+" with the adopt-or-create policy when there is none to adopt", func() {
+				createAccount(true)
+				create(key, adoptOrCreate)
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.objects).To(HaveLen(1))
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+			})
+
+			It("marks the "+k.noun+" it is about to create, so a failed create leaves the mark", func() {
+				createAccount(true)
+				obj := create(key, nil)
+				store.createErr = errors.New("unavailable")
+				_, err := reconcileIt()
+				Expect(err).To(MatchError("unavailable"))
+				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.CreatingAnnotation, k.key(obj)))
+
+				By("creating it on the next reconcile, which drops the mark with the claim")
+				store.createErr = nil
+				_, err = reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
+				Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, k.statusID(get())))
+			})
+
+			It("finds the "+k.noun+" it was creating when neither its claim nor its status was recorded", func() {
+				createAccount(true)
+				obj := t.newResource(key, accountName)
+				store.objects["created"] = t.seed("created", k.key(obj))
+				create(key, map[string]string{reconciler.CreatingAnnotation: k.key(obj)})
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+				Expect(k.statusID(get())).To(Equal("created"))
+				Expect(store.writes).To(BeZero(), "nothing is created")
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "it is not adopted")
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
+			})
+
+			It("finds the "+k.noun+" it claimed when its status was not recorded", func() {
+				createAccount(true)
+				obj := create(key, nil)
+				store.objects["claimed"] = t.seed("claimed", k.key(obj))
+				obj.SetLabels(map[string]string{k.claimLabel: "claimed"})
+				Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+				Expect(k.statusID(get())).To(Equal("claimed"))
+				Expect(store.writes).To(BeZero())
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
 			})
 
 			It("creates the "+k.noun+" when the one it would adopt is gone before it is read", func() {
 				createAccount(true)
-				obj := create(key, nil)
+				obj := create(key, adoptOrCreate)
 				store.objects["listed"] = t.seed("listed", k.key(obj))
 				store.getErr = fakeCRUDNotFound(http.MethodGet, accountID, "listed")
 				_, err := reconcileIt()
@@ -398,11 +503,12 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(id).NotTo(Equal("listed"))
 				Expect(store.objects).To(HaveKey(id))
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "it created this one")
 			})
 
 			It("returns a failed read of the "+k.noun+" it would adopt for back-off", func() {
 				createAccount(true)
-				obj := create(key, nil)
+				obj := create(key, adopt)
 				store.objects["listed"] = t.seed("listed", k.key(obj))
 				store.getErr = errors.New("unavailable")
 				_, err := reconcileIt()
@@ -436,6 +542,38 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(store.objects).To(HaveKey(newID))
 				Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, newID))
 			})
+
+			It("recreates an adopted "+k.noun+" deleted outside kflare as its own with adopt-or-create", func() {
+				createAccount(true)
+				obj := create(key, adoptOrCreate)
+				store.objects["existing"] = t.seed("existing", k.key(obj))
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+
+				delete(store.objects, "existing")
+				_, err = reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(k.statusID(get())).NotTo(Equal("existing"))
+				Expect(store.objects).To(HaveKey(k.statusID(get())))
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "kflare created this one")
+			})
+
+			It("reports NotFound with the adopt policy when an adopted "+k.noun+" is deleted outside kflare",
+				func() {
+					createAccount(true)
+					obj := create(key, adopt)
+					store.objects["existing"] = t.seed("existing", k.key(obj))
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+
+					delete(store.objects, "existing")
+					writes := store.writes
+					_, err = reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ready().Reason).To(Equal(reasonNotFound))
+					Expect(store.writes).To(Equal(writes), "nothing is created")
+				})
 
 			for _, change := range t.changes {
 				It("updates the "+k.noun+" in place after "+change.what, func() {
@@ -533,6 +671,39 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(store.objects).To(HaveLen(1))
+				expectGone()
+			})
+
+			// adopted creates a resource with annotations that adopts an
+			// existing object.
+			adopted := func(annotations map[string]string) {
+				createAccount(true)
+				obj := create(key, annotations)
+				store.objects["existing"] = t.seed("existing", k.key(obj))
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(k.statusID(get())).To(Equal("existing"))
+			}
+
+			It("keeps a "+k.noun+" it adopted", func() {
+				adopted(adopt)
+				startDeletion()
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.objects).To(HaveKey("existing"))
+				Expect(store.writes).To(BeZero())
+				expectGone()
+			})
+
+			It("deletes a "+k.noun+" it adopted with the delete policy", func() {
+				adopted(map[string]string{
+					reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt,
+					reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyDelete,
+				})
+				startDeletion()
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.objects).To(BeEmpty())
 				expectGone()
 			})
 

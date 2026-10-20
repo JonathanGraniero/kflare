@@ -95,6 +95,12 @@ var _ = Describe("IPList Controller", func() {
 		Expect(k8sClient.Get(ctx, k, list)).To(Succeed())
 		return list
 	}
+	// annotate sets annotations on the IPList at k.
+	annotate := func(k types.NamespacedName, annotations map[string]string) {
+		list := getList(k)
+		list.Annotations = annotations
+		Expect(k8sClient.Update(ctx, list)).To(Succeed())
+	}
 	readyCondition := func(k types.NamespacedName) metav1.Condition {
 		cond := meta.FindStatusCondition(getList(k).Status.Conditions, cloudflarev1alpha1.ConditionReady)
 		Expect(cond).NotTo(BeNil(), "no Ready condition")
@@ -257,12 +263,66 @@ var _ = Describe("IPList Controller", func() {
 			It("adopts an existing IP list with the same name, and corrects it", func() {
 				id := fake.seed("kflare_a", cf.ListTypeIP, "", cf.ListItem{IP: new("10.0.0.0/8")})
 				createList("a", nil)
+				annotate(key("a"), map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
 				syncList(key("a"))
 
 				Expect(fake.lists).To(HaveLen(1), "nothing created")
 				Expect(getList(key("a")).Labels).To(HaveKeyWithValue(cloudflarev1alpha1.IPListIDLabel, id))
+				Expect(getList(key("a")).Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 				Expect(fake.lists[id].Description).To(Equal("office a"))
 				Expect(fake.storedItems()).To(ConsistOf("192.0.2.1 front door", "198.51.100.0/24"))
+			})
+
+			It("reports AlreadyExists for an IP list with its name without an adoption policy, and leaves it", func() {
+				id := fake.seed("kflare_a", cf.ListTypeIP, "", cf.ListItem{IP: new("10.0.0.0/8")})
+				createList("a", nil)
+				result, err := reconcileList(key("a"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+				Expect(readyCondition(key("a")).Reason).To(Equal("AlreadyExists"))
+				Expect(readyCondition(key("a")).Message).To(ContainSubstring("kflare_a"))
+				Expect(fake.writes).To(BeZero())
+				Expect(fake.storedItems()).To(ConsistOf("10.0.0.0/8"))
+				Expect(getList(key("a")).Labels).NotTo(HaveKey(cloudflarev1alpha1.IPListIDLabel))
+				Expect(fake.lists).To(HaveKey(id))
+			})
+
+			It("reports NotFound with the adopt policy when the account has no list with its name", func() {
+				createList("a", nil)
+				annotate(key("a"), map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+				_, err := reconcileList(key("a"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(readyCondition(key("a")).Reason).To(Equal("NotFound"))
+				Expect(fake.lists).To(BeEmpty())
+			})
+
+			It("finds the list it claimed when its status was not recorded", func() {
+				id := fake.seed("kflare_a", cf.ListTypeIP, "office a")
+				createList("a", nil)
+				list := getList(key("a"))
+				list.Labels = map[string]string{cloudflarev1alpha1.IPListIDLabel: id}
+				Expect(k8sClient.Update(ctx, list)).To(Succeed())
+				syncList(key("a"))
+				Expect(getList(key("a")).Status.CloudflareMetadata.ListID).To(Equal(id))
+				Expect(fake.lists).To(HaveLen(1), "nothing else is created")
+				Expect(getList(key("a")).Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			})
+
+			It("marks the list it is about to create, and finds it on the next reconcile as its own", func() {
+				createList("a", nil)
+				fake.errs = map[string]error{"CreateList": errors.New("lost response")}
+				_, err := reconcileList(key("a"))
+				Expect(err).To(HaveOccurred())
+				Expect(getList(key("a")).Annotations).To(HaveKeyWithValue(reconciler.CreatingAnnotation, "kflare_a"))
+
+				By("finding the list the lost create made, without an adoption policy")
+				fake.errs = nil
+				id := fake.seed("kflare_a", cf.ListTypeIP, "office a")
+				syncList(key("a"))
+				Expect(getList(key("a")).Status.CloudflareMetadata.ListID).To(Equal(id))
+				Expect(fake.lists).To(HaveLen(1), "nothing else is created")
+				Expect(getList(key("a")).Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+				Expect(getList(key("a")).Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation))
 			})
 
 			It("does not adopt a list that another IPList manages", func() {
@@ -414,6 +474,25 @@ var _ = Describe("IPList Controller", func() {
 
 		It("deletes the list from Cloudflare and removes the finalizer", func() {
 			syncedList(nil)
+			_, err := reconcileList(key("a"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.lists).To(BeEmpty())
+			expectGone()
+		})
+
+		It("keeps a list it adopted", func() {
+			syncedList(map[string]string{reconciler.AdoptedAnnotation: "true"})
+			_, err := reconcileList(key("a"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.lists).To(HaveLen(1))
+			expectGone()
+		})
+
+		It("deletes a list it adopted with the delete policy", func() {
+			syncedList(map[string]string{
+				reconciler.AdoptedAnnotation:        "true",
+				reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyDelete,
+			})
 			_, err := reconcileList(key("a"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.lists).To(BeEmpty())

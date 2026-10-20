@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
@@ -59,7 +60,14 @@ func (f *fakeWorkerScriptAPI) UploadWorker(_ context.Context, rc *cf.ResourceCon
 		return cf.WorkerScriptResponse{}, err
 	}
 	f.uploads = append(f.uploads, params)
-	return f.uploadResp, f.uploadErr
+	if f.uploadErr != nil {
+		return cf.WorkerScriptResponse{}, f.uploadErr
+	}
+	// The account lists the Worker from now on, as uploaded.
+	uploaded := cf.WorkerMetaData{ID: params.ScriptName, ETAG: f.uploadResp.ETAG, ModifiedOn: f.uploadResp.ModifiedOn}
+	f.workers = append(slices.DeleteFunc(f.workers, func(w cf.WorkerMetaData) bool { return w.ID == params.ScriptName }),
+		uploaded)
+	return f.uploadResp, nil
 }
 
 func (f *fakeWorkerScriptAPI) ListWorkers(_ context.Context, rc *cf.ResourceContainer, _ cf.ListWorkersParams) (cf.WorkerListResponse, *cf.ResultInfo, error) {
@@ -217,11 +225,10 @@ var _ = Describe("WorkerScript Controller", func() {
 
 	// syncedFake returns a fake whose upload reports uploadedAt and whose list
 	// reports the same Worker, as Cloudflare does right after an upload.
+	// syncedFake is an account without the Worker, whose first upload
+	// Cloudflare stamps with uploadedAt.
 	syncedFake := func() *fakeWorkerScriptAPI {
-		return &fakeWorkerScriptAPI{
-			uploadResp: uploadResp("etag-1", uploadedAt),
-			workers:    []cf.WorkerMetaData{{ID: scriptName, ETAG: "etag-1", ModifiedOn: uploadedAt}},
-		}
+		return &fakeWorkerScriptAPI{uploadResp: uploadResp("etag-1", uploadedAt)}
 	}
 
 	startDeletion := func() {
@@ -313,8 +320,9 @@ var _ = Describe("WorkerScript Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
 
-			// A new desired state uploads straight away without listing first.
-			Expect(fake.calls).To(Equal([]string{"UploadWorker"}))
+			// It lists first: a Worker with the name that it did not upload is not
+			// its to replace.
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker"}))
 			Expect(fake.accountIDs).To(HaveEach(fakeAcctID))
 			Expect(fake.uploads).To(HaveLen(1))
 			Expect(fake.uploads[0]).To(Equal(cf.CreateWorkerParams{
@@ -411,7 +419,14 @@ var _ = Describe("WorkerScript Controller", func() {
 
 			_, err = reconcileWorker(r)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"UploadWorker", "ListWorkers"}))
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers"}))
+			expectReady(metav1.ConditionTrue, "Synced")
+
+			By("going on managing it once the creating mark is gone, as a Worker it uploaded")
+			Expect(getWorker().Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation))
+			_, err = reconcileWorker(r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers", "ListWorkers"}))
 			expectReady(metav1.ConditionTrue, "Synced")
 		})
 
@@ -427,7 +442,7 @@ var _ = Describe("WorkerScript Controller", func() {
 				fake.uploadResp = uploadResp("etag-1", uploadedAt.Add(time.Minute))
 				_, err = reconcileWorker(r)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(fake.calls).To(Equal([]string{"UploadWorker", "ListWorkers", "UploadWorker"}))
+				Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers", "UploadWorker"}))
 				Expect(getWorker().Status.CloudflareMetadata.ModifiedOn).To(Equal("2026-10-03T02:14:10.984591Z"))
 			},
 			Entry("modified (for example a binding edited in the dashboard)", []cf.WorkerMetaData{
@@ -436,7 +451,7 @@ var _ = Describe("WorkerScript Controller", func() {
 			Entry("deleted", []cf.WorkerMetaData{{ID: "some-other-worker", ModifiedOn: uploadedAt}}),
 		)
 
-		It("uploads again when the spec changes, without listing", func() {
+		It("uploads again when the spec changes", func() {
 			readyEnv(nil)
 			fake := syncedFake()
 			r := reconcilerWithFakeWorkerScriptAPI(fake)
@@ -450,7 +465,7 @@ var _ = Describe("WorkerScript Controller", func() {
 
 			_, err = reconcileWorker(r)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"UploadWorker", "UploadWorker"}))
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers", "UploadWorker"}))
 			Expect(fake.uploads[1].Bindings["GREETING"]).To(Equal(cf.WorkerPlainTextBinding{Text: "changed"}))
 			Expect(getWorker().Status.AppliedHash).NotTo(Equal(firstHash))
 		})
@@ -469,8 +484,81 @@ var _ = Describe("WorkerScript Controller", func() {
 
 			_, err = reconcileWorker(r)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"UploadWorker", "UploadWorker"}))
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers", "UploadWorker"}))
 			Expect(fake.uploads[1].Bindings["API_KEY"]).To(Equal(cf.WorkerSecretTextBinding{Text: "rotated-value"}))
+		})
+
+		// otherWorker is a Worker with the WorkerScript's name that kflare did
+		// not upload.
+		otherWorker := []cf.WorkerMetaData{{ID: scriptName, ETAG: "etag-0", ModifiedOn: uploadedAt.Add(-time.Hour)}}
+
+		It("reports AlreadyExists for a Worker with its name without an adoption policy, and leaves it alone", func() {
+			readyEnv(nil)
+			fake := syncedFake()
+			fake.workers = otherWorker
+			result, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+			Expect(fake.calls).To(Equal([]string{"ListWorkers"}))
+			expectReady(metav1.ConditionFalse, "AlreadyExists")
+			Expect(getWorker().Status.CloudflareMetadata.ModifiedOn).To(BeEmpty())
+		})
+
+		It("replaces a Worker with its name with the adopt policy, and records the adoption", func() {
+			readyEnv(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			fake := syncedFake()
+			fake.workers = otherWorker
+			_, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker"}))
+			Expect(getWorker().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+			Expect(getWorker().Status.CloudflareMetadata.ModifiedOn).To(Equal(uploadedAtStr))
+			expectReady(metav1.ConditionTrue, "Synced")
+		})
+
+		It("reports NotFound with the adopt policy when the account has no Worker with its name", func() {
+			readyEnv(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			fake := syncedFake()
+			_, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"ListWorkers"}))
+			expectReady(metav1.ConditionFalse, "NotFound")
+		})
+
+		It("marks the Worker it is about to upload, and finds it on the next reconcile as its own", func() {
+			readyEnv(nil)
+			fake := syncedFake()
+			fake.uploadErr = errors.New("lost response")
+			_, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).To(HaveOccurred())
+			Expect(getWorker().Annotations).To(HaveKeyWithValue(reconciler.CreatingAnnotation, scriptName))
+
+			By("uploading over the Worker the lost upload stored, without an adoption policy")
+			fake = syncedFake()
+			fake.workers = otherWorker
+			_, err = reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker"}))
+			expectReady(metav1.ConditionTrue, "Synced")
+			Expect(getWorker().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+
+			By("dropping the mark once status records the upload")
+			_, err = reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getWorker().Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation))
+		})
+
+		It("uploads a Worker deleted outside kflare again as its own with adopt-or-create", func() {
+			readyEnv(map[string]string{
+				reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate,
+				reconciler.AdoptedAnnotation:        "true",
+			})
+			setUploadedStatus(uploadedAtStr)
+			fake := syncedFake()
+			_, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker"}))
+			Expect(getWorker().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation), "kflare uploaded this one")
 		})
 
 		DescribeTable("classifies Cloudflare API errors",
@@ -497,6 +585,18 @@ var _ = Describe("WorkerScript Controller", func() {
 	})
 
 	Describe("Deletion", func() {
+		It("deletes an adopted Worker with deletion-policy=delete", func() {
+			readyEnv(map[string]string{reconciler.AdoptedAnnotation: "true", deletionPolicy: "delete"})
+			setUploadedStatus(uploadedAtStr)
+			startDeletion()
+
+			fake := &fakeWorkerScriptAPI{}
+			_, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.deletes).To(Equal([]string{scriptName}))
+			expectWorkerGone()
+		})
+
 		It("deletes the Worker from Cloudflare and removes the finalizer", func() {
 			readyEnv(nil)
 			setUploadedStatus(uploadedAtStr)
@@ -526,6 +626,7 @@ var _ = Describe("WorkerScript Controller", func() {
 			},
 			Entry("deletion-policy=retain", map[string]string{deletionPolicy: "retain"}, true),
 			Entry("never uploaded by kflare", nil, false),
+			Entry("an adopted Worker", map[string]string{reconciler.AdoptedAnnotation: "true"}, true),
 		)
 
 		It("treats a Worker already gone from Cloudflare as deleted", func() {

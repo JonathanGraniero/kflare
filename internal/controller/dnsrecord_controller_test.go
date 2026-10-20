@@ -38,10 +38,12 @@ type fakeDNSRecordAPI struct {
 
 	updateCalled bool
 	deleteCalled bool
+	createCalled bool
 	updateParams cf.UpdateDNSRecordParams
 }
 
 func (f *fakeDNSRecordAPI) CreateDNSRecord(_ context.Context, _ *cf.ResourceContainer, _ cf.CreateDNSRecordParams) (cf.DNSRecord, error) {
+	f.createCalled = true
 	return f.createRecord, f.createErr
 }
 func (f *fakeDNSRecordAPI) GetDNSRecord(_ context.Context, _ *cf.ResourceContainer, _ string) (cf.DNSRecord, error) {
@@ -444,7 +446,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			createDNSAccount(true)
 			createReadyZone()
 			createDNSSecret()
-			createDNSRecord(nil)
+			createDNSRecord(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
 			record := &cloudflarev1alpha1.DNSRecord{}
 			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
 			record.Finalizers = []string{reconciler.Finalizer}
@@ -460,10 +462,124 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(k8sClient.Get(ctx, recordKey, updated)).To(Succeed())
 			Expect(updated.Status.CloudflareMetadata.RecordID).To(Equal("existing-111"))
 			Expect(updated.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.DNSRecordIDLabel, "existing-111"))
+			Expect(updated.Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+			Expect(fake.createCalled).To(BeFalse())
 
 			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		// unsyncedRecord creates a DNSRecord with annotations and the
+		// finalizer, which no reconcile has recorded a record for yet.
+		unsyncedRecord := func(annotations map[string]string) {
+			createDNSAccount(true)
+			createReadyZone()
+			createDNSSecret()
+			createDNSRecord(annotations)
+			record := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
+			record.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, record)).To(Succeed())
+		}
+		getRecord := func() *cloudflarev1alpha1.DNSRecord {
+			record := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
+			return record
+		}
+		identical := cf.DNSRecord{ID: "existing-111", Name: dnsRecordName, Type: dnsRecordType, Content: dnsRecordIP,
+			TTL: 300}
+		other := cf.DNSRecord{ID: "other-222", Name: dnsRecordName, Type: dnsRecordType, Content: "203.0.113.9", TTL: 300}
+		created := cf.DNSRecord{ID: "created-333", Name: dnsRecordName, Type: dnsRecordType, Content: dnsRecordIP,
+			TTL: 300}
+
+		It("reports AlreadyExists for an identical record without an adoption policy, and leaves it alone", func() {
+			unsyncedRecord(nil)
+			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{identical}}
+			result, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
+			Expect(cond.Reason).To(Equal("AlreadyExists"))
+			Expect(cond.Message).To(ContainSubstring(dnsRecordType + " " + dnsRecordName))
+			Expect(fake.createCalled).To(BeFalse())
+			Expect(fake.updateCalled).To(BeFalse())
+			Expect(getRecord().Labels).NotTo(HaveKey(cloudflarev1alpha1.DNSRecordIDLabel))
+		})
+
+		It("creates a separate member of the set without an adoption policy when the record there differs", func() {
+			unsyncedRecord(nil)
+			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{other}, createRecord: created}
+			_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.createCalled).To(BeTrue())
+			Expect(fake.updateCalled).To(BeFalse(), "the other record is left as it is")
+			Expect(getRecord().Status.CloudflareMetadata.RecordID).To(Equal("created-333"))
+			Expect(getRecord().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+		})
+
+		It("adopts and corrects the only record with the name and type with adopt-or-create", func() {
+			unsyncedRecord(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate})
+			corrected := other
+			corrected.Content = dnsRecordIP
+			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{other}, updateRecord: corrected}
+			_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.createCalled).To(BeFalse())
+			Expect(fake.updateCalled).To(BeTrue())
+			Expect(fake.updateParams.ID).To(Equal("other-222"))
+			Expect(getRecord().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+		})
+
+		It("reports NotFound with the adopt policy when no record matches", func() {
+			unsyncedRecord(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{other, {ID: "other-444", Name: dnsRecordName,
+				Type: dnsRecordType, Content: "203.0.113.10"}}}
+			_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getRecordCondition(cloudflarev1alpha1.ConditionReady).Reason).To(Equal("NotFound"))
+			Expect(fake.createCalled).To(BeFalse())
+			Expect(fake.updateCalled).To(BeFalse())
+		})
+
+		It("reports an unknown adoption policy instead of creating or adopting", func() {
+			unsyncedRecord(map[string]string{reconciler.AdoptionPolicyAnnotation: "always"})
+			fake := &fakeDNSRecordAPI{}
+			_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getRecordCondition(cloudflarev1alpha1.ConditionReady).Reason).To(Equal("InvalidAdoptionPolicy"))
+			Expect(fake.createCalled).To(BeFalse())
+		})
+
+		It("marks the record it is about to create, and finds it on the next reconcile as its own", func() {
+			unsyncedRecord(nil)
+			fake := &fakeDNSRecordAPI{createErr: errors.New("lost response")}
+			_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).To(HaveOccurred())
+			Expect(getRecord().Annotations).To(HaveKeyWithValue(reconciler.CreatingAnnotation,
+				dnsRecordType+" "+dnsRecordName))
+
+			By("finding the record the lost create made among the set, without an adoption policy")
+			fake = &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{other, created}}
+			_, err = reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.createCalled).To(BeFalse())
+			Expect(getRecord().Status.CloudflareMetadata.RecordID).To(Equal("created-333"))
+			Expect(getRecord().Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation), "the claim records it")
+			Expect(getRecord().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+		})
+
+		It("finds the record it claimed when its status was not recorded", func() {
+			unsyncedRecord(nil)
+			record := getRecord()
+			record.Labels = map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "existing-111"}
+			Expect(k8sClient.Update(ctx, record)).To(Succeed())
+			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{identical}}
+			_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getRecordCondition(cloudflarev1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+			Expect(getRecord().Status.CloudflareMetadata.RecordID).To(Equal("existing-111"))
+			Expect(fake.createCalled).To(BeFalse())
 		})
 
 		It("creates a record instead of adopting one another DNSRecord already manages", func() {
@@ -909,6 +1025,31 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal("APIError"))
 		})
+
+		DescribeTable("deleting a record it adopted",
+			func(annotations map[string]string, deleted bool) {
+				createDNSAccount(true)
+				createReadyZone()
+				createDNSSecret()
+				createDNSRecord(annotations)
+				setRecordIDInStatus(dnsFakeRecordID)
+				record := &cloudflarev1alpha1.DNSRecord{}
+				Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
+				record.Finalizers = []string{reconciler.Finalizer}
+				Expect(k8sClient.Update(ctx, record)).To(Succeed())
+				Expect(k8sClient.Delete(ctx, record)).To(Succeed())
+
+				fake := &fakeDNSRecordAPI{}
+				_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.deleteCalled).To(Equal(deleted))
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, recordKey, &cloudflarev1alpha1.DNSRecord{}))).To(BeTrue())
+			},
+			Entry("keeps it", map[string]string{reconciler.AdoptedAnnotation: "true"}, false),
+			Entry("deletes it with deletion-policy=delete", map[string]string{
+				reconciler.AdoptedAnnotation: "true", reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyDelete,
+			}, true),
+		)
 
 		It("removes the finalizer without calling CF delete when deletion-policy=retain", func() {
 			createDNSAccount(true)

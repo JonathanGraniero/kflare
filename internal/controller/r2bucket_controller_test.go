@@ -296,15 +296,60 @@ var _ = Describe("R2Bucket Controller", func() {
 		It("adopts the existing bucket with its name and keeps its location", func() {
 			createAccount(true)
 			fake = newFakeR2BucketAPI(cf.R2Bucket{Name: bucketName, Location: "APAC"})
-			createR2(r2Name, accountName, nil)
+			createR2(r2Name, accountName,
+				map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
 			_, err := reconcileR2()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.writes).To(BeZero())
 			b := getR2()
 			Expect(b.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.R2BucketNameLabel, bucketName))
+			Expect(b.Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 			Expect(b.Status.CloudflareMetadata.Location).To(Equal("APAC"))
 			Expect(b.Status.CloudflareMetadata.CreationDate).To(BeNil())
 			Expect(readyCondition().Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("reports AlreadyExists for a bucket with its name without an adoption policy, and leaves it", func() {
+			createAccount(true)
+			fake = newFakeR2BucketAPI(cf.R2Bucket{Name: bucketName, Location: "APAC"})
+			createR2(r2Name, accountName, nil)
+			result, err := reconcileR2()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+			Expect(readyCondition().Reason).To(Equal("AlreadyExists"))
+			Expect(readyCondition().Message).To(ContainSubstring(bucketName))
+			Expect(fake.writes).To(BeZero())
+			Expect(getR2().Labels).NotTo(HaveKey(cloudflarev1alpha1.R2BucketNameLabel))
+		})
+
+		It("reports NotFound with the adopt policy when the account has no bucket with its name", func() {
+			createAccount(true)
+			createR2(r2Name, accountName,
+				map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			_, err := reconcileR2()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readyCondition().Reason).To(Equal("NotFound"))
+			Expect(fake.buckets).To(BeEmpty())
+		})
+
+		It("marks the bucket it is about to create, and finds it on the next reconcile as its own", func() {
+			createAccount(true)
+			createR2(r2Name, accountName, nil)
+			fake.createErr = errors.New("lost response")
+			_, err := reconcileR2()
+			Expect(err).To(HaveOccurred())
+			Expect(getR2().Annotations).To(HaveKeyWithValue(reconciler.CreatingAnnotation, bucketName))
+
+			By("finding the bucket the lost create made, without an adoption policy")
+			fake.createErr = nil
+			fake.buckets[bucketName] = cf.R2Bucket{Name: bucketName, Location: "WEUR"}
+			writes := fake.writes
+			_, err = reconcileR2()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.writes).To(Equal(writes), "nothing is created")
+			Expect(readyCondition().Status).To(Equal(metav1.ConditionTrue))
+			Expect(getR2().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			Expect(getR2().Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation))
 		})
 
 		It("reports NameConflict instead of taking over a bucket another R2Bucket manages", func() {
@@ -432,6 +477,31 @@ var _ = Describe("R2Bucket Controller", func() {
 
 		It("deletes the bucket from Cloudflare and removes the finalizer", func() {
 			syncedR2(nil)
+			startDeletion()
+			_, err := reconcileR2()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.buckets).To(BeEmpty())
+			expectGone()
+		})
+
+		It("keeps a bucket it adopted", func() {
+			fake = newFakeR2BucketAPI(cf.R2Bucket{Name: bucketName})
+			syncedR2(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			Expect(getR2().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+			startDeletion()
+			_, err := reconcileR2()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.buckets).To(HaveKey(bucketName))
+			expectGone()
+		})
+
+		It("deletes a bucket it adopted with the delete policy", func() {
+			fake = newFakeR2BucketAPI(cf.R2Bucket{Name: bucketName})
+			syncedR2(map[string]string{
+				reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt,
+				reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyDelete,
+			})
+			Expect(getR2().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 			startDeletion()
 			_, err := reconcileR2()
 			Expect(err).NotTo(HaveOccurred())

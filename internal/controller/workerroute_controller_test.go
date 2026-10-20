@@ -407,13 +407,73 @@ var _ = Describe("WorkerRoute Controller", func() {
 		It("adopts the existing route with the pattern and points it at the Worker", func() {
 			readyEnv()
 			fake = newFakeWorkerRouteAPI(cf.WorkerRoute{ID: "existing", Pattern: pattern, ScriptName: "someone-elses-worker"})
-			createRoute(routeName, pattern, true, nil)
+			createRoute(routeName, pattern, true,
+				map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
 			_, err := reconcileRoute()
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fake.routes).To(HaveLen(1))
 			Expect(fake.routes["existing"].ScriptName).To(Equal(workerName))
 			Expect(getRoute().Status.CloudflareMetadata.RouteID).To(Equal("existing"))
+			Expect(getRoute().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+		})
+
+		It("reports AlreadyExists for a route with its pattern without an adoption policy, and leaves it", func() {
+			readyEnv()
+			fake = newFakeWorkerRouteAPI(cf.WorkerRoute{ID: "existing", Pattern: pattern, ScriptName: "someone-elses-worker"})
+			createRoute(routeName, pattern, true, nil)
+			result, err := reconcileRoute()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+			Expect(readyCondition().Reason).To(Equal("AlreadyExists"))
+			Expect(readyCondition().Message).To(ContainSubstring(pattern))
+			Expect(fake.writes).To(BeZero())
+			Expect(fake.routes["existing"].ScriptName).To(Equal("someone-elses-worker"))
+		})
+
+		It("reports NotFound with the adopt policy when the zone has no route with its pattern", func() {
+			readyEnv()
+			createRoute(routeName, pattern, true,
+				map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			_, err := reconcileRoute()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readyCondition().Reason).To(Equal("NotFound"))
+			Expect(fake.routes).To(BeEmpty())
+		})
+
+		It("finds the route it claimed when its status was not recorded", func() {
+			readyEnv()
+			fake = newFakeWorkerRouteAPI(cf.WorkerRoute{ID: "claimed", Pattern: pattern, ScriptName: workerName})
+			createRoute(routeName, pattern, true, nil)
+			route := getRoute()
+			route.Labels = map[string]string{cloudflarev1alpha1.WorkerRouteIDLabel: "claimed"}
+			Expect(k8sClient.Update(ctx, route)).To(Succeed())
+			_, err := reconcileRoute()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readyCondition().Status).To(Equal(metav1.ConditionTrue))
+			Expect(getRoute().Status.CloudflareMetadata.RouteID).To(Equal("claimed"))
+			Expect(fake.writes).To(BeZero())
+			Expect(getRoute().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+		})
+
+		It("marks the route it is about to create, and finds it on the next reconcile as its own", func() {
+			readyEnv()
+			createRoute(routeName, pattern, true, nil)
+			fake.createErr = errors.New("lost response")
+			_, err := reconcileRoute()
+			Expect(err).To(HaveOccurred())
+			Expect(getRoute().Annotations).To(HaveKeyWithValue(reconciler.CreatingAnnotation, pattern))
+
+			By("finding the route the lost create made, without an adoption policy")
+			fake.createErr = nil
+			fake.routes["created"] = cf.WorkerRoute{ID: "created", Pattern: pattern, ScriptName: workerName}
+			writes := fake.writes
+			_, err = reconcileRoute()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.writes).To(Equal(writes), "nothing is created")
+			Expect(getRoute().Status.CloudflareMetadata.RouteID).To(Equal("created"))
+			Expect(getRoute().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			Expect(getRoute().Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation))
 		})
 
 		It("reports PatternConflict instead of taking over a route another WorkerRoute manages", func() {
@@ -534,6 +594,27 @@ var _ = Describe("WorkerRoute Controller", func() {
 
 		It("deletes the route from Cloudflare and removes the finalizer", func() {
 			syncedRoute(nil)
+			_, err := reconcileRoute()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.routes).To(BeEmpty())
+			expectGone()
+		})
+
+		It("keeps a route it adopted", func() {
+			fake = newFakeWorkerRouteAPI(cf.WorkerRoute{ID: "existing", Pattern: pattern, ScriptName: workerName})
+			syncedRoute(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			_, err := reconcileRoute()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.routes).To(HaveKey("existing"))
+			expectGone()
+		})
+
+		It("deletes a route it adopted with the delete policy", func() {
+			fake = newFakeWorkerRouteAPI(cf.WorkerRoute{ID: "existing", Pattern: pattern, ScriptName: workerName})
+			syncedRoute(map[string]string{
+				reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt,
+				reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyDelete,
+			})
 			_, err := reconcileRoute()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.routes).To(BeEmpty())

@@ -186,8 +186,12 @@ func (r *WorkerRouteReconciler) syncRoute(
 		}
 	}
 
-	// No route yet: adopt the route with this pattern (patterns are unique
-	// within a zone) unless another WorkerRoute manages it, or create one.
+	// No route yet: find the route with this pattern (patterns are unique
+	// within a zone). It is this resource's own when its claim or its
+	// creating annotation says so; another WorkerRoute may manage it;
+	// otherwise the resource adopts it only if its adoption policy allows.
+	// Without one, create it, unless the policy is adopt.
+	adopting := false
 	if current.ID == "" {
 		routes, err := cfAPI.ListWorkerRoutes(ctx, rc, cf.ListWorkerRoutesParams{})
 		if err != nil {
@@ -198,6 +202,7 @@ func (r *WorkerRouteReconciler) syncRoute(
 		if err != nil {
 			return ctrl.Result{}, err
 		}
+		what := fmt.Sprintf("Worker route %q", route.Spec.Pattern)
 		if existing, ok := routeWithPattern(routes.Routes, route.Spec.Pattern); ok {
 			if owner, taken := claimed[existing.ID]; taken {
 				return notReadyRetryAfter(ctx, r.Client, route, &conditionError{
@@ -205,9 +210,24 @@ func (r *WorkerRouteReconciler) syncRoute(
 					Message: fmt.Sprintf("Pattern %q is already managed by WorkerRoute %s", route.Spec.Pattern, owner),
 				})
 			}
+			if ownsID(route, cloudflarev1alpha1.WorkerRouteIDLabel, existing.ID) || creating(route, route.Spec.Pattern) {
+				logger.Info("Found the Worker route this resource created", "pattern", existing.Pattern,
+					"routeID", existing.ID)
+			} else {
+				if condErr := mayAdopt(route, what); condErr != nil {
+					return notReadyRetryAfter(ctx, r.Client, route, condErr)
+				}
+				adopting = true
+				logger.Info("Adopted existing Worker route", "pattern", existing.Pattern, "routeID", existing.ID)
+			}
 			current = existing
-			logger.Info("Adopted existing Worker route", "pattern", existing.Pattern, "routeID", existing.ID)
 		} else {
+			if condErr := mayCreate(route, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, route, condErr)
+			}
+			if err := markCreating(ctx, r.Client, route, route.Spec.Pattern); err != nil {
+				return ctrl.Result{}, err
+			}
 			created, err := cfAPI.CreateWorkerRoute(ctx, rc, cf.CreateWorkerRouteParams{
 				Pattern: route.Spec.Pattern,
 				Script:  script,
@@ -222,7 +242,7 @@ func (r *WorkerRouteReconciler) syncRoute(
 
 	// Claim the route before anything else can fail, so no other WorkerRoute
 	// adopts it in the meantime.
-	if err := claimID(ctx, r.Client, route, cloudflarev1alpha1.WorkerRouteIDLabel, current.ID); err != nil {
+	if err := claimID(ctx, r.Client, route, cloudflarev1alpha1.WorkerRouteIDLabel, current.ID, adopting); err != nil {
 		return ctrl.Result{}, err
 	}
 

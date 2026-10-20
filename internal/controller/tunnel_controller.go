@@ -133,21 +133,25 @@ func (r *TunnelReconciler) syncTunnel(
 	// If we already have a tunnel ID, try to fetch the current state.
 	// Cloudflare keeps deleted tunnels readable with deleted_at set, so a
 	// successful Get can still mean the tunnel is gone.
+	recorded := false
 	if tunnelID := tunnel.Status.CloudflareMetadata.TunnelID; tunnelID != "" {
 		got, err := cfAPI.GetTunnel(ctx, rc, tunnelID)
 		switch {
 		case err == nil && got.DeletedAt == nil:
-			cfTunnel = got
+			cfTunnel, recorded = got, true
 		case err == nil || cfpkg.IsNotFound(err):
-			logger.Info("Tunnel deleted externally, recreating", "tunnelID", tunnelID)
+			logger.Info("Tunnel deleted externally", "tunnelID", tunnelID)
 		default:
 			return handleCloudflareError(ctx, r.Client, tunnel, err)
 		}
 	}
 
-	// If we don't have a tunnel yet (no ID, or externally deleted), find or create.
-	// Adopting by name also recovers a tunnel created by an earlier reconcile
-	// whose status update never landed.
+	// If we don't have a tunnel yet (no ID, or externally deleted), find one
+	// by name: this resource's own if it was creating it (a tunnel created by
+	// an earlier reconcile whose status update never landed), else adopted
+	// only if the adoption policy allows. Without one, create it, unless the
+	// policy is adopt.
+	adopting := false
 	if cfTunnel.ID == "" {
 		tunnels, _, err := cfAPI.ListTunnels(ctx, rc, cf.TunnelListParams{
 			Name:      tunnel.Spec.Name,
@@ -156,10 +160,26 @@ func (r *TunnelReconciler) syncTunnel(
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, tunnel, err)
 		}
+		what := fmt.Sprintf("Tunnel %q", tunnel.Spec.Name)
 		if len(tunnels) > 0 {
+			if creating(tunnel, tunnel.Spec.Name) {
+				logger.Info("Found the tunnel this resource created", "name", tunnel.Spec.Name,
+					"tunnelID", tunnels[0].ID)
+			} else {
+				if condErr := mayAdopt(tunnel, what); condErr != nil {
+					return notReadyRetryAfter(ctx, r.Client, tunnel, condErr)
+				}
+				adopting = true
+				logger.Info("Adopted existing tunnel", "name", tunnel.Spec.Name, "tunnelID", tunnels[0].ID)
+			}
 			cfTunnel = tunnels[0]
-			logger.Info("Adopted existing tunnel", "name", tunnel.Spec.Name, "tunnelID", cfTunnel.ID)
 		} else {
+			if condErr := mayCreate(tunnel, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, tunnel, condErr)
+			}
+			if err := markCreating(ctx, r.Client, tunnel, tunnel.Spec.Name); err != nil {
+				return ctrl.Result{}, err
+			}
 			secret, err := generateTunnelSecret()
 			if err != nil {
 				return ctrl.Result{}, err
@@ -174,6 +194,20 @@ func (r *TunnelReconciler) syncTunnel(
 			}
 			cfTunnel = created
 			logger.Info("Created tunnel", "name", tunnel.Spec.Name, "tunnelID", cfTunnel.ID)
+		}
+	}
+
+	// Record an adoption before writing status; the patch re-reads the
+	// Tunnel, so it comes before the status fields are set. Once status
+	// records a tunnel this resource created, its creating annotation can go.
+	switch {
+	case adopting:
+		if err := markAdopted(ctx, r.Client, tunnel); err != nil {
+			return ctrl.Result{}, err
+		}
+	case recorded:
+		if err := clearCreating(ctx, r.Client, tunnel); err != nil {
+			return ctrl.Result{}, err
 		}
 	}
 

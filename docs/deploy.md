@@ -148,11 +148,15 @@ Every other kind references the account (or a resource that does). Examples are 
 
 Things to know before pointing kflare at existing infrastructure:
 
-- **Adoption.** A resource that already exists in Cloudflare with the same name is adopted rather than
-  recreated, and kflare then corrects drift toward your spec.
-- **Deletion policy.** Deleting a kflare resource deletes the Cloudflare object, unless the resource carries
-  the annotation `kflare.dev/deletion-policy: retain`. Use `retain` on anything you adopted and want to keep,
-  such as a production zone.
+- **Adoption.** kflare never takes over something you already have unless you ask it to. A resource whose
+  object already exists in Cloudflare (a zone with its name, a bucket, a database, a Worker...) reports
+  `AlreadyExists` and leaves it alone. To manage the existing object, annotate the resource
+  `kflare.dev/adoption-policy: adopt` (adopt it, never create one) or `adopt-or-create` (adopt it, or create
+  one if there is none). kflare then corrects drift toward your spec, and marks the resource
+  `kflare.dev/adopted: "true"`.
+- **Deletion policy.** Deleting a kflare resource deletes the Cloudflare object kflare created, and keeps one
+  it adopted. The annotation `kflare.dev/deletion-policy` overrides that: `retain` keeps the object, and
+  `delete` deletes it even if it was adopted.
 - **R2 objects.** kflare never deletes objects. Deleting an `R2Bucket` deletes the bucket only once it is
   empty; until then it reports `BucketNotEmpty`. Use `retain` to keep a bucket and its objects.
 - **KV data.** Deleting a `KVNamespace` deletes the namespace and everything stored in it. Use `retain` on
@@ -168,7 +172,7 @@ Things to know before pointing kflare at existing infrastructure:
   like WAF custom rules. Free zones allow one, which counts per IP address over 10 seconds and can only block.
   Cloudflare also counts per data center, and requires rules to say so: kflare adds `cf.colo.id` to
   `spec.characteristics` itself.
-- **IP lists.** An `IPList` manages a custom list in its account, adopting a list with the same name, and
+- **IP lists.** An `IPList` manages a custom list in its account, created or adopted by its name, and
   replaces the list's items whenever they differ from `spec.items`. Rule expressions use it as
   `$<spec.name>`. Cloudflare refuses a rule that uses a list the account does not have yet, and refuses to
   delete a list that a rule uses: kflare writes such a rule once the list exists, and deletes the list once
@@ -285,11 +289,11 @@ exist, short names such as `kubectl get cloudflareaccounts` can resolve to eithe
 
 Order matters, because kflare's finalizers need the controller running to clean up:
 
-1. **Delete your kflare resources while the controller is still running.** Each one deletes its Cloudflare
-   object, or keeps it if annotated `retain`. The order does not matter: Zones wait for their records,
-   routes and rules, Tunnels for their configurations, KV namespaces and R2 buckets for the Workers bound
-   to them, IP lists for the rules that use them, accounts until nothing uses them, and token Secrets until
-   no account uses them. An R2 bucket that still holds objects is not deleted: empty it, or annotate the
+1. **Delete your kflare resources while the controller is still running.** Each one deletes the Cloudflare
+   object it created, and keeps one it adopted or one annotated `retain`. The order does not matter: Zones
+   wait for their records, routes and rules, Tunnels for their configurations, KV namespaces and R2 buckets
+   for the Workers bound to them, IP lists for the rules that use them, accounts until nothing uses them,
+   and token Secrets until no account uses them. An R2 bucket that still holds objects is not deleted: empty it, or annotate the
    R2Bucket `retain`.
 
    ```sh
@@ -360,6 +364,9 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `ZoneNotFound`, `ZoneNotReady`, `TunnelNotFound`, `TunnelNotReady` | The referenced parent is missing or not ready | Check the parent resource |
 | `TunnelAlreadyConfigured` | Another `TunnelConfiguration` owns this tunnel | Keep one configuration per tunnel |
 | `CredentialsSecretConflict` | A Secret with the tunnel's `credentialsSecretRef` name exists and kflare does not own it | Delete it or pick another name |
+| `AlreadyExists` | The Cloudflare object the resource names (a zone, record, tunnel, Worker, bucket, ...) exists and kflare did not create it | Annotate the resource `kflare.dev/adoption-policy: adopt` to manage it, or pick another name |
+| `NotFound` | The resource's adoption policy is `adopt` and there is nothing to adopt | Check the name, or use `adopt-or-create` to create one |
+| `InvalidAdoptionPolicy` | `kflare.dev/adoption-policy` holds a value other than `adopt` and `adopt-or-create` | Fix or remove the annotation |
 | `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern | Keep one WorkerRoute per pattern |
 | `PatternOutsideZone` | The route pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |
 | `WorkerScriptNotFound`, `WorkerScriptNotReady`, `AccountMismatch` | The route's WorkerScript is missing, not uploaded yet, or in a different account than the zone | Check the WorkerScript; it must use the zone's account |

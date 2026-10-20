@@ -29,10 +29,11 @@ import (
 // the API creates, reads, updates and deletes by ID: KVNamespace, and the
 // kinds kflare-gen is to generate. They reconcile the same way. A resource
 // resolves its account's token and reads its object by the ID in its status,
-// creating a new one if it was deleted outside kflare. Without one, it adopts
-// the account's object with the same key, unless another resource of the kind
-// claims it, or creates one. It claims the object, updates it when it differs
-// from the spec, and deletes it with the resource once nothing depends on it.
+// creating a new one if it was deleted outside kflare. Without one, it creates
+// one, or, as its adoption policy allows (adoption.go), adopts the account's
+// object with the same key, unless another resource of the kind claims it.
+// It claims the object, updates it when it differs from the spec, and deletes
+// it with the resource once nothing depends on it, unless it is retained.
 // A kind supplies only what differs: a crudResourceKind, which calls the
 // kind's cloudflare-go v7 service.
 
@@ -148,11 +149,17 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 		}
 	}
 
-	// No object yet: adopt the account's object with this key, unless another
-	// resource of the kind claims it, or create one. An object found in the
-	// list is read by its ID, for all that the list leaves out.
+	// No object yet: find the account's object with this key. It is this
+	// resource's own when its claim or its creating annotation says so (an
+	// earlier reconcile did not record it in status); another resource of the
+	// kind may claim it; otherwise the resource adopts it only if its adoption
+	// policy allows. Without one, it creates the object, unless the policy is
+	// adopt. An object found in the list is read by its ID, for all that the
+	// list leaves out.
+	adopting := false
 	if current == nil {
 		key := k.key(obj)
+		what := fmt.Sprintf("%s %q", k.noun, key)
 		existing, err := findInPages(func(page int64) (*pagination.V4PagePaginationArray[L], error) {
 			return k.list(ctx, api, accountID, page)
 		}, func(listed *L) bool { return k.listedKey(listed) == key })
@@ -168,21 +175,36 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 			if owner, taken := claimed[id]; taken {
 				return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
 					Reason:  k.conflictReason,
-					Message: fmt.Sprintf("%s %q is already managed by %s %s", k.noun, key, k.name, owner),
+					Message: fmt.Sprintf("%s is already managed by %s %s", what, k.name, owner),
 				})
 			}
-			adopted, err := k.get(ctx, api, accountID, id)
+			own := ownsID(obj, k.claimLabel, id) || creating(obj, key)
+			if !own {
+				if condErr := mayAdopt(obj, what); condErr != nil {
+					return notReadyRetryAfter(ctx, r.Client, obj, condErr)
+				}
+			}
+			found, err := k.get(ctx, api, accountID, id)
 			switch {
 			case cfpkg.IsNotFound(err):
-				logger.Info(k.noun+" deleted since it was listed, creating one", "key", key, "id", id)
+				logger.Info(k.noun+" deleted since it was listed", "key", key, "id", id)
 			case err != nil:
 				return handleCloudflareError(ctx, r.Client, obj, err)
+			case own:
+				current = found
+				logger.Info("Found the "+k.noun+" this resource created", "key", key, "id", id)
 			default:
-				current = adopted
+				current, adopting = found, true
 				logger.Info("Adopted existing "+k.noun, "key", key, "id", id)
 			}
 		}
 		if current == nil {
+			if condErr := mayCreate(obj, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, obj, condErr)
+			}
+			if err := markCreating(ctx, r.Client, obj, key); err != nil {
+				return ctrl.Result{}, err
+			}
 			current, err = k.create(ctx, api, accountID, obj)
 			if err != nil {
 				return handleCloudflareError(ctx, r.Client, obj, err)
@@ -193,7 +215,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 
 	// Claim the object before anything else can fail, so no other resource of
 	// the kind adopts it in the meantime.
-	if err := claimID(ctx, r.Client, obj, k.claimLabel, k.id(current)); err != nil {
+	if err := claimID(ctx, r.Client, obj, k.claimLabel, k.id(current), adopting); err != nil {
 		return ctrl.Result{}, err
 	}
 

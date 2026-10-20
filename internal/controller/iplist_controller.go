@@ -160,15 +160,19 @@ func (r *IPListReconciler) syncList(
 		logger.Info("IP list deleted outside kflare, recreating", "listID", ipList.Status.CloudflareMetadata.ListID)
 	}
 
-	// No list yet: adopt the one with this name (names are unique in an
-	// account, across list kinds) unless another IPList manages it, or create
-	// one.
+	// No list yet: find the one with this name (names are unique in an
+	// account, across list kinds). It is this resource's own when its claim
+	// or its creating annotation says so; another IPList may manage it;
+	// otherwise the resource adopts it only if its adoption policy allows.
+	// Without one, create it, unless the policy is adopt.
+	adopting := false
 	if !found {
 		claimed, err := claimedIDs(ctx, r.Client, &cloudflarev1alpha1.IPListList{},
 			cloudflarev1alpha1.IPListIDLabel, ipList)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
+		what := fmt.Sprintf("IP list %q", ipList.Spec.Name)
 		if existing, ok := listWithName(lists, ipList.Spec.Name); ok {
 			if existing.Kind != cf.ListTypeIP {
 				return notReadyRetryAfter(ctx, r.Client, ipList, &conditionError{
@@ -179,12 +183,26 @@ func (r *IPListReconciler) syncList(
 			if owner, taken := claimed[existing.ID]; taken {
 				return notReadyRetryAfter(ctx, r.Client, ipList, &conditionError{
 					Reason:  reasonNameConflict,
-					Message: fmt.Sprintf("IP list %q is already managed by IPList %s", existing.Name, owner),
+					Message: fmt.Sprintf("%s is already managed by IPList %s", what, owner),
 				})
 			}
+			if ownsID(ipList, cloudflarev1alpha1.IPListIDLabel, existing.ID) || creating(ipList, ipList.Spec.Name) {
+				logger.Info("Found the IP list this resource created", "name", existing.Name, "listID", existing.ID)
+			} else {
+				if condErr := mayAdopt(ipList, what); condErr != nil {
+					return notReadyRetryAfter(ctx, r.Client, ipList, condErr)
+				}
+				adopting = true
+				logger.Info("Adopted existing IP list", "name", existing.Name, "listID", existing.ID)
+			}
 			current = existing
-			logger.Info("Adopted existing IP list", "name", existing.Name, "listID", existing.ID)
 		} else {
+			if condErr := mayCreate(ipList, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, ipList, condErr)
+			}
+			if err := markCreating(ctx, r.Client, ipList, ipList.Spec.Name); err != nil {
+				return ctrl.Result{}, err
+			}
 			current, err = cfAPI.CreateList(ctx, rc, cf.ListCreateParams{
 				Name:        ipList.Spec.Name,
 				Description: ipList.Spec.Description,
@@ -200,7 +218,7 @@ func (r *IPListReconciler) syncList(
 	// Claim the list before anything else can fail, so no other IPList adopts
 	// it in the meantime. The claim may re-read the IPList, so status is set
 	// only after it.
-	if err := claimID(ctx, r.Client, ipList, cloudflarev1alpha1.IPListIDLabel, current.ID); err != nil {
+	if err := claimID(ctx, r.Client, ipList, cloudflarev1alpha1.IPListIDLabel, current.ID, adopting); err != nil {
 		return ctrl.Result{}, err
 	}
 	ipList.Status.CloudflareMetadata.ListID = current.ID
