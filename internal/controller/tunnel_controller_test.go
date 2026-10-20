@@ -347,7 +347,7 @@ var _ = Describe("Tunnel Controller", func() {
 		})
 
 		It("adopts an existing tunnel with the same name instead of creating one", func() {
-			readyEnv(nil)
+			readyEnv(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
 			fake := &fakeTunnelAPI{
 				listTunnels: []cf.Tunnel{{ID: "tun-existing", Name: cfTunnelName, Status: "healthy"}},
 				token:       fakeTunnelTok,
@@ -356,7 +356,52 @@ var _ = Describe("Tunnel Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.calls).To(Equal([]string{"ListTunnels", "GetTunnelToken"}))
 			Expect(getTunnel().Status.CloudflareMetadata.TunnelID).To(Equal("tun-existing"))
+			Expect(getTunnel().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 			expectReady(metav1.ConditionTrue, "Synced")
+		})
+
+		It("reports AlreadyExists for an existing tunnel without an adoption policy, and leaves it alone", func() {
+			readyEnv(nil)
+			fake := &fakeTunnelAPI{listTunnels: []cf.Tunnel{{ID: "tun-existing", Name: cfTunnelName}}}
+			result, err := reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+			Expect(fake.calls).To(Equal([]string{"ListTunnels"}), "no token is read, nothing is created")
+			expectReady(metav1.ConditionFalse, "AlreadyExists")
+			Expect(getTunnel().Status.CloudflareMetadata.TunnelID).To(BeEmpty())
+		})
+
+		It("reports NotFound with the adopt policy when the account has no tunnel with the name", func() {
+			readyEnv(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			fake := &fakeTunnelAPI{}
+			_, err := reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"ListTunnels"}))
+			expectReady(metav1.ConditionFalse, "NotFound")
+		})
+
+		It("marks the tunnel it is about to create, and finds it on the next reconcile as its own", func() {
+			readyEnv(nil)
+			fake := &fakeTunnelAPI{createErr: errors.New("lost response")}
+			_, err := reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
+			Expect(err).To(HaveOccurred())
+			Expect(getTunnel().Annotations).To(HaveKeyWithValue(reconciler.CreatingAnnotation, cfTunnelName))
+
+			fake = &fakeTunnelAPI{
+				listTunnels: []cf.Tunnel{{ID: "tun-created", Name: cfTunnelName}},
+				token:       fakeTunnelTok,
+			}
+			_, err = reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"ListTunnels", "GetTunnelToken"}))
+			Expect(getTunnel().Status.CloudflareMetadata.TunnelID).To(Equal("tun-created"))
+			Expect(getTunnel().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+
+			By("dropping the mark once status records the tunnel")
+			fake = &fakeTunnelAPI{getTunnel: cf.Tunnel{ID: "tun-created", Name: cfTunnelName}, token: fakeTunnelTok}
+			_, err = reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getTunnel().Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation))
 		})
 
 		It("uses the tunnel recorded in status without listing or creating", func() {
@@ -596,6 +641,30 @@ var _ = Describe("Tunnel Controller", func() {
 			_, err := reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.calls).To(ContainElement("DeleteTunnel"))
+			expectTunnelGone()
+		})
+
+		It("keeps a tunnel it adopted", func() {
+			readyEnv(map[string]string{reconciler.AdoptedAnnotation: "true"})
+			setTunnelStatus(fakeTunnelID, credsName)
+			startDeletion()
+
+			fake := &fakeTunnelAPI{}
+			_, err := reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(BeEmpty(), "its connections are left too")
+			expectTunnelGone()
+		})
+
+		It("deletes a tunnel it adopted with deletion-policy=delete", func() {
+			readyEnv(map[string]string{reconciler.AdoptedAnnotation: "true", deletionPolicy: "delete"})
+			setTunnelStatus(fakeTunnelID, credsName)
+			startDeletion()
+
+			fake := &fakeTunnelAPI{}
+			_, err := reconcileTunnel(reconcilerWithFakeTunnelAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"CleanupTunnelConnections", "DeleteTunnel"}))
 			expectTunnelGone()
 		})
 

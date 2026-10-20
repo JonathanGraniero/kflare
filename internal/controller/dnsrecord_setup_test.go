@@ -20,6 +20,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -405,27 +406,37 @@ var _ = Describe("adoptableRecord", func() {
 	none := map[string]string{}
 
 	It("prefers the member of a set whose content matches", func() {
-		got, ok := adoptableRecord(spec("mx2.example.com"),
-			[]cf.DNSRecord{mx("1", "mx1.example.com"), mx("2", "mx2.example.com")}, none)
-		Expect(ok).To(BeTrue())
-		Expect(got.ID).To(Equal("2"))
+		for _, lone := range []bool{false, true} {
+			got, ok := adoptableRecord(spec("mx2.example.com"),
+				[]cf.DNSRecord{mx("1", "mx1.example.com"), mx("2", "mx2.example.com")}, none, lone)
+			Expect(ok).To(BeTrue())
+			Expect(got.ID).To(Equal("2"))
+		}
 	})
 
 	It("creates a new member when no record in a set matches", func() {
 		_, ok := adoptableRecord(spec("mx3.example.com"),
-			[]cf.DNSRecord{mx("1", "mx1.example.com"), mx("2", "mx2.example.com")}, none)
+			[]cf.DNSRecord{mx("1", "mx1.example.com"), mx("2", "mx2.example.com")}, none, true)
 		Expect(ok).To(BeFalse())
 	})
 
-	It("adopts and corrects the only record with the name and type", func() {
-		got, ok := adoptableRecord(spec("mx-new.example.com"), []cf.DNSRecord{mx("1", "mx-old.example.com")}, none)
+	It("adopts and corrects the only record with the name and type when lone records count", func() {
+		got, ok := adoptableRecord(spec("mx-new.example.com"), []cf.DNSRecord{mx("1", "mx-old.example.com")}, none,
+			true)
 		Expect(ok).To(BeTrue())
 		Expect(got.ID).To(Equal("1"))
 	})
 
+	It("leaves the only record with the name and type alone when its content differs and lone records do not count",
+		func() {
+			_, ok := adoptableRecord(spec("mx-new.example.com"), []cf.DNSRecord{mx("1", "mx-old.example.com")}, none,
+				false)
+			Expect(ok).To(BeFalse())
+		})
+
 	It("never adopts a record another DNSRecord manages, even when it matches", func() {
 		_, ok := adoptableRecord(spec("mx1.example.com"), []cf.DNSRecord{mx("1", "mx1.example.com")},
-			map[string]string{"1": "default/owner"})
+			map[string]string{"1": "default/owner"}, true)
 		Expect(ok).To(BeFalse())
 	})
 
@@ -434,8 +445,57 @@ var _ = Describe("adoptableRecord", func() {
 			Type: "SRV", Data: &apiextensionsv1.JSON{Raw: []byte(`{"port":443}`)}}}
 		a := cf.DNSRecord{ID: "a", Type: "SRV", Data: map[string]any{"port": float64(80)}}
 		b := cf.DNSRecord{ID: "b", Type: "SRV", Data: map[string]any{"port": float64(443)}}
-		got, ok := adoptableRecord(srv, []cf.DNSRecord{a, b}, none)
+		got, ok := adoptableRecord(srv, []cf.DNSRecord{a, b}, none, false)
 		Expect(ok).To(BeTrue())
 		Expect(got.ID).To(Equal("b"))
+	})
+})
+
+var _ = Describe("ownRecord", func() {
+	mx := func(id, content string) cf.DNSRecord {
+		return cf.DNSRecord{ID: id, Type: "MX", Name: "example.com", Content: content}
+	}
+	spec := func(content string, labels, annotations map[string]string) *cloudflarev1alpha1.DNSRecord {
+		return &cloudflarev1alpha1.DNSRecord{
+			ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},
+			Spec:       cloudflarev1alpha1.DNSRecordSpec{Type: "MX", Name: "example.com", Content: content},
+		}
+	}
+	set := []cf.DNSRecord{mx("1", "mx1.example.com"), mx("2", "mx2.example.com")}
+	none := map[string]string{}
+
+	It("finds the record the claim label names, whatever its content", func() {
+		got, ok := ownRecord(spec("mx3.example.com", map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "1"}, nil),
+			set, none)
+		Expect(ok).To(BeTrue())
+		Expect(got.ID).To(Equal("1"))
+	})
+
+	It("finds the matching member while the DNSRecord was creating a record of its type and name", func() {
+		got, ok := ownRecord(spec("mx2.example.com", nil,
+			map[string]string{reconciler.CreatingAnnotation: "MX example.com"}), set, none)
+		Expect(ok).To(BeTrue())
+		Expect(got.ID).To(Equal("2"))
+	})
+
+	It("finds nothing for a creating annotation of another key, or without one", func() {
+		_, ok := ownRecord(spec("mx2.example.com", nil,
+			map[string]string{reconciler.CreatingAnnotation: "MX other.example.com"}), set, none)
+		Expect(ok).To(BeFalse())
+		_, ok = ownRecord(spec("mx2.example.com", nil, nil), set, none)
+		Expect(ok).To(BeFalse())
+	})
+
+	It("finds nothing whose content differs while creating", func() {
+		_, ok := ownRecord(spec("mx3.example.com", nil,
+			map[string]string{reconciler.CreatingAnnotation: "MX example.com"}), set, none)
+		Expect(ok).To(BeFalse())
+	})
+
+	It("never counts a record another DNSRecord manages as its own", func() {
+		_, ok := ownRecord(spec("mx1.example.com", map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "1"},
+			map[string]string{reconciler.CreatingAnnotation: "MX example.com"}), set,
+			map[string]string{"1": "default/owner"})
+		Expect(ok).To(BeFalse())
 	})
 })

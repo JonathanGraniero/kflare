@@ -12,6 +12,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 // Several kinds manage Cloudflare objects that they may adopt rather than
@@ -54,17 +56,22 @@ func claimedIDs(
 }
 
 // claimID records id in obj's label, so other resources of its kind treat the
-// Cloudflare object as taken. It patches only the label.
-func claimID(ctx context.Context, c client.Writer, obj client.Object, label, id string) error {
-	if obj.GetLabels()[label] == id {
-		return nil
-	}
-	patch := client.MergeFrom(obj.DeepCopyObject().(client.Object))
-	labels := obj.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
-	labels[label] = id
-	obj.SetLabels(labels)
-	return c.Patch(ctx, obj, patch)
+// Cloudflare object as taken. In the same patch it marks obj as having
+// adopted the object when adopted is true, and drops the creating annotation,
+// since the label now records the object (see adoption.go). It patches only
+// when that changes something.
+func claimID(ctx context.Context, c client.Writer, obj client.Object, label, id string, adopted bool) error {
+	return patchMetadata(ctx, c, obj, func(labels, annotations map[string]string) {
+		labels[label] = id
+		if adopted {
+			annotations[reconciler.AdoptedAnnotation] = "true"
+		}
+		delete(annotations, reconciler.CreatingAnnotation)
+	})
+}
+
+// ownsID reports whether obj's claim label already holds id: the object is
+// the one obj created or adopted, even if its status does not say so yet.
+func ownsID(obj client.Object, label, id string) bool {
+	return obj.GetLabels()[label] == id
 }

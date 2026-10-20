@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -35,6 +36,7 @@ type fakeZoneAPI struct {
 	editErr      error
 	editCalled   bool
 	deleteCalled bool
+	createCalled bool
 
 	// Plan changes: the rate plan sent through each endpoint, the error to
 	// return, and what ZoneDetails reports once the plan has been changed.
@@ -45,6 +47,7 @@ type fakeZoneAPI struct {
 }
 
 func (f *fakeZoneAPI) CreateZone(_ context.Context, _ string, _ bool, _ cf.Account, _ string) (cf.Zone, error) {
+	f.createCalled = true
 	return f.createZone, f.createErr
 }
 func (f *fakeZoneAPI) ZoneDetails(_ context.Context, _ string) (cf.Zone, error) {
@@ -445,7 +448,7 @@ var _ = Describe("Zone Controller", func() {
 		It("adopts a pre-existing zone found via List", func() {
 			createAccount(true)
 			createSecret()
-			createZone(nil)
+			createZone(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
 			// No zoneID in status — zone hasn't been reconciled yet.
 			zone := &cloudflarev1alpha1.Zone{}
 			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
@@ -466,10 +469,105 @@ var _ = Describe("Zone Controller", func() {
 			updated := &cloudflarev1alpha1.Zone{}
 			Expect(k8sClient.Get(ctx, zoneKey, updated)).To(Succeed())
 			Expect(updated.Status.CloudflareMetadata.ZoneID).To(Equal("zone-existing-111"))
+			Expect(updated.Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+			Expect(fake.createCalled).To(BeFalse())
 
 			cond := getZoneCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		// unsynced creates a Zone with annotations and the finalizer, which no
+		// reconcile has recorded a zone for yet.
+		unsynced := func(annotations map[string]string) {
+			createAccount(true)
+			createSecret()
+			createZone(annotations)
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+			zone.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, zone)).To(Succeed())
+		}
+		existingZone := cf.Zone{ID: "zone-existing-111", Name: domainName, Type: "full", Status: "active",
+			Account: cf.Account{ID: fakeAcctID}}
+		zoneAnnotations := func() map[string]string {
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+			return zone.Annotations
+		}
+
+		It("reports AlreadyExists for an existing zone without an adoption policy, and leaves it alone", func() {
+			unsynced(nil)
+			fake := &fakeZoneAPI{listZones: []cf.Zone{{ID: "zone-existing-111", Name: domainName, Type: "partial",
+				Account: cf.Account{ID: fakeAcctID}}}}
+			result, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+			cond := getZoneCondition(cloudflarev1alpha1.ConditionReady)
+			Expect(cond.Reason).To(Equal("AlreadyExists"))
+			Expect(cond.Message).To(ContainSubstring(domainName))
+			Expect(fake.createCalled).To(BeFalse())
+			Expect(fake.editCalled).To(BeFalse(), "the zone's type differs, yet it is left as it is")
+			updated := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, zoneKey, updated)).To(Succeed())
+			Expect(updated.Status.CloudflareMetadata.ZoneID).To(BeEmpty())
+		})
+
+		It("reports NotFound with the adopt policy when the account has no such zone", func() {
+			unsynced(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			fake := &fakeZoneAPI{}
+			_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getZoneCondition(cloudflarev1alpha1.ConditionReady).Reason).To(Equal("NotFound"))
+			Expect(fake.createCalled).To(BeFalse())
+		})
+
+		It("marks the zone it is about to create, and finds it on the next reconcile as its own", func() {
+			unsynced(nil)
+			fake := &fakeZoneAPI{createErr: errors.New("lost response")}
+			_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).To(HaveOccurred())
+			Expect(fake.createCalled).To(BeTrue())
+			Expect(zoneAnnotations()).To(HaveKeyWithValue(reconciler.CreatingAnnotation, domainName))
+
+			By("finding the zone the lost create made, without an adoption policy")
+			fake = &fakeZoneAPI{listZones: []cf.Zone{existingZone}}
+			_, err = reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getZoneCondition(cloudflarev1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+			Expect(fake.createCalled).To(BeFalse())
+			Expect(zoneAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+
+			By("dropping the mark once status records the zone")
+			Expect(zoneAnnotations()).To(HaveKey(reconciler.CreatingAnnotation), "status was written after it")
+			fake = &fakeZoneAPI{getZone: existingZone}
+			_, err = reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(zoneAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
+		})
+
+		It("reports an unknown adoption policy instead of adopting", func() {
+			unsynced(map[string]string{reconciler.AdoptionPolicyAnnotation: "yes"})
+			fake := &fakeZoneAPI{listZones: []cf.Zone{existingZone}}
+			_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getZoneCondition(cloudflarev1alpha1.ConditionReady).Reason).To(Equal("InvalidAdoptionPolicy"))
+			Expect(zoneAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+		})
+
+		It("recreates an adopted zone deleted outside kflare as its own with adopt-or-create", func() {
+			unsynced(map[string]string{
+				reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate,
+				reconciler.AdoptedAnnotation:        "true",
+			})
+			setZoneIDInStatus(fakeZoneID)
+			notFoundErrVal := cf.NewNotFoundError(&cf.Error{StatusCode: 404, Type: cf.ErrorTypeNotFound})
+			fake := &fakeZoneAPI{getErr: &notFoundErrVal,
+				createZone: cf.Zone{ID: "zone-new-789", Name: domainName, Type: "full"}}
+			_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.createCalled).To(BeTrue())
+			Expect(zoneAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "kflare created this one")
 		})
 
 		It("creates a zone instead of adopting one that belongs to another account", func() {
@@ -656,6 +754,36 @@ var _ = Describe("Zone Controller", func() {
 			if err == nil {
 				Expect(updated.Finalizers).NotTo(ContainElement(reconciler.Finalizer))
 			}
+		})
+
+		// deleteZone deletes a synced Zone with annotations through a reconcile
+		// with fake, which it returns.
+		deleteZone := func(annotations map[string]string) *fakeZoneAPI {
+			createAccount(true)
+			createSecret()
+			createZone(annotations)
+			setZoneIDInStatus(fakeZoneID)
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+			zone.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, zone)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, zone)).To(Succeed())
+			fake := &fakeZoneAPI{}
+			_, err := reconcilerWithFakeZoneAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, zoneKey, &cloudflarev1alpha1.Zone{}))).To(BeTrue())
+			return fake
+		}
+
+		It("keeps a zone it adopted", func() {
+			Expect(deleteZone(map[string]string{reconciler.AdoptedAnnotation: "true"}).deleteCalled).To(BeFalse())
+		})
+
+		It("deletes a zone it adopted with deletion-policy=delete", func() {
+			Expect(deleteZone(map[string]string{
+				reconciler.AdoptedAnnotation:        "true",
+				reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyDelete,
+			}).deleteCalled).To(BeTrue())
 		})
 
 		It("calls CF delete and removes the finalizer when deletion-policy=delete", func() {

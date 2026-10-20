@@ -59,10 +59,11 @@ type D1DatabaseReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // d1DatabaseKind describes D1Databases to the shared CRUD reconciler. A
-// D1Database adopts the account's D1 database with the same name, unless
-// another D1Database manages it, or else creates one. Name, jurisdiction and
-// primaryLocationHint are set when the D1 database is created and cannot
-// change. A D1 database deleted outside kflare is created again.
+// D1Database creates its D1 database or, as its adoption policy allows, adopts
+// the account's D1 database with the same name, unless another D1Database
+// manages it. Name, jurisdiction and primaryLocationHint are set when the D1
+// database is created and cannot change. A D1 database deleted outside kflare
+// is created again.
 var d1DatabaseKind = crudResourceKind[*cloudflarev1alpha1.D1Database, D1DatabaseAPI, d1.D1, d1.DatabaseListResponse]{
 	name:      "D1Database",
 	noun:      "D1 database",

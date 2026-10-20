@@ -139,12 +139,21 @@ func (r *R2BucketReconciler) syncBucket(
 		}
 	}
 
+	what := fmt.Sprintf("R2 bucket %q", name)
+	adopting := false
 	switch {
 	case !found:
 		// Missing: never created, or deleted outside kflare together with
-		// its objects. A new, empty bucket is created either way.
+		// its objects. A new, empty bucket is created either way, unless the
+		// adoption policy is adopt.
 		if claimed {
-			logger.Info("R2 bucket deleted outside kflare, recreating", "bucket", name)
+			logger.Info("R2 bucket deleted outside kflare", "bucket", name)
+		}
+		if condErr := mayCreate(bucket, what); condErr != nil {
+			return notReadyRetryAfter(ctx, r.Client, bucket, condErr)
+		}
+		if err := markCreating(ctx, r.Client, bucket, name); err != nil {
+			return ctrl.Result{}, err
 		}
 		current, err = cfAPI.CreateR2Bucket(ctx, rc, cf.CreateR2BucketParameters{
 			Name:         name,
@@ -154,13 +163,22 @@ func (r *R2BucketReconciler) syncBucket(
 			return handleCloudflareError(ctx, r.Client, bucket, err)
 		}
 		logger.Info("Created R2 bucket", "bucket", name, "location", current.Location)
-	case !claimed:
+	case claimed:
+	case creating(bucket, name):
+		logger.Info("Found the R2 bucket this resource created", "bucket", name, "location", current.Location)
+	default:
+		// An existing bucket this resource never claimed: adopted only if
+		// the adoption policy allows.
+		if condErr := mayAdopt(bucket, what); condErr != nil {
+			return notReadyRetryAfter(ctx, r.Client, bucket, condErr)
+		}
+		adopting = true
 		logger.Info("Adopted existing R2 bucket", "bucket", name, "location", current.Location)
 	}
 
 	// Claim the bucket before anything else can fail, so no other R2Bucket
 	// adopts it in the meantime.
-	if err := claimID(ctx, r.Client, bucket, cloudflarev1alpha1.R2BucketNameLabel, name); err != nil {
+	if err := claimID(ctx, r.Client, bucket, cloudflarev1alpha1.R2BucketNameLabel, name, adopting); err != nil {
 		return ctrl.Result{}, err
 	}
 

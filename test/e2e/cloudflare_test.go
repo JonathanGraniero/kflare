@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -128,6 +129,31 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			g.Expect(ready).NotTo(BeNil(), "no Ready condition yet")
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "%s: %s", ready.Reason, ready.Message)
 		}, e2eTimeout, e2ePoll).Should(Succeed())
+	}
+
+	// expectNotReady waits until obj, re-read through key, reports Ready=False
+	// with reason.
+	expectNotReady := func(key client.ObjectKey, obj client.Object, conditions func() []metav1.Condition,
+		reason string) {
+		Eventually(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, key, obj)).To(Succeed())
+			ready := meta.FindStatusCondition(conditions(), cloudflarev1alpha1.ConditionReady)
+			g.Expect(ready).NotTo(BeNil(), "no Ready condition yet")
+			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse), "%s: %s", ready.Reason, ready.Message)
+			g.Expect(ready.Reason).To(Equal(reason), ready.Message)
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+	}
+
+	// annotate merges annotations into obj's.
+	annotate := func(obj client.Object, annotations map[string]string) {
+		patch := client.MergeFrom(obj.DeepCopyObject().(client.Object))
+		merged := obj.GetAnnotations()
+		if merged == nil {
+			merged = map[string]string{}
+		}
+		maps.Copy(merged, annotations)
+		obj.SetAnnotations(merged)
+		Expect(k8s.Patch(ctx, obj, patch)).To(Succeed())
 	}
 
 	// expectGone waits until the object at key no longer exists.
@@ -342,7 +368,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(cfBucket.Location).To(Equal(bucket.Status.CloudflareMetadata.Location))
 	})
 
-	It("creates a D1Database in a jurisdiction, and adopts the database by name once it is retained", func() {
+	It("creates a D1Database in a jurisdiction, and adopts the database by name only when asked to", func() {
 		newDatabase := func() *cloudflarev1alpha1.D1Database {
 			return &cloudflarev1alpha1.D1Database{
 				ObjectMeta: objectMeta(d1Key),
@@ -381,12 +407,35 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		_, err = getDatabase(databaseID)
 		Expect(err).NotTo(HaveOccurred(), "the retained database was deleted")
 
-		By("creating a D1Database with the same name, which adopts the database through the list")
+		By("creating a D1Database with the same name and no adoption policy, which leaves the database alone")
 		db = newDatabase()
 		Expect(k8s.Create(ctx, db)).To(Succeed())
+		expectNotReady(d1Key, db, func() []metav1.Condition { return db.Status.Conditions }, "AlreadyExists")
+		Expect(db.Labels).NotTo(HaveKey(cloudflarev1alpha1.D1DatabaseIDLabel))
+		Expect(d1DatabaseIDs(ctx, cfAPI, accountRC, resourceName())).To(ConsistOf(databaseID))
+
+		By("setting the adopt policy, which adopts the database through the list")
+		annotate(db, map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
 		expectReady(d1Key, db, func() []metav1.Condition { return db.Status.Conditions })
 		Expect(db.Status.CloudflareMetadata.DatabaseID).To(Equal(databaseID), "a new database was created")
+		Expect(db.Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 		Expect(d1DatabaseIDs(ctx, cfAPI, accountRC, resourceName())).To(ConsistOf(databaseID))
+
+		By("deleting the D1Database that adopted it, without a deletion policy, which keeps the database")
+		Expect(k8s.Delete(ctx, db)).To(Succeed())
+		expectGone(d1Key, &cloudflarev1alpha1.D1Database{})
+		_, err = getDatabase(databaseID)
+		Expect(err).NotTo(HaveOccurred(), "the adopted database was deleted")
+
+		By("adopting it once more with the delete policy, so the all-at-once deletion deletes it")
+		db = newDatabase()
+		db.Annotations = map[string]string{
+			reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt,
+			reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyDelete,
+		}
+		Expect(k8s.Create(ctx, db)).To(Succeed())
+		expectReady(d1Key, db, func() []metav1.Condition { return db.Status.Conditions })
+		Expect(db.Status.CloudflareMetadata.DatabaseID).To(Equal(databaseID))
 	})
 
 	It("uploads a WorkerScript bound to the KVNamespace and R2Bucket", func() {
@@ -419,14 +468,15 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		))
 	})
 
-	It("adopts the test zone without changing it", func() {
+	It("adopts the test zone, only once asked to, without changing it", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")
 		}
 		zone := &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: zoneKey.Name, Namespace: e2eNamespace,
-				// Never delete the shared test zone.
+				// Never delete the shared test zone: an adopted zone is kept
+				// anyway, but the retain policy does not depend on that.
 				Annotations: map[string]string{reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyRetain},
 			},
 			Spec: cloudflarev1alpha1.ZoneSpec{
@@ -434,10 +484,17 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				AccountRef: corev1.LocalObjectReference{Name: accountKey.Name},
 			},
 		}
+		By("creating the Zone without an adoption policy, which leaves the existing zone alone")
 		Expect(k8s.Create(ctx, zone)).To(Succeed())
+		expectNotReady(zoneKey, zone, func() []metav1.Condition { return zone.Status.Conditions }, "AlreadyExists")
+		Expect(zone.Status.CloudflareMetadata.ZoneID).To(BeEmpty())
+
+		By("setting the adopt policy")
+		annotate(zone, map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
 		expectReady(zoneKey, zone, func() []metav1.Condition { return zone.Status.Conditions })
 		zoneID = zone.Status.CloudflareMetadata.ZoneID
 		Expect(zoneID).NotTo(BeEmpty())
+		Expect(zone.Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 	})
 
 	It("creates a DNSRecord and leaves it alone once it is in sync", func() {

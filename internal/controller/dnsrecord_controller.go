@@ -136,7 +136,11 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 		}
 	}
 
-	// If we don't have a record yet (no ID, or externally deleted), find or create.
+	// If we don't have a record yet (no ID, or externally deleted), find this
+	// resource's own record among those with the same name and type (an
+	// earlier reconcile did not record it in status), else one to adopt as
+	// the adoption policy allows, else create one, unless the policy is adopt.
+	adopting := false
 	if cfRecord.ID == "" {
 		records, _, listErr := cfAPI.ListDNSRecords(ctx, rc, cf.ListDNSRecordsParams{
 			Name: record.Spec.Name,
@@ -149,11 +153,30 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if existing, ok := adoptableRecord(record, records, claimed); ok {
+		// Only an adoption policy lets the only record of the name and type
+		// be taken for this one. An unknown policy is reported below, by
+		// mayAdopt or mayCreate.
+		policy, _ := adoptionPolicy(record)
+		key := dnsRecordKey(record)
+		what := fmt.Sprintf("DNS record %s", key)
+		if existing, ok := ownRecord(record, records, claimed); ok {
 			cfRecord = existing
+			logger.Info("Found the DNS record this resource created",
+				"name", record.Spec.Name, "type", record.Spec.Type, "recordID", cfRecord.ID)
+		} else if existing, ok := adoptableRecord(record, records, claimed, policy != ""); ok {
+			if condErr := mayAdopt(record, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, record, condErr)
+			}
+			cfRecord, adopting = existing, true
 			logger.Info("Adopted existing DNS record",
 				"name", record.Spec.Name, "type", record.Spec.Type, "recordID", cfRecord.ID)
 		} else {
+			if condErr := mayCreate(record, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, record, condErr)
+			}
+			if err := markCreating(ctx, r.Client, record, key); err != nil {
+				return ctrl.Result{}, err
+			}
 			// Create a brand-new record.
 			params, err := buildCreateParams(record)
 			if err != nil {
@@ -171,7 +194,7 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 
 	// Claim the record before anything else can fail, so no other DNSRecord
 	// adopts it in the meantime.
-	if err := claimID(ctx, r.Client, record, cloudflarev1alpha1.DNSRecordIDLabel, cfRecord.ID); err != nil {
+	if err := claimID(ctx, r.Client, record, cloudflarev1alpha1.DNSRecordIDLabel, cfRecord.ID, adopting); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -193,20 +216,50 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 	return ctrl.Result{}, updateReady(ctx, r.Client, record, "Synced", "DNS record is synced with Cloudflare")
 }
 
-// adoptableRecord picks the existing Cloudflare record that record should
-// adopt from candidates (same name and type), or returns false when a new
-// record should be created.
+// dnsRecordKey is the key of record's creating annotation: its type and name,
+// shared by the members of a record set, which ownRecord tells apart by
+// content.
+func dnsRecordKey(record *cloudflarev1alpha1.DNSRecord) string {
+	return record.Spec.Type + " " + record.Spec.Name
+}
+
+// ownRecord returns the record among candidates (same name and type) that
+// record created or adopted without recording it in status: the one its
+// claim label names, or, while it was creating one, the one whose content (or
+// data) matches. Records another DNSRecord manages are never its own.
+func ownRecord(
+	record *cloudflarev1alpha1.DNSRecord,
+	candidates []cf.DNSRecord,
+	claimed map[string]string,
+) (cf.DNSRecord, bool) {
+	for _, c := range candidates {
+		if _, taken := claimed[c.ID]; taken {
+			continue
+		}
+		if ownsID(record, cloudflarev1alpha1.DNSRecordIDLabel, c.ID) ||
+			(creating(record, dnsRecordKey(record)) && recordContentMatches(record, c)) {
+			return c, true
+		}
+	}
+	return cf.DNSRecord{}, false
+}
+
+// adoptableRecord picks the existing Cloudflare record from candidates (same
+// name and type) that is the one record describes, or returns false when
+// there is none and a new record joins them.
 //
 // Records another DNSRecord manages are never adopted. Among the rest, one
-// whose content (or data) already matches is preferred, so DNSRecords for
-// the members of a set (several MX, TXT or A records) each find their own.
-// A record that does not match is only adopted, and corrected, when it is the
-// only record with that name and type, because only then is it clearly the
-// one this DNSRecord describes; otherwise a new record joins the set.
+// whose content (or data) already matches is the one, so DNSRecords for the
+// members of a set (several MX, TXT or A records) each find their own. When
+// lone is true, a record that does not match is the one, to be adopted and
+// corrected, when it is the only record with that name and type. Only an
+// adoption policy makes it so: without one, an existing record whose content
+// differs is left as it is, a separate member of the set.
 func adoptableRecord(
 	record *cloudflarev1alpha1.DNSRecord,
 	candidates []cf.DNSRecord,
 	claimed map[string]string,
+	lone bool,
 ) (cf.DNSRecord, bool) {
 	isClaimed := func(id string) bool { _, taken := claimed[id]; return taken }
 	for _, c := range candidates {
@@ -214,7 +267,7 @@ func adoptableRecord(
 			return c, true
 		}
 	}
-	if len(candidates) == 1 && !isClaimed(candidates[0].ID) {
+	if lone && len(candidates) == 1 && !isClaimed(candidates[0].ID) {
 		return candidates[0], true
 	}
 	return cf.DNSRecord{}, false

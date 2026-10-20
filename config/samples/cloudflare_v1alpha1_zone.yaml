@@ -4,7 +4,9 @@ metadata:
   name: example-zone
   namespace: default
   annotations:
-    kflare.dev/deletion-policy: retain
+    # The account already has this zone: take it over. Without this annotation kflare only creates zones, and
+    # reports AlreadyExists for one that exists. An adopted zone is kept when this resource is deleted.
+    kflare.dev/adoption-policy: adopt
 spec:
   name: example.com
   accountRef:

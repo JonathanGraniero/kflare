@@ -47,7 +47,8 @@ Every controller follows the same shape:
 3. Resolve the parent resource and credentials. If the parent is missing or not ready, report `Ready=False` and wait
    for the parent's watch event.
 4. Observe: fetch the Cloudflare resource by the ID stored in status (a rule: by its ref, see [Rules](#rules)). If there
-   is no ID, or Cloudflare says it no longer exists, find an existing resource to adopt or create a new one (see
+   is no ID, or Cloudflare says it no longer exists, look for an existing resource with the same key: the resource's
+   own, one to adopt if its adoption policy allows, or none, and then create one (see
    [Adoption and ownership](#adoption-and-ownership)).
 5. Compare the spec with what Cloudflare reported, and write to Cloudflare only when they differ.
 6. Record IDs and metadata in status and set `Ready=True`.
@@ -108,27 +109,56 @@ What each controller compares when it does reconcile:
 
 ## Adoption and ownership
 
-When a resource has no Cloudflare ID yet, kflare looks for an existing Cloudflare object before creating one. This lets
-you bring existing infrastructure under management, and it lets a reconcile recover if it created an object but failed
-to record its ID in status.
+A resource creates its Cloudflare object. When an object with the resource's key already exists and kflare did not
+create it, kflare leaves it untouched unless the resource asks to take it over, with the `kflare.dev/adoption-policy`
+annotation (named after ACK's `services.k8s.aws/adoption-policy`, which it follows):
 
-Adoption means kflare takes full ownership: it will overwrite the object to match the spec, and **by default it will
-delete the object when the Kubernetes resource is deleted**. If you adopt something kflare did not create, set the
-retain policy first (see [Deletion](#deletion)).
+| `kflare.dev/adoption-policy` | An existing object | No existing object |
+|---|---|---|
+| unset | left alone: `Ready=False`, reason `AlreadyExists`, checked again every minute | created |
+| `adopt` | adopted | `Ready=False`, reason `NotFound`, checked again every minute; never created |
+| `adopt-or-create` | adopted | created |
 
-| Resource | What gets adopted |
+Any other value reports `InvalidAdoptionPolicy` and changes nothing. Adding or changing the annotation reconciles the
+resource straight away.
+
+```yaml
+metadata:
+  annotations:
+    kflare.dev/adoption-policy: adopt
+```
+
+Adopting means kflare takes the object over: it overwrites it to match the spec and marks the resource with
+`kflare.dev/adopted: "true"`. **An adopted object is kept when its resource is deleted**, unless the resource says
+`kflare.dev/deletion-policy: delete` (see [Deletion](#deletion)). ACK deletes adopted resources by default; kflare does
+not, because deleting something kflare did not create is the one step that cannot be undone. If an adopted object is
+deleted outside kflare, `adopt-or-create` creates a new one, which is kflare's own from then on (the `adopted` mark
+goes), and `adopt` reports `NotFound`.
+
+A reconcile that created an object but failed before recording it must still know the object as its own, not report
+`AlreadyExists`. So just before the create call, kflare records the object's key in the `kflare.dev/creating`
+annotation, and an object found with that key is the resource's own. The annotation goes once the resource records the
+object: with its claim label, in the same patch (see below), or, for kinds without one, on the next reconcile that
+finds the object by the ID in status. An object a resource's claim label names is its own too.
+
+| Resource | What counts as an existing object |
 |---|---|
 | `Zone` | A zone with `spec.name` in the referenced account. Zones in other accounts the token can reach are never adopted. |
-| `DNSRecord` | A record with the same name and type that no other DNSRecord manages. A record whose content (or data) already matches is preferred. If none matches, an existing record is adopted and corrected only when it is the only record with that name and type; otherwise a new record is created alongside the others, so DNSRecords for record sets (several MX, TXT or A records) each find their own. |
+| `DNSRecord` | Without a policy, a record with the same name, type and content (or data). A record of the same name and type with other content is left alone, and the DNSRecord creates its own next to it, as a member of a record set (several MX, TXT or A records). Where a name holds only one such record, Cloudflare refuses the second (for a CNAME: 400, code 81053, verified live), and the DNSRecord reports `TerminalError`: set a policy to take the existing record over. With a policy, a matching record is preferred; otherwise the only record with that name and type is adopted and corrected, and with several, `adopt` reports `NotFound` while `adopt-or-create` creates a new one. Records another DNSRecord manages are never adopted. |
 | `Tunnel` | The first non-deleted tunnel named `spec.name` in the account. |
-| `TunnelConfiguration` | The tunnel's entire ingress configuration. kflare replaces whatever is there. When several TunnelConfigurations point at one Tunnel, the oldest owns it and the others report `TunnelAlreadyConfigured`. |
-| `WorkerScript` | No lookup. The first reconcile uploads the script, replacing any existing Worker with the same name. |
-| `KVNamespace` | The namespace with the same title in the account (titles are unique per account) unless another KVNamespace manages it, in which case it reports `TitleConflict` and retries every minute. |
+| `TunnelConfiguration` | The tunnel's configuration, when it routes anything (more than the catch-all rule) and this TunnelConfiguration has not written it. Adopting it replaces it whole. A new tunnel's empty configuration, or one kflare reset, counts as none. When several TunnelConfigurations point at one Tunnel, the oldest owns it and the others report `TunnelAlreadyConfigured`. |
+| `WorkerScript` | A Worker with `spec.name` that this WorkerScript has not uploaded. Adopting it means the first upload replaces it. |
+| `KVNamespace` | The namespace with the same title in the account (titles are unique per account), unless another KVNamespace manages it, in which case it reports `TitleConflict` and retries every minute. |
 | `IPList` | The IP list named `spec.name` in the account (names are unique per account, across list kinds) unless another IPList manages it, or the name belongs to a list of another kind: either way it reports `NameConflict` and retries every minute. |
 | `D1Database` | The database named `spec.name` in the account (names are unique per account) unless another D1Database manages it, in which case it reports `NameConflict` and retries every minute. An adopted database keeps its jurisdiction and location; `spec.jurisdiction` and `spec.primaryLocationHint` only apply when kflare creates the database. |
 | `R2Bucket` | The bucket named `spec.name` in the account's default jurisdiction (names are unique per account) unless another R2Bucket for the same Cloudflare account manages it, in which case it reports `NameConflict` and retries every minute. An adopted bucket keeps its location; `spec.locationHint` only applies when kflare creates the bucket. |
 | `WorkerRoute` | The route with the same pattern in the zone (patterns are unique per zone) unless another WorkerRoute manages it, in which case the WorkerRoute reports `PatternConflict` and retries every minute. |
-| `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` | Nothing. A rule is kflare's only if it carries the ref kflare derives for the resource (see [Rules](#rules)); rules created outside kflare are never touched. A zone deploys a managed ruleset at most once, so while a rule kflare does not manage deploys it, the ManagedRuleset reports `RulesetConflict` and checks again every minute. |
+| `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` | Nothing, whatever the policy. A rule is kflare's only if it carries the ref kflare derives for the resource (see [Rules](#rules)); rules created outside kflare are never touched. A zone deploys a managed ruleset at most once, so while a rule kflare does not manage deploys it, the ManagedRuleset reports `RulesetConflict` and checks again every minute. |
+
+A conflict with another resource of the kind comes first: it is reported whatever the policy.
+
+ACK's `adoption-fields` annotation, which adopts an object by its identifier, has no kflare counterpart: every kind
+that adopts has a natural key.
 
 ### DNSRecord, WorkerRoute, KVNamespace, D1Database, IPList and R2Bucket ownership
 
@@ -145,9 +175,9 @@ within an account, so a claim blocks another R2Bucket only when both point at th
 same CloudflareAccount or two that share an account ID. An R2Bucket that never claimed its bucket, for example one
 reporting `NameConflict`, leaves the bucket alone when it is deleted.
 
-This prevents two DNSRecords from fighting over one record. It does **not** protect records that were created outside
-kflare: a lone record with a matching name and type is adopted and overwritten. Tools such as external-dns avoid this
-with a TXT ownership registry; kflare currently does not.
+This prevents two DNSRecords from fighting over one record. Records created outside kflare are protected by the
+adoption policy above: without one, a DNSRecord never takes over a record it did not create. Tools such as external-dns
+keep a TXT ownership registry in the zone instead; kflare keeps its claims in the cluster.
 
 ### Rules
 
@@ -215,7 +245,7 @@ seconds once the entry point is deleted (verified live on `kflare.dev`, with a r
 | Error | Classification | Behavior |
 |---|---|---|
 | 401, 403, other 4xx | Terminal | `Ready=False` with reason `TerminalError`; no retry. A spec or credential change re-triggers the reconcile. |
-| 404 on a known resource ID | Handled first | The resource was deleted externally; kflare adopts or recreates it. |
+| 404 on a known resource ID | Handled first | The resource was deleted externally; kflare recreates it, or adopts another with its key, as the adoption policy allows. |
 | 404 elsewhere | Terminal | As above. |
 | 429, 5xx, network errors | Retryable | `Ready=False` with reason `APIError`; the error is returned so controller-runtime retries with exponential back-off (5 ms doubling up to about 16 minutes per resource). |
 
@@ -237,8 +267,10 @@ retried by the 10-hour resync.
 
 ## Deletion
 
-Each resource carries `kflare.dev/finalizer`. On deletion, kflare deletes the Cloudflare object and then removes the
-finalizer. Set the `kflare.dev/deletion-policy: retain` annotation to keep the Cloudflare object instead:
+Each resource carries `kflare.dev/finalizer`. On deletion, kflare deletes the Cloudflare object the resource created,
+keeps one it adopted (see [Adoption and ownership](#adoption-and-ownership)), and then removes the finalizer. The
+`kflare.dev/deletion-policy` annotation overrides that: `retain` keeps the object either way, and `delete` deletes it
+either way, an adopted one included.
 
 ```yaml
 metadata:
@@ -250,8 +282,10 @@ Per-resource details:
 
 - **Tunnel** removes the tunnel's connections first, which immediately disconnects any running `cloudflared`, then deletes
   the tunnel.
-- **TunnelConfiguration** resets the tunnel to its catch-all rule rather than deleting anything.
-- **WorkerScript** deletes the Worker only if kflare uploaded it.
+- **TunnelConfiguration** resets the tunnel to its catch-all rule rather than deleting anything. One that adopted the
+  tunnel's configuration leaves it as it is, unless its deletion policy says `delete`.
+- **WorkerScript** deletes the Worker only if kflare uploaded it, and keeps a Worker it adopted unless its deletion
+  policy says `delete`.
 - **WorkerScript** deletion also removes the Worker's routes: Cloudflare deletes them with the Worker. A WorkerRoute that
   still references it reports `WorkerScriptNotFound` and recreates its route once the Worker is uploaded again.
 - **KVNamespace** deletion deletes the namespace **and all of its data**. Set the retain policy on namespaces holding data
@@ -298,9 +332,9 @@ hang, and leaves its Cloudflare object in place.
 - **Drift is not corrected promptly.** Out-of-band changes wait for the next trigger, at worst the 10-hour resync. A
   configurable periodic requeue on successful reconciles would bound this; it needs to stay within Cloudflare's API
   rate limits when many resources are managed.
-- **Adoption is implicit.** Zone, DNSRecord, Tunnel, WorkerRoute, KVNamespace, D1Database, R2Bucket and IPList adopt
-  matching objects automatically, WorkerScript overwrites a same-named Worker, and the default deletion policy applies
-  to adopted objects. An explicit opt-in for adopting objects kflare did not create would make this safer.
+- **Adoption goes by key only.** A resource adopts the object with its key (a name, a title, a pattern), and there is
+  no way to name an object by its ID, as ACK's `adoption-fields` does. Tunnel names are not unique: a Tunnel adopts the
+  first one listed with its name.
 - **No ownership marker on the Cloudflare side, except for rules.** kflare tracks what it owns only in Kubernetes, so if
   the cluster's resources are lost, it cannot tell its objects apart from anyone else's. Rules are the exception: their
   ref marks them (see [Rules](#rules)).

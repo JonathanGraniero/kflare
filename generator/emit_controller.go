@@ -492,9 +492,9 @@ func kindDoc(c *controller) string {
 		}
 	}
 	var doc strings.Builder
-	fmt.Fprintf(&doc, "%sKind describes %s to the shared CRUD reconciler. A %s adopts the account's %s with "+
-		"the same %s, unless another %s manages it, or else creates one.", c.varName, pluralOf(c.name), c.name,
-		c.noun, c.key.jsonName, c.name)
+	fmt.Fprintf(&doc, "%sKind describes %s to the shared CRUD reconciler. A %s creates its %s or, as its "+
+		"adoption policy allows, adopts the account's %s with the same %s, unless another %s manages it.",
+		c.varName, pluralOf(c.name), c.name, c.noun, c.noun, c.key.jsonName, c.name)
 	if len(updatable) > 0 {
 		fmt.Fprintf(&doc, " It changes %s in place.", prose(updatable))
 	}

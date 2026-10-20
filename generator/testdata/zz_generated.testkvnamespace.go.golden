@@ -57,10 +57,11 @@ type TestKVNamespaceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // testKVNamespaceKind describes TestKVNamespaces to the shared CRUD reconciler.
-// A TestKVNamespace adopts the account's KV namespace with the same title,
-// unless another TestKVNamespace manages it, or else creates one. It changes
-// title in place. Jurisdiction is set when the KV namespace is created and
-// cannot change. A KV namespace deleted outside kflare is created again.
+// A TestKVNamespace creates its KV namespace or, as its adoption policy allows,
+// adopts the account's KV namespace with the same title, unless another
+// TestKVNamespace manages it. It changes title in place. Jurisdiction is set
+// when the KV namespace is created and cannot change. A KV namespace deleted
+// outside kflare is created again.
 var testKVNamespaceKind = crudResourceKind[*cloudflarev1alpha1.TestKVNamespace, TestKVNamespaceAPI, kv.Namespace, kv.Namespace]{
 	name:      "TestKVNamespace",
 	noun:      "KV namespace",

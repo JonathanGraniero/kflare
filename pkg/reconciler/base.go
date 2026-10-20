@@ -27,19 +27,59 @@ const (
 	Finalizer = "kflare.dev/finalizer"
 
 	// DeletionPolicyAnnotation chooses what happens to the Cloudflare resource
-	// when its Kubernetes resource is deleted. Any value other than
-	// DeletionPolicyRetain, including no annotation, deletes it.
+	// when its Kubernetes resource is deleted. Without it, a resource deletes
+	// the Cloudflare resource it created and keeps one it adopted.
 	DeletionPolicyAnnotation = "kflare.dev/deletion-policy"
 
 	// DeletionPolicyRetain keeps the Cloudflare resource when its Kubernetes
 	// resource is deleted.
 	DeletionPolicyRetain = "retain"
+
+	// DeletionPolicyDelete deletes the Cloudflare resource when its Kubernetes
+	// resource is deleted, even one the resource adopted. Any value other than
+	// DeletionPolicyRetain has this effect on a resource kflare created.
+	DeletionPolicyDelete = "delete"
+
+	// AdoptionPolicyAnnotation lets a resource take over an existing
+	// Cloudflare resource that kflare did not create. Without it, a resource
+	// only creates: it leaves an existing one alone and reports it.
+	AdoptionPolicyAnnotation = "kflare.dev/adoption-policy"
+
+	// AdoptionPolicyAdopt adopts an existing Cloudflare resource and never
+	// creates one.
+	AdoptionPolicyAdopt = "adopt"
+
+	// AdoptionPolicyAdoptOrCreate adopts an existing Cloudflare resource, or
+	// creates one when there is none.
+	AdoptionPolicyAdoptOrCreate = "adopt-or-create"
+
+	// AdoptedAnnotation is set to "true" by kflare on a resource that adopted
+	// its Cloudflare resource rather than creating it.
+	AdoptedAnnotation = "kflare.dev/adopted"
+
+	// CreatingAnnotation holds the key of the Cloudflare resource kflare is
+	// about to create for a resource, from just before the create call until
+	// the resource records what it created. A later reconcile that finds an
+	// object with that key knows it as its own, not as one to adopt.
+	CreatingAnnotation = "kflare.dev/creating"
 )
 
-// RetainOnDelete reports whether obj's deletion-policy annotation asks to
-// keep the Cloudflare resource when obj is deleted.
+// Adopted reports whether kflare adopted obj's Cloudflare resource.
+func Adopted(obj client.Object) bool {
+	return obj.GetAnnotations()[AdoptedAnnotation] == "true"
+}
+
+// RetainOnDelete reports whether the Cloudflare resource is kept when obj is
+// deleted: when obj's deletion-policy annotation asks for it, and when obj
+// adopted its Cloudflare resource, unless the annotation asks to delete it.
+// Deleting something kflare did not create is the one step that cannot be
+// undone, so an adopted resource is only deleted on request.
 func RetainOnDelete(obj client.Object) bool {
-	return obj.GetAnnotations()[DeletionPolicyAnnotation] == DeletionPolicyRetain
+	policy := obj.GetAnnotations()[DeletionPolicyAnnotation]
+	if Adopted(obj) {
+		return policy != DeletionPolicyDelete
+	}
+	return policy == DeletionPolicyRetain
 }
 
 // SetCondition upserts a standard Kubernetes condition on the provided slice.

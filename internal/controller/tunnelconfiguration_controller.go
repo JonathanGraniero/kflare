@@ -146,6 +146,47 @@ func (r *TunnelConfigurationReconciler) syncConfiguration(
 		return handleCloudflareError(ctx, r.Client, tc, err)
 	}
 
+	// A configuration this resource has not written yet (status names
+	// another tunnel, or none) is an existing one when it holds more than the
+	// catch-all rule: replacing it takes the adoption policy, unless this
+	// resource wrote it and did not record that. Otherwise the resource writes
+	// its own, unless the policy is adopt.
+	recorded := tc.Status.CloudflareMetadata.TunnelID == tunnelID
+	adopting := false
+	if !recorded {
+		what := fmt.Sprintf("The configuration of tunnel %s", tunnelID)
+		switch {
+		case !tunnelConfigured(current.Config):
+			if condErr := mayCreate(tc, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, tc, condErr)
+			}
+			if err := markCreating(ctx, r.Client, tc, tunnelID); err != nil {
+				return ctrl.Result{}, err
+			}
+		case !creating(tc, tunnelID):
+			if condErr := mayAdopt(tc, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, tc, condErr)
+			}
+			adopting = true
+			logger.Info("Adopted the existing tunnel configuration", "tunnelID", tunnelID,
+				"version", current.Version)
+		}
+	}
+
+	// Record an adoption before replacing the configuration; the patch
+	// re-reads the TunnelConfiguration, so it comes before status is set.
+	// Once status records the tunnel, the creating annotation can go.
+	switch {
+	case adopting:
+		if err := markAdopted(ctx, r.Client, tc); err != nil {
+			return ctrl.Result{}, err
+		}
+	case recorded:
+		if err := clearCreating(ctx, r.Client, tc); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	if !tunnelConfigurationMatches(desired, current.Config) {
 		updated, err := cfAPI.UpdateTunnelConfiguration(ctx, rc, cf.TunnelConfigurationParams{
 			TunnelID: tunnelID,
@@ -247,6 +288,13 @@ func tunnelConfigurationMatches(desired, actual cf.TunnelConfiguration) bool {
 	return actual.WarpRouting == nil || !actual.WarpRouting.Enabled
 }
 
+// tunnelConfigured reports whether config routes anything: it holds more
+// than the catch-all rule a configuration must end with. A new tunnel has no
+// rules, and one kflare reset only the catch-all rule.
+func tunnelConfigured(config cf.TunnelConfiguration) bool {
+	return len(config.Ingress) > 1
+}
+
 // normalizeIngress treats an empty originRequest object the same as an
 // absent one, so equivalent rules compare equal however the API encoded them.
 func normalizeIngress(rules []cf.UnvalidatedIngressRule) []cf.UnvalidatedIngressRule {
@@ -260,10 +308,11 @@ func normalizeIngress(rules []cf.UnvalidatedIngressRule) []cf.UnvalidatedIngress
 	return out
 }
 
-// reconcileDelete handles the deletion lifecycle: unless the retain policy is
-// set, it resets the tunnel this configuration last wrote to so that only the
-// catch-all rule remains (Cloudflare does not allow an empty configuration),
-// then removes the finalizer.
+// reconcileDelete handles the deletion lifecycle: unless the configuration is
+// retained (the retain policy, or one this resource adopted), it resets the
+// tunnel this configuration last wrote to so that only the catch-all rule
+// remains (Cloudflare does not allow an empty configuration), then removes
+// the finalizer.
 //
 // The Tunnel waits for its configurations before it is deleted, so it is
 // normally still there. If it is gone anyway (its finalizer was removed by

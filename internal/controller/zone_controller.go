@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	cf "github.com/cloudflare/cloudflare-go"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -115,6 +116,7 @@ func (r *ZoneReconciler) syncZone(
 	var cfZone cf.Zone
 
 	// If we already have a zone ID, try to fetch the current state.
+	recorded := false
 	if zone.Status.CloudflareMetadata.ZoneID != "" {
 		got, err := cfAPI.ZoneDetails(ctx, zone.Status.CloudflareMetadata.ZoneID)
 		if err != nil {
@@ -122,24 +124,42 @@ func (r *ZoneReconciler) syncZone(
 				return handleCloudflareError(ctx, r.Client, zone, err)
 			}
 			// Zone was deleted externally — fall through to find or recreate it.
-			logger.Info("Zone deleted externally, recreating",
+			logger.Info("Zone deleted externally",
 				"zoneID", zone.Status.CloudflareMetadata.ZoneID)
 		} else {
-			cfZone = got
+			cfZone, recorded = got, true
 		}
 	}
 
-	// If we don't have a zone yet (no ID, or externally deleted), find or create.
+	// If we don't have a zone yet (no ID, or externally deleted), find the
+	// account's zone with this name: this resource's own if it was creating
+	// it, else adopted only if the adoption policy allows. Without one, create
+	// it, unless the policy is adopt.
+	adopting := false
 	if cfZone.ID == "" {
 		zones, listErr := cfAPI.ListZones(ctx, zone.Spec.Name)
 		if listErr != nil {
 			return handleCloudflareError(ctx, r.Client, zone, listErr)
 		}
+		what := fmt.Sprintf("Zone %q", zone.Spec.Name)
 		if existing, ok := zoneInAccount(zones, account.Spec.AccountID); ok {
-			// Adopt the pre-existing zone.
+			if creating(zone, zone.Spec.Name) {
+				logger.Info("Found the zone this resource created", "name", zone.Spec.Name, "zoneID", existing.ID)
+			} else {
+				if condErr := mayAdopt(zone, what); condErr != nil {
+					return notReadyRetryAfter(ctx, r.Client, zone, condErr)
+				}
+				adopting = true
+				logger.Info("Adopted existing zone", "name", zone.Spec.Name, "zoneID", existing.ID)
+			}
 			cfZone = existing
-			logger.Info("Adopted existing zone", "name", zone.Spec.Name, "zoneID", cfZone.ID)
 		} else {
+			if condErr := mayCreate(zone, what); condErr != nil {
+				return notReadyRetryAfter(ctx, r.Client, zone, condErr)
+			}
+			if err := markCreating(ctx, r.Client, zone, zone.Spec.Name); err != nil {
+				return ctrl.Result{}, err
+			}
 			// Create a brand-new zone.
 			created, createErr := cfAPI.CreateZone(
 				ctx,
@@ -153,6 +173,20 @@ func (r *ZoneReconciler) syncZone(
 			}
 			cfZone = created
 			logger.Info("Created zone", "name", zone.Spec.Name, "zoneID", cfZone.ID)
+		}
+	}
+
+	// Record an adoption before changing the zone or writing status. Once
+	// status records a zone this resource created, its creating annotation
+	// can go.
+	switch {
+	case adopting:
+		if err := markAdopted(ctx, r.Client, zone); err != nil {
+			return ctrl.Result{}, err
+		}
+	case recorded:
+		if err := clearCreating(ctx, r.Client, zone); err != nil {
+			return ctrl.Result{}, err
 		}
 	}
 

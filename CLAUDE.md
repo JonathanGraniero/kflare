@@ -1681,11 +1681,11 @@ r/CloudFlare) as a v0.1 alpha, to find its first users
 **Order:** L1 to L5 come before the announcement, in order; L6 and L7 go with it. L2, L3 and L4 can be built side by
 side but merge one at a time (no stacked PRs). L5 waits for all of them.
 
-**Decisions for the user:**
-1. L1: OK to create a short-lived token with deploy.md's permissions for one live run
-2. L2: whether adopted objects are kept on deletion by default (proposed) or deleted, as ACK does
-3. L3: before the announcement (proposed), or after it, with the quickstart showing the copy step meanwhile
-4. L4: where the operational details removed from this file are kept (private notes)
+**Decisions for the user** (answered 2026-10-19, each as proposed):
+1. L1: OK to create a short-lived token with deploy.md's permissions for one live run: yes
+2. L2: whether adopted objects are kept on deletion by default (proposed) or deleted, as ACK does: kept
+3. L3: before the announcement (proposed), or after it, with the quickstart showing the copy step meanwhile: before
+4. L4: where the operational details removed from this file are kept (private notes): the maintainer's private notes
 
 ##### L1. Finish the live checks
 **Status:** ✅ 2026-10-19 but for a rerun of the least-privilege run. No branch unless a run fails: one did, so
@@ -1707,10 +1707,13 @@ side but merge one at a time (no stacked PRs). L5 waits for all of them.
 - Done when: both runs pass with no refusal in the manager's log
 
 ##### L2. Adoption on opt-in, ACK style (`feat/adoption-policy`)
-Today a `Zone` applied for an existing domain adopts the zone, and deleting the `Zone` deletes it from Cloudflare with
-every record in it. The same holds for an adopted DNS record, tunnel, Worker route, IP list, R2 bucket, KV namespace
-or D1 database (the last two with their data). `WorkerScript` replaces a Worker with the same name on its first upload
-and deletes it with the resource. Changing this before v0.1.0 changes no released behavior.
+**Status:** ✅ Built 2026-10-19 in `feat/adoption-policy`, as designed below with adopted objects kept on deletion (the
+user's choice); see "As built" at the end of this section.
+
+Until then a `Zone` applied for an existing domain adopted the zone, and deleting the `Zone` deleted it from Cloudflare
+with every record in it. The same held for an adopted DNS record, tunnel, Worker route, IP list, R2 bucket, KV
+namespace or D1 database (the last two with their data). `WorkerScript` replaced a Worker with the same name on its
+first upload and deleted it with the resource. Changing this before v0.1.0 changes no released behavior.
 
 Proposed design (the user preferred it on 2026-10-19 to retaining implicitly adopted objects): ACK's adoption
 annotations under kflare's prefix. kflare's `deletion-policy` annotation already has ACK's shape; ARCHITECTURE.md
@@ -1739,15 +1742,40 @@ adopted resources unless `retain`.
   Revisit for kinds whose names are not unique (Tunnel, Turnstile widgets). The planned `AdoptedResource` CRD (Phase 4)
   may no longer be needed; decide then
 
-- [ ] Unit and envtest specs for every adopting kind and each policy: unset with an existing object reports
+- [x] Unit and envtest specs for every adopting kind and each policy: unset with an existing object reports
   `AlreadyExists` and writes nothing; `adopt` without one reports `NotFound`; an adopted object is annotated and kept
   on deletion, and deleted with `delete`; a created object is deleted as before; the recovery case is not refused
-- [ ] Live e2e: the Zone and D1Database adoption specs set the policy; an existing object without it is refused and
-  left as it was; an adopted object outlives its resource
-- [ ] A mutation run with every mutation caught (`hack/mutate.sh`)
-- [ ] ARCHITECTURE.md (Adoption and ownership, Deletion, Known limitations), deploy.md, README's "Import existing
+- [x] Live e2e: the Zone and D1Database adoption specs set the policy; an existing object without it is refused and
+  left as it was; an adopted object outlives its resource. Run `9781eb`, 20 of 20 (2026-10-19). The Zone keeps its
+  retain policy, so a bug cannot delete the test zone; the D1Database shows the adopted object outliving its resource
+- [x] A mutation run with every mutation caught (`hack/mutate.sh`): 79 mutations of `RetainOnDelete`, `adoption.go`,
+  `ownership.go` and every adopting kind's policy checks, marks and recovery. The first run left five alive, each
+  closed by a spec (a recreated tunnel's configuration, a WorkerScript once its mark is gone, IPList's and
+  WorkerRoute's recovery by claim) or by removing what it showed redundant (DNSRecord's early policy check)
+- [x] ARCHITECTURE.md (Adoption and ownership, Deletion, Known limitations), deploy.md, README's "Import existing
   resources" line, the samples (the Zone sample adopts), conventions 4 and 6
 - Done when: all of the above pass, and kflare touches no existing object unless a resource asks it to
+
+**As built** (2026-10-19):
+- `pkg/reconciler`: `AdoptionPolicyAnnotation` (`AdoptionPolicyAdopt`, `AdoptionPolicyAdoptOrCreate`),
+  `AdoptedAnnotation`, `CreatingAnnotation` and `DeletionPolicyDelete`. `RetainOnDelete` keeps an adopted object unless
+  the policy is `delete`, and a created one only with `retain` (any other value deletes it, as before)
+- `internal/controller/adoption.go`: `adoptionPolicy` (an unknown value is `InvalidAdoptionPolicy`, never read as
+  another), `mayAdopt` and `mayCreate` (the conditions, retried after a minute), `creating`, `markCreating` (sets the
+  key and drops `adopted`: kflare creates this object), `markAdopted` and `clearCreating` for the kinds without a claim
+  label, and `patchMetadata`, which patches only on a change. `claimID` (`ownership.go`) now also sets `adopted` and
+  drops `creating` in the claim's patch; `ownsID` reads a resource's own claim
+- The claim-label kinds (the shared CRUD reconciler, so KVNamespace and D1Database, plus DNSRecord, IPList, R2Bucket and
+  WorkerRoute) count an existing object as their own when their claim or their `creating` key names it. Zone, Tunnel,
+  TunnelConfiguration (key: the tunnel ID) and WorkerScript (key: its name) patch `adopted` before writing status, and
+  drop `creating` on the reconcile that next finds the object through status. kflare-gen's CRUD kind docs say so
+- WorkerScript now lists the account's Workers on every reconcile, its first included; its fake keeps the list as
+  uploads change it. A Worker deleted outside kflare is uploaded again, unless the policy is `adopt`
+- DNSRecord: `ownRecord` (claim, or `creating` = type and name plus matching content: members of a set share the key)
+  and `adoptableRecord(lone)`, which takes the only record of the name and type only with a policy. Verified live
+  2026-10-19: Cloudflare refuses a second CNAME for a name (400, 81053), so without a policy a DNSRecord whose name
+  holds another CNAME reports `TerminalError`
+- The rule kinds are unchanged
 
 ##### L3. A DNSRecord points at a Tunnel by reference (`feat/dnsrecord-tunnel-ref`)
 The closest alternative, adyanth/cloudflare-operator, exposes a Service through a tunnel with one resource. kflare
@@ -1854,11 +1882,15 @@ badge against the real API would help credibility, and the drift correction peri
    (`AccountNotFound`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a minute)
 2. **Status fields** — every CRD status has `conditions []metav1.Condition` and a `cloudflareMetadata` block
 3. **References** — foreign-key relationships use `*Ref` fields (e.g., `zoneRef`, `tunnelRef`) not raw IDs
-4. **Adoption** — controllers adopt an existing Cloudflare resource with the same name before creating one
-   (the planned `AdoptedResource` CRD, Phase 4, will make this explicit)
+4. **Adoption** — a resource creates its Cloudflare object, and takes over an existing one with its key only when its
+   `kflare.dev/adoption-policy` annotation says `adopt` or `adopt-or-create` (`internal/controller/adoption.go`:
+   `mayAdopt`, `mayCreate`; otherwise `AlreadyExists` or `NotFound`). kflare marks an adopting resource
+   `kflare.dev/adopted`, and records a key in `kflare.dev/creating` before each create (`markCreating`), so a reconcile
+   that lost the record of a create finds the object as its own
 5. **FieldExport** (planned, Phase 4) — `FieldExport` CR pipes `.status.*` fields into ConfigMaps for cross-namespace consumption
 6. **Deletion policy** — annotation `kflare.dev/deletion-policy: retain | delete` controls whether the
-   Cloudflare resource is deleted on CR deletion; check it with `reconciler.RetainOnDelete`
+   Cloudflare resource is deleted on CR deletion. Without it, a created object is deleted and an adopted one kept;
+   check it with `reconciler.RetainOnDelete`
 7. **Immutability** — fields that identify the Cloudflare resource (names, refs) are immutable via CEL
    `self == oldSelf`, with an envtest case per field
 8. **Status helpers** — set conditions and report errors through `internal/controller/status.go`
