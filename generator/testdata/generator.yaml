@@ -71,8 +71,8 @@ kinds:
             passes a name that ends in a hyphen. Cloudflare took 63 characters and refused 64, a trailing hyphen, a
             capital and an underscore (10005; verified live 2026-10-14).
     ignore:
-      storageClass: Testing Infrequent Access is billed usage; see Deferred in CLAUDE.md.
-      cf-r2-jurisdiction: Jurisdictions are not supported yet; see R2Bucket in CLAUDE.md.
+      storageClass: Testing Infrequent Access is billed usage; see Deferred in docs/design-notes.md.
+      cf-r2-jurisdiction: Jurisdictions are not supported yet; see R2Bucket in docs/design-notes.md.
 
   # IPList's hand-written CRD, as kflare-gen generates it, without the items, which are not part of the list service.
   - kind: TestIPList
