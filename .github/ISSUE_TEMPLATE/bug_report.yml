@@ -1,0 +1,78 @@
+name: Bug report
+description: kflare did something other than what its docs say
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security issues go through SECURITY.md instead, not a public issue.
+        Leave out API tokens, account IDs you'd rather not share, and anything else secret.
+  - type: input
+    id: kflare-version
+    attributes:
+      label: kflare version
+      description: The chart or image version, or the commit if you built it.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: kubernetes-version
+    attributes:
+      label: Kubernetes version
+      description: "`kubectl version`; kflare supports 1.34 and newer."
+      placeholder: "1.34.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Resource kind
+      options:
+        - CloudflareAccount
+        - Zone
+        - DNSRecord
+        - Tunnel
+        - TunnelConfiguration
+        - WorkerScript
+        - WorkerRoute
+        - KVNamespace
+        - R2Bucket
+        - D1Database
+        - IPList
+        - WAFCustomRule
+        - RateLimitRule
+        - ManagedRuleset
+        - TransformRule
+        - RedirectRule
+        - CacheRule
+        - ConfigurationRule
+        - OriginRule
+        - Several, or none in particular
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected
+      description: What you applied or changed, what kflare did in Cloudflare, and what you expected it to do.
+    validations:
+      required: true
+  - type: textarea
+    id: resource
+    attributes:
+      label: The resource and its status
+      description: "`kubectl get <kind> <name> -o yaml`, with its `status` and conditions."
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Manager log
+      description: "The manager's log lines about the resource, from `kubectl logs -n kflare-system deploy/kflare` for the README's install."
+      render: text
+  - type: input
+    id: plan
+    attributes:
+      label: Cloudflare plan
+      description: The zone's plan (Free, Pro, Business, Enterprise), if the resource is in a zone. Some settings differ by plan.
