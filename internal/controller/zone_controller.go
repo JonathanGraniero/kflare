@@ -271,24 +271,24 @@ func (r *ZoneReconciler) reconcileDelete(ctx context.Context, zone *cloudflarev1
 // SetupWithManager registers ZoneReconciler with the manager and adds a watch
 // on CloudflareAccount so that a change in account credentials automatically
 // re-triggers reconciliation of all zones that reference that account. It
-// also hears about deleted DNSRecords, WorkerRoutes and rules (WAFCustomRules,
-// RateLimitRules, ManagedRulesets), so a zone waiting for them to go is
-// released as soon as the last one is gone.
+// also hears about the deletion of every kind a Zone waits for
+// (zoneDependents: DNSRecords, WorkerRoutes and the rule kinds, generated
+// ones included), so a zone waiting for them to go is released as soon as the
+// last one is gone.
 func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	dependentDeleted := builder.WithPredicates(deletesOnly)
-	dependent := handler.EnqueueRequestsFromMapFunc(r.deletingZoneOf)
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.Zone{}).
 		Watches(
 			&cloudflarev1alpha1.CloudflareAccount{},
 			handler.EnqueueRequestsFromMapFunc(r.zonesForAccount),
-		).
-		Watches(&cloudflarev1alpha1.DNSRecord{}, dependent, dependentDeleted).
-		Watches(&cloudflarev1alpha1.WorkerRoute{}, dependent, dependentDeleted).
-		Watches(&cloudflarev1alpha1.WAFCustomRule{}, dependent, dependentDeleted).
-		Watches(&cloudflarev1alpha1.RateLimitRule{}, dependent, dependentDeleted).
-		Watches(&cloudflarev1alpha1.ManagedRuleset{}, dependent, dependentDeleted).
-		Complete(r)
+		)
+	// Every kind a Zone waits for, the generated rule kinds among them, so
+	// a Zone being deleted is released as soon as the last of them is gone.
+	for _, dependent := range zoneDependents {
+		b = b.Watches(dependent.newObject(), handler.EnqueueRequestsFromMapFunc(r.deletingZoneOf),
+			builder.WithPredicates(deletesOnly))
+	}
+	return b.Complete(r)
 }
 
 // deletingZoneOf maps the deletion of a DNSRecord, WorkerRoute or rule to its
