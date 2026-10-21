@@ -9,6 +9,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
 	. "github.com/onsi/ginkgo/v2"
@@ -17,14 +19,20 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
-// fakeDNSRecordAPI is a test double for DNSRecordAPI.
+// fakeDNSRecordAPI is a test double for DNSRecordAPI. Its calls hold a lock,
+// so a controller running in a manager can use it; read what it recorded
+// from such a spec through lastUpdate.
 type fakeDNSRecordAPI struct {
 	createRecord cf.DNSRecord
 	createErr    error
@@ -36,30 +44,51 @@ type fakeDNSRecordAPI struct {
 	updateErr    error
 	deleteErr    error
 
+	mu           sync.Mutex
 	updateCalled bool
 	deleteCalled bool
 	createCalled bool
+	createParams cf.CreateDNSRecordParams
 	updateParams cf.UpdateDNSRecordParams
 }
 
-func (f *fakeDNSRecordAPI) CreateDNSRecord(_ context.Context, _ *cf.ResourceContainer, _ cf.CreateDNSRecordParams) (cf.DNSRecord, error) {
+func (f *fakeDNSRecordAPI) CreateDNSRecord(_ context.Context, _ *cf.ResourceContainer, params cf.CreateDNSRecordParams) (cf.DNSRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.createCalled = true
+	f.createParams = params
 	return f.createRecord, f.createErr
 }
 func (f *fakeDNSRecordAPI) GetDNSRecord(_ context.Context, _ *cf.ResourceContainer, _ string) (cf.DNSRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.getRecord, f.getErr
 }
 func (f *fakeDNSRecordAPI) ListDNSRecords(_ context.Context, _ *cf.ResourceContainer, _ cf.ListDNSRecordsParams) ([]cf.DNSRecord, *cf.ResultInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.listRecords, nil, f.listErr
 }
 func (f *fakeDNSRecordAPI) UpdateDNSRecord(_ context.Context, _ *cf.ResourceContainer, params cf.UpdateDNSRecordParams) (cf.DNSRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.updateCalled = true
 	f.updateParams = params
 	return f.updateRecord, f.updateErr
 }
 func (f *fakeDNSRecordAPI) DeleteDNSRecord(_ context.Context, _ *cf.ResourceContainer, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deleteCalled = true
 	return f.deleteErr
+}
+
+// lastUpdate returns the params of the last UpdateDNSRecord call, and
+// whether there was one.
+func (f *fakeDNSRecordAPI) lastUpdate() (cf.UpdateDNSRecordParams, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.updateParams, f.updateCalled
 }
 
 // reconcilerWithFakeDNSAPI returns a DNSRecordReconciler wired to a pre-built fake.
@@ -719,7 +748,8 @@ var _ = Describe("DNSRecord Controller", func() {
 			createReadyZone()
 			createDNSSecret()
 
-			// Create record with proxied=true.
+			// Create record with proxied=true, and so an automatic TTL: the
+			// only one Cloudflare keeps on a proxied record.
 			proxied := true
 			rec := &cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Name: dnsRecordCRName, Namespace: dnsRecordNS},
@@ -728,7 +758,7 @@ var _ = Describe("DNSRecord Controller", func() {
 					Name:    dnsRecordName,
 					Type:    dnsRecordType,
 					Content: dnsRecordIP,
-					TTL:     300,
+					TTL:     1,
 					Proxied: &proxied,
 				},
 			}
@@ -739,12 +769,14 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(k8sClient.Update(ctx, rec)).To(Succeed())
 
 			cfProxied := false
-			cfRecord := cf.DNSRecord{ID: dnsFakeRecordID, Name: dnsRecordName, Type: dnsRecordType, Content: dnsRecordIP, TTL: 300, Proxied: &cfProxied}
+			cfRecord := cf.DNSRecord{ID: dnsFakeRecordID, Name: dnsRecordName, Type: dnsRecordType, Content: dnsRecordIP, TTL: 1, Proxied: &cfProxied}
 			fake := &fakeDNSRecordAPI{getRecord: cfRecord, updateRecord: cf.DNSRecord{ID: dnsFakeRecordID}}
 			r := reconcilerWithFakeDNSAPI(fake)
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.updateCalled).To(BeTrue())
+			Expect(fake.updateParams.Proxied).To(Equal(new(true)))
+			Expect(fake.updateParams.TTL).To(Equal(1))
 		})
 
 		It("calls UpdateDNSRecord when Priority has drifted", func() {
@@ -1367,6 +1399,312 @@ var _ = Describe("DNSRecord Controller", func() {
 			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Describe("with a tunnelRef", func() {
+		const (
+			tunnelCRName = "dns-test-tunnel"
+			appHostname  = "app.example.com"
+			oldTunnelID  = "6f1d2a7e-0000-4000-8000-000000000001"
+			newTunnelID  = "6f1d2a7e-0000-4000-8000-000000000002"
+		)
+		tunnelKey := types.NamespacedName{Name: tunnelCRName, Namespace: dnsRecordNS}
+		// target is the hostname a record pointing at tunnelID has as content.
+		target := func(tunnelID string) string { return tunnelID + ".cfargotunnel.com" }
+
+		// setTunnelID reports the Tunnel ready, with tunnelID.
+		setTunnelID := func(tunnelID string) {
+			tunnel := &cloudflarev1alpha1.Tunnel{}
+			Expect(k8sClient.Get(ctx, tunnelKey, tunnel)).To(Succeed())
+			tunnel.Status.CloudflareMetadata.TunnelID = tunnelID
+			tunnel.Status.Conditions = []metav1.Condition{{
+				Type: cloudflarev1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Synced",
+				ObservedGeneration: tunnel.Generation, LastTransitionTime: metav1.Now(),
+			}}
+			Expect(k8sClient.Status().Update(ctx, tunnel)).To(Succeed())
+		}
+		// createTunnel creates the Tunnel the record points at, using the
+		// CloudflareAccount account; with a tunnelID, it is ready with it.
+		createTunnel := func(account, tunnelID string) {
+			Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.Tunnel{
+				ObjectMeta: metav1.ObjectMeta{Name: tunnelCRName, Namespace: dnsRecordNS},
+				Spec: cloudflarev1alpha1.TunnelSpec{
+					Name:                 "app",
+					AccountRef:           corev1.LocalObjectReference{Name: account},
+					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "app-tunnel-token"},
+				},
+			})).To(Succeed())
+			DeferCleanup(forceDelete, ctx, &cloudflarev1alpha1.Tunnel{}, tunnelKey)
+			if tunnelID != "" {
+				setTunnelID(tunnelID)
+			}
+		}
+		// createTunnelRecord creates the account, the Zone, the token Secret,
+		// and a DNSRecord with the finalizer that points at the Tunnel.
+		createTunnelRecord := func(annotations map[string]string) {
+			createDNSAccount(true)
+			createReadyZone()
+			createDNSSecret()
+			Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.DNSRecord{
+				ObjectMeta: metav1.ObjectMeta{Name: dnsRecordCRName, Namespace: dnsRecordNS,
+					Annotations: annotations, Finalizers: []string{reconciler.Finalizer}},
+				Spec: cloudflarev1alpha1.DNSRecordSpec{
+					ZoneRef:   corev1.LocalObjectReference{Name: dnsZoneCRName},
+					Name:      appHostname,
+					Type:      "CNAME",
+					TunnelRef: &corev1.LocalObjectReference{Name: tunnelCRName},
+				},
+			})).To(Succeed())
+		}
+		// inCloudflare is the record id as Cloudflare reports it once it
+		// points at tunnelID.
+		inCloudflare := func(id, tunnelID string) cf.DNSRecord {
+			return cf.DNSRecord{ID: id, Type: "CNAME", Name: appHostname, Content: target(tunnelID), TTL: 1,
+				Proxied: new(true), Proxiable: true, Tags: []string{}}
+		}
+		reconcileWith := func(fake *fakeDNSRecordAPI) error {
+			_, err := reconcilerWithFakeDNSAPI(fake).Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			return err
+		}
+		getRecord := func() *cloudflarev1alpha1.DNSRecord {
+			record := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
+			return record
+		}
+		// expectWaiting reconciles the record and checks that it reports
+		// reason, without a Cloudflare client or a requeue: the Tunnel watch
+		// re-triggers it.
+		expectWaiting := func(reason string) *metav1.Condition {
+			built := false
+			r := &DNSRecordReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+				NewDNSRecordAPI: func(string) (DNSRecordAPI, error) { built = true; return &fakeDNSRecordAPI{}, nil }}
+			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsZero()).To(BeTrue())
+			Expect(built).To(BeFalse(), "no Cloudflare client while the record waits")
+			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(reason), cond.Message)
+			return cond
+		}
+
+		It("waits for the Tunnel while it does not exist", func() {
+			createTunnelRecord(nil)
+			Expect(expectWaiting("TunnelNotFound").Message).To(ContainSubstring(tunnelCRName))
+		})
+
+		It("waits for the Tunnel until it is ready with an ID", func() {
+			createTunnelRecord(nil)
+			createTunnel(dnsAccountName, "")
+			expectWaiting("TunnelNotReady")
+		})
+
+		It("refuses a Tunnel that uses another CloudflareAccount than the Zone", func() {
+			createTunnelRecord(nil)
+			createTunnel("other-account", oldTunnelID)
+			message := expectWaiting("AccountMismatch").Message
+			Expect(message).To(ContainSubstring(`"other-account"`))
+			Expect(message).To(ContainSubstring(`"` + dnsAccountName + `"`))
+		})
+
+		It("creates a proxied CNAME to the tunnel's hostname", func() {
+			createTunnelRecord(nil)
+			createTunnel(dnsAccountName, oldTunnelID)
+			fake := &fakeDNSRecordAPI{createRecord: inCloudflare(dnsFakeRecordID, oldTunnelID)}
+			Expect(reconcileWith(fake)).To(Succeed())
+			Expect(fake.createCalled).To(BeTrue())
+			Expect(fake.createParams.Type).To(Equal("CNAME"))
+			Expect(fake.createParams.Name).To(Equal(appHostname))
+			Expect(fake.createParams.Content).To(Equal(target(oldTunnelID)))
+			Expect(fake.createParams.Proxied).To(Equal(new(true)))
+			Expect(fake.createParams.TTL).To(Equal(1))
+			Expect(getRecordCondition(cloudflarev1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+			Expect(getRecord().Status.CloudflareMetadata.RecordID).To(Equal(dnsFakeRecordID))
+		})
+
+		It("leaves the record alone once it points at the tunnel", func() {
+			createTunnelRecord(nil)
+			createTunnel(dnsAccountName, oldTunnelID)
+			setRecordIDInStatus(dnsFakeRecordID)
+			fake := &fakeDNSRecordAPI{getRecord: inCloudflare(dnsFakeRecordID, oldTunnelID)}
+			Expect(reconcileWith(fake)).To(Succeed())
+			Expect(fake.updateCalled).To(BeFalse())
+			Expect(getRecordCondition(cloudflarev1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("follows the tunnel to its new ID once the tunnel is recreated", func() {
+			createTunnelRecord(nil)
+			createTunnel(dnsAccountName, newTunnelID)
+			setRecordIDInStatus(dnsFakeRecordID)
+			fake := &fakeDNSRecordAPI{getRecord: inCloudflare(dnsFakeRecordID, oldTunnelID),
+				updateRecord: inCloudflare(dnsFakeRecordID, newTunnelID)}
+			Expect(reconcileWith(fake)).To(Succeed())
+			Expect(fake.updateCalled).To(BeTrue())
+			Expect(fake.updateParams.ID).To(Equal(dnsFakeRecordID))
+			Expect(fake.updateParams.Content).To(Equal(target(newTunnelID)))
+			Expect(fake.updateParams.Proxied).To(Equal(new(true)))
+		})
+
+		It("turns proxying back on when it was turned off outside kflare", func() {
+			createTunnelRecord(nil)
+			createTunnel(dnsAccountName, oldTunnelID)
+			setRecordIDInStatus(dnsFakeRecordID)
+			unproxied := inCloudflare(dnsFakeRecordID, oldTunnelID)
+			unproxied.Proxied = new(false)
+			fake := &fakeDNSRecordAPI{getRecord: unproxied, updateRecord: inCloudflare(dnsFakeRecordID, oldTunnelID)}
+			Expect(reconcileWith(fake)).To(Succeed())
+			Expect(fake.updateCalled).To(BeTrue())
+			Expect(fake.updateParams.Proxied).To(Equal(new(true)))
+			Expect(fake.updateParams.Content).To(Equal(target(oldTunnelID)))
+		})
+
+		It("reports AlreadyExists for a CNAME to the tunnel it did not create, without an adoption policy", func() {
+			createTunnelRecord(nil)
+			createTunnel(dnsAccountName, oldTunnelID)
+			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{inCloudflare("existing-111", oldTunnelID)}}
+			Expect(reconcileWith(fake)).To(Succeed())
+			Expect(getRecordCondition(cloudflarev1alpha1.ConditionReady).Reason).To(Equal("AlreadyExists"))
+			Expect(fake.createCalled).To(BeFalse())
+			Expect(fake.updateCalled).To(BeFalse())
+		})
+
+		It("finds the record it was creating by the tunnel's hostname", func() {
+			createTunnelRecord(map[string]string{reconciler.CreatingAnnotation: "CNAME " + appHostname})
+			createTunnel(dnsAccountName, oldTunnelID)
+			fake := &fakeDNSRecordAPI{listRecords: []cf.DNSRecord{inCloudflare("created-333", oldTunnelID)}}
+			Expect(reconcileWith(fake)).To(Succeed())
+			Expect(fake.createCalled).To(BeFalse())
+			record := getRecord()
+			Expect(record.Status.CloudflareMetadata.RecordID).To(Equal("created-333"))
+			Expect(record.Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+		})
+
+		It("follows its Tunnel to a new ID through the Tunnel watch", func() {
+			createTunnelRecord(nil)
+			createTunnel(dnsAccountName, oldTunnelID)
+			setRecordIDInStatus(dnsFakeRecordID)
+			fake := &fakeDNSRecordAPI{getRecord: inCloudflare(dnsFakeRecordID, oldTunnelID),
+				updateRecord: inCloudflare(dnsFakeRecordID, newTunnelID)}
+
+			By("running the DNSRecord controller, which finds the record in sync")
+			mgr, err := manager.New(cfg, manager.Options{
+				Controller: config.Controller{SkipNameValidation: new(true)},
+				Metrics:    metricsserver.Options{BindAddress: "0"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect((&DNSRecordReconciler{
+				Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+				NewDNSRecordAPI: func(string) (DNSRecordAPI, error) { return fake, nil },
+			}).SetupWithManager(mgr)).To(Succeed())
+			mgrCtx, stop := context.WithCancel(ctx)
+			stopped := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				defer close(stopped)
+				Expect(mgr.Start(mgrCtx)).To(Succeed())
+			}()
+			// Stop it before the cleanup deletes the record, which it would
+			// otherwise reconcile.
+			stopManager := func() {
+				stop()
+				Eventually(stopped).Should(BeClosed())
+			}
+			DeferCleanup(stopManager)
+			Eventually(func(g Gomega) {
+				cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			}).WithTimeout(10 * time.Second).Should(Succeed())
+			_, updated := fake.lastUpdate()
+			Expect(updated).To(BeFalse())
+
+			By("recreating the tunnel, which gives it a new ID")
+			setTunnelID(newTunnelID)
+			Eventually(func(g Gomega) {
+				params, updated := fake.lastUpdate()
+				g.Expect(updated).To(BeTrue(), "the record was not re-triggered by its Tunnel")
+				g.Expect(params.Content).To(Equal(target(newTunnelID)))
+			}).WithTimeout(10 * time.Second).Should(Succeed())
+			stopManager()
+		})
+	})
+
+	Describe("Validation of what the record points at", func() {
+		// create creates a DNSRecord named name with spec in the test Zone,
+		// deleted after the spec.
+		create := func(name string, spec cloudflarev1alpha1.DNSRecordSpec) error {
+			spec.ZoneRef = corev1.LocalObjectReference{Name: dnsZoneCRName}
+			spec.Name = "app.example.com"
+			record := &cloudflarev1alpha1.DNSRecord{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: dnsRecordNS},
+				Spec:       spec,
+			}
+			err := k8sClient.Create(ctx, record)
+			if err == nil {
+				DeferCleanup(forceDelete, ctx, &cloudflarev1alpha1.DNSRecord{},
+					types.NamespacedName{Name: name, Namespace: dnsRecordNS})
+			}
+			return err
+		}
+		tunnelRef := &corev1.LocalObjectReference{Name: "app-tunnel"}
+		srvData := &apiextensionsv1.JSON{Raw: []byte(`{"port":443,"target":"app.example.com"}`)}
+
+		DescribeTable("refuses",
+			func(spec cloudflarev1alpha1.DNSRecordSpec, message string) {
+				Expect(create("refused", spec)).To(MatchError(ContainSubstring(message)))
+			},
+			Entry("content and a tunnelRef", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "CNAME", Content: "app.example.net", TunnelRef: tunnelRef},
+				"set exactly one of content, data and tunnelRef"),
+			Entry("data and a tunnelRef", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "CNAME", Data: srvData, TunnelRef: tunnelRef},
+				"set exactly one of content, data and tunnelRef"),
+			Entry("content and data", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "SRV", Content: "0 443 app.example.com", Data: srvData},
+				"set exactly one of content, data and tunnelRef"),
+			Entry("none of them", cloudflarev1alpha1.DNSRecordSpec{Type: "A"},
+				"set exactly one of content, data and tunnelRef"),
+			Entry("a tunnelRef on another type than CNAME", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "A", TunnelRef: tunnelRef}, "tunnelRef needs type CNAME"),
+			Entry("an unproxied record with a tunnelRef", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "CNAME", TunnelRef: tunnelRef, Proxied: new(false)},
+				"a record with a tunnelRef must be proxied"),
+			Entry("a ttl on a record with a tunnelRef", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "CNAME", TunnelRef: tunnelRef, TTL: 300}, "a proxied record takes ttl 1"),
+			Entry("a ttl on a proxied record", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "A", Content: "192.0.2.1", Proxied: new(true), TTL: 300}, "a proxied record takes ttl 1"),
+			Entry("data that is not an object", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "SRV", Data: &apiextensionsv1.JSON{Raw: []byte(`"0 443 app.example.com"`)}},
+				"must be of type object"),
+		)
+
+		DescribeTable("accepts",
+			func(spec cloudflarev1alpha1.DNSRecordSpec) {
+				Expect(create("accepted", spec)).To(Succeed())
+			},
+			Entry("a tunnelRef on a CNAME", cloudflarev1alpha1.DNSRecordSpec{Type: "CNAME", TunnelRef: tunnelRef}),
+			Entry("a tunnelRef, proxied, with an automatic ttl", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "CNAME", TunnelRef: tunnelRef, Proxied: new(true), TTL: 1}),
+			Entry("a ttl on an unproxied record", cloudflarev1alpha1.DNSRecordSpec{
+				Type: "A", Content: "192.0.2.1", Proxied: new(false), TTL: 300}),
+			Entry("data alone", cloudflarev1alpha1.DNSRecordSpec{Type: "SRV", Data: srvData}),
+		)
+
+		It("refuses empty content", func() {
+			record := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": cloudflarev1alpha1.GroupVersion.String(),
+				"kind":       "DNSRecord",
+				"metadata":   map[string]any{"name": "empty-content", "namespace": dnsRecordNS},
+				"spec": map[string]any{
+					"zoneRef": map[string]any{"name": dnsZoneCRName},
+					"name":    "app.example.com",
+					"type":    "A",
+					"content": "",
+				},
+			}}
+			Expect(k8sClient.Create(ctx, record)).To(MatchError(ContainSubstring("spec.content")))
 		})
 	})
 

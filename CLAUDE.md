@@ -188,7 +188,10 @@ what was decided and verified live, and why.
      PR changed. A survivor is a gap in the generated specs: close it in kflare-gen, for every kind
    - The live run: `hack/e2e-live.sh` runs the manager on this machine against the current kind cluster, runs the
      suite against it and leaves the cluster as it found it (its header says how). Afterwards, check that Cloudflare
-     holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57)
+     holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57).
+     Once the repo has its CI secrets (Release and CI below), a `/live-e2e` review comment on the pull request
+     (`gh pr review <number> --comment -b /live-e2e`) runs the same suite in GitHub Actions instead. Never run both at
+     once: the script's lock does not see a CI run
 7. **Docs.** Every place that lists the kinds names the last one of the same shape, so
    `git grep -n OriginRule -- '*.md'` (or `D1Database`) finds them: README's kinds, deploy.md's permission row (the
    label Cloudflare's docs give it), kinds table and uninstall command, ARCHITECTURE.md's ownership tree, drift and
@@ -322,18 +325,55 @@ side but merge one at a time (no stacked PRs). L5 waits for all of them.
 #### L3. A DNSRecord points at a Tunnel by reference (`feat/dnsrecord-tunnel-ref`)
 The closest alternative, adyanth/cloudflare-operator, exposes a Service through a tunnel with one resource. kflare
 should not need an ID copied from status to do the same: manifests must be writable before the first apply.
-- [ ] `spec.tunnelRef` on DNSRecord (a Tunnel in the same namespace): the record is a proxied CNAME to
+- [x] `spec.tunnelRef` on DNSRecord (a Tunnel in the same namespace): the record is a proxied CNAME to
   `<tunnelID>.cfargotunnel.com`. CEL: exactly one of `content`, `data` and `tunnelRef`; `tunnelRef` only with type
   `CNAME`. Check live what Cloudflare does with an unproxied one before deciding whether `proxied: false` is refused
-- [ ] Waits for the Tunnel to be ready, and watches Tunnels, so a recreated tunnel (a new ID) corrects the record
-- [ ] A Tunnel waits for the DNSRecords that reference it before it is deleted (`protection.go`), as it waits for its
+- [x] Waits for the Tunnel to be ready, and watches Tunnels, so a recreated tunnel (a new ID) corrects the record
+- [x] A Tunnel waits for the DNSRecords that reference it before it is deleted (`protection.go`), as it waits for its
   TunnelConfigurations; otherwise their hostnames would point at nothing
-- [ ] `examples/expose-a-service/`: a Zone adopting the reader's existing domain (`kflare.dev/adoption-policy: adopt`,
+- [x] `examples/expose-a-service/`: a Zone adopting the reader's existing domain (`kflare.dev/adoption-policy: adopt`,
   L2), a Tunnel, a cloudflared Deployment reading `TUNNEL_TOKEN` from the Tunnel's Secret (image pinned), a
   TunnelConfiguration and a DNSRecord with `tunnelRef`. kflare does not run cloudflared; the example does
-- [ ] Unit and envtest specs, CEL cases, a live e2e spec (the record follows the Tunnel, including after the tunnel is
+- [x] Unit and envtest specs, CEL cases, a live e2e spec (the record follows the Tunnel, including after the tunnel is
   recreated), a mutation run, ARCHITECTURE.md, deploy.md and the samples
-- Done when: the example works on kind with a real account, and no sample asks for a copied ID
+- Done when: the example works on kind with a real account, and no sample asks for a copied ID. The live e2e suite now
+  runs the example (decided 2026-10-20: in GitHub Actions, see below), so this holds once a live CI run passes
+
+**As built** (2026-10-20, `feat/dnsrecord-tunnel-ref`):
+- Checked live first on `kflare.dev` (`kflare-probe-*` objects, deleted afterwards): Cloudflare accepts an unproxied
+  CNAME to `<id>.cfargotunnel.com`, but it resolves to that name, which has only a private IPv6 address
+  (`fd10:aec2:5dae::`), and HTTPS cannot connect; so the CRD refuses `proxied: false` with a `tunnelRef`. A proxied
+  CNAME to a tunnel ID that does not exist is accepted too (requests get 530), so the Tunnel check is kflare's. A
+  proxied record's TTL is always 1, whatever a create or update sends: a proxied DNSRecord with another `ttl` used to
+  write on every reconcile, so the CRD now refuses that on any proxied record. Cloudflare's docs: `cfargotunnel.com`
+  only proxies traffic for DNS records in the tunnel's own account
+- CEL on the spec: exactly one of `content`, `data` and `tunnelRef` (`data` became `type: object`, without which CEL
+  cannot see it; `content` has a minimum length of 1); `tunnelRef` only on a CNAME; no `proxied: false` with it; `ttl`
+  1 on any proxied record. A DNSRecord resolves its Tunnel after its Zone: `TunnelNotFound`, `TunnelNotReady`, and
+  `AccountMismatch` when the Tunnel's CloudflareAccount is not the Zone's (by name, as WorkerRoute and WorkerScript
+  compare). `tunnelRecordSpec` gives the spec kflare writes; ownership, adoption, create and drift take it in place of
+  the resource's spec. The DNSRecord controller watches Tunnels (`recordsForTunnel`); the Tunnel controller watches the
+  deletion of every kind in `tunnelDependents` in a loop, DNSRecords among them (`recordTunnels`)
+- Specs: the waits, create, idle, a new tunnel ID followed, proxying restored, `AlreadyExists` and recovery by the
+  tunnel's hostname, the CEL cases, and two specs that run a controller in a manager: a Tunnel's new ID reaches its
+  record through the watch, and a Tunnel being deleted is released by its record's deletion. A mutation check
+  (`hack/mutate.sh`, 24 mutations of the controller, the watches, the protection entry and the CRD's rules) caught all
+- Live e2e: a DNSRecord with `tunnelRef` follows its tunnel after the tunnel is deleted outside kflare and recreated
+  with a new ID (the same record, updated in place, and the TunnelConfiguration follows too); and the example, applied
+  with the run's names, answers `https://kflare-e2e-<run>-hello.kflare.dev` through `cloudflared`, then deleting its
+  namespace deletes the record and the tunnel and keeps the zone. The HTTP check resolves through the zone's
+  authoritative name server: a resolver that asks before Cloudflare serves a new name caches the miss for 30 minutes
+  (the zone's SOA minimum)
+- The live e2e suite moved to GitHub Actions in this branch, at the user's request (2026-10-20). `e2e.yml` runs the
+  deployment smoke test on pull requests, pushes to main and by hand (Kubernetes 1.34 and 1.37). The live suite is a
+  separate job, on 1.37, that runs only when the owner, a member or a collaborator leaves a review comment starting
+  with `/live-e2e` (`gh pr review <number> --comment -b /live-e2e`), or by hand with the `live` input (decided by the
+  user the same day). A plain `/live-e2e` comment was the first design: CodeQL flagged it (critical,
+  `actions/untrusted-checkout-toctou`), because a comment event runs privileged, from main's copy of the workflow, and
+  carries no commit, so the head looked up afterwards could have moved since the comment. A review runs like a
+  `pull_request` event instead: from the pull request's own copy of the workflow, on the merge commit as of the review,
+  and without secrets for a fork (the job then fails, naming the missing secrets, instead of skipping every spec). It
+  sits in a `concurrency` group that never runs two at once or cancels one halfway
 
 #### L4. Launch docs (`docs/launch`)
 - [ ] README, rewritten for someone arriving from Reddit:
@@ -385,8 +425,9 @@ In GitHub's settings, no branch.
   verification behind it in the post itself
 - [ ] Be around for the first hours to answer comments, and file issues for the bugs people report
 
-**After the announcement**, not blocking it: the live e2e suite in GitHub Actions (Release and CI above), whose green
-badge against the real API would help credibility, and the drift correction period (Known limitations).
+**After the announcement**, not blocking it: the CI token and secrets that turn on the live e2e suite in GitHub Actions
+(Release and CI below; the workflow is ready since L3), whose green badge against the real API would help credibility,
+and the drift correction period (Known limitations).
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🔲 Proposed, not decided: the user picks what comes after OriginRule, and in what order
@@ -434,14 +475,15 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 ### Release and CI
 **Status:** 🔲 Open, alongside Phase 3
 
-- [ ] Run the live e2e suite in GitHub Actions. The repo has no Actions secrets or variables yet (2026-10-09, still
-  none on 2026-10-17). Use a
-  dedicated CI token holding only what the suite needs, not the dev token, which also holds Account API Tokens Write
-  and Registrar Domains Admin. What the suite needs is deploy.md's permissions, with Zone Read (verified 2026-10-13,
-  see [Token permissions](docs/design-notes.md#token-permissions-for-phase-3)). Set the secrets `CF_API_TOKEN` and
-  `CF_ACCOUNT_ID`, and the variable
-  `CF_E2E_ZONE=kflare.dev`. A Free zone holds one rate limiting rule and a Free account one IP list, so runs must
-  not overlap: give the workflow a `concurrency` group, and avoid local runs while it runs
+- [ ] Run the live e2e suite in GitHub Actions. The workflow is ready since L3 (`feat/dnsrecord-tunnel-ref`): a
+  review comment starting with `/live-e2e`, by the owner, a member or a collaborator, runs it on the pull request as
+  reviewed (branches of this repo only: a fork gets no secrets), one run at a time and never cancelled halfway. What
+  is left: the repo has no Actions secrets or variables yet (none on 2026-10-20). Use a dedicated CI
+  token holding only what the suite needs, not the dev token, which also holds Account API Tokens Write and Registrar
+  Domains Admin. What the suite needs is deploy.md's permissions, with Zone Read (verified 2026-10-13, see
+  [Token permissions](docs/design-notes.md#token-permissions-for-phase-3)). Set the secrets `CF_API_TOKEN` and
+  `CF_ACCOUNT_ID`, and the variable `CF_E2E_ZONE=kflare.dev`. A Free zone holds one rate limiting rule and a Free
+  account one IP list, so local runs must not overlap with a CI run
 - [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists (still none on 2026-10-19). The release workflow
   publishes the image and chart. (`docs/deploy.md`'s stale "the six kflare CRDs" was fixed with WAFCustomRule).
   Proposed 2026-10-19 instead of tagging once OriginRule lands: tag as L5 of [Launch readiness](#launch-readiness),

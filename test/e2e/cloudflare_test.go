@@ -12,9 +12,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"maps"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -36,6 +40,7 @@ import (
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
+	"github.com/JonathanGraniero/kflare/test/utils"
 )
 
 const (
@@ -107,17 +112,25 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		ruleService *rulesets.RuleService
 
 		accountKey, tunnelKey, tunnelConfigKey, workerKey, zoneKey, recordKey client.ObjectKey
+		tunnelRecordKey                                                       client.ObjectKey
 		routeKey, exclusionKey, kvKey, bucketKey, wafKey, wafSkipKey          client.ObjectKey
 		rateLimitKey, listKey, listRuleKey, managedKey, d1Key                 client.ObjectKey
 		urlRewriteKey, requestHeadersKey, responseHeadersKey, redirectKey     client.ObjectKey
 		cacheKey, configurationKey, originKey                                 client.ObjectKey
 
 		tunnelID, zoneID, recordID, routeID, exclusionID, kvNamespaceID, listID, databaseID string
+		tunnelRecordID                                                                      string
 	)
 
 	// resourceName is the name of every Cloudflare object this run creates.
 	resourceName := func() string { return "kflare-e2e-" + run }
 	recordName := func() string { return resourceName() + "." + zoneName }
+	tunnelRecordName := func() string { return resourceName() + "-tunnel." + zoneName }
+	// exampleNamespace holds examples/expose-a-service for this run; the
+	// example's tunnel is named after it too.
+	exampleNamespace := func() string { return resourceName() + "-example" }
+	exampleTunnelName := func() string { return exampleNamespace() + "-hello" }
+	exampleHostname := func() string { return resourceName() + "-hello." + zoneName }
 	// listName is the name of the run's IP list: list names allow no hyphens.
 	listName := func() string { return "kflare_e2e_" + run }
 
@@ -197,6 +210,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		workerKey = client.ObjectKey{Namespace: e2eNamespace, Name: "worker"}
 		zoneKey = client.ObjectKey{Namespace: e2eNamespace, Name: "zone"}
 		recordKey = client.ObjectKey{Namespace: e2eNamespace, Name: "record"}
+		tunnelRecordKey = client.ObjectKey{Namespace: e2eNamespace, Name: "tunnel-record"}
 		routeKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route"}
 		exclusionKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route-exclusion"}
 		kvKey = client.ObjectKey{Namespace: e2eNamespace, Name: "kv"}
@@ -218,7 +232,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 
 		DeferCleanup(func() {
 			By("removing anything this run left behind in Cloudflare")
-			cleanupCloudflare(ctx, cfAPI, accountRC, resourceName(), zoneID, recordName(), routeIDs(routeID, exclusionID))
+			cleanupCloudflare(ctx, cfAPI, accountRC, resourceName(), zoneID,
+				[]string{recordName(), tunnelRecordName(), exampleHostname()}, routeIDs(routeID, exclusionID))
+			cleanupTunnel(ctx, cfAPI, accountRC, exampleTunnelName())
 			if kvNamespaceID != "" {
 				_, err := cfAPI.DeleteWorkersKVNamespace(ctx, accountRC, kvNamespaceID)
 				if err != nil && !cfpkg.IsNotFound(err) {
@@ -532,6 +548,131 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(current.ModifiedOn).To(Equal(modifiedOn))
 		}, 15*time.Second, 3*time.Second).Should(Succeed())
+	})
+
+	It("points a DNSRecord at the Tunnel, and follows the tunnel when it is recreated", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		hostname := func(id string) string { return id + ".cfargotunnel.com" }
+		record := &cloudflarev1alpha1.DNSRecord{
+			ObjectMeta: objectMeta(tunnelRecordKey),
+			Spec: cloudflarev1alpha1.DNSRecordSpec{
+				ZoneRef:   corev1.LocalObjectReference{Name: zoneKey.Name},
+				Name:      tunnelRecordName(),
+				Type:      "CNAME",
+				TunnelRef: &corev1.LocalObjectReference{Name: tunnelKey.Name},
+				Comment:   "kflare e2e " + run,
+			},
+		}
+		Expect(k8s.Create(ctx, record)).To(Succeed())
+		expectReady(tunnelRecordKey, record, func() []metav1.Condition { return record.Status.Conditions })
+		tunnelRecordID = record.Status.CloudflareMetadata.RecordID
+
+		cfRecord, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), tunnelRecordID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfRecord.Type).To(Equal("CNAME"))
+		Expect(cfRecord.Content).To(Equal(hostname(tunnelID)))
+		Expect(cfRecord.Proxied).To(Equal(new(true)))
+		Expect(cfRecord.TTL).To(Equal(1))
+
+		By("deleting the tunnel outside kflare, which the Tunnel recreates with a new ID")
+		Expect(cfAPI.DeleteTunnel(ctx, accountRC, tunnelID)).To(Succeed())
+		tunnel := &cloudflarev1alpha1.Tunnel{}
+		Expect(k8s.Get(ctx, tunnelKey, tunnel)).To(Succeed())
+		annotate(tunnel, map[string]string{"e2e.kflare.dev/touched": time.Now().Format(time.RFC3339Nano)})
+		Eventually(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, tunnelKey, tunnel)).To(Succeed())
+			g.Expect(tunnel.Status.CloudflareMetadata.TunnelID).NotTo(BeEmpty())
+			g.Expect(tunnel.Status.CloudflareMetadata.TunnelID).NotTo(Equal(tunnelID))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+		tunnelID = tunnel.Status.CloudflareMetadata.TunnelID
+
+		By("checking the record points at the new tunnel, still the same record, and the configuration follows too")
+		Eventually(func(g Gomega) {
+			current, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), tunnelRecordID)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(current.Content).To(Equal(hostname(tunnelID)))
+			g.Expect(current.Proxied).To(Equal(new(true)))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+		Eventually(func(g Gomega) {
+			cfConfig, err := cfAPI.GetTunnelConfiguration(ctx, accountRC, tunnelID)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(cfConfig.Config.Ingress).To(HaveLen(2))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+	})
+
+	It("exposes a Service through a Tunnel with examples/expose-a-service", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		By("applying the example with this run's namespace, tunnel name, account and hostname")
+		dir, err := utils.GetProjectDir()
+		Expect(err).NotTo(HaveOccurred())
+		raw, err := os.ReadFile(filepath.Join(dir, "examples", "expose-a-service", "expose-a-service.yaml"))
+		Expect(err).NotTo(HaveOccurred())
+		manifest := strings.NewReplacer(
+			"hello.example.com", exampleHostname(),
+			"example.com", zoneName,
+			"kflare-example", exampleNamespace(),
+			"name: my-account", "name: "+accountKey.Name,
+		).Replace(string(raw))
+		apply := exec.Command("kubectl", "apply", "-f", "-")
+		apply.Stdin = strings.NewReader(manifest)
+		_, err = utils.Run(apply)
+		Expect(err).NotTo(HaveOccurred())
+		namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: exampleNamespace()}}
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8s.Delete(ctx, namespace))).To(Succeed())
+		})
+
+		key := func(name string) client.ObjectKey { return client.ObjectKey{Namespace: exampleNamespace(), Name: name} }
+		tunnel := &cloudflarev1alpha1.Tunnel{}
+		expectReady(key("hello-tunnel"), tunnel, func() []metav1.Condition { return tunnel.Status.Conditions })
+		routes := &cloudflarev1alpha1.TunnelConfiguration{}
+		expectReady(key("hello-routes"), routes, func() []metav1.Condition { return routes.Status.Conditions })
+		record := &cloudflarev1alpha1.DNSRecord{}
+		expectReady(key("hello"), record, func() []metav1.Condition { return record.Status.Conditions })
+		exampleTunnelID := tunnel.Status.CloudflareMetadata.TunnelID
+		exampleRecordID := record.Status.CloudflareMetadata.RecordID
+		cfRecord, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), exampleRecordID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfRecord.Content).To(Equal(exampleTunnelID + ".cfargotunnel.com"))
+		Expect(cfRecord.Proxied).To(Equal(new(true)))
+
+		By("requesting https://" + exampleHostname() + " until cloudflared has connected the tunnel")
+		zone, err := cfAPI.ZoneDetails(ctx, zoneID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(zone.NameServers).NotTo(BeEmpty())
+		httpClient := authoritativeClient(zone.NameServers[0])
+		Eventually(func(g Gomega) {
+			resp, err := httpClient.Get("https://" + exampleHostname())
+			g.Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(resp.StatusCode).To(Equal(http.StatusOK), string(body))
+			// whoami answers with the request it received, which Cloudflare's
+			// proxy added its headers to.
+			g.Expect(string(body)).To(ContainSubstring("Hostname: whoami-"))
+			g.Expect(string(body)).To(ContainSubstring("Cf-Connecting-Ip:"))
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("deleting the example's namespace, which deletes the record and the tunnel and keeps the adopted zone")
+		Expect(k8s.Delete(ctx, namespace)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8s.Get(ctx, client.ObjectKey{Name: exampleNamespace()}, &corev1.Namespace{}))
+		}, 2*e2eTimeout, e2ePoll).Should(BeTrue(), "the example's namespace was not deleted")
+		_, err = cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), exampleRecordID)
+		Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "the example's record was not deleted: %v", err)
+		cfTunnel, err := cfAPI.GetTunnel(ctx, accountRC, exampleTunnelID)
+		if err == nil {
+			Expect(cfTunnel.DeletedAt).NotTo(BeNil(), "the example's tunnel was not deleted")
+		} else {
+			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "unexpected error: %v", err)
+		}
+		_, err = cfAPI.ZoneDetails(ctx, zoneID)
+		Expect(err).NotTo(HaveOccurred(), "the adopted zone must still exist")
 	})
 
 	It("routes a pattern to the WorkerScript and excludes a sub-path", func() {
@@ -1146,8 +1287,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 
 		// One delete for everything, in no particular order, like `kubectl delete
 		// -f` on a directory: parents must wait for the children that need them
-		// (Zone, Tunnel, KVNamespace, R2Bucket, D1Database, CloudflareAccount and its token Secret),
-		// and Cloudflare deletes the IP list only once the rule using it is gone.
+		// (Zone, Tunnel, KVNamespace, R2Bucket, D1Database, CloudflareAccount and its token Secret;
+		// the Tunnel also waits for the DNSRecord that points at it), and Cloudflare deletes the
+		// IP list only once the rule using it is gone.
 		By("deleting every resource at once")
 		everything := []client.Object{
 			&cloudflarev1alpha1.WorkerRoute{ObjectMeta: objectMeta(routeKey)},
@@ -1166,6 +1308,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			&cloudflarev1alpha1.WAFCustomRule{ObjectMeta: objectMeta(listRuleKey)},
 			&cloudflarev1alpha1.IPList{ObjectMeta: objectMeta(listKey)},
 			&cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(recordKey)},
+			&cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(tunnelRecordKey)},
 			&cloudflarev1alpha1.TunnelConfiguration{ObjectMeta: objectMeta(tunnelConfigKey)},
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: objectMeta(workerKey)},
 			&cloudflarev1alpha1.KVNamespace{ObjectMeta: objectMeta(kvKey)},
@@ -1200,8 +1343,10 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "IP list was not deleted: %v", err)
 		}
 		if zoneName != "" {
-			_, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), recordID)
-			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "record was not deleted: %v", err)
+			for _, id := range []string{recordID, tunnelRecordID} {
+				_, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), id)
+				Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "record %s was not deleted: %v", id, err)
+			}
 			for _, id := range routeIDs(routeID, exclusionID) {
 				_, err = cfAPI.GetWorkerRoute(ctx, cf.ZoneIdentifier(zoneID), id)
 				Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "route %s was not deleted: %v", id, err)
@@ -1271,15 +1416,15 @@ func workerNames(ctx context.Context, api *cf.API, rc *cf.ResourceContainer) []s
 	return names
 }
 
-// cleanupCloudflare deletes the tunnel, Worker, DNS record and Worker routes
+// cleanupCloudflare deletes the tunnel, Worker, DNS records and Worker routes
 // this run may have created. It only reports problems: it runs after the specs, whether
 // or not they passed.
 func cleanupCloudflare(
 	ctx context.Context,
 	api *cf.API,
 	rc *cf.ResourceContainer,
-	name, zoneID, record string,
-	routes []string,
+	name, zoneID string,
+	records, routes []string,
 ) {
 	report := func(what string, err error) {
 		if err != nil && !cfpkg.IsNotFound(err) {
@@ -1287,27 +1432,61 @@ func cleanupCloudflare(
 		}
 	}
 
-	tunnels, _, err := api.ListTunnels(ctx, rc, cf.TunnelListParams{Name: name, IsDeleted: new(false)})
-	report("listing tunnels", err)
-	for _, t := range tunnels {
-		report("removing tunnel connections", api.CleanupTunnelConnections(ctx, rc, t.ID))
-		report("deleting tunnel "+t.ID, api.DeleteTunnel(ctx, rc, t.ID))
-	}
+	cleanupTunnel(ctx, api, rc, name)
 
 	report("deleting Worker", api.DeleteWorker(ctx, rc, cf.DeleteWorkerParams{ScriptName: name}))
 
 	if zoneID != "" {
 		zrc := cf.ZoneIdentifier(zoneID)
-		records, _, err := api.ListDNSRecords(ctx, zrc, cf.ListDNSRecordsParams{Name: record})
-		report("listing DNS records", err)
-		for _, r := range records {
-			report("deleting DNS record "+r.ID, api.DeleteDNSRecord(ctx, zrc, r.ID))
+		for _, record := range records {
+			found, _, err := api.ListDNSRecords(ctx, zrc, cf.ListDNSRecordsParams{Name: record})
+			report("listing DNS records", err)
+			for _, r := range found {
+				report("deleting DNS record "+r.ID, api.DeleteDNSRecord(ctx, zrc, r.ID))
+			}
 		}
 		for _, id := range routes {
 			_, err := api.DeleteWorkerRoute(ctx, zrc, id)
 			report("deleting Worker route "+id, err)
 		}
 	}
+}
+
+// cleanupTunnel deletes the account's tunnels named name, disconnecting any
+// connector first. It only reports problems, like cleanupCloudflare.
+func cleanupTunnel(ctx context.Context, api *cf.API, rc *cf.ResourceContainer, name string) {
+	tunnels, _, err := api.ListTunnels(ctx, rc, cf.TunnelListParams{Name: name, IsDeleted: new(false)})
+	if err != nil {
+		GinkgoWriter.Printf("cleanup: listing tunnels named %s: %v\n", name, err)
+		return
+	}
+	for _, t := range tunnels {
+		if err := api.CleanupTunnelConnections(ctx, rc, t.ID); err != nil && !cfpkg.IsNotFound(err) {
+			GinkgoWriter.Printf("cleanup: removing the connections of tunnel %s: %v\n", t.ID, err)
+		}
+		if err := api.DeleteTunnel(ctx, rc, t.ID); err != nil && !cfpkg.IsNotFound(err) {
+			GinkgoWriter.Printf("cleanup: deleting tunnel %s: %v\n", t.ID, err)
+		}
+	}
+}
+
+// authoritativeClient returns an HTTP client that resolves hostnames through
+// nameserver, one of a zone's authoritative name servers, instead of the
+// system's resolver. A resolver that asked for a new hostname a moment before
+// Cloudflare served it would cache the miss for the zone's negative TTL, half
+// an hour.
+func authoritativeClient(nameserver string) *http.Client {
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, net.JoinHostPort(nameserver, "53"))
+		},
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, Resolver: resolver}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = dialer.DialContext
+	return &http.Client{Timeout: 20 * time.Second, Transport: transport}
 }
 
 // objectMeta names the object at key.

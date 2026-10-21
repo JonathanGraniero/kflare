@@ -1,0 +1,156 @@
+# Exposes a Service in the cluster at https://hello.example.com through a Cloudflare Tunnel, with no public IP and
+# no open inbound port. See README.md in this directory.
+#
+# Replace example.com with a domain on your Cloudflare account before applying, for example:
+#   sed 's/example\.com/your-domain.com/g' expose-a-service.yaml | kubectl apply -f -
+#
+# kflare creates the tunnel, writes its token to a Secret, sets the tunnel's ingress rules and creates the
+# hostname's DNS record. kflare does not run cloudflared: the Deployment at the end of this file does.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kflare-example
+---
+# The application to expose: a small web server that answers with the request it received.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami
+  namespace: kflare-example
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: whoami
+  template:
+    metadata:
+      labels:
+        app: whoami
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.12.0@sha256:c4717a8d1f0134a7444e24f881160e033991f23027c6c5a9a3f8fd22e70d1d44
+          args: ["--port=8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whoami
+  namespace: kflare-example
+spec:
+  selector:
+    app: whoami
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# Your domain's zone, which must already be on the Cloudflare account. The adopt policy makes kflare use the zone
+# you have instead of creating one; kflare changes nothing on it, and keeps it when this resource is deleted.
+apiVersion: kflare.dev/v1alpha1
+kind: Zone
+metadata:
+  name: my-zone
+  namespace: kflare-example
+  annotations:
+    kflare.dev/adoption-policy: adopt
+spec:
+  name: example.com
+  accountRef:
+    name: my-account
+---
+# A new tunnel. kflare writes the token cloudflared needs to the Secret hello-tunnel-token, under TUNNEL_TOKEN.
+apiVersion: kflare.dev/v1alpha1
+kind: Tunnel
+metadata:
+  name: hello-tunnel
+  namespace: kflare-example
+spec:
+  name: kflare-example-hello
+  accountRef:
+    name: my-account
+  credentialsSecretRef:
+    name: hello-tunnel-token
+---
+# Where the tunnel sends requests: hello.example.com goes to the whoami Service, anything else gets a 404.
+apiVersion: kflare.dev/v1alpha1
+kind: TunnelConfiguration
+metadata:
+  name: hello-routes
+  namespace: kflare-example
+spec:
+  tunnelRef:
+    name: hello-tunnel
+  ingress:
+    - hostname: hello.example.com
+      service: http://whoami.kflare-example.svc.cluster.local:80
+---
+# The hostname's DNS record: a proxied CNAME to the tunnel, which kflare keeps pointed at it.
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: hello
+  namespace: kflare-example
+spec:
+  zoneRef:
+    name: my-zone
+  name: hello.example.com
+  type: CNAME
+  tunnelRef:
+    name: hello-tunnel
+---
+# The connector: cloudflared runs the tunnel with the token kflare wrote. Two replicas keep the hostname up while
+# one restarts. Its pods start once the token Secret exists.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: kflare-example
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.10.0@sha256:9b49eed8f62806d5d45ddf59ecefb5710429598ea6d3fcccd2af938f621b2b07
+          command: ["cloudflared", "tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run"]
+          envFrom:
+            - secretRef:
+                name: hello-tunnel-token
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

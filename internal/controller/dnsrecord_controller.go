@@ -56,6 +56,7 @@ type DNSRecordReconciler struct {
 //+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords/finalizers,verbs=update
 //+kubebuilder:rbac:groups=kflare.dev,resources=zones,verbs=get;list;watch
+//+kubebuilder:rbac:groups=kflare.dev,resources=tunnels,verbs=get;list;watch
 
 func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -97,6 +98,18 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			fmt.Sprintf("Zone %q is not ready", record.Spec.ZoneRef.Name))
 	}
 
+	// A record that points at a Tunnel takes its content from the tunnel's
+	// ID, so it waits for the Tunnel. The Tunnel watch re-triggers this
+	// reconcile when the Tunnel changes, including when it gets a new ID.
+	spec := record.Spec
+	if record.Spec.TunnelRef != nil {
+		tunnelID, condErr := r.recordTunnelID(ctx, record, zone)
+		if condErr != nil {
+			return ctrl.Result{}, updateNotReady(ctx, r.Client, record, condErr.Reason, condErr.Message)
+		}
+		spec = tunnelRecordSpec(record.Spec, tunnelID)
+	}
+
 	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, record, credErr)
@@ -107,13 +120,58 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return invalidToken(ctx, r.Client, record, err)
 	}
 
-	return r.syncDNSRecord(ctx, record, zone.Status.CloudflareMetadata.ZoneID, cfAPI)
+	return r.syncDNSRecord(ctx, record, &spec, zone.Status.CloudflareMetadata.ZoneID, cfAPI)
 }
 
-// syncDNSRecord drives the desired→observed→delta→reconcile loop for a DNSRecord.
+// recordTunnelID returns the ID of the tunnel record points at through its
+// tunnelRef, or the condition that keeps the record from pointing at it.
+func (r *DNSRecordReconciler) recordTunnelID(
+	ctx context.Context,
+	record *cloudflarev1alpha1.DNSRecord,
+	zone *cloudflarev1alpha1.Zone,
+) (string, *conditionError) {
+	tunnel := &cloudflarev1alpha1.Tunnel{}
+	key := types.NamespacedName{Name: record.Spec.TunnelRef.Name, Namespace: record.Namespace}
+	if err := r.Get(ctx, key, tunnel); err != nil {
+		return "", &conditionError{
+			Reason:  "TunnelNotFound",
+			Message: fmt.Sprintf("Tunnel %q not found: %v", key.Name, err),
+		}
+	}
+	if tunnel.Spec.AccountRef.Name != zone.Spec.AccountRef.Name {
+		return "", &conditionError{
+			Reason: reasonAccountMismatch,
+			Message: fmt.Sprintf("Tunnel %q uses CloudflareAccount %q but Zone %q uses %q; "+
+				"a tunnel carries traffic only for DNS records in its own account",
+				tunnel.Name, tunnel.Spec.AccountRef.Name, zone.Name, zone.Spec.AccountRef.Name),
+		}
+	}
+	if !isTunnelReady(tunnel) {
+		return "", &conditionError{
+			Reason:  "TunnelNotReady",
+			Message: fmt.Sprintf("Tunnel %q is not ready", key.Name),
+		}
+	}
+	return tunnel.Status.CloudflareMetadata.TunnelID, nil
+}
+
+// tunnelRecordSpec returns spec as kflare writes it for a record that points
+// at the tunnel tunnelID: a CNAME to the tunnel's hostname, proxied, since
+// an unproxied one resolves to an address the internet cannot reach
+// (verified live).
+func tunnelRecordSpec(spec cloudflarev1alpha1.DNSRecordSpec, tunnelID string) cloudflarev1alpha1.DNSRecordSpec {
+	spec.Content = tunnelID + cloudflarev1alpha1.TunnelHostnameSuffix
+	spec.Proxied = new(true)
+	return spec
+}
+
+// syncDNSRecord drives the desired→observed→delta→reconcile loop for a
+// DNSRecord. spec is the record to write: record's own spec, with the content
+// and proxying a tunnelRef implies.
 func (r *DNSRecordReconciler) syncDNSRecord(
 	ctx context.Context,
 	record *cloudflarev1alpha1.DNSRecord,
+	spec *cloudflarev1alpha1.DNSRecordSpec,
 	zoneID string,
 	cfAPI DNSRecordAPI,
 ) (ctrl.Result, error) {
@@ -159,11 +217,11 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 		policy, _ := adoptionPolicy(record)
 		key := dnsRecordKey(record)
 		what := fmt.Sprintf("DNS record %s", key)
-		if existing, ok := ownRecord(record, records, claimed); ok {
+		if existing, ok := ownRecord(record, spec, records, claimed); ok {
 			cfRecord = existing
 			logger.Info("Found the DNS record this resource created",
 				"name", record.Spec.Name, "type", record.Spec.Type, "recordID", cfRecord.ID)
-		} else if existing, ok := adoptableRecord(record, records, claimed, policy != ""); ok {
+		} else if existing, ok := adoptableRecord(spec, records, claimed, policy != ""); ok {
 			if condErr := mayAdopt(record, what); condErr != nil {
 				return notReadyRetryAfter(ctx, r.Client, record, condErr)
 			}
@@ -178,7 +236,7 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 				return ctrl.Result{}, err
 			}
 			// Create a brand-new record.
-			params, err := buildCreateParams(record)
+			params, err := buildCreateParams(spec)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -199,7 +257,7 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 	}
 
 	// Drift detection: compare desired spec against observed CF state.
-	if drifted, params := driftDetect(record, cfRecord); drifted {
+	if drifted, params := driftDetect(spec, cfRecord); drifted {
 		params.ID = cfRecord.ID
 		updated, updateErr := cfAPI.UpdateDNSRecord(ctx, rc, params)
 		if updateErr != nil {
@@ -226,9 +284,11 @@ func dnsRecordKey(record *cloudflarev1alpha1.DNSRecord) string {
 // ownRecord returns the record among candidates (same name and type) that
 // record created or adopted without recording it in status: the one its
 // claim label names, or, while it was creating one, the one whose content (or
-// data) matches. Records another DNSRecord manages are never its own.
+// data) matches spec, the record it writes. Records another DNSRecord manages
+// are never its own.
 func ownRecord(
 	record *cloudflarev1alpha1.DNSRecord,
+	spec *cloudflarev1alpha1.DNSRecordSpec,
 	candidates []cf.DNSRecord,
 	claimed map[string]string,
 ) (cf.DNSRecord, bool) {
@@ -237,7 +297,7 @@ func ownRecord(
 			continue
 		}
 		if ownsID(record, cloudflarev1alpha1.DNSRecordIDLabel, c.ID) ||
-			(creating(record, dnsRecordKey(record)) && recordContentMatches(record, c)) {
+			(creating(record, dnsRecordKey(record)) && recordContentMatches(spec, c)) {
 			return c, true
 		}
 	}
@@ -245,7 +305,7 @@ func ownRecord(
 }
 
 // adoptableRecord picks the existing Cloudflare record from candidates (same
-// name and type) that is the one record describes, or returns false when
+// name and type) that is the one spec describes, or returns false when
 // there is none and a new record joins them.
 //
 // Records another DNSRecord manages are never adopted. Among the rest, one
@@ -256,14 +316,14 @@ func ownRecord(
 // adoption policy makes it so: without one, an existing record whose content
 // differs is left as it is, a separate member of the set.
 func adoptableRecord(
-	record *cloudflarev1alpha1.DNSRecord,
+	spec *cloudflarev1alpha1.DNSRecordSpec,
 	candidates []cf.DNSRecord,
 	claimed map[string]string,
 	lone bool,
 ) (cf.DNSRecord, bool) {
 	isClaimed := func(id string) bool { _, taken := claimed[id]; return taken }
 	for _, c := range candidates {
-		if !isClaimed(c.ID) && recordContentMatches(record, c) {
+		if !isClaimed(c.ID) && recordContentMatches(spec, c) {
 			return c, true
 		}
 	}
@@ -273,34 +333,34 @@ func adoptableRecord(
 	return cf.DNSRecord{}, false
 }
 
-// recordContentMatches reports whether cfRecord holds the value record
-// describes: its data when spec.data is set, otherwise its content.
-func recordContentMatches(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) bool {
-	if record.Spec.Data != nil {
-		return !dataDrifted(record, cfRecord)
+// recordContentMatches reports whether cfRecord holds the value spec
+// describes: its data when data is set, otherwise its content.
+func recordContentMatches(spec *cloudflarev1alpha1.DNSRecordSpec, cfRecord cf.DNSRecord) bool {
+	if spec.Data != nil {
+		return !dataDrifted(spec, cfRecord)
 	}
-	return record.Spec.Content == cfRecord.Content
+	return spec.Content == cfRecord.Content
 }
 
 // automaticTTL is the TTL Cloudflare reports for "automatic". It is also what
 // Cloudflare stores when a record is created without a TTL.
 const automaticTTL = 1
 
-// buildCreateParams constructs a CreateDNSRecordParams from the DNSRecord spec.
-func buildCreateParams(record *cloudflarev1alpha1.DNSRecord) (cf.CreateDNSRecordParams, error) {
+// buildCreateParams constructs a CreateDNSRecordParams from the desired spec.
+func buildCreateParams(spec *cloudflarev1alpha1.DNSRecordSpec) (cf.CreateDNSRecordParams, error) {
 	params := cf.CreateDNSRecordParams{
-		Type:     record.Spec.Type,
-		Name:     record.Spec.Name,
-		Content:  record.Spec.Content,
-		TTL:      desiredTTL(record),
-		Proxied:  record.Spec.Proxied,
-		Priority: record.Spec.Priority,
-		Comment:  record.Spec.Comment,
-		Tags:     record.Spec.Tags,
+		Type:     spec.Type,
+		Name:     spec.Name,
+		Content:  spec.Content,
+		TTL:      desiredTTL(spec),
+		Proxied:  spec.Proxied,
+		Priority: spec.Priority,
+		Comment:  spec.Comment,
+		Tags:     spec.Tags,
 	}
-	if record.Spec.Data != nil {
+	if spec.Data != nil {
 		var data any
-		if err := json.Unmarshal(record.Spec.Data.Raw, &data); err != nil {
+		if err := json.Unmarshal(spec.Data.Raw, &data); err != nil {
 			return cf.CreateDNSRecordParams{}, fmt.Errorf("invalid data field: %w", err)
 		}
 		params.Data = data
@@ -309,14 +369,14 @@ func buildCreateParams(record *cloudflarev1alpha1.DNSRecord) (cf.CreateDNSRecord
 }
 
 // desiredTTL returns spec.ttl, or automatic when it is unset.
-func desiredTTL(record *cloudflarev1alpha1.DNSRecord) int {
-	if record.Spec.TTL == 0 {
+func desiredTTL(spec *cloudflarev1alpha1.DNSRecordSpec) int {
+	if spec.TTL == 0 {
 		return automaticTTL
 	}
-	return record.Spec.TTL
+	return spec.TTL
 }
 
-// driftDetect compares the desired DNSRecord spec against the observed CF record.
+// driftDetect compares the desired spec against the observed CF record.
 // Returns (true, params) if any field has drifted, (false, zero) otherwise.
 //
 // Unset spec fields are compared against Cloudflare's defaults, because
@@ -325,7 +385,7 @@ func desiredTTL(record *cloudflarev1alpha1.DNSRecord) int {
 //
 // Content is not compared when spec.data is set, or for SRV records, because
 // Cloudflare derives the content from the data fields.
-func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (bool, cf.UpdateDNSRecordParams) {
+func driftDetect(spec *cloudflarev1alpha1.DNSRecordSpec, cfRecord cf.DNSRecord) (bool, cf.UpdateDNSRecordParams) {
 	drifted := false
 	params := cf.UpdateDNSRecordParams{
 		Type:     cfRecord.Type,
@@ -342,50 +402,50 @@ func driftDetect(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) (b
 	}
 
 	// Content: skipped when Cloudflare derives it from the data block.
-	contentFromData := record.Spec.Data != nil || record.Spec.Type == "SRV"
-	if !contentFromData && record.Spec.Content != cfRecord.Content {
-		params.Content = record.Spec.Content
+	contentFromData := spec.Data != nil || spec.Type == "SRV"
+	if !contentFromData && spec.Content != cfRecord.Content {
+		params.Content = spec.Content
 		drifted = true
 	}
 
 	// TTL.
-	if ttl := desiredTTL(record); ttl != cfRecord.TTL {
+	if ttl := desiredTTL(spec); ttl != cfRecord.TTL {
 		params.TTL = ttl
 		drifted = true
 	}
 
 	// Proxied. The update is a PATCH that omits a nil value, so the desired
 	// value is always sent explicitly.
-	proxied := record.Spec.Proxied != nil && *record.Spec.Proxied
+	proxied := spec.Proxied != nil && *spec.Proxied
 	if proxied != (cfRecord.Proxied != nil && *cfRecord.Proxied) {
 		params.Proxied = &proxied
 		drifted = true
 	}
 
 	// Priority: only managed when the spec sets it.
-	if p := record.Spec.Priority; p != nil && (cfRecord.Priority == nil || *cfRecord.Priority != *p) {
+	if p := spec.Priority; p != nil && (cfRecord.Priority == nil || *cfRecord.Priority != *p) {
 		params.Priority = p
 		drifted = true
 	}
 
 	// Comment (*string in UpdateDNSRecordParams).
-	if record.Spec.Comment != cfRecord.Comment {
-		params.Comment = &record.Spec.Comment
+	if spec.Comment != cfRecord.Comment {
+		params.Comment = &spec.Comment
 		drifted = true
 	}
 
 	// Tags (sort both before comparing).
-	if !tagsEqual(record.Spec.Tags, cfRecord.Tags) {
-		params.Tags = append([]string{}, record.Spec.Tags...)
+	if !tagsEqual(spec.Tags, cfRecord.Tags) {
+		params.Tags = append([]string{}, spec.Tags...)
 		drifted = true
 	}
 
 	// Data (JSON round-trip compare).
-	if dataDrifted(record, cfRecord) {
+	if dataDrifted(spec, cfRecord) {
 		var data any
-		if record.Spec.Data != nil {
+		if spec.Data != nil {
 			// Unmarshal is safe here; it was validated in buildCreateParams.
-			_ = json.Unmarshal(record.Spec.Data.Raw, &data)
+			_ = json.Unmarshal(spec.Data.Raw, &data)
 		}
 		params.Data = data
 		drifted = true
@@ -459,7 +519,9 @@ func (r *DNSRecordReconciler) deleteCloudflareRecord(
 
 // SetupWithManager registers DNSRecordReconciler with the manager and adds a
 // watch on Zone so that a zone becoming ready automatically re-triggers
-// reconciliation of all DNS records that reference it.
+// reconciliation of all DNS records that reference it. It watches Tunnels
+// likewise, so a record follows its Tunnel when it becomes ready or is
+// recreated with a new ID.
 func (r *DNSRecordReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.DNSRecord{}).
@@ -467,7 +529,29 @@ func (r *DNSRecordReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&cloudflarev1alpha1.Zone{},
 			handler.EnqueueRequestsFromMapFunc(r.recordsForZone),
 		).
+		Watches(
+			&cloudflarev1alpha1.Tunnel{},
+			handler.EnqueueRequestsFromMapFunc(r.recordsForTunnel),
+		).
 		Complete(r)
+}
+
+// recordsForTunnel maps a Tunnel event to reconcile.Requests for the
+// DNSRecords in its namespace whose tunnelRef names it.
+func (r *DNSRecordReconciler) recordsForTunnel(ctx context.Context, obj client.Object) []reconcile.Request {
+	recordList := &cloudflarev1alpha1.DNSRecordList{}
+	if err := r.List(ctx, recordList, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for _, rec := range recordList.Items {
+		if rec.Spec.TunnelRef != nil && rec.Spec.TunnelRef.Name == obj.GetName() {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: rec.Name, Namespace: rec.Namespace},
+			})
+		}
+	}
+	return reqs
 }
 
 // recordsForZone maps a Zone event to reconcile.Requests for all DNSRecords
@@ -528,21 +612,21 @@ func tagsEqual(a, b []string) bool {
 	return true
 }
 
-// dataDrifted returns true if the spec's data field differs from the CF record's data.
+// dataDrifted returns true if spec's data field differs from the CF record's data.
 // The spec's raw JSON and the CF record's interface{} are both unmarshalled into
 // interface{} and compared with reflect.DeepEqual, avoiding JSON key-ordering issues.
-func dataDrifted(record *cloudflarev1alpha1.DNSRecord, cfRecord cf.DNSRecord) bool {
+func dataDrifted(spec *cloudflarev1alpha1.DNSRecordSpec, cfRecord cf.DNSRecord) bool {
 	// Neither side has data — no drift.
-	if record.Spec.Data == nil && cfRecord.Data == nil {
+	if spec.Data == nil && cfRecord.Data == nil {
 		return false
 	}
 	// One side has data, the other doesn't — drifted.
-	if record.Spec.Data == nil || cfRecord.Data == nil {
+	if spec.Data == nil || cfRecord.Data == nil {
 		return true
 	}
 	// Both have data — unmarshal spec JSON into interface{} and deep-compare.
 	var specData any
-	if err := json.Unmarshal(record.Spec.Data.Raw, &specData); err != nil {
+	if err := json.Unmarshal(spec.Data.Raw, &specData); err != nil {
 		return true
 	}
 	return !reflect.DeepEqual(specData, cfRecord.Data)

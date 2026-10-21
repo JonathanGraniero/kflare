@@ -68,14 +68,18 @@ spec:
               content:
                 description: |-
                   Content is the DNS record content (e.g. an IP address for A records, a hostname for CNAME/MX).
-                  Omit for record types that use the Data field instead (SRV, LOC, CAA, ...).
+                  Set exactly one of content, data and tunnelRef: record types such as
+                  SRV, LOC and CAA use data instead.
+                minLength: 1
                 type: string
               data:
                 description: |-
                   Data holds structured record data for types that require it (SRV, LOC, CAA).
                   The JSON structure must match the Cloudflare API schema for the given record type.
+                  Set exactly one of content, data and tunnelRef.
                   Cloudflare derives the record content from it, so content drift is not
                   corrected while data is set.
+                type: object
                 x-kubernetes-preserve-unknown-fields: true
               name:
                 description: Name is the fully-qualified DNS record name (e.g. "www.example.com").
@@ -93,7 +97,8 @@ spec:
               proxied:
                 description: |-
                   Proxied controls whether Cloudflare proxies traffic through its network for this record.
-                  Only applicable to A, AAAA, and CNAME records. Defaults to false (DNS only).
+                  Only applicable to A, AAAA, and CNAME records. Defaults to false (DNS only),
+                  or to true with a tunnelRef, which cannot be unproxied.
                 type: boolean
               tags:
                 description: Tags are optional labels attached to the record in Cloudflare.
@@ -103,13 +108,35 @@ spec:
               ttl:
                 description: |-
                   TTL is the time-to-live in seconds: 1 for automatic (the default), or
-                  30-86400. Cloudflare only accepts values below 60 on Enterprise zones.
+                  30-86400. Cloudflare only accepts values below 60 on Enterprise zones,
+                  and a proxied record always has an automatic TTL.
                 maximum: 86400
                 minimum: 1
                 type: integer
                 x-kubernetes-validations:
                 - message: ttl must be 1 (automatic) or between 30 and 86400
                   rule: self == 1 || self >= 30
+              tunnelRef:
+                description: |-
+                  TunnelRef points the record at a Tunnel in the same namespace: kflare
+                  sets its content to the tunnel's hostname, <tunnel ID>.cfargotunnel.com,
+                  and corrects it when the tunnel is recreated with a new ID. Only for
+                  CNAME records, which are then proxied: a tunnel carries traffic only
+                  through Cloudflare's proxy, and only for records in the tunnel's
+                  account, so the Tunnel must use the Zone's CloudflareAccount. The Tunnel
+                  waits for the records that point at it before it is deleted.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               type:
                 description: Type is the DNS record type. Immutable after creation.
                 enum:
@@ -162,6 +189,19 @@ spec:
             - type
             - zoneRef
             type: object
+            x-kubernetes-validations:
+            - message: set exactly one of content, data and tunnelRef
+              rule: '(has(self.content) ? 1 : 0) + (has(self.data) ? 1 : 0) + (has(self.tunnelRef)
+                ? 1 : 0) == 1'
+            - message: tunnelRef needs type CNAME
+              rule: '!has(self.tunnelRef) || self.type == ''CNAME'''
+            - message: 'a record with a tunnelRef must be proxied: an unproxied one
+                resolves to an address the internet cannot reach'
+              rule: '!has(self.tunnelRef) || !has(self.proxied) || self.proxied'
+            - message: 'a proxied record takes ttl 1 (automatic): Cloudflare ignores
+                any other'
+              rule: '!(has(self.tunnelRef) || (has(self.proxied) && self.proxied))
+                || !has(self.ttl) || self.ttl == 1'
           status:
             description: DNSRecordStatus defines the observed state of DNSRecord.
             properties:

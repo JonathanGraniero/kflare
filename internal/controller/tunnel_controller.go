@@ -327,7 +327,9 @@ func (r *TunnelReconciler) reconcileDelete(ctx context.Context, tunnel *cloudfla
 	}
 
 	// A TunnelConfiguration resets the tunnel's ingress rules through this
-	// Tunnel when it is deleted; the watch on them re-triggers this reconcile.
+	// Tunnel when it is deleted, and a DNSRecord pointing at the tunnel would
+	// route its hostname to nothing; the watches on them re-trigger this
+	// reconcile.
 	dependents, err := dependentsOf(ctx, r.Client, tunnel.Namespace, tunnel.Name, tunnelDependents)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -366,23 +368,25 @@ func (r *TunnelReconciler) reconcileDelete(ctx context.Context, tunnel *cloudfla
 // CloudflareAccounts, so a change in account credentials re-triggers every
 // tunnel that references the account.
 //
-// Deleted TunnelConfigurations re-trigger a Tunnel that is waiting for them
-// to go before it can be deleted.
+// Deleted TunnelConfigurations and DNSRecords re-trigger a Tunnel that is
+// waiting for them to go before it can be deleted.
 func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&cloudflarev1alpha1.Tunnel{}).
 		Owns(&corev1.Secret{}).
 		Watches(
 			&cloudflarev1alpha1.CloudflareAccount{},
 			handler.EnqueueRequestsFromMapFunc(r.tunnelsForAccount),
-		).
-		Watches(&cloudflarev1alpha1.TunnelConfiguration{},
-			handler.EnqueueRequestsFromMapFunc(r.deletingTunnelOf), builder.WithPredicates(deletesOnly)).
-		Complete(r)
+		)
+	for _, dependent := range tunnelDependents {
+		b = b.Watches(dependent.newObject(), handler.EnqueueRequestsFromMapFunc(r.deletingTunnelOf),
+			builder.WithPredicates(deletesOnly))
+	}
+	return b.Complete(r)
 }
 
-// deletingTunnelOf maps the deletion of a TunnelConfiguration to its Tunnel
-// while that Tunnel is being deleted.
+// deletingTunnelOf maps the deletion of a TunnelConfiguration or DNSRecord to
+// its Tunnel while that Tunnel is being deleted.
 func (r *TunnelReconciler) deletingTunnelOf(ctx context.Context, obj client.Object) []reconcile.Request {
 	return deletingParentOf(ctx, r.Client, obj,
 		func() client.Object { return &cloudflarev1alpha1.Tunnel{} }, true, tunnelDependents)
