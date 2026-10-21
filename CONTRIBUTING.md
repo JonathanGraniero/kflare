@@ -129,8 +129,9 @@ A change to how a controller behaves comes with:
 
 ## Releasing
 
-Maintainers release by bumping `version` and `appVersion` in `helm/kflare/Chart.yaml` through a pull request, then
-pushing a `vX.Y.Z` tag that matches them. The `Release` workflow refuses a tag that does not match, and otherwise
+Maintainers release by bumping `version` and `appVersion` in `helm/kflare/Chart.yaml` and adding the release's
+section to [CHANGELOG.md](CHANGELOG.md) through a pull request, then pushing a `vX.Y.Z` tag that matches them. The
+GitHub release's notes are that section. The `Release` workflow refuses a tag that does not match, and otherwise
 publishes the image (`linux/amd64` and `linux/arm64`) and the chart to `ghcr.io`.
 
 ## License

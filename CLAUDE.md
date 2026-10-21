@@ -92,6 +92,7 @@ With:
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
+├── CHANGELOG.md           # Release notes; a release's section is its GitHub release's notes
 ├── CLAUDE.md              # This file
 └── Makefile
 ```
@@ -272,11 +273,11 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Plans in progress
 
 ### Launch readiness
-**Status:** 🚧 In progress: L1 (but for one rerun), L2 and L3 are done; L4 is built in `docs/launch`. Goal: announce
-kflare on Reddit (r/kubernetes first, then r/CloudFlare) as a v0.1 alpha, to find its first users. The audience, as
-the user put it on 2026-10-21: companies running Kubernetes, so the docs lead with Helm and GitOps installs and with
-keeping kflare easy to maintain. kflare is a standalone project: the user docs do not compare it with ACK, and
-ARCHITECTURE.md credits ACK once, for the adoption and deletion annotations
+**Status:** 🚧 In progress: L1 (but for one rerun) to L4 are done; L5 is under way in `docs/release-v0.1.0`.
+Goal: announce kflare on Reddit (r/kubernetes first, then r/CloudFlare) as a v0.1 alpha, to find its first users. The
+audience, as the user put it on 2026-10-21: companies running Kubernetes, so the docs lead with Helm and GitOps
+installs and with keeping kflare easy to maintain. kflare is a standalone project: the user docs do not compare it
+with ACK, and ARCHITECTURE.md credits ACK once, for the adoption and deletion annotations
 
 **Where it stands** (checked 2026-10-19 against main, `7005841`):
 - No tag and no GitHub release, so the release workflow has never run: no image or chart is published, and the
@@ -331,8 +332,8 @@ side but merge one at a time (no stacked PRs). L5 waits for all of them.
 [docs/design-notes.md](docs/design-notes.md#l3-a-dnsrecord-points-at-a-tunnel-by-reference-featdnsrecord-tunnel-ref).
 
 #### L4. Launch docs (`docs/launch`)
-**Status:** 🚧 Built 2026-10-21 in `docs/launch`; its done-when can only be checked by L5's quickstart run, since the
-README installs the released chart (`--version 0.1.0`) and applies the example from the `v0.1.0` tag.
+**Status:** ✅ Merged 2026-10-21 (#61). Its done-when is checked by L5's quickstart run, since the README installs the
+released chart (`--version 0.1.0`) and applies the example from the `v0.1.0` tag.
 - [x] README, rewritten for someone arriving from Reddit:
   - What kflare is, in two sentences, and its status: alpha, API `v1alpha1`, Kubernetes 1.34+
   - A quickstart: install the released chart, connect an account, run `examples/expose-a-service/`
@@ -362,7 +363,13 @@ README installs the released chart (`--version 0.1.0`) and applies the example f
 - Done when: someone who has never seen the repo gets from the README to a working tunnel without opening another
   file, and the README links no file written for agents
 
-#### L5. Release v0.1.0
+#### L5. Release v0.1.0 (`docs/release-v0.1.0`)
+**Status:** 🚧 Started 2026-10-21. The branch adds CHANGELOG.md, whose v0.1.0 section is the release's notes. Checked
+before tagging: the Dockerfile cross-compiles (`--platform=$BUILDPLATFORM`, no `RUN` in the final stage), so the
+release workflow's `linux/arm64` build needs no QEMU (a local arm64 build passed); `helm package` gives
+`kflare-0.1.0.tgz` with the 19 CRDs and `ghcr.io/jonathangraniero/kflare:0.1.0`, the tag the workflow pushes. Pushing
+the tag, making the packages public (GitHub cannot make a public package private again) and the live quickstart run
+each need the user's OK.
 - [ ] Once L2, L3 and L4 are merged: tag `v0.1.0` (Chart.yaml is at 0.1.0) and check the release workflow is green
 - [ ] Both packages on GHCR (`ghcr.io/jonathangraniero/kflare` and `charts/kflare`) are public: the image pull and
   `helm install` work from a machine not logged in to ghcr.io
@@ -464,10 +471,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   `CF_E2E_ZONE=kflare.dev`, were set on 2026-10-21. First run, by hand on main: GitHub run 39530820711, e2e run
   `f7dccb`, 24 of 24 passed. A Free zone holds one rate limiting rule and a Free account one IP list, so local runs
   must not overlap with a CI run
-- [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists (still none on 2026-10-19). The release workflow
-  publishes the image and chart. (`docs/deploy.md`'s stale "the six kflare CRDs" was fixed with WAFCustomRule).
-  Proposed 2026-10-19 instead of tagging once OriginRule lands: tag as L5 of [Launch readiness](#launch-readiness),
-  after L1 to L4 (the user decides)
+- [ ] Tag `v0.1.0`: L5 of [Launch readiness](#launch-readiness). The release workflow publishes the image and chart
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
@@ -507,7 +511,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
 > OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
-> L1 is done but for one rerun, L2 and L3 are merged, L4 is built in `docs/launch`. The proposed
+> L1 is done but for one rerun, L2 to L4 are merged, L5 is under way. The proposed
 > [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
 > deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
