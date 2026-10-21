@@ -899,6 +899,11 @@ func (in *DNSRecordList) DeepCopyObject() runtime.Object {
 func (in *DNSRecordSpec) DeepCopyInto(out *DNSRecordSpec) {
 	*out = *in
 	out.ZoneRef = in.ZoneRef
+	if in.TunnelRef != nil {
+		in, out := &in.TunnelRef, &out.TunnelRef
+		*out = new(corev1.LocalObjectReference)
+		**out = **in
+	}
 	if in.Proxied != nil {
 		in, out := &in.Proxied, &out.Proxied
 		*out = new(bool)

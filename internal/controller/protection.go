@@ -33,7 +33,9 @@ import (
 //   - a Zone waits for its DNSRecords, WorkerRoutes and rules
 //     (WAFCustomRules, RateLimitRules, ManagedRulesets), which need its zone
 //     ID and account;
-//   - a Tunnel waits for its TunnelConfigurations;
+//   - a Tunnel waits for its TunnelConfigurations, which reset its ingress
+//     rules through its account, and for the DNSRecords that point at it
+//     through tunnelRef, whose hostnames would otherwise route to nothing;
 //   - a KVNamespace or R2Bucket waits for the WorkerScripts bound to it:
 //     Cloudflare deletes a namespace or bucket a Worker is bound to, but
 //     every later upload of that Worker then fails.
@@ -115,8 +117,19 @@ var (
 	tunnelDependents = []dependentKind{
 		dependents("TunnelConfiguration", func() client.ObjectList { return &cloudflarev1alpha1.TunnelConfigurationList{} },
 			func(tc *cloudflarev1alpha1.TunnelConfiguration) []string { return []string{tc.Spec.TunnelRef.Name} }),
+		dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
+			recordTunnels),
 	}
 )
+
+// recordTunnels returns the Tunnel a DNSRecord points at through tunnelRef,
+// if any.
+func recordTunnels(d *cloudflarev1alpha1.DNSRecord) []string {
+	if d.Spec.TunnelRef == nil {
+		return nil
+	}
+	return []string{d.Spec.TunnelRef.Name}
+}
 
 // dependentsOf returns every resource of kinds in namespace ("" for all
 // namespaces) that references parentName, as sorted "Kind namespace/name"

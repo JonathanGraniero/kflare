@@ -92,7 +92,7 @@ test: manifests generate fmt fix vet envtest ## Run tests.
 # CF_ACCOUNT_ID, and CF_E2E_ZONE for Zone/DNSRecord; without them they skip.
 .PHONY: test-e2e
 test-e2e: kind ## Run the e2e suite against a kind cluster (and Cloudflare, when credentials are set).
-	KIND=$(KIND) go test ./test/e2e/ -v -ginkgo.v -timeout 30m
+	KIND=$(KIND) go test ./test/e2e/ -v -ginkgo.v -timeout 45m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint

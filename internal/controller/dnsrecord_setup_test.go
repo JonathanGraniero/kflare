@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
@@ -127,6 +128,43 @@ var _ = Describe("DNSRecordReconciler recordsForZone", func() {
 	})
 })
 
+var _ = Describe("DNSRecordReconciler recordsForTunnel", func() {
+	ctx := context.Background()
+	tunnel := &cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: "rft-tunnel", Namespace: "default"}}
+	// k8sClient is set by BeforeSuite, after this tree is built.
+	reconcilerForTunnels := func() *DNSRecordReconciler { return &DNSRecordReconciler{Client: k8sClient} }
+
+	// create makes a DNSRecord in namespace with spec, removed after the spec.
+	create := func(name, namespace string, spec cloudflarev1alpha1.DNSRecordSpec) {
+		spec.ZoneRef = corev1.LocalObjectReference{Name: "rft-zone"}
+		rec := &cloudflarev1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: spec}
+		Expect(k8sClient.Create(ctx, rec)).To(Succeed())
+		DeferCleanup(forceDelete, ctx, &cloudflarev1alpha1.DNSRecord{},
+			types.NamespacedName{Name: name, Namespace: namespace})
+	}
+
+	It("returns the records in the Tunnel's namespace whose tunnelRef names it", func() {
+		pointing := cloudflarev1alpha1.DNSRecordSpec{Name: "app.rft-example.com", Type: "CNAME",
+			TunnelRef: &corev1.LocalObjectReference{Name: "rft-tunnel"}}
+		create("rft-pointing", "default", pointing)
+		create("rft-elsewhere", "kube-public", pointing)
+		create("rft-other-tunnel", "default", cloudflarev1alpha1.DNSRecordSpec{Name: "api.rft-example.com",
+			Type: "CNAME", TunnelRef: &corev1.LocalObjectReference{Name: "rft-other"}})
+		create("rft-no-tunnel", "default", cloudflarev1alpha1.DNSRecordSpec{Name: "rft-example.com", Type: "A",
+			Content: "192.0.2.1"})
+
+		Expect(reconcilerForTunnels().recordsForTunnel(ctx, tunnel)).To(ConsistOf(reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "rft-pointing", Namespace: "default"},
+		}))
+	})
+
+	It("returns nil when the record list fails", func() {
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		Expect(reconcilerForTunnels().recordsForTunnel(cancelled, tunnel)).To(BeNil())
+	})
+})
+
 var _ = Describe("isZoneReady", func() {
 	It("returns false when the zone has no conditions", func() {
 		zone := &cloudflarev1alpha1.Zone{
@@ -196,40 +234,40 @@ var _ = Describe("tagsEqual", func() {
 })
 
 var _ = Describe("dataDrifted", func() {
-	makeRecord := func(rawJSON []byte) *cloudflarev1alpha1.DNSRecord {
-		rec := &cloudflarev1alpha1.DNSRecord{}
+	makeSpec := func(rawJSON []byte) *cloudflarev1alpha1.DNSRecordSpec {
+		spec := &cloudflarev1alpha1.DNSRecordSpec{}
 		if rawJSON != nil {
-			rec.Spec.Data = &apiextensionsv1.JSON{Raw: rawJSON}
+			spec.Data = &apiextensionsv1.JSON{Raw: rawJSON}
 		}
-		return rec
+		return spec
 	}
 
 	It("returns false when both spec and CF data are nil", func() {
-		Expect(dataDrifted(makeRecord(nil), cf.DNSRecord{})).To(BeFalse())
+		Expect(dataDrifted(makeSpec(nil), cf.DNSRecord{})).To(BeFalse())
 	})
 
 	It("returns true when spec data is nil but CF data is set", func() {
-		Expect(dataDrifted(makeRecord(nil), cf.DNSRecord{Data: map[string]any{"port": float64(80)}})).To(BeTrue())
+		Expect(dataDrifted(makeSpec(nil), cf.DNSRecord{Data: map[string]any{"port": float64(80)}})).To(BeTrue())
 	})
 
 	It("returns true when spec data is set but CF data is nil", func() {
-		Expect(dataDrifted(makeRecord([]byte(`{"port":80}`)), cf.DNSRecord{})).To(BeTrue())
+		Expect(dataDrifted(makeSpec([]byte(`{"port":80}`)), cf.DNSRecord{})).To(BeTrue())
 	})
 
 	It("returns false when both have equal data", func() {
 		cfData := map[string]any{"port": float64(80), "weight": float64(1)}
 		cfJSON, _ := json.Marshal(cfData)
-		Expect(dataDrifted(makeRecord(cfJSON), cf.DNSRecord{Data: cfData})).To(BeFalse())
+		Expect(dataDrifted(makeSpec(cfJSON), cf.DNSRecord{Data: cfData})).To(BeFalse())
 	})
 
 	It("returns true when data values differ", func() {
 		specJSON := []byte(`{"port":80}`)
 		cfData := map[string]any{"port": float64(9000)}
-		Expect(dataDrifted(makeRecord(specJSON), cf.DNSRecord{Data: cfData})).To(BeTrue())
+		Expect(dataDrifted(makeSpec(specJSON), cf.DNSRecord{Data: cfData})).To(BeTrue())
 	})
 
 	It("returns true for invalid spec JSON", func() {
-		Expect(dataDrifted(makeRecord([]byte(`not-valid-json`)), cf.DNSRecord{Data: "something"})).To(BeTrue())
+		Expect(dataDrifted(makeSpec([]byte(`not-valid-json`)), cf.DNSRecord{Data: "something"})).To(BeTrue())
 	})
 })
 
@@ -238,7 +276,7 @@ var _ = Describe("buildCreateParams", func() {
 		rec := &cloudflarev1alpha1.DNSRecord{
 			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Name: "www.example.com", Content: "1.2.3.4"},
 		}
-		params, err := buildCreateParams(rec)
+		params, err := buildCreateParams(&rec.Spec)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.TTL).To(Equal(1))
 	})
@@ -253,7 +291,7 @@ var _ = Describe("buildCreateParams", func() {
 				Data:    &apiextensionsv1.JSON{Raw: []byte(`{"port":8080,"weight":1}`)},
 			},
 		}
-		params, err := buildCreateParams(rec)
+		params, err := buildCreateParams(&rec.Spec)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.Data).NotTo(BeNil())
 	})
@@ -266,7 +304,7 @@ var _ = Describe("buildCreateParams", func() {
 				Data: &apiextensionsv1.JSON{Raw: []byte(`not-valid-json`)},
 			},
 		}
-		_, err := buildCreateParams(rec)
+		_, err := buildCreateParams(&rec.Spec)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("invalid data field"))
 	})
@@ -299,7 +337,7 @@ var _ = Describe("driftDetect", func() {
 			Comment:  "my record",
 			Tags:     []string{"env:prod"},
 		}
-		drifted, params := driftDetect(spec, cfRecord)
+		drifted, params := driftDetect(&spec.Spec, cfRecord)
 		Expect(drifted).To(BeFalse())
 		Expect(params).To(Equal(cf.UpdateDNSRecordParams{}))
 	})
@@ -310,7 +348,7 @@ var _ = Describe("driftDetect", func() {
 		}
 		// Cloudflare always reports ttl and proxied, even when they were never set.
 		cfRecord := cf.DNSRecord{Type: "A", Content: "1.2.3.4", TTL: 1, Proxied: makeProxy(false), Tags: []string{}}
-		drifted, _ := driftDetect(spec, cfRecord)
+		drifted, _ := driftDetect(&spec.Spec, cfRecord)
 		Expect(drifted).To(BeFalse())
 	})
 
@@ -319,7 +357,7 @@ var _ = Describe("driftDetect", func() {
 			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Content: "1.2.3.4"},
 		}
 		cfRecord := cf.DNSRecord{Type: "A", Content: "1.2.3.4", TTL: 1, Proxied: makeProxy(true)}
-		drifted, params := driftDetect(spec, cfRecord)
+		drifted, params := driftDetect(&spec.Spec, cfRecord)
 		Expect(drifted).To(BeTrue())
 		// A nil Proxied would be omitted from the PATCH and leave proxying on.
 		Expect(params.Proxied).To(Equal(makeProxy(false)))
@@ -330,7 +368,7 @@ var _ = Describe("driftDetect", func() {
 			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Content: "1.2.3.4"},
 		}
 		cfRecord := cf.DNSRecord{Type: "A", Content: "1.2.3.4", TTL: 300, Proxied: makeProxy(false)}
-		drifted, params := driftDetect(spec, cfRecord)
+		drifted, params := driftDetect(&spec.Spec, cfRecord)
 		Expect(drifted).To(BeTrue())
 		Expect(params.TTL).To(Equal(1))
 	})
@@ -341,7 +379,7 @@ var _ = Describe("driftDetect", func() {
 		}
 		cfRecord := cf.DNSRecord{Type: "MX", Content: "mail.example.com", TTL: 300, Proxied: makeProxy(false),
 			Priority: makePriority(10)}
-		drifted, _ := driftDetect(spec, cfRecord)
+		drifted, _ := driftDetect(&spec.Spec, cfRecord)
 		Expect(drifted).To(BeFalse())
 	})
 
@@ -360,7 +398,7 @@ var _ = Describe("driftDetect", func() {
 			Proxied: makeProxy(false),
 			Data:    map[string]any{"flags": float64(0), "tag": "issue", "value": "letsencrypt.org"},
 		}
-		drifted, _ := driftDetect(spec, cfRecord)
+		drifted, _ := driftDetect(&spec.Spec, cfRecord)
 		Expect(drifted).To(BeFalse())
 	})
 
@@ -369,7 +407,7 @@ var _ = Describe("driftDetect", func() {
 			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "A", Content: "1.2.3.4", TTL: 300},
 		}
 		cfRecord := cf.DNSRecord{Type: "A", Content: "1.2.3.4", TTL: 300, Tags: []string{"env:prod"}}
-		drifted, params := driftDetect(spec, cfRecord)
+		drifted, params := driftDetect(&spec.Spec, cfRecord)
 		Expect(drifted).To(BeTrue())
 		Expect(params.Tags).NotTo(BeNil())
 		Expect(params.Tags).To(BeEmpty())
@@ -388,7 +426,7 @@ var _ = Describe("driftDetect", func() {
 			Content: "auto-formatted-by-cf",
 			TTL:     300,
 		}
-		drifted, _ := driftDetect(spec, cfRecord)
+		drifted, _ := driftDetect(&spec.Spec, cfRecord)
 		// Only content could have drifted, but it's skipped for SRV.
 		Expect(drifted).To(BeFalse())
 	})
@@ -398,10 +436,8 @@ var _ = Describe("adoptableRecord", func() {
 	mx := func(id, content string) cf.DNSRecord {
 		return cf.DNSRecord{ID: id, Type: "MX", Name: "example.com", Content: content}
 	}
-	spec := func(content string) *cloudflarev1alpha1.DNSRecord {
-		return &cloudflarev1alpha1.DNSRecord{
-			Spec: cloudflarev1alpha1.DNSRecordSpec{Type: "MX", Name: "example.com", Content: content},
-		}
+	spec := func(content string) *cloudflarev1alpha1.DNSRecordSpec {
+		return &cloudflarev1alpha1.DNSRecordSpec{Type: "MX", Name: "example.com", Content: content}
 	}
 	none := map[string]string{}
 
@@ -441,8 +477,8 @@ var _ = Describe("adoptableRecord", func() {
 	})
 
 	It("matches data-based records on data", func() {
-		srv := &cloudflarev1alpha1.DNSRecord{Spec: cloudflarev1alpha1.DNSRecordSpec{
-			Type: "SRV", Data: &apiextensionsv1.JSON{Raw: []byte(`{"port":443}`)}}}
+		srv := &cloudflarev1alpha1.DNSRecordSpec{
+			Type: "SRV", Data: &apiextensionsv1.JSON{Raw: []byte(`{"port":443}`)}}
 		a := cf.DNSRecord{ID: "a", Type: "SRV", Data: map[string]any{"port": float64(80)}}
 		b := cf.DNSRecord{ID: "b", Type: "SRV", Data: map[string]any{"port": float64(443)}}
 		got, ok := adoptableRecord(srv, []cf.DNSRecord{a, b}, none, false)
@@ -463,37 +499,41 @@ var _ = Describe("ownRecord", func() {
 	}
 	set := []cf.DNSRecord{mx("1", "mx1.example.com"), mx("2", "mx2.example.com")}
 	none := map[string]string{}
+	own := func(record *cloudflarev1alpha1.DNSRecord, candidates []cf.DNSRecord,
+		claimed map[string]string) (cf.DNSRecord, bool) {
+		return ownRecord(record, &record.Spec, candidates, claimed)
+	}
 
 	It("finds the record the claim label names, whatever its content", func() {
-		got, ok := ownRecord(spec("mx3.example.com", map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "1"}, nil),
+		got, ok := own(spec("mx3.example.com", map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "1"}, nil),
 			set, none)
 		Expect(ok).To(BeTrue())
 		Expect(got.ID).To(Equal("1"))
 	})
 
 	It("finds the matching member while the DNSRecord was creating a record of its type and name", func() {
-		got, ok := ownRecord(spec("mx2.example.com", nil,
+		got, ok := own(spec("mx2.example.com", nil,
 			map[string]string{reconciler.CreatingAnnotation: "MX example.com"}), set, none)
 		Expect(ok).To(BeTrue())
 		Expect(got.ID).To(Equal("2"))
 	})
 
 	It("finds nothing for a creating annotation of another key, or without one", func() {
-		_, ok := ownRecord(spec("mx2.example.com", nil,
+		_, ok := own(spec("mx2.example.com", nil,
 			map[string]string{reconciler.CreatingAnnotation: "MX other.example.com"}), set, none)
 		Expect(ok).To(BeFalse())
-		_, ok = ownRecord(spec("mx2.example.com", nil, nil), set, none)
+		_, ok = own(spec("mx2.example.com", nil, nil), set, none)
 		Expect(ok).To(BeFalse())
 	})
 
 	It("finds nothing whose content differs while creating", func() {
-		_, ok := ownRecord(spec("mx3.example.com", nil,
+		_, ok := own(spec("mx3.example.com", nil,
 			map[string]string{reconciler.CreatingAnnotation: "MX example.com"}), set, none)
 		Expect(ok).To(BeFalse())
 	})
 
 	It("never counts a record another DNSRecord manages as its own", func() {
-		_, ok := ownRecord(spec("mx1.example.com", map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "1"},
+		_, ok := own(spec("mx1.example.com", map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "1"},
 			map[string]string{reconciler.CreatingAnnotation: "MX example.com"}), set,
 			map[string]string{"1": "default/owner"})
 		Expect(ok).To(BeFalse())

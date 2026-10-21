@@ -21,7 +21,7 @@ Early development. Phase 1 (foundation) and Phase 2 (core resources) are complet
 **Currently implemented:**
 - `CloudflareAccount` — cluster-scoped credential store, validates your API token against the Cloudflare API on reconcile
 - `Zone` — creates or adopts a DNS zone and reports its name servers and activation status
-- `DNSRecord` — manages a record in a `Zone`, correcting drift in content, TTL, proxying, priority, comment, tags and structured data
+- `DNSRecord` — manages a record in a `Zone`, correcting drift in content, TTL, proxying, priority, comment, tags and structured data; with `tunnelRef`, points a hostname at a `Tunnel` (see [the example](examples/expose-a-service))
 - `Tunnel` — creates or adopts a remotely-managed Cloudflare Tunnel and writes its token to a Secret under `TUNNEL_TOKEN`, ready for `cloudflared tunnel run` (see [the sample](config/samples/cloudflare_v1alpha1_tunnel.yaml))
 - `TunnelConfiguration` — owns a Tunnel's ingress rules (hostname → service), pushes them to Cloudflare and reverts changes made outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml))
 - `WorkerScript` — uploads a Worker from inline code or a ConfigMap, with plain text, secret (from a Kubernetes Secret), KV and R2 bindings, and re-uploads it when it is changed outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_workerscript.yaml))

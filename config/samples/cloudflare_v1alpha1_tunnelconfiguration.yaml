@@ -7,8 +7,8 @@ spec:
   # The Tunnel (same namespace) whose ingress rules this resource owns.
   tunnelRef:
     name: example-tunnel
-  # Each hostname also needs a proxied CNAME record pointing at
-  # <tunnelID>.cfargotunnel.com (see the Tunnel's status for the ID).
+  # Each hostname also needs a DNS record that points at the tunnel: a
+  # DNSRecord with tunnelRef (see cloudflare_v1alpha1_dnsrecord_tunnel.yaml).
   ingress:
     - hostname: app.example.com
       service: http://my-app.default.svc.cluster.local:80

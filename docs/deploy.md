@@ -128,7 +128,7 @@ Every other kind references the account (or a resource that does). Examples are 
 | Kind | Scope | References | Sample |
 |---|---|---|---|
 | `Zone` | Namespaced | `accountRef` | [zone](../config/samples/cloudflare_v1alpha1_zone.yaml) |
-| `DNSRecord` | Namespaced | `zoneRef` (same namespace) | [A](../config/samples/cloudflare_v1alpha1_dnsrecord_a.yaml), [MX](../config/samples/cloudflare_v1alpha1_dnsrecord_mx.yaml), [SRV](../config/samples/cloudflare_v1alpha1_dnsrecord_srv.yaml) |
+| `DNSRecord` | Namespaced | `zoneRef`, optional `tunnelRef` (same namespace) | [A](../config/samples/cloudflare_v1alpha1_dnsrecord_a.yaml), [MX](../config/samples/cloudflare_v1alpha1_dnsrecord_mx.yaml), [SRV](../config/samples/cloudflare_v1alpha1_dnsrecord_srv.yaml), [to a tunnel](../config/samples/cloudflare_v1alpha1_dnsrecord_tunnel.yaml) |
 | `Tunnel` | Namespaced | `accountRef` | [tunnel](../config/samples/cloudflare_v1alpha1_tunnel.yaml) |
 | `TunnelConfiguration` | Namespaced | `tunnelRef` (same namespace) | [tunnel configuration](../config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml) |
 | `WorkerScript` | Namespaced | `accountRef` | [worker](../config/samples/cloudflare_v1alpha1_workerscript.yaml) |
@@ -145,6 +145,11 @@ Every other kind references the account (or a resource that does). Examples are 
 | `CacheRule` | Namespaced | `zoneRef` (same namespace) | [static assets for a day](../config/samples/cloudflare_v1alpha1_cacherule.yaml) |
 | `ConfigurationRule` | Namespaced | `zoneRef` (same namespace) | [stricter settings for admin pages](../config/samples/cloudflare_v1alpha1_configurationrule.yaml) |
 | `OriginRule` | Namespaced | `zoneRef` (same namespace) | [API requests to port 8443](../config/samples/cloudflare_v1alpha1_originrule.yaml) |
+
+To expose a Service on your domain through a Cloudflare Tunnel, see
+[`examples/expose-a-service`](../examples/expose-a-service). It puts the pieces together: a Zone, a Tunnel, its
+TunnelConfiguration, a DNSRecord whose `tunnelRef` points the hostname at the tunnel, and a `cloudflared` Deployment
+that connects it.
 
 Things to know before pointing kflare at existing infrastructure:
 
@@ -291,7 +296,8 @@ Order matters, because kflare's finalizers need the controller running to clean 
 
 1. **Delete your kflare resources while the controller is still running.** Each one deletes the Cloudflare
    object it created, and keeps one it adopted or one annotated `retain`. The order does not matter: Zones
-   wait for their records, routes and rules, Tunnels for their configurations, KV namespaces and R2 buckets
+   wait for their records, routes and rules, Tunnels for their configurations and the records that point at
+   them, KV namespaces and R2 buckets
    for the Workers bound to them, IP lists for the rules that use them, accounts until nothing uses them,
    and token Secrets until no account uses them. An R2 bucket that still holds objects is not deleted: empty it, or annotate the
    R2Bucket `retain`.
@@ -370,6 +376,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern | Keep one WorkerRoute per pattern |
 | `PatternOutsideZone` | The route pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |
 | `WorkerScriptNotFound`, `WorkerScriptNotReady`, `AccountMismatch` | The route's WorkerScript is missing, not uploaded yet, or in a different account than the zone | Check the WorkerScript; it must use the zone's account |
+| `AccountMismatch` (DNSRecord) | The Tunnel the record's `tunnelRef` names uses another `CloudflareAccount` than the record's Zone | Use the zone's account for the Tunnel: Cloudflare routes a tunnel's traffic only for DNS records in the tunnel's account |
 | `TitleConflict` | Another `KVNamespace` already manages a namespace with this title | Keep one KVNamespace per title |
 | `KVNamespaceNotFound`, `KVNamespaceNotReady` | A WorkerScript's `kvNamespaceRef` names a missing or not-yet-ready KVNamespace | Check the KVNamespace; it must use the Worker's account |
 | `NameConflict` | Another `R2Bucket` already manages a bucket with this name in the same Cloudflare account, another `IPList` a list with this name, another `D1Database` a database with this name, or the account has a list of another kind with this name | Keep one R2Bucket per bucket, one IPList per list and one D1Database per database; list names are unique across list kinds |

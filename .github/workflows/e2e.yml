@@ -7,6 +7,9 @@ on:
         description: "Reason for running e2e tests"
         required: false
         default: "manual"
+  pull_request:
+  push:
+    branches: [main]
 
 # Read-only: these jobs only check out and test.
 permissions:
@@ -14,13 +17,28 @@ permissions:
 
 jobs:
   e2e:
-    name: E2E Tests (Kubernetes ${{ matrix.kubernetes }})
+    name: E2E Tests (Kubernetes ${{ matrix.kubernetes }}${{ matrix.live && ', live' || '' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # The oldest supported release and the newest one.
-        kubernetes: [v1.34.11, v1.37.0]
+        # The oldest supported release and the newest one. Only the newest runs
+        # the live Cloudflare specs: two runs against the same zone and account
+        # at once would collide on the Free plan's single rate limiting rule and
+        # IP list.
+        include:
+          - kubernetes: v1.34.11
+            live: false
+          - kubernetes: v1.37.0
+            live: true
+    # Live legs run one at a time across every run of this workflow, and are
+    # never cancelled halfway: a cancelled run cannot clean up, and a rule or
+    # list it leaves behind fails the next run. Local live runs must not
+    # overlap with them either.
+    concurrency:
+      group: ${{ matrix.live && 'e2e-cloudflare' || format('e2e-{0}-{1}', github.run_id, matrix.kubernetes) }}
+      cancel-in-progress: false
     env:
       GOTOOLCHAIN: local
 
@@ -43,14 +61,16 @@ jobs:
           config: local/kind-config.yaml
 
       # Builds the manager image, deploys it with config/default and checks
-      # that the manager starts. With the CF_API_TOKEN and CF_ACCOUNT_ID
-      # secrets set, it then drives the manager against the Cloudflare API;
-      # the CF_E2E_ZONE variable (a zone the token can edit, never deleted)
-      # adds the Zone and DNSRecord specs. Without them those specs skip.
+      # that the manager starts. On the live leg, with the CF_API_TOKEN and
+      # CF_ACCOUNT_ID secrets set, it then drives the manager against the
+      # Cloudflare API; the CF_E2E_ZONE variable (a zone the token can edit,
+      # adopted and never deleted) adds the zone-level specs and the
+      # examples/expose-a-service spec. Without them those specs skip, as they
+      # do for pull requests from forks, which get no secrets.
       - name: Run e2e tests
         env:
           KIND_CLUSTER: kflare-e2e
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_E2E_ZONE: ${{ vars.CF_E2E_ZONE }}
+          CF_API_TOKEN: ${{ matrix.live && secrets.CF_API_TOKEN || '' }}
+          CF_ACCOUNT_ID: ${{ matrix.live && secrets.CF_ACCOUNT_ID || '' }}
+          CF_E2E_ZONE: ${{ matrix.live && vars.CF_E2E_ZONE || '' }}
         run: make test-e2e

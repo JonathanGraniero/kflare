@@ -1,0 +1,17 @@
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: app-tunnel-record
+  namespace: default
+spec:
+  zoneRef:
+    name: example-zone  # must reference an existing Zone CR in the same namespace
+  name: app.example.com
+  type: CNAME
+  # Points the hostname at the Tunnel (same namespace): kflare writes a proxied
+  # CNAME to <tunnel ID>.cfargotunnel.com, and follows the tunnel if it is
+  # recreated with a new ID. The Tunnel must use the Zone's CloudflareAccount.
+  # The TunnelConfiguration's ingress rule for app.example.com decides where
+  # the traffic goes.
+  tunnelRef:
+    name: example-tunnel

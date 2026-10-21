@@ -10,7 +10,7 @@ its known limitations. The phased roadmap lives in [CLAUDE.md](./CLAUDE.md).
 Secret (API token)
   └─ CloudflareAccount (cluster-scoped)
        ├─ Zone (namespaced)
-       │    ├─ DNSRecord (same namespace, via zoneRef)
+       │    ├─ DNSRecord (same namespace, via zoneRef; tunnelRef points it at a Tunnel)
        │    ├─ WorkerRoute (same namespace, via zoneRef; runs a WorkerScript)
        │    ├─ WAFCustomRule (same namespace, via zoneRef)
        │    ├─ RateLimitRule (same namespace, via zoneRef)
@@ -21,7 +21,8 @@ Secret (API token)
        │    ├─ ConfigurationRule (same namespace, via zoneRef)
        │    └─ OriginRule (same namespace, via zoneRef)
        ├─ Tunnel (namespaced)
-       │    └─ TunnelConfiguration (same namespace, via tunnelRef)
+       │    ├─ TunnelConfiguration (same namespace, via tunnelRef)
+       │    └─ DNSRecord (same namespace, via tunnelRef: a proxied CNAME to the tunnel)
        ├─ WorkerScript (namespaced; binds KVNamespaces via kvNamespaceRef, R2Buckets via r2BucketRef)
        ├─ KVNamespace (namespaced)
        ├─ R2Bucket (namespaced)
@@ -52,6 +53,15 @@ Every controller follows the same shape:
    [Adoption and ownership](#adoption-and-ownership)).
 5. Compare the spec with what Cloudflare reported, and write to Cloudflare only when they differ.
 6. Record IDs and metadata in status and set `Ready=True`.
+
+A DNSRecord with a `tunnelRef` has a second parent, its Tunnel. It waits until the Tunnel is ready with an ID
+(`TunnelNotFound`, `TunnelNotReady`), and refuses a Tunnel that uses another CloudflareAccount than its Zone
+(`AccountMismatch`): Cloudflare routes a tunnel's traffic only for DNS records in the tunnel's account. The record is
+then a CNAME to `<tunnel ID>.cfargotunnel.com`, always proxied. Checked live on 2026-10-20: Cloudflare accepts an
+unproxied CNAME to a tunnel, but it resolves to a private IPv6 address the internet cannot reach, so the CRD refuses
+`proxied: false` with a `tunnelRef`. Cloudflare also accepts a CNAME to a tunnel ID that does not exist, so the check is
+kflare's. And a proxied record's TTL is always automatic: Cloudflare stores 1 whatever it is sent, so the CRD refuses
+another `ttl` on any proxied record, which would otherwise be written again on every reconcile.
 
 The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace and D1Database through the shared
 CRUD reconciler (`internal/controller/crudresource_controller.go`), and TransformRule, RedirectRule, CacheRule,
@@ -96,7 +106,7 @@ What each controller compares when it does reconcile:
 |---|---|
 | `CloudflareAccount` | Token validity (re-validated against the account on every reconcile) |
 | `Zone` | Zone type and `spec.plan`; recreated if deleted externally |
-| `DNSRecord` | Content, TTL, proxied, priority (when set), comment, tags, structured data; recreated if deleted externally |
+| `DNSRecord` | Content, TTL, proxied, priority (when set), comment, tags, structured data; recreated if deleted externally. With a `tunnelRef`, the content is the Tunnel's hostname, `<tunnel ID>.cfargotunnel.com`, and proxied is on: a Tunnel recreated with a new ID re-triggers the record, which updates its content in place |
 | `Tunnel` | Existence (recreated if deleted externally); token Secret contents |
 | `TunnelConfiguration` | The full ingress configuration |
 | `WorkerScript` | Cloudflare's `modified_on` timestamp, because its etag does not change for binding-only edits; the IDs of bound KVNamespaces, so a recreated namespace re-uploads the Worker |
@@ -312,7 +322,8 @@ resource that still needs its parent for its own cleanup. Parents therefore keep
   the resources of every generated kind, KVNamespaces among them.
 - A `Zone` waits for its DNSRecords, WorkerRoutes, WAFCustomRules, RateLimitRules, ManagedRulesets and the resources of
   every generated rule kind, TransformRules, RedirectRules, CacheRules, ConfigurationRules and OriginRules among them.
-- A `Tunnel` waits for its TunnelConfigurations.
+- A `Tunnel` waits for its TunnelConfigurations, and for the DNSRecords that point at it through `tunnelRef`: deleting
+  the tunnel first would leave their hostnames routing to nothing.
 - A `KVNamespace` waits for the WorkerScripts bound to it through `kvNamespaceRef`. Cloudflare deletes a namespace a
   Worker is bound to, but every later upload of that Worker then fails. (Its entry in `generator/generator.yaml` lists
   the dependent kind and the hand-written function that finds the namespaces a WorkerScript binds.)
