@@ -86,6 +86,7 @@ With:
 ├── test/e2e/              # Deployment smoke test against kind (make test-e2e)
 ├── local/                 # kind cluster setup for running the controller with make run
 ├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
+├── helm/artifacthub-repo.yml  # Artifact Hub metadata; the Artifact Hub workflow pushes it (verified publisher)
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);
 │                          #   its CLAUDE.md holds the generator's design
 ├── hack/                  # sync-helm-chart.sh, mutate.sh (mutations), e2e-live.sh (live e2e), license header
@@ -274,7 +275,7 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 
 ### Launch readiness
 **Status:** 🚧 In progress: L1 (but for one rerun) to L5 are done, v0.1.0 is released; L6 is done but for
-ArtifactHub; L7 is next.
+ArtifactHub's first indexing; L7 is on hold (the user, 2026-10-21).
 Goal: announce kflare on Reddit (r/kubernetes first, then r/CloudFlare) as a v0.1 alpha, to find its first users. The
 audience, as the user put it on 2026-10-21: companies running Kubernetes, so the docs lead with Helm and GitOps
 installs and with keeping kflare easy to maintain. kflare is a standalone project: the user docs do not compare it
@@ -393,8 +394,8 @@ resolve to the versions their comments name.
 - Done when: the quickstart works on a clean machine with nothing but the README. Holds, and so does L4's done-when
 
 #### L6. Repository settings
-**Status:** 🚧 2026-10-21: About and Discussions are done; ArtifactHub waits on the user's account. The settings
-need no branch; `docs/l6-repo-settings` adds the issue chooser's links and records this.
+**Status:** 🚧 2026-10-21: About and Discussions are done (#64); the user added the chart's repository on
+ArtifactHub, and `feat/artifacthub-verified-publisher` publishes its metadata. Done once ArtifactHub lists v0.1.0.
 - [x] About: a description that says what kflare manages, topics (`kubernetes`, `kubernetes-operator`, `cloudflare`,
   `gitops`, `crd`, `cloudflare-tunnel`, `dns`, `waf`), and a website once `kflare.dev` serves one. Set with
   `gh repo edit`: "Kubernetes operator that manages Cloudflare as custom resources: zones, DNS records, tunnels,
@@ -404,13 +405,19 @@ need no branch; `docs/l6-repo-settings` adds the issue chooser's links and recor
   API (`has_discussions`; the local gh 2.18 has no flag for it), with GitHub's default categories. The issue chooser
   (`.github/ISSUE_TEMPLATE/config.yml`) sends questions to Q&A and vulnerability reports to private vulnerability
   reporting, which was already on
-- [ ] The chart listed on ArtifactHub (a Phase 4 item, cheap once v0.1.0 exists). Needs the user's ArtifactHub account:
-  Control Panel → Add repository, kind Helm charts, URL `oci://ghcr.io/jonathangraniero/charts/kflare` (ArtifactHub's
-  format for OCI: registry, namespace and chart name; it indexes the semver tags). Not listed yet on 2026-10-21.
-  Optional afterwards: verified publisher, by pushing `artifacthub-repo.yml` (the repository ID ArtifactHub assigns)
-  to the chart's `artifacthub.io` tag with `oras`
+- [ ] The chart listed on ArtifactHub (a Phase 4 item, cheap once v0.1.0 exists). The user added the repository from
+  their account on 2026-10-21: kind Helm charts, URL `oci://ghcr.io/jonathangraniero/charts/kflare` (ArtifactHub's
+  format for OCI: registry, namespace and chart name; it indexes the semver tags), repository ID
+  `1c4eabd6-0faa-410f-9686-2c80a7bb4ecd`, not yet tracked that day. Verified publisher, at the user's request:
+  `helm/artifacthub-repo.yml` holds that ID (no `owners`: the user's account already owns the repository), and the
+  `Artifact Hub` workflow (`.github/workflows/artifacthub.yml`) pushes it to the chart's `artifacthub.io` tag with ORAS
+  1.3.4 when it changes on main, as publishing goes through Actions. The command was checked first against a local
+  registry: config `application/vnd.cncf.artifacthub.config.v1+yaml`, one layer
+  `application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml`. ArtifactHub applies the metadata the next
+  time it processes the repository
 
 #### L7. Announcement
+**Status:** ⏸️ On hold: the user is holding off on the announcement (2026-10-21).
 - [ ] r/kubernetes first, r/CloudFlare a few days later. r/selfhosted asks that promoted projects be production-ready
   with docs (its rule 2, checked 2026-10-19), so wait for a later release there
 - [ ] Frame it as a v0.1 alpha looking for early users, not as production-grade. Ask for specific feedback: which
@@ -536,7 +543,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
 > OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
-> L1 is done but for one rerun, L2 to L5 are done and v0.1.0 is released; L6 is done but for ArtifactHub, then L7.
+> L1 is done but for one rerun, L2 to L5 are done and v0.1.0 is released; L6 waits on ArtifactHub; L7 is on hold.
 > The proposed [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
 > deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under

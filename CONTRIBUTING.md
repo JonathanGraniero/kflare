@@ -82,6 +82,10 @@ sudo sysctl fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288
 sync. `make helm-lint` lints and renders the chart. A new value goes in `values.yaml`, with a comment, and in
 `values.schema.json`.
 
+Artifact Hub lists the chart from its OCI repository. `helm/artifacthub-repo.yml` holds Artifact Hub's ID for that
+repository, which makes kflare a verified publisher there; the `Artifact Hub` workflow pushes it to the chart's
+`artifacthub.io` tag whenever it changes on `main`.
+
 ## The live end-to-end suite
 
 `make test-e2e` deploys the manager to the kind cluster in your current context and checks it starts. With
