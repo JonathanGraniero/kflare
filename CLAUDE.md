@@ -391,6 +391,25 @@ In GitHub's settings, no branch.
 **After the announcement**, not blocking it: the drift correction period (Known limitations). The live e2e suite has
 run in GitHub Actions since 2026-10-21 (Release and CI below).
 
+#### Chart hardening for v0.1.1 (`feat/chart-hardening`)
+**Status:** 🔲 Decided 2026-10-21, after v0.1.0 is tagged: the first release after it. One PR off main. Today the chart
+has no PodDisruptionBudget or NetworkPolicy, and `--metrics-secure` turns on TLS only: the manager sets no
+`FilterProvider`, so nothing authenticates or authorizes a scrape.
+- [ ] Metrics over HTTPS with authentication and authorization **on by default** (the user's choice): the manager's
+  `FilterProvider` is controller-runtime's `filters.WithAuthenticationAndAuthorization`, the controller's ClusterRole
+  gains `tokenreviews` and `subjectaccessreviews` create, the chart adds a `metrics-reader` ClusterRole
+  (`nonResourceURLs: /metrics`, get) for Prometheus to bind, and the ServiceMonitor scrapes over HTTPS with its
+  ServiceAccount token. A value turns it back to plain HTTP. It changes how v0.1.0 is scraped, so the release notes
+  say so
+- [ ] PodDisruptionBudget, `maxUnavailable: 1`, created by default only when `replicaCount` > 1 (the user's choice), so
+  a single replica never blocks a node drain; a value turns it off
+- [ ] NetworkPolicy, opt-in (default off: the API server's address varies by cluster): ingress to the metrics port from
+  selected namespaces, egress to DNS, the API server and port 443
+- [ ] values.yaml, values.schema.json, the chart README and deploy.md (Security model, Monitoring, Network access);
+  `make helm-lint`, and a kind install that scrapes `/metrics` with and without a bound token
+- Done when: a default install answers `/metrics` only over HTTPS to a token bound to the metrics-reader role, and a
+  two-replica install gets a PDB that a node drain respects
+
 ### Next wave (proposed 2026-10-17)
 **Status:** 🔲 Proposed, not decided: the user picks what comes after OriginRule, and in what order
 
