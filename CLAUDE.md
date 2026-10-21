@@ -88,7 +88,7 @@ With:
 ├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);
 │                          #   its CLAUDE.md holds the generator's design
-├── hack/                  # sync-helm-chart.sh, mutate.sh (the mutation check) and the license header
+├── hack/                  # sync-helm-chart.sh, mutate.sh (mutations), e2e-live.sh (live e2e), license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
@@ -186,9 +186,9 @@ what was decided and verified live, and why.
      rule kinds so far took 21 to 40, of: the generated conversion (each field), the phase and action, the kind's name
      and registration, the CRD's bounds, patterns, enums, required fields and CEL rules, and any kflare-gen code the
      PR changed. A survivor is a gap in the generated specs: close it in kflare-gen, for every kind
-   - The live run: with the CRDs installed (`make install`) and a manager running (`make run`),
-     `KFLARE_E2E_MANAGER=external make test-e2e` runs the suite against it. Afterwards, check that Cloudflare holds
-     nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57)
+   - The live run: `hack/e2e-live.sh` runs the manager on this machine against the current kind cluster, runs the
+     suite against it and leaves the cluster as it found it (its header says how). Afterwards, check that Cloudflare
+     holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57)
 7. **Docs.** Every place that lists the kinds names the last one of the same shape, so
    `git grep -n OriginRule -- '*.md'` (or `D1Database`) finds them: README's kinds, deploy.md's permission row (the
    label Cloudflare's docs give it), kinds table and uninstall command, ARCHITECTURE.md's ownership tree, drift and
@@ -234,6 +234,9 @@ make kind
 # e2e: deploys to the kind cluster in the current context ($KIND_CLUSTER, default "kind");
 # runs the live Cloudflare specs when CF_API_TOKEN/CF_ACCOUNT_ID (and CF_E2E_ZONE) are set
 make test-e2e
+
+# The same suite with the manager on this machine, against the current kind cluster (see the script's header)
+hack/e2e-live.sh
 
 # Regenerate the Helm chart's CRDs/RBAC from config/, and lint + render it
 make helm
