@@ -45,6 +45,15 @@ curl https://hello.your-domain.com
 ready, `kubectl describe` shows why in its `Ready` condition; the deploy guide's
 [troubleshooting](../../docs/deploy.md#troubleshooting) lists the reasons.
 
+If `curl` cannot resolve the hostname although the DNSRecord is ready, your resolver may have looked the name up
+before the record existed and cached the answer that it does not, which a Cloudflare zone lets resolvers keep for 30
+minutes by default. Ask one of the zone's name servers directly, or wait:
+
+```sh
+kubectl -n kflare-example get zones.kflare.dev my-zone -o jsonpath='{.status.nameServers}'
+dig @<one of them> hello.your-domain.com
+```
+
 ## Clean up
 
 ```sh

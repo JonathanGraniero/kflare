@@ -2,7 +2,7 @@
 
 This document explains how kflare's controllers behave and why: how they find and own Cloudflare resources, when they
 notice drift, how they handle errors, and what happens on deletion. It describes the code as it is today, including
-its known limitations. The phased roadmap lives in [CLAUDE.md](./CLAUDE.md).
+its known limitations. What may come next is in [ROADMAP.md](./ROADMAP.md).
 
 ## Resource model
 
@@ -121,7 +121,7 @@ What each controller compares when it does reconcile:
 
 A resource creates its Cloudflare object. When an object with the resource's key already exists and kflare did not
 create it, kflare leaves it untouched unless the resource asks to take it over, with the `kflare.dev/adoption-policy`
-annotation (named after ACK's `services.k8s.aws/adoption-policy`, which it follows):
+annotation:
 
 | `kflare.dev/adoption-policy` | An existing object | No existing object |
 |---|---|---|
@@ -140,8 +140,8 @@ metadata:
 
 Adopting means kflare takes the object over: it overwrites it to match the spec and marks the resource with
 `kflare.dev/adopted: "true"`. **An adopted object is kept when its resource is deleted**, unless the resource says
-`kflare.dev/deletion-policy: delete` (see [Deletion](#deletion)). ACK deletes adopted resources by default; kflare does
-not, because deleting something kflare did not create is the one step that cannot be undone. If an adopted object is
+`kflare.dev/deletion-policy: delete` (see [Deletion](#deletion)), because deleting something kflare did not create is
+the one step that cannot be undone. If an adopted object is
 deleted outside kflare, `adopt-or-create` creates a new one, which is kflare's own from then on (the `adopted` mark
 goes), and `adopt` reports `NotFound`.
 
@@ -167,8 +167,7 @@ finds the object by the ID in status. An object a resource's claim label names i
 
 A conflict with another resource of the kind comes first: it is reported whatever the policy.
 
-ACK's `adoption-fields` annotation, which adopts an object by its identifier, has no kflare counterpart: every kind
-that adopts has a natural key.
+The adoption and deletion policy annotations are modelled on those of AWS Controllers for Kubernetes.
 
 ### DNSRecord, WorkerRoute, KVNamespace, D1Database, IPList and R2Bucket ownership
 
@@ -344,8 +343,7 @@ hang, and leaves its Cloudflare object in place.
   configurable periodic requeue on successful reconciles would bound this; it needs to stay within Cloudflare's API
   rate limits when many resources are managed.
 - **Adoption goes by key only.** A resource adopts the object with its key (a name, a title, a pattern), and there is
-  no way to name an object by its ID, as ACK's `adoption-fields` does. Tunnel names are not unique: a Tunnel adopts the
-  first one listed with its name.
+  no way to name an object by its ID. Tunnel names are not unique: a Tunnel adopts the first one listed with its name.
 - **No ownership marker on the Cloudflare side, except for rules.** kflare tracks what it owns only in Kubernetes, so if
   the cluster's resources are lost, it cannot tell its objects apart from anyone else's. Rules are the exception: their
   ref marks them (see [Rules](#rules)).

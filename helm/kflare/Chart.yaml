@@ -1,6 +1,8 @@
 apiVersion: v2
 name: kflare
-description: A Kubernetes operator that manages Cloudflare zones, DNS records, tunnels and Workers as custom resources.
+description: >-
+  A Kubernetes operator that manages Cloudflare through custom resources: zones, DNS records, tunnels, Workers and
+  their storage, WAF rules and the Rules products.
 type: application
 # Chart and application are released together from a vX.Y.Z tag; the release
 # workflow refuses a tag that does not match this version.

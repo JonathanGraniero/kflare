@@ -1,25 +1,32 @@
 # Deploying kflare with Helm
 
 This guide installs the kflare controller into a Kubernetes cluster, connects it to a Cloudflare
-account, and covers upgrades, uninstalling and troubleshooting.
+account, and covers running it in production, upgrades, uninstalling and troubleshooting.
 
 - [Requirements](#requirements)
 - [1. Create a Cloudflare API token](#1-create-a-cloudflare-api-token)
 - [2. Install the chart](#2-install-the-chart)
+  - [With Argo CD or Flux](#with-argo-cd-or-flux)
 - [3. Connect your Cloudflare account](#3-connect-your-cloudflare-account)
 - [4. Manage Cloudflare resources](#4-manage-cloudflare-resources)
 - [Configuration](#configuration)
 - [Security model](#security-model)
+- [Running in production](#running-in-production)
+  - [Monitoring](#monitoring)
+  - [Network access](#network-access)
+  - [Protecting objects that must outlive their manifests](#protecting-objects-that-must-outlive-their-manifests)
+  - [Moving to a new cluster](#moving-to-a-new-cluster)
 - [Upgrading](#upgrading)
 - [Uninstalling](#uninstalling)
-- [Local development with kind](#local-development-with-kind)
 - [Troubleshooting](#troubleshooting)
 
 ## Requirements
 
 - Kubernetes 1.34 or newer. The chart refuses to install on older clusters.
-- Helm 3.8 or newer (OCI chart support).
+- Helm 3.8 or newer (OCI chart support), or a GitOps tool that installs Helm charts from an OCI registry, such as
+  Argo CD or Flux.
 - One kflare installation per cluster. A second release would reconcile the same resources.
+- Outbound HTTPS from the controller to `api.cloudflare.com` (see [Network access](#network-access)).
 
 ## 1. Create a Cloudflare API token
 
@@ -52,13 +59,19 @@ Scope zone permissions to the zones kflare should manage. Note the account ID, s
 
 ## 2. Install the chart
 
-From a release, the chart and image are published to GitHub Container Registry:
+Each release publishes the chart and the controller image to GitHub Container Registry. Pick a version from the
+[releases page](https://github.com/JonathanGraniero/kflare/releases):
 
 ```sh
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
   --version <version> \
-  --namespace kflare-system --create-namespace
+  --namespace kflare-system --create-namespace \
+  --values kflare-values.yaml
 ```
+
+Keep `kflare-values.yaml` in git (see [Configuration](#configuration)). The chart's version pins the image too:
+`image.tag` defaults to the chart's `appVersion`. To pull from a registry mirror, set `image.repository` and, if it
+needs credentials, `imagePullSecrets`.
 
 From a checkout of this repository, for example to run unreleased changes:
 
@@ -80,6 +93,90 @@ Wait for the controller:
 ```sh
 kubectl -n kflare-system rollout status deployment/kflare
 ```
+
+### With Argo CD or Flux
+
+Install kflare from the platform repository your GitOps tool syncs, in its own Argo CD `Application` or Flux
+`HelmRelease`, and keep kflare resources in the applications that use them. The `CloudflareAccount` and its token
+Secret belong with the kflare installation, since only cluster administrators should create accounts (see
+[Security model](#security-model)).
+
+Argo CD, with the chart from GitHub Container Registry (Argo CD takes an OCI registry's address without `oci://`):
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kflare
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/jonathangraniero/charts
+    chart: kflare
+    targetRevision: <version>
+    helm:
+      valuesObject:
+        replicaCount: 2
+  destination:
+    name: in-cluster
+    namespace: kflare-system
+  syncPolicy:
+    automated:
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+```
+
+Flux, with an `OCIRepository` for the chart:
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kflare
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/jonathangraniero/charts/kflare
+  ref:
+    tag: <version>
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kflare
+  namespace: flux-system
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: kflare
+  releaseName: kflare          # otherwise Flux names it kflare-system-kflare
+  targetNamespace: kflare-system
+  install:
+    createNamespace: true
+  values:
+    replicaCount: 2
+```
+
+Things to know:
+
+- **The CRDs come with the chart**, as templates rather than in Helm's `crds/` directory, so Argo CD and Flux upgrade
+  them with the chart. They carry `helm.sh/resource-policy: keep`: Flux uninstalls with Helm, which keeps them, and
+  Argo CD treats the annotation as its `Delete=false` sync option, so deleting the Application keeps them too.
+- **Decide who owns the CRDs once, at install time.** Removing a CRD deletes every resource of its kind, and with them
+  their Cloudflare objects. Switching `crds.enabled` to `false` on a running installation stops the chart from
+  rendering the CRDs, and a GitOps tool that prunes could then delete them. This is why the Argo CD example above does
+  not turn on `prune`. To manage the CRDs yourself, set `crds.enabled=false` from the start and apply
+  `config/crd/bases` from the matching release, for example in an earlier sync wave.
+- **On a new cluster, kflare resources need the CRDs first.** In Argo CD, an application holding kflare resources
+  fails its first sync until the CRDs exist; `syncPolicy.retry` lets it try again. In Flux, put the `HelmRelease` in
+  a `Kustomization` that the ones holding kflare resources list under `dependsOn`.
+- **Upgrade by changing the version in git**, after reading the release notes (see [Upgrading](#upgrading)).
 
 ## 3. Connect your Cloudflare account
 
@@ -223,10 +320,11 @@ Things to know before pointing kflare at existing infrastructure:
 
 Every value is documented in [`helm/kflare/values.yaml`](../helm/kflare/values.yaml), and
 [`values.schema.json`](../helm/kflare/values.schema.json) rejects unknown or invalid values at install time.
-Common settings:
+A values file for a production cluster usually sets:
 
 ```yaml
-# High availability: one replica is active, the others wait on the leader lease.
+# High availability: one replica is active, the others wait on the leader lease
+# and take over within about 15 seconds (the lease's duration) if it goes.
 replicaCount: 2
 topologySpreadConstraints:
   - maxSkew: 1
@@ -244,7 +342,7 @@ metrics:
       release: prometheus   # match your Prometheus' serviceMonitorSelector
 
 logging:
-  level: debug              # debug, info or error
+  level: info               # debug, info or error
   format: json              # json or console
 
 # The controller caches every Secret in the cluster (token and credential Secrets
@@ -271,11 +369,96 @@ capabilities dropped and a read-only root filesystem.
 - **Metrics** are served over plain HTTP without authentication on port 8080, inside the cluster only.
   Restrict access with a NetworkPolicy if your metrics are sensitive.
 
+## Running in production
+
+### Monitoring
+
+Every kflare resource reports a single `Ready` condition with a reason (see [Troubleshooting](#troubleshooting)), and
+the `READY` column of `kubectl get` shows it. kflare does not record Kubernetes Events yet.
+
+The controller serves controller-runtime's standard Prometheus metrics: `controller_runtime_reconcile_total` and
+`controller_runtime_reconcile_errors_total`, labelled by `controller`, `controller_runtime_reconcile_time_seconds`,
+`workqueue_depth`, and the Go runtime's. Turn on `metrics.serviceMonitor.enabled` to have the Prometheus Operator scrape
+them. Two things to alert on:
+
+- **Errors from Cloudflare that kflare retries** (5xx, rate limiting, network failures) count as reconcile errors.
+  A rate that stays above zero means kflare cannot reach Cloudflare or is being rate limited:
+
+  ```yaml
+  - alert: KflareReconcileErrors
+    expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{namespace="kflare-system"}[15m])) > 0
+    for: 30m
+  ```
+
+- **Resources that are not `Ready`.** Errors kflare does not retry, such as a spec Cloudflare refuses or a missing
+  token permission (`TerminalError`), and waits such as `AlreadyExists` or a parent that is not ready, do not count as
+  reconcile errors: they show only in the condition. Check the `READY` column after each change, or export the
+  conditions with kube-state-metrics' custom resource state metrics and alert on `Ready` being `False`.
+
+The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name.
+
+### Network access
+
+The controller needs outbound HTTPS to `api.cloudflare.com` and access to the Kubernetes API server, and nothing
+else; nothing connects to it but metrics scrapers and the kubelet's probes. The chart creates no NetworkPolicy. Under
+a default-deny policy, allow egress to DNS, the API server and port 443.
+
+Behind an HTTP proxy, set the standard proxy variables with `extraEnv`. Both Cloudflare clients and the Kubernetes
+client read them, so `NO_PROXY` must cover the API server, which the controller reaches at the `kubernetes` Service's
+cluster IP:
+
+```yaml
+extraEnv:
+  - name: HTTPS_PROXY
+    value: http://proxy.internal.example:3128
+  - name: NO_PROXY
+    value: 10.96.0.0/12,.svc,.cluster.local   # your cluster's Service CIDR
+```
+
+### Protecting objects that must outlive their manifests
+
+These all delete the Cloudflare objects kflare created, as long as the controller runs: deleting a resource or its
+namespace, deleting a CRD, and a GitOps tool pruning a resource that was removed from git. For anything you cannot
+lose or recreate, annotate the resource `kflare.dev/deletion-policy: retain`, so that deleting it leaves the object in
+Cloudflare:
+
+- a `Zone` kflare created, since deleting a zone deletes every record in it
+- a `KVNamespace` or `D1Database` holding data, since deleting one deletes its data
+- an `R2Bucket` you want to keep (kflare never deletes objects in a bucket, but deletes an empty bucket)
+
+Objects kflare adopted (`kflare.dev/adoption-policy`) are already kept when their resource is deleted.
+
+### Moving to a new cluster
+
+kflare keeps its record of what it owns in the cluster: the object's ID in the resource's status, and for some kinds
+a claim label (see [Adoption and ownership](../ARCHITECTURE.md#adoption-and-ownership)). Rules are the exception: kflare
+finds a rule by a ref stored in Cloudflare and derived from the resource's kind, namespace and name. Applied in a new
+cluster, the same manifests carry no such record, so each resource whose object exists reports `AlreadyExists` and
+changes nothing, while rules find their rules and carry on. To move kflare's resources to a new cluster:
+
+1. **Stop the old installation**: uninstall it, or scale `deployment/kflare` to zero replicas and keep your GitOps tool
+   from scaling it back. Two installations must never manage the same objects; for rules, both would find the same
+   rule by its ref and keep rewriting it.
+2. **In the new cluster, annotate the resources whose objects exist** with
+   `kflare.dev/adoption-policy: adopt-or-create` (rules need nothing) and apply them. Each adopts its object and
+   corrects it to the spec, which is what it already holds.
+3. **Adopted objects are kept when their resource is deleted.** To have kflare delete an object with its resource, as
+   it would have before the move, annotate the resource `kflare.dev/deletion-policy: delete`.
+4. **Retire the old cluster.** Deleting the cluster leaves the Cloudflare objects alone. To keep the cluster, remove
+   the finalizers from the old kflare resources by hand (see [Uninstalling](#uninstalling)), which also leaves the
+   objects in place; never delete them while the old controller still runs.
+
+This procedure follows from the adoption rules above, but has not been run end to end yet: try it with a test zone
+first.
+
 ## Upgrading
 
 ```sh
-helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version <new-version> -n kflare-system
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version <new-version> -n kflare-system \
+  --values kflare-values.yaml
 ```
+
+With Argo CD or Flux, change `targetRevision` or the `OCIRepository`'s tag in git instead.
 
 The CRDs are part of the chart's templates, so `helm upgrade` upgrades them too. (Helm's `crds/` directory
 would only install them once.) To manage CRDs yourself, for example through GitOps with a separate sync
@@ -284,12 +467,6 @@ wave, set `crds.enabled=false` and apply `config/crd/bases` from the matching re
 kflare's API is `v1alpha1`: read the release notes before upgrading, as fields can still change between
 releases.
 
-**From pre-release builds using `cloudflare.cloudflare.k8s.io`:** the API group moved to `kflare.dev`, and
-objects are not migrated. Remove the old finalizers (`cloudflare.k8s.io/finalizer`) from existing objects,
-delete the old CRDs, and re-apply your manifests with `apiVersion: kflare.dev/v1alpha1`. While both CRD sets
-exist, short names such as `kubectl get cloudflareaccounts` can resolve to either group; use the full name
-(`cloudflareaccounts.kflare.dev`).
-
 ## Uninstalling
 
 Order matters, because kflare's finalizers need the controller running to clean up:
@@ -297,21 +474,25 @@ Order matters, because kflare's finalizers need the controller running to clean 
 1. **Delete your kflare resources while the controller is still running.** Each one deletes the Cloudflare
    object it created, and keeps one it adopted or one annotated `retain`. The order does not matter: Zones
    wait for their records, routes and rules, Tunnels for their configurations and the records that point at
-   them, KV namespaces and R2 buckets
-   for the Workers bound to them, IP lists for the rules that use them, accounts until nothing uses them,
-   and token Secrets until no account uses them. An R2 bucket that still holds objects is not deleted: empty it, or annotate the
-   R2Bucket `retain`.
+   them, KV namespaces and R2 buckets for the Workers bound to them, IP lists for the rules that use them,
+   accounts until nothing uses them, and token Secrets until no account uses them. An R2 bucket that still
+   holds objects is not deleted: empty it, or annotate the R2Bucket `retain`.
 
    ```sh
    kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,wafcustomrules.kflare.dev,ratelimitrules.kflare.dev,managedrulesets.kflare.dev,transformrules.kflare.dev,redirectrules.kflare.dev,cacherules.kflare.dev,configurationrules.kflare.dev,originrules.kflare.dev,iplists.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev,kvnamespaces.kflare.dev,r2buckets.kflare.dev,d1databases.kflare.dev --all -A
    kubectl delete cloudflareaccounts.kflare.dev --all
    ```
 
+   With Argo CD or Flux, remove the resources from git and let the tool delete them, or delete their applications
+   with cascading deletion.
+
 2. **Uninstall the release.**
 
    ```sh
    helm uninstall kflare -n kflare-system
    ```
+
+   With Argo CD or Flux, delete the kflare `Application` or `HelmRelease` instead.
 
    The CRDs stay (`helm.sh/resource-policy: keep`). Deleting a CRD deletes every resource of that kind,
    which, while a controller runs, deletes the matching Cloudflare objects.
@@ -327,27 +508,6 @@ Their Cloudflare objects are then left in place.
 
 ```sh
 kubectl patch <kind>.kflare.dev <name> -n <namespace> --type=merge -p '{"metadata":{"finalizers":null}}'
-```
-
-## Local development with kind
-
-Build the image from your checkout, load it into kind, and install the chart from the repository:
-
-```sh
-make docker-build IMG=kflare:dev
-kind load docker-image kflare:dev --name kflare-dev
-helm upgrade --install kflare ./helm/kflare -n kflare-system --create-namespace \
-  --set image.repository=kflare,image.tag=dev
-```
-
-Run `make helm` after changing API types or RBAC markers. It regenerates the chart's CRDs and RBAC rules
-from `config/`, and CI fails if they are out of sync. `make helm-lint` lints and renders the chart.
-
-If pods cannot reach the API server (`dial tcp 10.96.0.1:443: i/o timeout`) and `kube-proxy` crash-loops with
-`too many open files`, the host's inotify limits are too low for the number of kind clusters. Raise them:
-
-```sh
-sudo sysctl fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288
 ```
 
 ## Troubleshooting
