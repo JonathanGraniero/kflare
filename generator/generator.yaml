@@ -4,7 +4,7 @@
 # cloudflare-go v7 service (the params of New and the object Get returns) becomes a field of the kind unless the entry
 # ignores it, with the reason. Field names are the API's, as in the SDK's json, path and query tags. Lengths, patterns,
 # ranges, defaults, integers and page sizes come from the OpenAPI subset in generator/openapi; an entry that replaces a
-# field's validation says why. See CLAUDE.md, "Code generator (kflare-gen)".
+# field's validation says why. See generator/CLAUDE.md, and CLAUDE.md's "Adding a kind" for the steps.
 kinds:
   - kind: KVNamespace
     service: kv.NamespaceService
