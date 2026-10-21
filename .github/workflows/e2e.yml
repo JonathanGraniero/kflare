@@ -1,47 +1,41 @@
 name: E2E
 
 on:
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: "Reason for running e2e tests"
-        required: false
-        default: "manual"
   pull_request:
   push:
     branches: [main]
+  # A maintainer's /live-e2e comment on a pull request runs the live job on
+  # its head commit. GitHub runs this trigger from the default branch's copy
+  # of this file.
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "Also run the live Cloudflare specs on the selected branch"
+        type: boolean
+        default: false
 
-# Read-only: these jobs only check out and test.
+# Read-only by default: the smoke job only checks out and tests.
 permissions:
   contents: read
 
 jobs:
-  e2e:
-    name: E2E Tests (Kubernetes ${{ matrix.kubernetes }}${{ matrix.live && ', live' || '' }})
+  # Builds the manager image, deploys it with config/default to kind and
+  # checks that the manager starts. It has no Cloudflare credentials, so the
+  # live specs skip.
+  smoke:
+    name: E2E Tests (Kubernetes ${{ matrix.kubernetes }})
+    if: github.event_name != 'issue_comment'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # The oldest supported release and the newest one. Only the newest runs
-        # the live Cloudflare specs: two runs against the same zone and account
-        # at once would collide on the Free plan's single rate limiting rule and
-        # IP list.
-        include:
-          - kubernetes: v1.34.11
-            live: false
-          - kubernetes: v1.37.0
-            live: true
-    # Live legs run one at a time across every run of this workflow, and are
-    # never cancelled halfway: a cancelled run cannot clean up, and a rule or
-    # list it leaves behind fails the next run. Local live runs must not
-    # overlap with them either.
-    concurrency:
-      group: ${{ matrix.live && 'e2e-cloudflare' || format('e2e-{0}-{1}', github.run_id, matrix.kubernetes) }}
-      cancel-in-progress: false
+        # The oldest supported release and the newest one.
+        kubernetes: [v1.34.11, v1.37.0]
     env:
       GOTOOLCHAIN: local
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -60,17 +54,112 @@ jobs:
           cluster_name: kflare-e2e
           config: local/kind-config.yaml
 
-      # Builds the manager image, deploys it with config/default and checks
-      # that the manager starts. On the live leg, with the CF_API_TOKEN and
-      # CF_ACCOUNT_ID secrets set, it then drives the manager against the
-      # Cloudflare API; the CF_E2E_ZONE variable (a zone the token can edit,
-      # adopted and never deleted) adds the zone-level specs and the
-      # examples/expose-a-service spec. Without them those specs skip, as they
-      # do for pull requests from forks, which get no secrets.
       - name: Run e2e tests
         env:
           KIND_CLUSTER: kflare-e2e
-          CF_API_TOKEN: ${{ matrix.live && secrets.CF_API_TOKEN || '' }}
-          CF_ACCOUNT_ID: ${{ matrix.live && secrets.CF_ACCOUNT_ID || '' }}
-          CF_E2E_ZONE: ${{ matrix.live && vars.CF_E2E_ZONE || '' }}
         run: make test-e2e
+
+  # The whole suite against the Cloudflare account in the CF_API_TOKEN and
+  # CF_ACCOUNT_ID secrets and the zone in the CF_E2E_ZONE variable (a zone the
+  # token can edit, adopted and never deleted). It runs when the owner, a
+  # member or a collaborator comments /live-e2e on a pull request, or by hand
+  # with the live input. It runs the pull request's code with the token, so a
+  # pull request from a fork is refused: push its branch to this repository
+  # first. The result is the commit status "E2E / live" on the commit tested.
+  live:
+    name: Live E2E (Kubernetes v1.37.0)
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.live) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/live-e2e') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    # One live run at a time across every run of this workflow, never
+    # cancelled halfway: the specs share one zone and account, whose Free plan
+    # holds one rate limiting rule and one IP list, and a cancelled run cannot
+    # clean up. Local live runs (hack/e2e-live.sh) must not overlap with it
+    # either.
+    concurrency:
+      group: e2e-cloudflare
+      cancel-in-progress: false
+    env:
+      GOTOOLCHAIN: local
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Find the commit to test
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != issue_comment ]]; then
+            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          if [[ "$(jq -r .head.repo.full_name <<<"$pr")" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::error::/live-e2e runs only for branches of $GITHUB_REPOSITORY: it runs the code with the Cloudflare token"
+            exit 1
+          fi
+          echo "sha=$(jq -r .head.sha <<<"$pr")" >> "$GITHUB_OUTPUT"
+
+      - name: Report the run as pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: >-
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context="E2E / live"
+          -f target_url="$RUN_URL" -f description="Running the live e2e suite"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Set up kind
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          node_image: kindest/node:v1.37.0
+          cluster_name: kflare-e2e
+          config: local/kind-config.yaml
+
+      - name: Run e2e tests
+        env:
+          KIND_CLUSTER: kflare-e2e
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_E2E_ZONE: ${{ vars.CF_E2E_ZONE }}
+        run: |
+          if [[ -z "$CF_API_TOKEN" || -z "$CF_ACCOUNT_ID" || -z "$CF_E2E_ZONE" ]]; then
+            echo "::error::Set the CF_API_TOKEN and CF_ACCOUNT_ID secrets and the CF_E2E_ZONE variable: without them every live spec skips"
+            exit 1
+          fi
+          make test-e2e
+
+      - name: Report the result
+        if: always() && steps.target.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+          RESULT: ${{ job.status }}
+        run: |
+          case "$RESULT" in
+            success) state=success description="The live e2e suite passed" ;;
+            failure) state=failure description="The live e2e suite failed" ;;
+            *) state=error description="The live e2e run was $RESULT" ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context="E2E / live" \
+            -f target_url="$RUN_URL" -f description="$description"

@@ -189,8 +189,8 @@ what was decided and verified live, and why.
    - The live run: `hack/e2e-live.sh` runs the manager on this machine against the current kind cluster, runs the
      suite against it and leaves the cluster as it found it (its header says how). Afterwards, check that Cloudflare
      holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57).
-     Once the repo has its CI secrets (Release and CI below), the E2E workflow runs the same suite on the pull request.
-     Never run both at once: the script's lock does not see a CI run
+     Once the repo has its CI secrets (Release and CI below), commenting `/live-e2e` on the pull request runs the same
+     suite in GitHub Actions instead. Never run both at once: the script's lock does not see a CI run
 7. **Docs.** Every place that lists the kinds names the last one of the same shape, so
    `git grep -n OriginRule -- '*.md'` (or `D1Database`) finds them: README's kinds, deploy.md's permission row (the
    label Cloudflare's docs give it), kinds table and uninstall command, ARCHITECTURE.md's ownership tree, drift and
@@ -363,10 +363,14 @@ should not need an ID copied from status to do the same: manifests must be writa
   namespace deletes the record and the tunnel and keeps the zone. The HTTP check resolves through the zone's
   authoritative name server: a resolver that asks before Cloudflare serves a new name caches the miss for 30 minutes
   (the zone's SOA minimum)
-- The live e2e suite moved to GitHub Actions in this branch, at the user's request (2026-10-20): `e2e.yml` runs on pull
-  requests, pushes to main and by hand; only the newest Kubernetes leg runs the live specs, in a `concurrency` group
-  that serializes them across runs and never cancels one halfway. It runs live once the repo has the `CF_API_TOKEN`
-  and `CF_ACCOUNT_ID` secrets and the `CF_E2E_ZONE` variable (see Release and CI)
+- The live e2e suite moved to GitHub Actions in this branch, at the user's request (2026-10-20). `e2e.yml` runs the
+  deployment smoke test on pull requests, pushes to main and by hand (Kubernetes 1.34 and 1.37). The live suite is a
+  separate job, on 1.37, that runs only when the owner, a member or a collaborator comments `/live-e2e` on a pull
+  request (decided by the user the same day), or by hand with the `live` input. It runs the pull request's head commit
+  with the Cloudflare token, so it refuses a pull request from a fork, and reports the commit status `E2E / live`. It
+  sits in a `concurrency` group that never runs two at once or cancels one halfway, and fails when the secrets are
+  missing instead of skipping every spec. GitHub runs a comment's workflow from main's copy, so `/live-e2e` works once
+  this branch is merged; before that, `gh workflow run e2e.yml --ref <branch> -f live=true` runs the branch's copy
 
 #### L4. Launch docs (`docs/launch`)
 - [ ] README, rewritten for someone arriving from Reddit:
@@ -468,12 +472,12 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 ### Release and CI
 **Status:** 🔲 Open, alongside Phase 3
 
-- [ ] Run the live e2e suite in GitHub Actions. The workflow is ready since L3 (`feat/dnsrecord-tunnel-ref`): `e2e.yml`
-  runs on pull requests, pushes to main and by hand, the live specs only on its newest Kubernetes leg, in a
-  `concurrency` group that never runs two at once or cancels one halfway. What is left: the repo has no Actions secrets
-  or variables yet (none on 2026-10-20). Use a dedicated CI token holding only what the suite needs, not the dev
-  token, which also holds Account API Tokens Write and Registrar Domains Admin. What the suite needs is deploy.md's
-  permissions, with Zone Read (verified 2026-10-13, see
+- [ ] Run the live e2e suite in GitHub Actions. The workflow is ready since L3 (`feat/dnsrecord-tunnel-ref`): a
+  `/live-e2e` comment on a pull request, by the owner, a member or a collaborator, runs it on the pull request's head
+  commit (branches of this repo only), one run at a time and never cancelled halfway, and reports the commit status
+  `E2E / live`. What is left: the repo has no Actions secrets or variables yet (none on 2026-10-20). Use a dedicated CI
+  token holding only what the suite needs, not the dev token, which also holds Account API Tokens Write and Registrar
+  Domains Admin. What the suite needs is deploy.md's permissions, with Zone Read (verified 2026-10-13, see
   [Token permissions](docs/design-notes.md#token-permissions-for-phase-3)). Set the secrets `CF_API_TOKEN` and
   `CF_ACCOUNT_ID`, and the variable `CF_E2E_ZONE=kflare.dev`. A Free zone holds one rate limiting rule and a Free
   account one IP list, so local runs must not overlap with a CI run
