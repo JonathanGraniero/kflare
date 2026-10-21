@@ -633,7 +633,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		expectReady(key("hello-routes"), routes, func() []metav1.Condition { return routes.Status.Conditions })
 		record := &cloudflarev1alpha1.DNSRecord{}
 		expectReady(key("hello"), record, func() []metav1.Condition { return record.Status.Conditions })
-		exampleTunnelID, exampleRecordID := tunnel.Status.CloudflareMetadata.TunnelID, record.Status.CloudflareMetadata.RecordID
+		exampleTunnelID := tunnel.Status.CloudflareMetadata.TunnelID
+		exampleRecordID := record.Status.CloudflareMetadata.RecordID
 		cfRecord, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), exampleRecordID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfRecord.Content).To(Equal(exampleTunnelID + ".cfargotunnel.com"))

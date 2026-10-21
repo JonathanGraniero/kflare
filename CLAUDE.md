@@ -188,7 +188,9 @@ what was decided and verified live, and why.
      PR changed. A survivor is a gap in the generated specs: close it in kflare-gen, for every kind
    - The live run: `hack/e2e-live.sh` runs the manager on this machine against the current kind cluster, runs the
      suite against it and leaves the cluster as it found it (its header says how). Afterwards, check that Cloudflare
-     holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57)
+     holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57).
+     Once the repo has its CI secrets (Release and CI below), the E2E workflow runs the same suite on the pull request.
+     Never run both at once: the script's lock does not see a CI run
 7. **Docs.** Every place that lists the kinds names the last one of the same shape, so
    `git grep -n OriginRule -- '*.md'` (or `D1Database`) finds them: README's kinds, deploy.md's permission row (the
    label Cloudflare's docs give it), kinds table and uninstall command, ARCHITECTURE.md's ownership tree, drift and
@@ -416,8 +418,9 @@ In GitHub's settings, no branch.
   verification behind it in the post itself
 - [ ] Be around for the first hours to answer comments, and file issues for the bugs people report
 
-**After the announcement**, not blocking it: the live e2e suite in GitHub Actions (Release and CI above), whose green
-badge against the real API would help credibility, and the drift correction period (Known limitations).
+**After the announcement**, not blocking it: the CI token and secrets that turn on the live e2e suite in GitHub Actions
+(Release and CI below; the workflow is ready since L3), whose green badge against the real API would help credibility,
+and the drift correction period (Known limitations).
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🔲 Proposed, not decided: the user picks what comes after OriginRule, and in what order
@@ -465,14 +468,15 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 ### Release and CI
 **Status:** 🔲 Open, alongside Phase 3
 
-- [ ] Run the live e2e suite in GitHub Actions. The repo has no Actions secrets or variables yet (2026-10-09, still
-  none on 2026-10-17). Use a
-  dedicated CI token holding only what the suite needs, not the dev token, which also holds Account API Tokens Write
-  and Registrar Domains Admin. What the suite needs is deploy.md's permissions, with Zone Read (verified 2026-10-13,
-  see [Token permissions](docs/design-notes.md#token-permissions-for-phase-3)). Set the secrets `CF_API_TOKEN` and
-  `CF_ACCOUNT_ID`, and the variable
-  `CF_E2E_ZONE=kflare.dev`. A Free zone holds one rate limiting rule and a Free account one IP list, so runs must
-  not overlap: give the workflow a `concurrency` group, and avoid local runs while it runs
+- [ ] Run the live e2e suite in GitHub Actions. The workflow is ready since L3 (`feat/dnsrecord-tunnel-ref`): `e2e.yml`
+  runs on pull requests, pushes to main and by hand, the live specs only on its newest Kubernetes leg, in a
+  `concurrency` group that never runs two at once or cancels one halfway. What is left: the repo has no Actions secrets
+  or variables yet (none on 2026-10-20). Use a dedicated CI token holding only what the suite needs, not the dev
+  token, which also holds Account API Tokens Write and Registrar Domains Admin. What the suite needs is deploy.md's
+  permissions, with Zone Read (verified 2026-10-13, see
+  [Token permissions](docs/design-notes.md#token-permissions-for-phase-3)). Set the secrets `CF_API_TOKEN` and
+  `CF_ACCOUNT_ID`, and the variable `CF_E2E_ZONE=kflare.dev`. A Free zone holds one rate limiting rule and a Free
+  account one IP list, so local runs must not overlap with a CI run
 - [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists (still none on 2026-10-19). The release workflow
   publishes the image and chart. (`docs/deploy.md`'s stale "the six kflare CRDs" was fixed with WAFCustomRule).
   Proposed 2026-10-19 instead of tagging once OriginRule lands: tag as L5 of [Launch readiness](#launch-readiness),

@@ -271,7 +271,8 @@ kubectl get secret example-tunnel-token -o yaml  # TUNNEL_TOKEN for cloudflared
   `originRequest`; both count as "unchanged" (verified live — an idle reconcile does not bump the version)
 - `originRequest` timeouts are not exposed: cloudflare-go v0's `TunnelDuration` (still in v0.119) marshals float
   seconds but only unmarshals integers
-- Each hostname still needs a proxied CNAME to `<tunnelID>.cfargotunnel.com` (use a `DNSRecord`)
+- Each hostname still needs a proxied CNAME to `<tunnelID>.cfargotunnel.com`: a `DNSRecord` with `tunnelRef` (since
+  Launch readiness L3)
 - Drift is only corrected when something triggers a reconcile (spec change, Tunnel change, resync period)
 
 **Test locally:**
