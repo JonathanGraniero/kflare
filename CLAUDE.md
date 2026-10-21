@@ -273,7 +273,7 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Plans in progress
 
 ### Launch readiness
-**Status:** 🚧 In progress: L1 (but for one rerun) to L4 are done; L5 is under way in `docs/release-v0.1.0`.
+**Status:** 🚧 In progress: L1 (but for one rerun) to L5 are done, v0.1.0 is released; L6 and L7 are next.
 Goal: announce kflare on Reddit (r/kubernetes first, then r/CloudFlare) as a v0.1 alpha, to find its first users. The
 audience, as the user put it on 2026-10-21: companies running Kubernetes, so the docs lead with Helm and GitOps
 installs and with keeping kflare easy to maintain. kflare is a standalone project: the user docs do not compare it
@@ -332,7 +332,7 @@ side but merge one at a time (no stacked PRs). L5 waits for all of them.
 [docs/design-notes.md](docs/design-notes.md#l3-a-dnsrecord-points-at-a-tunnel-by-reference-featdnsrecord-tunnel-ref).
 
 #### L4. Launch docs (`docs/launch`)
-**Status:** ✅ Merged 2026-10-21 (#61). Its done-when is checked by L5's quickstart run, since the README installs the
+**Status:** ✅ Merged 2026-10-21 (#61). Its done-when held in L5's quickstart run, since the README installs the
 released chart (`--version 0.1.0`) and applies the example from the `v0.1.0` tag.
 - [x] README, rewritten for someone arriving from Reddit:
   - What kflare is, in two sentences, and its status: alpha, API `v1alpha1`, Kubernetes 1.34+
@@ -364,21 +364,32 @@ released chart (`--version 0.1.0`) and applies the example from the `v0.1.0` tag
   file, and the README links no file written for agents
 
 #### L5. Release v0.1.0 (`docs/release-v0.1.0`)
-**Status:** 🚧 Started 2026-10-21. The branch adds CHANGELOG.md, whose v0.1.0 section is the release's notes. Checked
-before tagging: the Dockerfile cross-compiles (`--platform=$BUILDPLATFORM`, no `RUN` in the final stage), so the
-release workflow's `linux/arm64` build needs no QEMU (a local arm64 build passed); `helm package` gives
-`kflare-0.1.0.tgz` with the 19 CRDs and `ghcr.io/jonathangraniero/kflare:0.1.0`, the tag the workflow pushes; the
-workflow's four SHA-pinned actions resolve to the versions their comments name. GitHub publishes a personal account's
-new packages as private, linked repository or not, and only the package's settings page (Danger Zone) makes one
-public, which cannot be undone: the user does it. Pushing the tag and the live quickstart run need the user's OK.
-- [ ] Once L2, L3 and L4 are merged: tag `v0.1.0` (Chart.yaml is at 0.1.0) and check the release workflow is green
-- [ ] Both packages on GHCR (`ghcr.io/jonathangraniero/kflare` and `charts/kflare`) are public: the image pull and
-  `helm install` work from a machine not logged in to ghcr.io
-- [ ] Run the README's quickstart verbatim on a new kind cluster against a real account, then upgrade and uninstall as
-  deploy.md describes
-- [ ] A GitHub release with notes: the resource kinds, the alpha status, adoption and deletion (L2), and the known
-  limitations from ARCHITECTURE.md
-- Done when: the quickstart works on a clean machine with nothing but the README
+**Status:** ✅ Released 2026-10-21: [v0.1.0](https://github.com/JonathanGraniero/kflare/releases/tag/v0.1.0), the
+latest release. #62 added CHANGELOG.md, whose v0.1.0 section is the release's notes. Checked before tagging: the
+Dockerfile cross-compiles (`--platform=$BUILDPLATFORM`, no `RUN` in the final stage), so the release workflow's
+`linux/arm64` build needs no QEMU (a local arm64 build passed); `helm package` gives `kflare-0.1.0.tgz` with the 19
+CRDs and `ghcr.io/jonathangraniero/kflare:0.1.0`, the tag the workflow pushes; the workflow's four SHA-pinned actions
+resolve to the versions their comments name.
+- [x] Once L2, L3 and L4 are merged: tag `v0.1.0` (Chart.yaml is at 0.1.0) and check the release workflow is green.
+  Annotated tag on #62's merge commit `6ec72bd` (the user's OK); `Release` run 39607073566 passed every step
+- [x] Both packages on GHCR (`ghcr.io/jonathangraniero/kflare` and `charts/kflare`) are public: the image pull and
+  `helm install` work from a machine not logged in to ghcr.io. Both answered anonymously minutes after the run:
+  `docker pull` and `helm pull` with empty credential configs, and the image is an index of `linux/amd64` and
+  `linux/arm64`. GitHub's docs say a personal account's new packages start private and only the package's settings
+  page makes one public (irreversibly); which happened here is not known, since the gh token lacks `read:packages`
+- [x] Run the README's quickstart verbatim on a new kind cluster against a real account, then upgrade and uninstall as
+  deploy.md describes. Kind `kindest/node:v1.34.11`, an account-owned token holding only the README's four permissions
+  (zone ones on `kflare.dev`; created with the user's OK, deleted afterwards), Helm with an empty registry config.
+  The account was Ready with Account Settings Read alone; the example was Ready about 30 s after `kubectl apply`, and
+  `curl https://hello.kflare.dev` answered through the tunnel (8 connections). With the example running, deploy.md's
+  upgrade (its production values without the ServiceMonitor: 2 replicas, 512Mi) rolled out, a new pod held the lease
+  about 10 s later, and the hostname kept answering. README step 5 deleted the record and the tunnel and kept the
+  zone; deploy.md's uninstall kept the 19 CRDs through `helm uninstall`, then removed them. No error line and no 401
+  or 403 in the manager's log. A third kind cluster needs `fs.inotify.max_user_instances` above 128 (CONTRIBUTING.md)
+- [x] A GitHub release with notes: the resource kinds, the alpha status, adoption and deletion (L2), and the known
+  limitations from ARCHITECTURE.md. CHANGELOG.md's section with its links made absolute to the tag, marked latest
+  (the user's choice), through the REST API (`make_latest`), since the local gh 2.18 has no `--latest`
+- Done when: the quickstart works on a clean machine with nothing but the README. Holds, and so does L4's done-when
 
 #### L6. Repository settings
 In GitHub's settings, no branch.
@@ -400,7 +411,7 @@ In GitHub's settings, no branch.
 run in GitHub Actions since 2026-10-21 (Release and CI below).
 
 #### Chart hardening for v0.1.1 (`feat/chart-hardening`)
-**Status:** 🔲 Decided 2026-10-21, after v0.1.0 is tagged: the first release after it. One PR off main. Today the chart
+**Status:** 🔲 Decided 2026-10-21 for the release after v0.1.0, which is out, so it can start. One PR off main. The chart
 has no PodDisruptionBudget or NetworkPolicy, and `--metrics-secure` turns on TLS only: the manager sets no
 `FilterProvider`, so nothing authenticates or authorizes a scrape.
 - [ ] Metrics over HTTPS with authentication and authorization **on by default** (the user's choice): the manager's
@@ -472,7 +483,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   `CF_E2E_ZONE=kflare.dev`, were set on 2026-10-21. First run, by hand on main: GitHub run 39530820711, e2e run
   `f7dccb`, 24 of 24 passed. A Free zone holds one rate limiting rule and a Free account one IP list, so local runs
   must not overlap with a CI run
-- [ ] Tag `v0.1.0`: L5 of [Launch readiness](#launch-readiness). The release workflow publishes the image and chart
+- [x] Tag `v0.1.0`: L5 of [Launch readiness](#launch-readiness). The release workflow publishes the image and chart;
+  its first run, on 2026-10-21, passed
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
@@ -512,7 +524,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
 > OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
-> L1 is done but for one rerun, L2 to L4 are merged, L5 is under way. The proposed
+> L1 is done but for one rerun, L2 to L5 are done and v0.1.0 is released; L6 and L7 are next. The proposed
 > [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
 > deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
