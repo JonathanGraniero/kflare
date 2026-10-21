@@ -1,0 +1,6 @@
+# Artifact Hub repository metadata for oci://ghcr.io/jonathangraniero/charts/kflare.
+# .github/workflows/artifacthub.yml pushes it to the chart's OCI repository under the
+# artifacthub.io tag, where Artifact Hub reads it. A repositoryID matching the ID of
+# kflare's repository in Artifact Hub makes kflare a verified publisher.
+# Reference: https://github.com/artifacthub/hub/blob/master/docs/metadata/artifacthub-repo.yml
+repositoryID: 1c4eabd6-0faa-410f-9686-2c80a7bb4ecd

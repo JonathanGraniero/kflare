@@ -1,0 +1,50 @@
+name: Artifact Hub
+
+# Publishes helm/artifacthub-repo.yml to the chart's OCI repository under the
+# artifacthub.io tag, where Artifact Hub reads it: its repositoryID makes kflare
+# a verified publisher on Artifact Hub. Runs when the file changes on main, or
+# by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - helm/artifacthub-repo.yml
+      - .github/workflows/artifacthub.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  METADATA_REF: ghcr.io/jonathangraniero/charts/kflare:artifacthub.io
+
+jobs:
+  metadata:
+    name: Publish repository metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: 1.3.4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The config and layer media types are the ones Artifact Hub looks for
+      # (https://artifacthub.io/docs/topics/repositories/helm-charts/).
+      - name: Push artifacthub-repo.yml
+        working-directory: helm
+        run: |
+          oras push "$METADATA_REF" \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
+          oras manifest fetch "$METADATA_REF"
