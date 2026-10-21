@@ -274,8 +274,8 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Plans in progress
 
 ### Launch readiness
-**Status:** 🚧 In progress: L1 (but for one rerun) to L5 are done, v0.1.0 is released; L6 is done but for
-ArtifactHub's first indexing; L7 is on hold (the user, 2026-10-21).
+**Status:** 🚧 In progress: L1 (but for one rerun) to L6 are done, v0.1.0 is released and on ArtifactHub; L7 is on
+hold (the user, 2026-10-21).
 Goal: announce kflare on Reddit (r/kubernetes first, then r/CloudFlare) as a v0.1 alpha, to find its first users. The
 audience, as the user put it on 2026-10-21: companies running Kubernetes, so the docs lead with Helm and GitOps
 installs and with keeping kflare easy to maintain. kflare is a standalone project: the user docs do not compare it
@@ -394,8 +394,8 @@ resolve to the versions their comments name.
 - Done when: the quickstart works on a clean machine with nothing but the README. Holds, and so does L4's done-when
 
 #### L6. Repository settings
-**Status:** 🚧 2026-10-21: About and Discussions are done (#64); the user added the chart's repository on
-ArtifactHub, and `feat/artifacthub-verified-publisher` publishes its metadata. Done once ArtifactHub lists v0.1.0.
+**Status:** ✅ 2026-10-21: About and Discussions (#64), and the chart on ArtifactHub as a verified publisher (#65):
+[artifacthub.io/packages/helm/kflare/kflare](https://artifacthub.io/packages/helm/kflare/kflare).
 - [x] About: a description that says what kflare manages, topics (`kubernetes`, `kubernetes-operator`, `cloudflare`,
   `gitops`, `crd`, `cloudflare-tunnel`, `dns`, `waf`), and a website once `kflare.dev` serves one. Set with
   `gh repo edit`: "Kubernetes operator that manages Cloudflare as custom resources: zones, DNS records, tunnels,
@@ -405,7 +405,7 @@ ArtifactHub, and `feat/artifacthub-verified-publisher` publishes its metadata. D
   API (`has_discussions`; the local gh 2.18 has no flag for it), with GitHub's default categories. The issue chooser
   (`.github/ISSUE_TEMPLATE/config.yml`) sends questions to Q&A and vulnerability reports to private vulnerability
   reporting, which was already on
-- [ ] The chart listed on ArtifactHub (a Phase 4 item, cheap once v0.1.0 exists). The user added the repository from
+- [x] The chart listed on ArtifactHub (a Phase 4 item, cheap once v0.1.0 exists). The user added the repository from
   their account on 2026-10-21: kind Helm charts, URL `oci://ghcr.io/jonathangraniero/charts/kflare` (ArtifactHub's
   format for OCI: registry, namespace and chart name; it indexes the semver tags), repository ID
   `1c4eabd6-0faa-410f-9686-2c80a7bb4ecd`, not yet tracked that day. Verified publisher, at the user's request:
@@ -414,7 +414,10 @@ ArtifactHub, and `feat/artifacthub-verified-publisher` publishes its metadata. D
   1.3.4 when it changes on main, as publishing goes through Actions. The command was checked first against a local
   registry: config `application/vnd.cncf.artifacthub.config.v1+yaml`, one layer
   `application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml`. ArtifactHub applies the metadata the next
-  time it processes the repository
+  time it processes the repository. After #65 merged, the workflow's first run (39660384701) pushed it, the tag read
+  back anonymously with that ID, and ArtifactHub's first pass (19:45 UTC) listed kflare 0.1.0 with
+  `verified_publisher` true. Its record shows no license, CRDs or image security report: Chart.yaml has none of
+  ArtifactHub's annotations yet
 
 #### L7. Announcement
 **Status:** ⏸️ On hold: the user is holding off on the announcement (2026-10-21).
@@ -520,7 +523,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - `view`/`edit` aggregated ClusterRoles; CloudflareAccount is never in `edit` (it can point at any Secret)
   - Verified by installing on kind with a live token: account Ready, Secret protection finalizer, upgrade,
     uninstall keeping CRDs
-- [ ] Chart listed on ArtifactHub
+- [x] Chart listed on ArtifactHub (L6, 2026-10-21; verified publisher)
 - [ ] Kustomize component overlays for common patterns (tunnel + DNS combo, zero-trust stack)
 - [ ] Docusaurus documentation site
   - Getting Started
@@ -543,7 +546,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
 > OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
-> L1 is done but for one rerun, L2 to L5 are done and v0.1.0 is released; L6 waits on ArtifactHub; L7 is on hold.
+> L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on hold.
 > The proposed [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
 > deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
