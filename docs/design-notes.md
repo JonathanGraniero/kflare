@@ -1217,8 +1217,8 @@ afterwards):**
   Cloudflare reports only where the database runs (`running_in_region`, which v7's type lacks). Values outside either
   enum → 400, 7400 (the error lists the location hints in capitals; lowercase ones are accepted)
 - No API renames a database or moves it: Update and Edit take only `read_replication`
-- The dev account holds a production database, `nhl-trade-tracker`: the e2e spec and its cleanup touch only databases
-  named `kflare-e2e-<run>`
+- The e2e spec and its cleanup touch only databases named `kflare-e2e-<run>`, so the test account's other databases
+  are safe
 - Needs the account-level **D1: Edit** permission (the API's D1 Write), which is enough on its own (verified
   2026-10-15, see Token permissions)
 
@@ -1297,3 +1297,58 @@ adopted resources unless `retain`.
   2026-10-19: Cloudflare refuses a second CNAME for a name (400, 81053), so without a policy a DNSRecord whose name
   holds another CNAME reports `TerminalError`
 - The rule kinds are unchanged
+
+##### L3. A DNSRecord points at a Tunnel by reference (`feat/dnsrecord-tunnel-ref`)
+**Status:** ✅ Merged 2026-10-21 (#60). Moved from CLAUDE.md verbatim.
+
+The closest alternative, adyanth/cloudflare-operator, exposes a Service through a tunnel with one resource. kflare
+should not need an ID copied from status to do the same: manifests must be writable before the first apply.
+- [x] `spec.tunnelRef` on DNSRecord (a Tunnel in the same namespace): the record is a proxied CNAME to
+  `<tunnelID>.cfargotunnel.com`. CEL: exactly one of `content`, `data` and `tunnelRef`; `tunnelRef` only with type
+  `CNAME`. Check live what Cloudflare does with an unproxied one before deciding whether `proxied: false` is refused
+- [x] Waits for the Tunnel to be ready, and watches Tunnels, so a recreated tunnel (a new ID) corrects the record
+- [x] A Tunnel waits for the DNSRecords that reference it before it is deleted (`protection.go`), as it waits for its
+  TunnelConfigurations; otherwise their hostnames would point at nothing
+- [x] `examples/expose-a-service/`: a Zone adopting the reader's existing domain (`kflare.dev/adoption-policy: adopt`,
+  L2), a Tunnel, a cloudflared Deployment reading `TUNNEL_TOKEN` from the Tunnel's Secret (image pinned), a
+  TunnelConfiguration and a DNSRecord with `tunnelRef`. kflare does not run cloudflared; the example does
+- [x] Unit and envtest specs, CEL cases, a live e2e spec (the record follows the Tunnel, including after the tunnel is
+  recreated), a mutation run, ARCHITECTURE.md, deploy.md and the samples
+- Done when: the example works on kind with a real account, and no sample asks for a copied ID. The live e2e suite now
+  runs the example (decided 2026-10-20: in GitHub Actions, see below), so this holds once a live CI run passes
+
+**As built** (2026-10-20, `feat/dnsrecord-tunnel-ref`):
+- Checked live first on `kflare.dev` (`kflare-probe-*` objects, deleted afterwards): Cloudflare accepts an unproxied
+  CNAME to `<id>.cfargotunnel.com`, but it resolves to that name, which has only a private IPv6 address
+  (`fd10:aec2:5dae::`), and HTTPS cannot connect; so the CRD refuses `proxied: false` with a `tunnelRef`. A proxied
+  CNAME to a tunnel ID that does not exist is accepted too (requests get 530), so the Tunnel check is kflare's. A
+  proxied record's TTL is always 1, whatever a create or update sends: a proxied DNSRecord with another `ttl` used to
+  write on every reconcile, so the CRD now refuses that on any proxied record. Cloudflare's docs: `cfargotunnel.com`
+  only proxies traffic for DNS records in the tunnel's own account
+- CEL on the spec: exactly one of `content`, `data` and `tunnelRef` (`data` became `type: object`, without which CEL
+  cannot see it; `content` has a minimum length of 1); `tunnelRef` only on a CNAME; no `proxied: false` with it; `ttl`
+  1 on any proxied record. A DNSRecord resolves its Tunnel after its Zone: `TunnelNotFound`, `TunnelNotReady`, and
+  `AccountMismatch` when the Tunnel's CloudflareAccount is not the Zone's (by name, as WorkerRoute and WorkerScript
+  compare). `tunnelRecordSpec` gives the spec kflare writes; ownership, adoption, create and drift take it in place of
+  the resource's spec. The DNSRecord controller watches Tunnels (`recordsForTunnel`); the Tunnel controller watches the
+  deletion of every kind in `tunnelDependents` in a loop, DNSRecords among them (`recordTunnels`)
+- Specs: the waits, create, idle, a new tunnel ID followed, proxying restored, `AlreadyExists` and recovery by the
+  tunnel's hostname, the CEL cases, and two specs that run a controller in a manager: a Tunnel's new ID reaches its
+  record through the watch, and a Tunnel being deleted is released by its record's deletion. A mutation check
+  (`hack/mutate.sh`, 24 mutations of the controller, the watches, the protection entry and the CRD's rules) caught all
+- Live e2e: a DNSRecord with `tunnelRef` follows its tunnel after the tunnel is deleted outside kflare and recreated
+  with a new ID (the same record, updated in place, and the TunnelConfiguration follows too); and the example, applied
+  with the run's names, answers `https://kflare-e2e-<run>-hello.kflare.dev` through `cloudflared`, then deleting its
+  namespace deletes the record and the tunnel and keeps the zone. The HTTP check resolves through the zone's
+  authoritative name server: a resolver that asks before Cloudflare serves a new name caches the miss for 30 minutes
+  (the zone's SOA minimum)
+- The live e2e suite moved to GitHub Actions in this branch, at the user's request (2026-10-20). `e2e.yml` runs the
+  deployment smoke test on pull requests, pushes to main and by hand (Kubernetes 1.34 and 1.37). The live suite is a
+  separate job, on 1.37, that runs only when the owner, a member or a collaborator leaves a review comment starting
+  with `/live-e2e` (`gh pr review <number> --comment -b /live-e2e`), or by hand with the `live` input (decided by the
+  user the same day). A plain `/live-e2e` comment was the first design: CodeQL flagged it (critical,
+  `actions/untrusted-checkout-toctou`), because a comment event runs privileged, from main's copy of the workflow, and
+  carries no commit, so the head looked up afterwards could have moved since the comment. A review runs like a
+  `pull_request` event instead: from the pull request's own copy of the workflow, on the merge commit as of the review,
+  and without secrets for a fork (the job then fails, naming the missing secrets, instead of skipping every spec). It
+  sits in a `concurrency` group that never runs two at once or cancels one halfway

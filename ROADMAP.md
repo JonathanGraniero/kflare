@@ -15,9 +15,10 @@ since what people ask for decides the order.
 | Security | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `IPList` |
 | Rules (the products that replace Page Rules) | `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` |
 
-Each is tested live against a real Cloudflare account on the Free plan, and with an API token holding only the
-permissions the [deploy guide](docs/deploy.md) lists. Existing Cloudflare objects are only taken over when a resource
-asks for it (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)).
+Each is tested live against a real Cloudflare account on the Free plan, in GitHub Actions, with an API token holding
+only the permissions the [deploy guide](docs/deploy.md) lists. Existing Cloudflare objects are only taken over when a
+resource asks for it (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs
+the CRDs and the controller; the deploy guide shows it installed with Helm, Argo CD or Flux.
 
 ## Next
 
@@ -31,8 +32,16 @@ Candidates that a Free account can use and test, roughly in the order the code g
 - **Hyperdrive** connections, with the database password read from a Secret
 - **Bulk redirects**: account-level redirect lists and the rules that use them
 - **Managed ruleset exceptions**: skip rules for a managed ruleset kflare deploys
-- Correcting drift on a schedule: today, a change made outside kflare is corrected on the next reconcile, which can be
-  up to 10 hours away (see [When drift is detected](ARCHITECTURE.md#when-drift-is-detected))
+
+For running kflare:
+
+- **Correcting drift on a schedule** ([#55](https://github.com/JonathanGraniero/kflare/issues/55)): today, a change
+  made outside kflare is corrected on the next reconcile, which can be up to 10 hours away (see
+  [When drift is detected](ARCHITECTURE.md#when-drift-is-detected))
+- **Kubernetes Events** when a resource's `Ready` condition changes
+  ([#56](https://github.com/JonathanGraniero/kflare/issues/56))
+- **`kubectl get kflare`**, listing every kflare resource ([#54](https://github.com/JonathanGraniero/kflare/issues/54))
+- **In the chart**: a PodDisruptionBudget, a NetworkPolicy, and metrics served over HTTPS with authentication
 
 ## Waiting on something
 
@@ -45,4 +54,4 @@ Candidates that a Free account can use and test, roughly in the order the code g
 | Custom block responses on WAF custom rules | Built to Cloudflare's documented limits, but a Free zone cannot use them, so not tested live |
 | R2 jurisdictions and storage classes | Moving `R2Bucket` to Cloudflare's generated Go SDK, which can send them |
 
-Later, beyond these: a Helm chart listed on ArtifactHub, an OLM bundle, and a documentation site.
+Later, beyond these: an OLM bundle, and a documentation site.

@@ -22,7 +22,7 @@ pinned versions.
 ```sh
 make build   # runs codegen, manifests, generate, fmt, fix and vet, then builds bin/manager
 make test    # the same generators, then the unit and envtest suites (Kubernetes 1.34.1)
-make lint    # golangci-lint and yamllint
+make lint    # golangci-lint
 ```
 
 CI runs `make test`, `make lint`, `make helm-lint` and a Docker build, runs the envtest suites again on the newest
@@ -56,6 +56,30 @@ kflare creates only what you apply, and takes over nothing that already exists u
 `kflare.dev/adoption-policy` (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). Still, use a test
 account or zone, not production.
 
+To run your build the way users do, through the Helm chart, build the image, load it into kind and install the chart
+from your checkout:
+
+```sh
+make docker-build IMG=kflare:dev
+kind load docker-image kflare:dev --name kflare-dev
+helm upgrade --install kflare ./helm/kflare -n kflare-system --create-namespace \
+  --set image.repository=kflare,image.tag=dev
+```
+
+If pods cannot reach the API server (`dial tcp 10.96.0.1:443: i/o timeout`) and `kube-proxy` crash-loops with
+`too many open files`, the host's inotify limits are too low for the number of kind clusters. Raise them:
+
+```sh
+sudo sysctl fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288
+```
+
+## The Helm chart
+
+`helm/kflare/templates/crds/` and `helm/kflare/files/manager-rules.yaml` are generated from `config/` by
+`hack/sync-helm-chart.sh`. Run `make helm` after changing API types or RBAC markers; CI fails when they are out of
+sync. `make helm-lint` lints and renders the chart. A new value goes in `values.yaml`, with a comment, and in
+`values.schema.json`.
+
 ## The live end-to-end suite
 
 `make test-e2e` deploys the manager to the kind cluster in your current context and checks it starts. With
@@ -71,6 +95,12 @@ resource, all named `kflare-e2e-<run>`, check Cloudflare's copy after each step,
 - A Free zone holds one rate limiting rule and a Free account one IP list, so two runs must never overlap
 - Runs leave empty ruleset entry points in some of the zone's phases. They hold no rules and change nothing; delete
   them if you like
+
+The same suite runs in GitHub Actions against the project's test account, on Kubernetes 1.37 (the `E2E` workflow).
+Pull requests and pushes to `main` run only a smoke test of the deployment, with no Cloudflare credentials. A
+maintainer runs the live suite on a pull request with a review comment starting with `/live-e2e`. A pull request from
+a fork gets no secrets, so the live suite cannot run on it: describe what you ran against your own account instead.
+Runs never overlap.
 
 ## Changing a controller
 
@@ -96,6 +126,12 @@ A change to how a controller behaves comes with:
 - Merge `main` into your branch if it falls behind, rather than rebasing a branch others may have pulled
 - Describe what changed and how you checked it: the tests, and for live behavior, what you ran against Cloudflare
 - `main` is protected: every change lands through a pull request
+
+## Releasing
+
+Maintainers release by bumping `version` and `appVersion` in `helm/kflare/Chart.yaml` through a pull request, then
+pushing a `vX.Y.Z` tag that matches them. The `Release` workflow refuses a tag that does not match, and otherwise
+publishes the image (`linux/amd64` and `linux/arm64`) and the chart to `ghcr.io`.
 
 ## License
 

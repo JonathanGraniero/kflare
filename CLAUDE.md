@@ -272,8 +272,11 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Plans in progress
 
 ### Launch readiness
-**Status:** 🚧 In progress: L1 (but for one rerun) and L2 are done. Goal: announce kflare on Reddit
-(r/kubernetes first, then r/CloudFlare) as a v0.1 alpha, to find its first users
+**Status:** 🚧 In progress: L1 (but for one rerun), L2 and L3 are done; L4 is built in `docs/launch`. Goal: announce
+kflare on Reddit (r/kubernetes first, then r/CloudFlare) as a v0.1 alpha, to find its first users. The audience, as
+the user put it on 2026-10-21: companies running Kubernetes, so the docs lead with Helm and GitOps installs and with
+keeping kflare easy to maintain. kflare is a standalone project: the user docs do not compare it with ACK, and
+ARCHITECTURE.md credits ACK once, for the adoption and deletion annotations
 
 **Where it stands** (checked 2026-10-19 against main, `7005841`):
 - No tag and no GitHub release, so the release workflow has never run: no image or chart is published, and the
@@ -323,60 +326,14 @@ side but merge one at a time (no stacked PRs). L5 waits for all of them.
 [docs/design-notes.md](docs/design-notes.md#l2-adoption-on-opt-in-ack-style-featadoption-policy).
 
 #### L3. A DNSRecord points at a Tunnel by reference (`feat/dnsrecord-tunnel-ref`)
-The closest alternative, adyanth/cloudflare-operator, exposes a Service through a tunnel with one resource. kflare
-should not need an ID copied from status to do the same: manifests must be writable before the first apply.
-- [x] `spec.tunnelRef` on DNSRecord (a Tunnel in the same namespace): the record is a proxied CNAME to
-  `<tunnelID>.cfargotunnel.com`. CEL: exactly one of `content`, `data` and `tunnelRef`; `tunnelRef` only with type
-  `CNAME`. Check live what Cloudflare does with an unproxied one before deciding whether `proxied: false` is refused
-- [x] Waits for the Tunnel to be ready, and watches Tunnels, so a recreated tunnel (a new ID) corrects the record
-- [x] A Tunnel waits for the DNSRecords that reference it before it is deleted (`protection.go`), as it waits for its
-  TunnelConfigurations; otherwise their hostnames would point at nothing
-- [x] `examples/expose-a-service/`: a Zone adopting the reader's existing domain (`kflare.dev/adoption-policy: adopt`,
-  L2), a Tunnel, a cloudflared Deployment reading `TUNNEL_TOKEN` from the Tunnel's Secret (image pinned), a
-  TunnelConfiguration and a DNSRecord with `tunnelRef`. kflare does not run cloudflared; the example does
-- [x] Unit and envtest specs, CEL cases, a live e2e spec (the record follows the Tunnel, including after the tunnel is
-  recreated), a mutation run, ARCHITECTURE.md, deploy.md and the samples
-- Done when: the example works on kind with a real account, and no sample asks for a copied ID. The live e2e suite now
-  runs the example (decided 2026-10-20: in GitHub Actions, see below), so this holds once a live CI run passes
-
-**As built** (2026-10-20, `feat/dnsrecord-tunnel-ref`):
-- Checked live first on `kflare.dev` (`kflare-probe-*` objects, deleted afterwards): Cloudflare accepts an unproxied
-  CNAME to `<id>.cfargotunnel.com`, but it resolves to that name, which has only a private IPv6 address
-  (`fd10:aec2:5dae::`), and HTTPS cannot connect; so the CRD refuses `proxied: false` with a `tunnelRef`. A proxied
-  CNAME to a tunnel ID that does not exist is accepted too (requests get 530), so the Tunnel check is kflare's. A
-  proxied record's TTL is always 1, whatever a create or update sends: a proxied DNSRecord with another `ttl` used to
-  write on every reconcile, so the CRD now refuses that on any proxied record. Cloudflare's docs: `cfargotunnel.com`
-  only proxies traffic for DNS records in the tunnel's own account
-- CEL on the spec: exactly one of `content`, `data` and `tunnelRef` (`data` became `type: object`, without which CEL
-  cannot see it; `content` has a minimum length of 1); `tunnelRef` only on a CNAME; no `proxied: false` with it; `ttl`
-  1 on any proxied record. A DNSRecord resolves its Tunnel after its Zone: `TunnelNotFound`, `TunnelNotReady`, and
-  `AccountMismatch` when the Tunnel's CloudflareAccount is not the Zone's (by name, as WorkerRoute and WorkerScript
-  compare). `tunnelRecordSpec` gives the spec kflare writes; ownership, adoption, create and drift take it in place of
-  the resource's spec. The DNSRecord controller watches Tunnels (`recordsForTunnel`); the Tunnel controller watches the
-  deletion of every kind in `tunnelDependents` in a loop, DNSRecords among them (`recordTunnels`)
-- Specs: the waits, create, idle, a new tunnel ID followed, proxying restored, `AlreadyExists` and recovery by the
-  tunnel's hostname, the CEL cases, and two specs that run a controller in a manager: a Tunnel's new ID reaches its
-  record through the watch, and a Tunnel being deleted is released by its record's deletion. A mutation check
-  (`hack/mutate.sh`, 24 mutations of the controller, the watches, the protection entry and the CRD's rules) caught all
-- Live e2e: a DNSRecord with `tunnelRef` follows its tunnel after the tunnel is deleted outside kflare and recreated
-  with a new ID (the same record, updated in place, and the TunnelConfiguration follows too); and the example, applied
-  with the run's names, answers `https://kflare-e2e-<run>-hello.kflare.dev` through `cloudflared`, then deleting its
-  namespace deletes the record and the tunnel and keeps the zone. The HTTP check resolves through the zone's
-  authoritative name server: a resolver that asks before Cloudflare serves a new name caches the miss for 30 minutes
-  (the zone's SOA minimum)
-- The live e2e suite moved to GitHub Actions in this branch, at the user's request (2026-10-20). `e2e.yml` runs the
-  deployment smoke test on pull requests, pushes to main and by hand (Kubernetes 1.34 and 1.37). The live suite is a
-  separate job, on 1.37, that runs only when the owner, a member or a collaborator leaves a review comment starting
-  with `/live-e2e` (`gh pr review <number> --comment -b /live-e2e`), or by hand with the `live` input (decided by the
-  user the same day). A plain `/live-e2e` comment was the first design: CodeQL flagged it (critical,
-  `actions/untrusted-checkout-toctou`), because a comment event runs privileged, from main's copy of the workflow, and
-  carries no commit, so the head looked up afterwards could have moved since the comment. A review runs like a
-  `pull_request` event instead: from the pull request's own copy of the workflow, on the merge commit as of the review,
-  and without secrets for a fork (the job then fails, naming the missing secrets, instead of skipping every spec). It
-  sits in a `concurrency` group that never runs two at once or cancels one halfway
+**Status:** ✅ Merged 2026-10-21 (#60), and the first live CI run passed (GitHub run 39530820711, e2e run `f7dccb`,
+24 of 24). The design and as-built notes are in
+[docs/design-notes.md](docs/design-notes.md#l3-a-dnsrecord-points-at-a-tunnel-by-reference-featdnsrecord-tunnel-ref).
 
 #### L4. Launch docs (`docs/launch`)
-- [ ] README, rewritten for someone arriving from Reddit:
+**Status:** 🚧 Built 2026-10-21 in `docs/launch`; its done-when can only be checked by L5's quickstart run, since the
+README installs the released chart (`--version 0.1.0`) and applies the example from the `v0.1.0` tag.
+- [x] README, rewritten for someone arriving from Reddit:
   - What kflare is, in two sentences, and its status: alpha, API `v1alpha1`, Kubernetes 1.34+
   - A quickstart: install the released chart, connect an account, run `examples/expose-a-service/`
   - The resource kinds as a short table, each linking its sample and naming its token permission
@@ -387,15 +344,21 @@ should not need an ID copied from status to do the same: manifests must be writa
     Code), and kept honest by the live e2e suite against a real Cloudflare account, mutation testing on every
     controller, and a record of what was verified live
   - Links to ROADMAP.md, ARCHITECTURE.md and docs/deploy.md; contributor setup moves to CONTRIBUTING.md
-- [ ] ROADMAP.md, short and written for users: done, next (the [Next wave](#next-wave-proposed-2026-10-17)), and
+- [x] ROADMAP.md, short and written for users: done, next (the [Next wave](#next-wave-proposed-2026-10-17)), and
   deferred with the reason (paid plans, Zero Trust setup). The README links it instead of this file
-- [ ] CONTRIBUTING.md (build, test, `make codegen`, the live e2e and the token it needs, branch and PR conventions),
+- [x] CONTRIBUTING.md (build, test, `make codegen`, the live e2e and the token it needs, branch and PR conventions),
   a bug report template (kflare and Kubernetes versions, the resource's status and conditions), and 3 to 5 good first
-  issues from the Next wave and the known limitations
-- [ ] Take out of this file the three operational details about the maintainer's own account: the dev token's extra
+  issues from the Next wave and the known limitations (#54 to #57, created 2026-10-20)
+- [x] Take out of this file the three operational details about the maintainer's own account: the dev token's extra
   permissions (Release and CI), a database on the dev account that is not kflare's (D1Database notes) and the
   domain's renewal setting (Release and CI). None is a secret, so git history stays as it is
-- [ ] Delete `.golangci.bck.yml` (nothing references it) and add a CI badge
+- [x] Delete `.golangci.bck.yml` (nothing references it) and add a CI badge
+- [x] Added for the audience above: deploy.md's "With Argo CD or Flux" (an `Application` and an
+  `OCIRepository`/`HelmRelease`, CRD ownership, sync order) and "Running in production" (monitoring with the
+  controller-runtime metrics and the `Ready` condition, egress and proxies, `retain` for objects that must outlive
+  their manifests, moving to a new cluster). deploy.md's kind section and the chart README's maintenance notes moved to
+  CONTRIBUTING.md; the chart README, written for ArtifactHub, links with absolute URLs. Not run: the Argo CD and Flux
+  manifests, the proxy settings and the cluster move; deploy.md says the move is untested
 - Done when: someone who has never seen the repo gets from the README to a working tunnel without opening another
   file, and the README links no file written for agents
 
@@ -425,9 +388,8 @@ In GitHub's settings, no branch.
   verification behind it in the post itself
 - [ ] Be around for the first hours to answer comments, and file issues for the bugs people report
 
-**After the announcement**, not blocking it: the CI token and secrets that turn on the live e2e suite in GitHub Actions
-(Release and CI below; the workflow is ready since L3), whose green badge against the real API would help credibility,
-and the drift correction period (Known limitations).
+**After the announcement**, not blocking it: the drift correction period (Known limitations). The live e2e suite has
+run in GitHub Actions since 2026-10-21 (Release and CI below).
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🔲 Proposed, not decided: the user picks what comes after OriginRule, and in what order
@@ -475,22 +437,19 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 ### Release and CI
 **Status:** 🔲 Open, alongside Phase 3
 
-- [ ] Run the live e2e suite in GitHub Actions. The workflow is ready since L3 (`feat/dnsrecord-tunnel-ref`): a
+- [x] Run the live e2e suite in GitHub Actions. The workflow is ready since L3 (`feat/dnsrecord-tunnel-ref`): a
   review comment starting with `/live-e2e`, by the owner, a member or a collaborator, runs it on the pull request as
-  reviewed (branches of this repo only: a fork gets no secrets), one run at a time and never cancelled halfway. What
-  is left: the repo has no Actions secrets or variables yet (none on 2026-10-20). Use a dedicated CI
-  token holding only what the suite needs, not the dev token, which also holds Account API Tokens Write and Registrar
-  Domains Admin. What the suite needs is deploy.md's permissions, with Zone Read (verified 2026-10-13, see
-  [Token permissions](docs/design-notes.md#token-permissions-for-phase-3)). Set the secrets `CF_API_TOKEN` and
-  `CF_ACCOUNT_ID`, and the variable `CF_E2E_ZONE=kflare.dev`. A Free zone holds one rate limiting rule and a Free
-  account one IP list, so local runs must not overlap with a CI run
+  reviewed (branches of this repo only: a fork gets no secrets), one run at a time and never cancelled halfway. The
+  secrets `CF_API_TOKEN` (a dedicated CI token holding deploy.md's permissions with Zone Read, see
+  [Token permissions](docs/design-notes.md#token-permissions-for-phase-3)) and `CF_ACCOUNT_ID`, and the variable
+  `CF_E2E_ZONE=kflare.dev`, were set on 2026-10-21. First run, by hand on main: GitHub run 39530820711, e2e run
+  `f7dccb`, 24 of 24 passed. A Free zone holds one rate limiting rule and a Free account one IP list, so local runs
+  must not overlap with a CI run
 - [ ] Tag `v0.1.0`: `Chart.yaml` is already at 0.1.0 and no tag exists (still none on 2026-10-19). The release workflow
   publishes the image and chart. (`docs/deploy.md`'s stale "the six kflare CRDs" was fixed with WAFCustomRule).
   Proposed 2026-10-19 instead of tagging once OriginRule lands: tag as L5 of [Launch readiness](#launch-readiness),
   after L1 to L4 (the user decides)
-- [ ] `kflare.dev` expires on 2027-10-04 with auto-renew off (registered 2026-10-04; unchanged on 2026-10-17). The e2e
-  zone disappears if it lapses: decide on renewal before September 2027
-- [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, renewal, CI token, GitHub secrets)
+- [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
 
@@ -529,7 +488,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
 > OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
-> L1 is done but for one rerun. The proposed [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
+> L1 is done but for one rerun, L2 and L3 are merged, L4 is built in `docs/launch`. The proposed
+> [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
 > deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
 > [Deferred](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup) in docs/design-notes.md.

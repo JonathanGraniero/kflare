@@ -24,6 +24,18 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: install
+    attributes:
+      label: Installed with
+      options:
+        - Helm
+        - Argo CD
+        - Flux
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: dropdown
     id: kind
     attributes:
       label: Resource kind
@@ -69,7 +81,7 @@ body:
     id: logs
     attributes:
       label: Manager log
-      description: "The manager's log lines about the resource, from `kubectl logs -n kflare-system deploy/kflare` for the README's install."
+      description: "The controller's log lines about the resource: `kubectl -n kflare-system logs deploy/kflare` for the chart's default install."
       render: text
   - type: input
     id: plan

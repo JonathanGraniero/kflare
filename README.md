@@ -1,164 +1,161 @@
 # kflare
 
-kflare is a Kubernetes operator for Cloudflare. It lets you manage Cloudflare resources — DNS zones, records, tunnels, Workers, and more — declaratively using Kubernetes custom resources, enabling full GitOps-driven infrastructure management.
+[![CI](https://github.com/JonathanGraniero/kflare/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JonathanGraniero/kflare/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Instead of clicking through the Cloudflare dashboard or scripting API calls, you define your desired Cloudflare state in YAML and apply it to your cluster. kflare reconciles the difference.
+kflare is a Kubernetes operator that manages Cloudflare through custom resources: zones, DNS records, tunnels, Workers
+and their storage, WAF rules and the Rules products. You keep Cloudflare's configuration in git next to the workloads
+it serves, apply it with Helm, Argo CD or Flux like everything else, and kflare keeps Cloudflare matching it.
 
-## What it does
+**Status: alpha.** The API is `v1alpha1`, and fields can still change between releases. kflare needs Kubernetes 1.34
+or newer, and installs with Helm 3.8 or newer.
 
-- **Declarative Cloudflare management** — define DNS records, zones, tunnels, and Workers as Kubernetes CRDs
-- **GitOps-ready** — store your Cloudflare config in git alongside your app manifests
-- **Credential management** — reference Kubernetes Secrets for API tokens, with support for external-secrets
-- **Drift detection** — compares desired state against the live Cloudflare API on every reconcile and corrects any difference. Changes made outside kflare are picked up on the next reconcile, not immediately; see [when drift is detected](./ARCHITECTURE.md#when-drift-is-detected)
-- **Import existing resources, on request** — kflare never touches a Cloudflare resource it did not create unless you annotate it `kflare.dev/adoption-policy: adopt` (or `adopt-or-create`). Adopted resources are overwritten to match the spec, and kept when their Kubernetes resource is deleted unless you set `kflare.dev/deletion-policy: delete`; see [adoption and ownership](./ARCHITECTURE.md#adoption-and-ownership)
+## Quickstart: expose a Service through a Cloudflare Tunnel
 
-For how the controllers work, including known limitations, see [ARCHITECTURE.md](./ARCHITECTURE.md).
+This puts a demo Service on `https://hello.<your domain>` without a public IP, a load balancer or an open inbound port.
+You need a domain on your Cloudflare account, and `hello.<your domain>` must not have a DNS record yet.
 
-## Status
+**1. Create an API token.** In the Cloudflare dashboard, under **My Profile → API Tokens** (or **Manage Account →
+Account API Tokens** for a token the account owns), create a token with these permissions, with the zone permissions
+limited to your domain:
 
-Early development. Phase 1 (foundation) and Phase 2 (core resources) are complete. See [CLAUDE.md](./CLAUDE.md) for the full phased implementation plan.
+- Account · Account Settings · Read
+- Account · Cloudflare Tunnel · Edit
+- Zone · Zone · Read
+- Zone · DNS · Edit
 
-**Currently implemented:**
-- `CloudflareAccount` — cluster-scoped credential store, validates your API token against the Cloudflare API on reconcile
-- `Zone` — creates or adopts a DNS zone and reports its name servers and activation status
-- `DNSRecord` — manages a record in a `Zone`, correcting drift in content, TTL, proxying, priority, comment, tags and structured data; with `tunnelRef`, points a hostname at a `Tunnel` (see [the example](examples/expose-a-service))
-- `Tunnel` — creates or adopts a remotely-managed Cloudflare Tunnel and writes its token to a Secret under `TUNNEL_TOKEN`, ready for `cloudflared tunnel run` (see [the sample](config/samples/cloudflare_v1alpha1_tunnel.yaml))
-- `TunnelConfiguration` — owns a Tunnel's ingress rules (hostname → service), pushes them to Cloudflare and reverts changes made outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml))
-- `WorkerScript` — uploads a Worker from inline code or a ConfigMap, with plain text, secret (from a Kubernetes Secret), KV and R2 bindings, and re-uploads it when it is changed outside kflare (see [the sample](config/samples/cloudflare_v1alpha1_workerscript.yaml))
+Note your account ID, shown on the account's overview page.
 
-- `WorkerRoute` — routes a URL pattern in a `Zone` to a `WorkerScript`, or excludes a pattern from a broader route, and recreates the route when Cloudflare drops it (see [the sample](config/samples/cloudflare_v1alpha1_workerroute.yaml))
-
-- `KVNamespace` — creates or adopts a Workers KV namespace (renamed in place when its title changes); WorkerScripts bind it with `kvNamespaceRef` instead of a copied ID (see [the sample](config/samples/cloudflare_v1alpha1_kvnamespace.yaml))
-
-- `R2Bucket` — creates or adopts an R2 bucket, with an optional location hint; WorkerScripts bind it with `r2BucketRef`. kflare never deletes objects: a bucket that still holds any is kept and reported as `BucketNotEmpty` (see [the sample](config/samples/cloudflare_v1alpha1_r2bucket.yaml))
-
-- `D1Database` — creates or adopts a D1 database, optionally restricted to a jurisdiction or placed by a location hint; the first kind generated end to end by kflare-gen, from Cloudflare's Go SDK and API schema (see [the sample](config/samples/cloudflare_v1alpha1_d1database.yaml))
-
-- `WAFCustomRule` — manages one WAF custom rule in a `Zone` (block, challenge, skip or log), kept in `spec.priority` order among kflare's rules; rules created outside kflare are left alone (see [the sample](config/samples/cloudflare_v1alpha1_wafcustomrule.yaml))
-
-- `RateLimitRule` — manages one rate limiting rule in a `Zone`: counts the requests its expression matches per client IP address (or other characteristics on higher plans) and blocks or challenges a client that goes over the limit, optionally with a custom response (see [the sample](config/samples/cloudflare_v1alpha1_ratelimitrule.yaml))
-
-- `IPList` — manages a custom IP list in a Cloudflare account, which rule expressions use as `$name` (for example `ip.src in $office_ips`); a rule applied together with its list is written once the list exists, and the list is deleted once no rule uses it (see [the sample](config/samples/cloudflare_v1alpha1_iplist.yaml))
-
-- `ManagedRuleset` — deploys a Cloudflare managed ruleset to a `Zone`, such as the Free Managed Ruleset, with overrides for the whole ruleset, a category or a single rule; deleting the last one hands the zone back to Cloudflare's default deployment (see [the sample](config/samples/cloudflare_v1alpha1_managedruleset.yaml))
-
-- `TransformRule` — manages one transform rule in a `Zone`: a rewrite of the URL a request reaches the origin with, or a change to its request or response headers; the first rule kind generated by kflare-gen (see [the samples](config/samples/cloudflare_v1alpha1_transformrule.yaml))
-
-- `RedirectRule` — manages one single redirect in a `Zone`: the requests its expression matches are redirected to a static URL or to one an expression computes, with the status code and query string it asks for; generated by kflare-gen like TransformRule (see [the sample](config/samples/cloudflare_v1alpha1_redirectrule.yaml))
-
-- `CacheRule` — manages one cache rule in a `Zone`: whether the responses to the requests its expression matches are cached, for how long at the edge and in browsers (by status code too), their cache key and how `Vary` shapes it; generated by kflare-gen (see [the sample](config/samples/cloudflare_v1alpha1_cacherule.yaml))
-
-- `ConfigurationRule` — manages one configuration rule in a `Zone`: settings such as the SSL mode, the security level or Rocket Loader, changed for the requests its expression matches; generated by kflare-gen (see [the sample](config/samples/cloudflare_v1alpha1_configurationrule.yaml))
-
-- `OriginRule` — manages one origin rule in a `Zone`: the requests its expression matches reach the origin on another
-  destination port; generated by kflare-gen, the last of the rules that replace Page Rules
-  (see [the sample](config/samples/cloudflare_v1alpha1_originrule.yaml))
-
-**Planned next:** more of Phase 3 — more resources generated by kflare-gen from Cloudflare's Go SDK and API schema, such
-as queues, Vectorize indexes and Turnstile widgets (the order is still to be picked); Zero Trust and managed transforms;
-load balancers last (see [CLAUDE.md](./CLAUDE.md)).
-
-## Install
-
-kflare installs with Helm:
+**2. Install kflare.**
 
 ```sh
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
-  --version <version> --namespace kflare-system --create-namespace
+  --version 0.1.0 --namespace kflare-system --create-namespace
+kubectl -n kflare-system rollout status deployment/kflare
 ```
 
-The [deploy guide](docs/deploy.md) covers the API token permissions, connecting a Cloudflare account,
-configuration, upgrades, uninstalling safely and troubleshooting.
-
-## Prerequisites
-
-For working on kflare itself:
-
-- Go 1.26+
-- Kubernetes 1.34+ (the oldest version kflare supports and tests against)
-- kubectl
-- Docker (kind itself is pinned and downloaded by `make kind`)
-- A Cloudflare account and API token with **Edit zone DNS** permissions
-  - `Tunnel` also needs the account-level **Cloudflare Tunnel: Edit** permission
-  - `WorkerScript` also needs the account-level **Workers Scripts: Edit** permission
-  - `WorkerRoute` also needs the zone-level **Workers Routes: Edit** permission
-  - `KVNamespace` also needs the account-level **Workers KV Storage: Edit** permission
-  - `R2Bucket` also needs the account-level **Workers R2 Storage: Edit** permission
-  - `D1Database` also needs the account-level **D1: Edit** permission
-  - `WAFCustomRule` and `RateLimitRule` also need the zone-level **Zone WAF: Edit** permission
-  - `IPList` also needs the account-level **Account Rule Lists: Edit** permission
-  - Setting `Zone` `spec.plan` also needs **Billing: Edit**, and changes your bill
-
-## Local Development
-
-### 1. Set your Cloudflare credentials
+**3. Connect your Cloudflare account.** The token goes in a Secret, and a cluster-scoped `CloudflareAccount` points
+at it:
 
 ```sh
-export CF_API_TOKEN=<your-api-token>
-export CF_ACCOUNT_ID=<your-account-id>
+kubectl -n kflare-system create secret generic cloudflare-token --from-literal=CF_API_TOKEN=<your API token>
+
+kubectl apply -f - <<'EOF'
+apiVersion: kflare.dev/v1alpha1
+kind: CloudflareAccount
+metadata:
+  name: my-account
+spec:
+  accountID: <your account ID>
+  tokenSecretRef:
+    name: cloudflare-token
+    namespace: kflare-system
+EOF
+
+kubectl wait --for=condition=Ready cloudflareaccounts.kflare.dev/my-account --timeout=2m
 ```
 
-### 2. Spin up a local cluster
-
-This creates a kind cluster, installs the CRDs, and applies a `CloudflareAccount` CR pointing at your real Cloudflare account:
+**4. Expose a Service.** The [example](examples/expose-a-service) holds a demo app (`whoami`), a `Zone` that adopts
+your existing domain, a `Tunnel`, its `TunnelConfiguration`, a `DNSRecord` pointing `hello.<your domain>` at the
+tunnel, and a `cloudflared` Deployment that connects it. Apply it with your domain in place of `example.com`:
 
 ```sh
-./local/setup.sh
+curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.1.0/examples/expose-a-service/expose-a-service.yaml \
+  | sed 's/example\.com/your-domain.com/g' | kubectl apply -f -
+
+kubectl -n kflare-example wait --for=condition=Ready dnsrecords.kflare.dev/hello --timeout=5m
+kubectl -n kflare-example rollout status deployment/cloudflared
+curl https://hello.your-domain.com
 ```
 
-### 3. Run the controller
+`curl` prints the request `whoami` received. Until `cloudflared` connects, the hostname answers with Cloudflare's error
+1033 (HTTP 530). If something stays not ready, `kubectl -n kflare-example describe` on it shows why in its `Ready`
+condition.
 
-In a separate terminal, run the controller locally against the kind cluster:
+**5. Clean up.**
 
 ```sh
-make run
+kubectl delete namespace kflare-example
 ```
 
-### 4. Verify it's working
+kflare deletes the DNS record, the tunnel's routes and the tunnel. It keeps your zone, because it adopted the zone
+rather than creating it.
 
-```sh
-kubectl get cloudflareaccount my-account -o yaml
-```
+## Resource kinds
 
-You should see the `Ready` condition set to `True` and your account name populated in the status:
+| Kind | What it manages | Token permission | Sample |
+|---|---|---|---|
+| `CloudflareAccount` | The credentials every other resource uses (cluster-scoped) | Account · Account Settings · Read | [account](config/samples/cloudflare_v1alpha1_cloudflareaccount.yaml) |
+| `Zone` | A zone, created or adopted, with its name servers and status | Zone · Zone · Edit (Read to adopt) | [zone](config/samples/cloudflare_v1alpha1_zone.yaml) |
+| `DNSRecord` | A DNS record, or with `tunnelRef` a hostname pointed at a `Tunnel` | Zone · DNS · Edit | [A](config/samples/cloudflare_v1alpha1_dnsrecord_a.yaml), [MX](config/samples/cloudflare_v1alpha1_dnsrecord_mx.yaml), [SRV](config/samples/cloudflare_v1alpha1_dnsrecord_srv.yaml), [tunnel](config/samples/cloudflare_v1alpha1_dnsrecord_tunnel.yaml) |
+| `Tunnel` | A Cloudflare Tunnel, with its token written to a Secret for `cloudflared` | Account · Cloudflare Tunnel · Edit | [tunnel](config/samples/cloudflare_v1alpha1_tunnel.yaml) |
+| `TunnelConfiguration` | A tunnel's routes, hostname to Service | Account · Cloudflare Tunnel · Edit | [routes](config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml) |
+| `WorkerScript` | A Worker, from inline code or a ConfigMap, with its bindings | Account · Workers Scripts · Edit | [worker](config/samples/cloudflare_v1alpha1_workerscript.yaml) |
+| `WorkerRoute` | A route from a URL pattern to a Worker | Zone · Workers Routes · Edit | [route](config/samples/cloudflare_v1alpha1_workerroute.yaml) |
+| `KVNamespace` | A Workers KV namespace | Account · Workers KV Storage · Edit | [namespace](config/samples/cloudflare_v1alpha1_kvnamespace.yaml) |
+| `R2Bucket` | An R2 bucket (kflare never deletes its objects) | Account · Workers R2 Storage · Edit | [bucket](config/samples/cloudflare_v1alpha1_r2bucket.yaml) |
+| `D1Database` | A D1 database | Account · D1 · Edit | [database](config/samples/cloudflare_v1alpha1_d1database.yaml) |
+| `WAFCustomRule` | One WAF custom rule in a zone | Zone · Zone WAF · Edit | [rules](config/samples/cloudflare_v1alpha1_wafcustomrule.yaml) |
+| `RateLimitRule` | One rate limiting rule in a zone | Zone · Zone WAF · Edit | [rule](config/samples/cloudflare_v1alpha1_ratelimitrule.yaml) |
+| `ManagedRuleset` | A Cloudflare managed ruleset deployed to a zone, with overrides | Zone · Zone WAF · Edit | [ruleset](config/samples/cloudflare_v1alpha1_managedruleset.yaml) |
+| `IPList` | An IP list that rule expressions use as `$name` | Account · Account Rule Lists · Edit | [list](config/samples/cloudflare_v1alpha1_iplist.yaml) |
+| `TransformRule` | One URL rewrite or header transform rule | Zone · Transform Rules · Edit | [rules](config/samples/cloudflare_v1alpha1_transformrule.yaml) |
+| `RedirectRule` | One single redirect | Zone · Single Redirect · Edit | [rule](config/samples/cloudflare_v1alpha1_redirectrule.yaml) |
+| `CacheRule` | One cache rule | Zone · Cache Rules · Edit | [rule](config/samples/cloudflare_v1alpha1_cacherule.yaml) |
+| `ConfigurationRule` | One configuration rule (SSL mode, security level and other settings) | Zone · Config Rules · Edit | [rule](config/samples/cloudflare_v1alpha1_configurationrule.yaml) |
+| `OriginRule` | One origin rule (the origin's destination port) | Zone · Origin Rules · Edit | [rule](config/samples/cloudflare_v1alpha1_originrule.yaml) |
 
-```yaml
-status:
-  accountName: your-account-name
-  conditions:
-  - type: Ready
-    status: "True"
-    reason: Validated
-    message: Credentials are valid and account is reachable
-```
+Grant a token only the permissions of the kinds you use. Setting a `Zone`'s `spec.plan` also needs Account · Billing ·
+Edit, and changes your bill.
 
-### 5. Inspect with k9s
+## Running kflare in your clusters
 
-```sh
-k9s
-```
+The [deploy guide](docs/deploy.md) covers installing and operating kflare. In short:
 
-From k9s, type `:cloudflareaccounts` to browse CRs, or `:secrets` to inspect the credentials secret in `kflare-system`.
+- **Install it like any other platform component.** Pin the chart version, keep your values in git, and let Argo CD or
+  Flux install it; the guide has an `Application` and a `HelmRelease` to start from. The chart installs and upgrades
+  the CRDs, keeps them on uninstall, and runs under the restricted Pod Security Standard.
+- **One installation per cluster**, with leader election; two replicas give a quick failover.
+- **kflare never takes over what it did not create**, unless a resource asks with the
+  `kflare.dev/adoption-policy` annotation. Objects it adopted are kept when their resource is deleted, and
+  `kflare.dev/deletion-policy: retain` keeps any object, for zones and storage that must outlive a manifest.
+- **Credentials stay in Secrets** that you can manage with External Secrets Operator or Sealed Secrets. A rotated token
+  is picked up straight away. Only cluster administrators can create a `CloudflareAccount`; the namespaced kinds are
+  added to the built-in `edit` and `admin` roles, so teams manage their own records and rules.
+- **Every resource reports a single `Ready` condition** with a reason, and the controller serves Prometheus metrics.
 
-### Tear down
+[ARCHITECTURE.md](ARCHITECTURE.md) explains how kflare finds, owns, corrects and deletes Cloudflare objects, and its
+known limitations. One to know up front: a change made in the Cloudflare dashboard is corrected on the next
+reconcile, which can be up to 10 hours away.
 
-```sh
-./local/teardown.sh
-```
+## Why kflare
 
-## Building
+Other tools cover parts of this, and may suit you better. [external-dns](https://github.com/kubernetes-sigs/external-dns)
+is mature and widely used for DNS records that follow your Services and Ingresses.
+[adyanth/cloudflare-operator](https://github.com/adyanth/cloudflare-operator) exposes Services through tunnels.
+Terraform's Cloudflare provider, or Crossplane, covers far more of Cloudflare's API than kflare does. kflare is for
+teams who want Cloudflare configured the Kubernetes way: custom resources reviewed and applied like the rest of the
+cluster, references between them instead of copied IDs, and one operator for DNS, tunnels, Workers and their storage,
+the WAF and the Rules products.
 
-```sh
-# Generate the kinds kflare-gen builds from cloudflare-go v7 (make codegen), then CRDs and deepcopy functions
-make generate manifests
+## How it's built
 
-# Build the controller binary
-make build
+kflare is developed with AI assistance (Claude Code). What keeps it honest:
 
-# Run unit tests
-make test
-```
+- **A live end-to-end suite** runs every resource kind against a real Cloudflare account on the Free plan, in GitHub
+  Actions, and checks Cloudflare's copy after each step. Its token holds nothing beyond the permissions above.
+- **Mutation testing** on the controllers: deliberate bugs, which the tests must catch.
+- **Cloudflare's behavior is checked live before code relies on it**: what the API accepts, refuses and stores.
+  [ARCHITECTURE.md](ARCHITECTURE.md) records what was verified.
+
+## More
+
+- [Deploy guide](docs/deploy.md): install, configure, operate, upgrade, uninstall, troubleshoot
+- [Architecture](ARCHITECTURE.md): how the controllers behave, and known limitations
+- [Roadmap](ROADMAP.md): what may come next
+- [Contributing](CONTRIBUTING.md): building, testing and the live suite
+- [Security](SECURITY.md): reporting a vulnerability
 
 ## License
 
-MIT License — Copyright (c) 2026 Jonathan Graniero. See [LICENSE](./LICENSE) for details.
+MIT. Copyright (c) 2026 Jonathan Graniero. See [LICENSE](LICENSE).
