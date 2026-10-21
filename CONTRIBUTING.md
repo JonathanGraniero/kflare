@@ -4,7 +4,9 @@ Thanks for helping. kflare is an alpha, so bug reports from real use are as valu
 differently from what [ARCHITECTURE.md](ARCHITECTURE.md) or the [deploy guide](docs/deploy.md) says, please open an
 issue with the resource's YAML (without secrets), its `status`, and the kflare and Kubernetes versions.
 
-Security issues go through [SECURITY.md](SECURITY.md), not public issues.
+Questions about installing or using kflare, and ideas, go to
+[Discussions](https://github.com/JonathanGraniero/kflare/discussions). Security issues go through
+[SECURITY.md](SECURITY.md), not public issues.
 
 ## What you need
 
