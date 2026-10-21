@@ -367,9 +367,10 @@ released chart (`--version 0.1.0`) and applies the example from the `v0.1.0` tag
 **Status:** 🚧 Started 2026-10-21. The branch adds CHANGELOG.md, whose v0.1.0 section is the release's notes. Checked
 before tagging: the Dockerfile cross-compiles (`--platform=$BUILDPLATFORM`, no `RUN` in the final stage), so the
 release workflow's `linux/arm64` build needs no QEMU (a local arm64 build passed); `helm package` gives
-`kflare-0.1.0.tgz` with the 19 CRDs and `ghcr.io/jonathangraniero/kflare:0.1.0`, the tag the workflow pushes. Pushing
-the tag, making the packages public (GitHub cannot make a public package private again) and the live quickstart run
-each need the user's OK.
+`kflare-0.1.0.tgz` with the 19 CRDs and `ghcr.io/jonathangraniero/kflare:0.1.0`, the tag the workflow pushes; the
+workflow's four SHA-pinned actions resolve to the versions their comments name. GitHub publishes a personal account's
+new packages as private, linked repository or not, and only the package's settings page (Danger Zone) makes one
+public, which cannot be undone: the user does it. Pushing the tag and the live quickstart run need the user's OK.
 - [ ] Once L2, L3 and L4 are merged: tag `v0.1.0` (Chart.yaml is at 0.1.0) and check the release workflow is green
 - [ ] Both packages on GHCR (`ghcr.io/jonathangraniero/kflare` and `charts/kflare`) are public: the image pull and
   `helm install` work from a machine not logged in to ghcr.io
