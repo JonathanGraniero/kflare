@@ -153,6 +153,7 @@ kflare is developed with AI assistance (Claude Code). What keeps it honest:
 - [Deploy guide](docs/deploy.md): install, configure, operate, upgrade, uninstall, troubleshoot
 - [Architecture](ARCHITECTURE.md): how the controllers behave, and known limitations
 - [Roadmap](ROADMAP.md): what may come next
+- [Discussions](https://github.com/JonathanGraniero/kflare/discussions): questions, ideas and feedback
 - [Contributing](CONTRIBUTING.md): building, testing and the live suite
 - [Security](SECURITY.md): reporting a vulnerability
 

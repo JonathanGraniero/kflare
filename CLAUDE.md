@@ -273,7 +273,8 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ## Plans in progress
 
 ### Launch readiness
-**Status:** 🚧 In progress: L1 (but for one rerun) to L5 are done, v0.1.0 is released; L6 and L7 are next.
+**Status:** 🚧 In progress: L1 (but for one rerun) to L5 are done, v0.1.0 is released; L6 is done but for
+ArtifactHub; L7 is next.
 Goal: announce kflare on Reddit (r/kubernetes first, then r/CloudFlare) as a v0.1 alpha, to find its first users. The
 audience, as the user put it on 2026-10-21: companies running Kubernetes, so the docs lead with Helm and GitOps
 installs and with keeping kflare easy to maintain. kflare is a standalone project: the user docs do not compare it
@@ -392,11 +393,22 @@ resolve to the versions their comments name.
 - Done when: the quickstart works on a clean machine with nothing but the README. Holds, and so does L4's done-when
 
 #### L6. Repository settings
-In GitHub's settings, no branch.
-- [ ] About: a description that says what kflare manages, topics (`kubernetes`, `kubernetes-operator`, `cloudflare`,
-  `gitops`, `crd`, `cloudflare-tunnel`, `dns`, `waf`), and a website once `kflare.dev` serves one
-- [ ] Discussions on, so questions from the announcement do not land in issues (optional)
-- [ ] The chart listed on ArtifactHub (a Phase 4 item, cheap once v0.1.0 exists)
+**Status:** 🚧 2026-10-21: About and Discussions are done; ArtifactHub waits on the user's account. The settings
+need no branch; `docs/l6-repo-settings` adds the issue chooser's links and records this.
+- [x] About: a description that says what kflare manages, topics (`kubernetes`, `kubernetes-operator`, `cloudflare`,
+  `gitops`, `crd`, `cloudflare-tunnel`, `dns`, `waf`), and a website once `kflare.dev` serves one. Set with
+  `gh repo edit`: "Kubernetes operator that manages Cloudflare as custom resources: zones, DNS records, tunnels,
+  Workers, KV, R2, D1, WAF and Rules. Installs with Helm.", the eight topics plus `helm` (the Helm-first audience). No
+  website: `kflare.dev` and `www.kflare.dev` serve nothing (checked 2026-10-21)
+- [x] Discussions on, so questions from the announcement do not land in issues (optional). Turned on through the REST
+  API (`has_discussions`; the local gh 2.18 has no flag for it), with GitHub's default categories. The issue chooser
+  (`.github/ISSUE_TEMPLATE/config.yml`) sends questions to Q&A and vulnerability reports to private vulnerability
+  reporting, which was already on
+- [ ] The chart listed on ArtifactHub (a Phase 4 item, cheap once v0.1.0 exists). Needs the user's ArtifactHub account:
+  Control Panel → Add repository, kind Helm charts, URL `oci://ghcr.io/jonathangraniero/charts/kflare` (ArtifactHub's
+  format for OCI: registry, namespace and chart name; it indexes the semver tags). Not listed yet on 2026-10-21.
+  Optional afterwards: verified publisher, by pushing `artifacthub-repo.yml` (the repository ID ArtifactHub assigns)
+  to the chart's `artifacthub.io` tag with `oras`
 
 #### L7. Announcement
 - [ ] r/kubernetes first, r/CloudFlare a few days later. r/selfhosted asks that promoted projects be production-ready
@@ -524,8 +536,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
 > OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
-> L1 is done but for one rerun, L2 to L5 are done and v0.1.0 is released; L6 and L7 are next. The proposed
-> [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
+> L1 is done but for one rerun, L2 to L5 are done and v0.1.0 is released; L6 is done but for ArtifactHub, then L7.
+> The proposed [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
 > deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
 > [Deferred](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup) in docs/design-notes.md.

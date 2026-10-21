@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Ask a question
+    url: https://github.com/JonathanGraniero/kflare/discussions/categories/q-a
+    about: Questions about installing or using kflare go to Discussions, where the answers stay findable.
+  - name: Report a vulnerability
+    url: https://github.com/JonathanGraniero/kflare/security/advisories/new
+    about: Report security issues privately, never in a public issue.
