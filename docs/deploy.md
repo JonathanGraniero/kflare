@@ -483,9 +483,25 @@ port this lists, and `networkPolicy.apiServer.to`, if you narrow it, the address
 kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes
 ```
 
-The policy is off by default because one that misses the API server cuts the controller off. After turning it on,
-check that the controller keeps its leader lease and that your `CloudflareAccount`s stay `Ready`. It needs a CNI that
-enforces NetworkPolicies.
+The policy is off by default because one that misses the API server cuts the controller off, and that may not show
+at once. The controller connects to the API server as it starts, sooner than a CNI applies a policy to a new pod, and
+keeps that connection. To check the policy, connect from a pod under a copy of it, once the copy is in force:
+
+```sh
+kubectl -n kflare-system get networkpolicy kflare -o json \
+  | jq '.metadata = {name: "kflare-probe"} | .spec.podSelector = {matchLabels: {run: "kflare-probe"}}' \
+  | kubectl -n kflare-system apply -f -
+kubectl -n kflare-system run kflare-probe --image=registry.k8s.io/e2e-test-images/agnhost:2.53 -- pause
+kubectl -n kflare-system wait --for=condition=Ready pod/kflare-probe && sleep 10
+kubectl -n kflare-system exec kflare-probe -- /agnhost connect kflare-metrics:8080 --timeout=5s  # TIMEOUT
+kubectl -n kflare-system exec kflare-probe -- /agnhost connect kubernetes.default.svc:443 --timeout=5s
+kubectl -n kflare-system exec kflare-probe -- /agnhost connect api.cloudflare.com:443 --timeout=5s
+kubectl -n kflare-system delete pod/kflare-probe networkpolicy/kflare-probe
+```
+
+Each `connect` prints nothing when it gets through, and `TIMEOUT` when the policy blocks it. The first must time
+out: the policy opens no egress to that port, so a connection there means the policy is not in force yet (wait and
+retry) or the CNI does not enforce NetworkPolicies.
 
 Behind an HTTP proxy, set the standard proxy variables with `extraEnv`. Both Cloudflare clients and the Kubernetes
 client read them, so `NO_PROXY` must cover the API server, which the controller reaches at the `kubernetes` Service's
