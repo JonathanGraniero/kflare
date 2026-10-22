@@ -84,7 +84,7 @@ With:
 │   ├── rbac/              # Generated role.yaml + kustomize RBAC
 │   ├── default/           # Kustomize base used by make deploy
 │   └── samples/           # Example CRs
-├── test/e2e/              # Deployment smoke test against kind (make test-e2e)
+├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e)
 ├── local/                 # kind cluster setup for running the controller with make run
 ├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
 ├── helm/artifacthub-repo.yml  # Artifact Hub metadata; the Artifact Hub workflow pushes it (verified publisher)
@@ -471,12 +471,22 @@ kinds reconciling at once share a phase's ruleset)
   - `replicaCount: 2`, both pods on one worker: the PDB showed 1 allowed disruption, and `kubectl drain` evicted one
     pod and was refused 3 times for the other until its replacement was ready on the other worker; the lease moved
     to a new pod. Back at one replica the PDB was gone
-  - NetworkPolicy on: a restarted controller took the lease (the API server reached on 172.19.0.6:6443) and a
-    `CloudflareAccount` with the dev token turned `Ready` (`Validated`); metrics answered from the allowed namespaces
-    (curl 200, Prometheus up) and timed out from another; a probe pod under the same egress rules reached
-    api.cloudflare.com and the API server, and timed out on ports 80 and 8443. The log's only error line was an
-    optimistic-concurrency conflict, retried
+  - NetworkPolicy on: a `CloudflareAccount` with the dev token turned `Ready` (`Validated`), created a minute after
+    the policy; metrics answered from the allowed namespaces (curl 200, Prometheus up) and timed out from another; a
+    probe pod under the same egress rules reached api.cloudflare.com and the API server (172.19.0.6:6443), and timed
+    out on ports 80 and 8443. The log's only error line was an optimistic-concurrency conflict, retried. A restarted
+    controller taking the lease proves nothing about the API server rule (found later the same day): kindnet applies
+    a policy to a new pod about a second after it starts (a pod polling the API server from its start got through 3
+    times, then never), and the controller keeps the connection it opened in that second. With the rule broken
+    (`apiServer.ports: [1]`), a restarted controller still took the lease; a probe pod under the same policy did not
+    get through
   - `metrics.secure: false`: plain HTTP 200 without a token, no metrics-reader role and no review rules
+- [x] CI keeps checking it: the e2e suite installs the chart (`helm install`, no longer `make deploy`), with the
+  NetworkPolicy on and `metrics.certSecret` from a CA the suite makes. Smoke specs check `/metrics` (plain HTTP 400,
+  no or an invalid token 401, a token without the role 403, with it 200, the certificate verified), that the
+  running pod holds the lease, and the policy's rules from an agnhost probe pod under a copy of it (for the reason
+  above): a port it does not open is blocked first, then the API server, DNS and api.cloudflare.com:443 get through.
+  The live specs reach Cloudflare under the policy
 - Done when: a default install answers `/metrics` only over HTTPS to a token bound to the metrics-reader role, and a
   two-replica install gets a PDB that a node drain respects. Both hold (above)
 
