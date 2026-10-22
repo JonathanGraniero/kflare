@@ -58,9 +58,19 @@ logging:
   format: json
 
 metrics:
-  # -- Serve Prometheus metrics. The endpoint is plain HTTP without
-  # authentication; restrict access with a NetworkPolicy if needed.
+  # -- Serve Prometheus metrics.
   enabled: true
+  # -- Serve metrics over HTTPS, and only to callers whose bearer token the API
+  # server authenticates and authorizes for get on /metrics: bind them to the
+  # chart's `<fullname>-metrics-reader` ClusterRole. false serves plain HTTP
+  # to anyone who can reach the port, as kflare 0.1.0 did.
+  secure: true
+  # -- Name of a Secret in the release namespace holding the metrics server's
+  # certificate (`tls.crt`, `tls.key`, and `ca.crt` for the ServiceMonitor),
+  # such as one cert-manager issues for `<fullname>-metrics.<namespace>.svc`.
+  # It is reloaded when it changes. Without it, the controller uses a
+  # self-signed certificate and the ServiceMonitor skips verification.
+  certSecret: ""
   # -- Container port for metrics.
   port: 8080
   service:
@@ -69,12 +79,63 @@ metrics:
     # -- Service port.
     port: 8080
   serviceMonitor:
-    # -- Create a Prometheus Operator ServiceMonitor (needs its CRDs).
+    # -- Create a Prometheus Operator ServiceMonitor (needs its CRDs). With
+    # metrics.secure, Prometheus scrapes with its own ServiceAccount token,
+    # which must be bound to the metrics-reader ClusterRole.
     enabled: false
     # -- Scrape interval.
     interval: 30s
     # -- Extra labels, e.g. to match your Prometheus' serviceMonitorSelector.
     labels: {}
+    # -- The scrape's TLS settings (a Prometheus Operator TLSConfig), replacing
+    # the default: verify against `ca.crt` of metrics.certSecret, or skip
+    # verification without one.
+    tlsConfig: {}
+
+# A PodDisruptionBudget that lets a node drain evict one controller pod at a
+# time. Only created when replicaCount is above 1, so that a single replica
+# never blocks a drain.
+podDisruptionBudget:
+  # -- Create the PodDisruptionBudget when replicaCount > 1.
+  enabled: true
+  # -- Pods a disruption may take down at once (a number or a percentage).
+  maxUnavailable: 1
+
+# A NetworkPolicy for the controller pods. Off by default: the API server's
+# address and port vary by cluster, and a policy that misses them cuts the
+# controller off. It needs a CNI that enforces NetworkPolicies.
+networkPolicy:
+  # -- Create the NetworkPolicy.
+  enabled: false
+  # -- Sources allowed to reach the metrics port (NetworkPolicy `from` peers),
+  # such as your Prometheus' namespace. Empty allows any source. Nothing else
+  # may connect, but the kubelet's probes, which policies do not block.
+  metricsFrom: []
+  dns:
+    # -- Where DNS lookups go (NetworkPolicy `to` peers), on port 53.
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+  apiServer:
+    # -- Where the Kubernetes API server is (NetworkPolicy `to` peers), such as
+    # an ipBlock with the control plane's addresses. Empty allows any address
+    # on `apiServer.ports`.
+    to: []
+    # -- Ports the API server listens on. Most CNIs apply policies after
+    # translating the `kubernetes` Service (443) to its endpoints, so include
+    # the endpoints' port: `kubectl get endpointslices -n default -l
+    # kubernetes.io/service-name=kubernetes`.
+    ports:
+      - 443
+      - 6443
+  # -- Extra egress rules (NetworkPolicy egress entries), such as one for an
+  # HTTP proxy. Port 443 is always open to any address, for api.cloudflare.com:
+  # a NetworkPolicy cannot select a hostname.
+  extraEgress: []
 
 # -- Container port for the /healthz and /readyz probes.
 healthPort: 8081

@@ -21,7 +21,10 @@ accounts, installing with Argo CD or Flux, running in production, upgrades and u
 - The controller Deployment and its ServiceAccount, under the restricted Pod Security Standard
 - A ClusterRole for the controller, and a Role for leader election in the release namespace
 - Optionally, ClusterRoles that add kflare's kinds to the built-in `view`, `edit` and `admin` roles
-- A Service for metrics, and optionally a Prometheus Operator ServiceMonitor
+- A Service for metrics, served over HTTPS to callers allowed by the `<release>-metrics-reader` ClusterRole, and
+  optionally a Prometheus Operator ServiceMonitor
+- A PodDisruptionBudget when `replicaCount` is above 1
+- Optionally, a NetworkPolicy
 
 Before uninstalling, delete your kflare resources while the controller still runs, so it can clean up the Cloudflare
 objects it created; see
@@ -45,7 +48,11 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `logging.level` | `info` | `debug`, `info` or `error` |
 | `logging.format` | `json` | `json` or `console` |
 | `metrics.enabled` | `true` | Serve Prometheus metrics on `metrics.port` |
+| `metrics.secure` | `true` | HTTPS, only to tokens allowed `get` on `/metrics`; `false`: plain HTTP |
+| `metrics.certSecret` | unset | Secret with the metrics certificate (`tls.crt`, `tls.key`, `ca.crt`) |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor |
+| `podDisruptionBudget.enabled` | `true` | Create a PodDisruptionBudget (`maxUnavailable: 1`) when `replicaCount` > 1 |
+| `networkPolicy.enabled` | `false` | Allow only metrics scrapes in, and DNS, the API server and port 443 out |
 | `resources` | 10m/64Mi requests, 256Mi limit | Controller resources |
 | `topologySpreadConstraints`, `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` | unset | Pod scheduling |
 | `extraEnv` | `[]` | Extra environment variables, such as `HTTPS_PROXY` and `NO_PROXY` |
