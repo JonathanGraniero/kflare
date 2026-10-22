@@ -23,6 +23,12 @@ CloudflareAccount at it:
   YAML
 
   kubectl get cloudflareaccounts   # READY should become True
+{{- if and .Values.metrics.enabled .Values.metrics.secure }}
+
+Metrics are served over HTTPS, to callers allowed get on /metrics: bind your
+Prometheus' ServiceAccount to the ClusterRole {{ include "kflare.fullname" . }}-metrics-reader
+(kube-prometheus-stack's Prometheus already has that permission).
+{{- end }}
 
 Before uninstalling, delete your kflare resources while the controller is still
 running, so it can clean up (or retain) the matching Cloudflare objects.

@@ -1,0 +1,56 @@
+{{- if .Values.networkPolicy.enabled }}
+# Allows the controller pods the traffic they need, and nothing else: scrapes
+# of the metrics port in, and DNS, the Kubernetes API server and the Cloudflare
+# API out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kflare.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kflare.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if .Values.metrics.enabled }}
+    - ports:
+        - port: {{ .Values.metrics.port }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.metricsFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+      {{- with .Values.networkPolicy.dns.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    - ports:
+        {{- range .Values.networkPolicy.apiServer.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+      {{- with .Values.networkPolicy.apiServer.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    # api.cloudflare.com, at any address: a NetworkPolicy cannot select a
+    # hostname.
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

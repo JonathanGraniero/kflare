@@ -1,0 +1,18 @@
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
+# Lets a node drain evict the controller pods one at a time. With a single
+# replica there is none, so that it never blocks a drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kflare.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  # A pod that is not ready can always be evicted: it is not doing any work.
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "kflare.selectorLabels" . | nindent 6 }}
+{{- end }}

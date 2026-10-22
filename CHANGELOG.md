@@ -3,6 +3,43 @@
 kflare follows [semantic versioning](https://semver.org). While its API is `v1alpha1`, any release can change it:
 read the notes before upgrading. The chart and the controller image share one version.
 
+## Unreleased
+
+What will ship in v0.1.1: the Helm chart hardened for production
+([#67](https://github.com/JonathanGraniero/kflare/issues/67)).
+
+### Upgrading from v0.1.0
+
+**Metrics are served over HTTPS, and only to callers allowed to read them.** A scrape set up for v0.1.0 fails with
+401 or 403 until it changes, on the same port (8080):
+
+- **With the chart's ServiceMonitor**, nothing changes in your values: it scrapes over HTTPS with Prometheus' own
+  ServiceAccount token. kube-prometheus-stack's Prometheus is already allowed; any other needs its ServiceAccount
+  bound to the `kflare-metrics-reader` ClusterRole (the deploy guide's
+  [Monitoring](docs/deploy.md#monitoring) has the binding)
+- **Any other scraper** must use HTTPS, send a bearer token whose user is bound to `kflare-metrics-reader`, and either
+  skip verifying the self-signed certificate or trust one from `metrics.certSecret`
+- **To keep v0.1.0's plain HTTP**, set `metrics.secure: false`
+
+### The Helm chart
+
+- **Metrics over HTTPS with authentication and authorization**, on by default (`metrics.secure`). A request needs a
+  bearer token that the API server authenticates and authorizes for `get` on `/metrics`, which the new
+  `kflare-metrics-reader` ClusterRole grants. The controller's ClusterRole may create TokenReviews and
+  SubjectAccessReviews to check them. `metrics.certSecret` serves a certificate from a Secret, such as one
+  cert-manager issues, instead of a self-signed one, and the ServiceMonitor then verifies it
+- **A PodDisruptionBudget** with `maxUnavailable: 1` when `replicaCount` is above 1, so that a node drain evicts one
+  controller pod at a time (`podDisruptionBudget`). A single replica gets none, so it never blocks a drain
+- **An opt-in NetworkPolicy** (`networkPolicy`): scrapes of the metrics port in, from the sources you select; DNS, the
+  Kubernetes API server and port 443 (Cloudflare) out
+
+### The controller
+
+- `--metrics-secure` also authenticates and authorizes each request now, with a TokenReview and a SubjectAccessReview;
+  an allowed token is trusted for a minute. Before, it only turned on TLS
+- `--metrics-cert-path` serves the metrics certificate and key from a directory (`tls.crt`, `tls.key`), reloaded
+  when they change
+
 ## v0.1.0 (alpha)
 
 The first release of kflare, a Kubernetes operator that manages Cloudflare through custom resources. It is an alpha:
