@@ -88,7 +88,8 @@ repository, which makes kflare a verified publisher there; the `Artifact Hub` wo
 
 ## The live end-to-end suite
 
-`make test-e2e` deploys the manager to the kind cluster in your current context and checks it starts. With
+`make test-e2e` installs the manager with the Helm chart on the kind cluster in your current context, with the
+chart's NetworkPolicy on, and checks that it starts and serves its metrics only to an authorized token. With
 `CF_API_TOKEN` and `CF_ACCOUNT_ID` set, it also runs the live specs in `test/e2e/cloudflare_test.go` against your
 account, and with `CF_E2E_ZONE` the zone-level ones against that zone. They create, change and delete one of each
 resource, all named `kflare-e2e-<run>`, check Cloudflare's copy after each step, and clean up even when they fail.

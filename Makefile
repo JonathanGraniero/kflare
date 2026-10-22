@@ -87,8 +87,8 @@ test: manifests generate fmt fix vet envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
-# Deploys the manager to the kind cluster in the current context ($KIND_CLUSTER
-# names it for image loading). The Cloudflare specs also need CF_API_TOKEN and
+# Installs the manager with the Helm chart (needs helm) on the kind cluster in
+# the current context ($KIND_CLUSTER names it for image loading). The Cloudflare specs also need CF_API_TOKEN and
 # CF_ACCOUNT_ID, and CF_E2E_ZONE for Zone/DNSRecord; without them they skip.
 .PHONY: test-e2e
 test-e2e: kind ## Run the e2e suite against a kind cluster (and Cloudflare, when credentials are set).

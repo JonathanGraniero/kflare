@@ -22,8 +22,8 @@ permissions:
   contents: read
 
 jobs:
-  # Builds the manager image, deploys it with config/default to kind and
-  # checks that the manager starts. It has no Cloudflare credentials, so the
+  # Builds the manager image, installs it on kind with the Helm chart and
+  # checks that the manager starts and serves its metrics securely. It has no Cloudflare credentials, so the
   # live specs skip.
   smoke:
     name: E2E Tests (Kubernetes ${{ matrix.kubernetes }})
@@ -46,6 +46,10 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+
+      # The suite installs the manager with the Helm chart.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Set up kind
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
@@ -98,6 +102,10 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+
+      # The suite installs the manager with the Helm chart.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Set up kind
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
