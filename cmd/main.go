@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"path/filepath"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -26,6 +27,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	"github.com/JonathanGraniero/kflare/internal/controller"
+	"github.com/JonathanGraniero/kflare/pkg/metricsauth"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -46,6 +48,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var secureMetrics bool
+	var metricsCertPath string
 	var enableHTTP2 bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -53,7 +56,11 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", false,
-		"If set the metrics endpoint is served securely")
+		"If set, the metrics endpoint is served over HTTPS, and each request must carry a token that the API server "+
+			"authenticates (TokenReview) and authorizes for GET on /metrics (SubjectAccessReview)")
+	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
+		"The directory holding the metrics server's certificate (tls.crt) and key (tls.key), reloaded when they "+
+			"change. Without it, the secure metrics endpoint uses a self-signed certificate.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
@@ -84,13 +91,36 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
+	metricsServerOptions := metricsserver.Options{
+		BindAddress:   metricsAddr,
+		SecureServing: secureMetrics,
+		TLSOpts:       tlsOpts,
+	}
+	if secureMetrics {
+		// Authenticate and authorize every request to the metrics endpoint
+		// against the API server, so that only callers granted GET on
+		// /metrics (the chart's metrics-reader ClusterRole) can scrape it.
+		metricsServerOptions.FilterProvider = metricsauth.WithAuthenticationAndAuthorization
+	}
+	if metricsCertPath != "" {
+		if !secureMetrics {
+			setupLog.Error(nil, "--metrics-cert-path needs --metrics-secure")
+			os.Exit(1)
+		}
+		// The metrics server falls back to a self-signed certificate when
+		// these files are missing, so a mistyped mount would go unnoticed.
+		for _, name := range []string{"tls.crt", "tls.key"} {
+			if _, err := os.Stat(filepath.Join(metricsCertPath, name)); err != nil {
+				setupLog.Error(err, "unable to read the metrics server's certificate")
+				os.Exit(1)
+			}
+		}
+		metricsServerOptions.CertDir = metricsCertPath
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress:   metricsAddr,
-			SecureServing: secureMetrics,
-			TLSOpts:       tlsOpts,
-		},
+		Scheme:                 scheme,
+		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
