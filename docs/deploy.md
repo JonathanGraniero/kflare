@@ -86,7 +86,10 @@ The chart installs:
 - the kflare CRDs (kept on uninstall, see [Uninstalling](#uninstalling))
 - the controller Deployment, ServiceAccount and a Service for metrics
 - a ClusterRole for the controller, plus a Role for leader election in the release namespace
+- a `kflare-metrics-reader` ClusterRole for whoever scrapes the metrics (see [Monitoring](#monitoring))
+- a PodDisruptionBudget, when `replicaCount` is above 1
 - `view`/`edit` aggregation roles (see [Security model](#security-model))
+- optionally, a ServiceMonitor and a NetworkPolicy (see [Running in production](#running-in-production))
 
 Wait for the controller:
 
@@ -324,7 +327,9 @@ A values file for a production cluster usually sets:
 
 ```yaml
 # High availability: one replica is active, the others wait on the leader lease
-# and take over within about 15 seconds (the lease's duration) if it goes.
+# and take over within about 15 seconds (the lease's duration) if it goes. With
+# more than one replica, a PodDisruptionBudget lets a node drain evict one pod
+# at a time.
 replicaCount: 2
 topologySpreadConstraints:
   - maxSkew: 1
@@ -334,7 +339,8 @@ topologySpreadConstraints:
       matchLabels:
         app.kubernetes.io/name: kflare
 
-# Prometheus Operator scraping.
+# Prometheus Operator scraping, over HTTPS with Prometheus' own ServiceAccount
+# token (see Monitoring).
 metrics:
   serviceMonitor:
     enabled: true
@@ -366,8 +372,11 @@ capabilities dropped and a read-only root filesystem.
   kflare kinds, and `edit`/`admin` can manage the namespaced ones. `CloudflareAccount` is never added to
   `edit`: an account can point the controller at a token Secret in any namespace, so only cluster
   administrators should create one.
-- **Metrics** are served over plain HTTP without authentication on port 8080, inside the cluster only.
-  Restrict access with a NetworkPolicy if your metrics are sensitive.
+- **Metrics** are served over HTTPS on port 8080, and only to callers the API server authenticates and authorizes: a
+  request needs a bearer token, such as a ServiceAccount's, whose user may `get` the `/metrics` non-resource URL,
+  which the `kflare-metrics-reader` ClusterRole grants. The controller checks a token with a TokenReview and a
+  SubjectAccessReview, which its ClusterRole may create, and trusts an allowed token for a minute.
+  `metrics.secure: false` serves plain HTTP to anyone who can reach the port instead.
 
 ## Running in production
 
@@ -379,7 +388,59 @@ the `READY` column of `kubectl get` shows it. kflare does not record Kubernetes 
 The controller serves controller-runtime's standard Prometheus metrics: `controller_runtime_reconcile_total` and
 `controller_runtime_reconcile_errors_total`, labelled by `controller`, `controller_runtime_reconcile_time_seconds`,
 `workqueue_depth`, and the Go runtime's. Turn on `metrics.serviceMonitor.enabled` to have the Prometheus Operator scrape
-them. Two things to alert on:
+them.
+
+The endpoint answers over HTTPS only, and to a bearer token allowed to `get` `/metrics`: a request gets 401 without a
+token the API server accepts, and 403 with one that lacks the permission. The ServiceMonitor scrapes with Prometheus'
+own ServiceAccount token. kube-prometheus-stack's Prometheus already has the permission; for another Prometheus, bind
+its ServiceAccount to the chart's `kflare-metrics-reader` ClusterRole:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-kflare-metrics-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kflare-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: prometheus          # your Prometheus' ServiceAccount
+    namespace: monitoring
+```
+
+The ServiceMonitor reads that token with `bearerTokenFile`, which a Prometheus with
+`arbitraryFSAccessThroughSMs.deny` refuses. To scrape by hand, with a token for a ServiceAccount bound to the role:
+
+```sh
+kubectl -n kflare-system port-forward svc/kflare-metrics 8080 &
+curl -k -H "Authorization: Bearer $(kubectl -n monitoring create token prometheus)" https://localhost:8080/metrics
+```
+
+The controller's certificate is self-signed, and the ServiceMonitor skips verifying it, unless `metrics.certSecret`
+names a Secret in the release namespace that holds one: `tls.crt` and `tls.key`, and `ca.crt` for the ServiceMonitor
+to verify against. For example, from cert-manager, with an issuer whose Secrets carry `ca.crt` (a CA issuer does):
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kflare-metrics
+  namespace: kflare-system
+spec:
+  secretName: kflare-metrics-tls     # metrics.certSecret: kflare-metrics-tls
+  dnsNames:
+    - kflare-metrics.kflare-system.svc
+  issuerRef:
+    kind: ClusterIssuer
+    name: my-ca-issuer
+```
+
+The controller reloads the certificate when it is renewed. `metrics.serviceMonitor.tlsConfig` replaces the
+ServiceMonitor's TLS settings, for a CA kept elsewhere.
+
+Two things to alert on:
 
 - **Errors from Cloudflare that kflare retries** (5xx, rate limiting, network failures) count as reconcile errors.
   A rate that stays above zero means kflare cannot reach Cloudflare or is being rate limited:
@@ -400,8 +461,31 @@ The log is JSON by default, and each reconcile's lines name the resource's kind,
 ### Network access
 
 The controller needs outbound HTTPS to `api.cloudflare.com` and access to the Kubernetes API server, and nothing
-else; nothing connects to it but metrics scrapers and the kubelet's probes. The chart creates no NetworkPolicy. Under
-a default-deny policy, allow egress to DNS, the API server and port 443.
+else; nothing connects to it but metrics scrapers and the kubelet's probes. Under a default-deny policy, turn on the
+chart's NetworkPolicy, which allows just that:
+
+```yaml
+networkPolicy:
+  enabled: true
+  metricsFrom:                 # who may scrape the metrics port; empty allows any source
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+```
+
+It allows DNS to the cluster DNS (`networkPolicy.dns.to`: kube-system's pods labelled `k8s-app: kube-dns`), the API
+server on ports 443 and 6443 at any address (`networkPolicy.apiServer.ports` and `.to`), and port 443 at any address
+for Cloudflare, since a NetworkPolicy cannot select a hostname. Most CNIs apply a policy after translating the
+`kubernetes` Service to the API server's own address and port, so `networkPolicy.apiServer.ports` must include the
+port this lists, and `networkPolicy.apiServer.to`, if you narrow it, the addresses:
+
+```sh
+kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes
+```
+
+The policy is off by default because one that misses the API server cuts the controller off. After turning it on,
+check that the controller keeps its leader lease and that your `CloudflareAccount`s stay `Ready`. It needs a CNI that
+enforces NetworkPolicies.
 
 Behind an HTTP proxy, set the standard proxy variables with `extraEnv`. Both Cloudflare clients and the Kubernetes
 client read them, so `NO_PROXY` must cover the API server, which the controller reaches at the `kubernetes` Service's
@@ -414,6 +498,9 @@ extraEnv:
   - name: NO_PROXY
     value: 10.96.0.0/12,.svc,.cluster.local   # your cluster's Service CIDR
 ```
+
+With the NetworkPolicy on, add the proxy to `networkPolicy.extraEgress`, for example
+`[{to: [{ipBlock: {cidr: 10.0.0.10/32}}], ports: [{port: 3128}]}]`.
 
 ### Protecting objects that must outlive their manifests
 

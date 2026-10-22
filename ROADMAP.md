@@ -18,7 +18,9 @@ since what people ask for decides the order.
 Each is tested live against a real Cloudflare account on the Free plan, in GitHub Actions, with an API token holding
 only the permissions the [deploy guide](docs/deploy.md) lists. Existing Cloudflare objects are only taken over when a
 resource asks for it (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs
-the CRDs and the controller; the deploy guide shows it installed with Helm, Argo CD or Flux.
+the CRDs and the controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.1.1 it serves
+metrics over HTTPS to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an
+optional NetworkPolicy.
 
 ## Next
 
@@ -41,7 +43,6 @@ For running kflare:
 - **Kubernetes Events** when a resource's `Ready` condition changes
   ([#56](https://github.com/JonathanGraniero/kflare/issues/56))
 - **`kubectl get kflare`**, listing every kflare resource ([#54](https://github.com/JonathanGraniero/kflare/issues/54))
-- **In the chart**: a PodDisruptionBudget, a NetworkPolicy, and metrics served over HTTPS with authentication
 
 ## Waiting on something
 

@@ -77,6 +77,7 @@ With:
 ├── internal/controller/   # One reconciler per CRD (+ credentials.go), envtest suites alongside
 ├── pkg/
 │   ├── cloudflare/        # Client wrapper and error classification
+│   ├── metricsauth/       # Authenticates and authorizes metrics requests (TokenReview, SubjectAccessReview)
 │   └── reconciler/        # Conditions, finalizer and deletion-policy helpers
 ├── config/
 │   ├── crd/               # Generated CRDs (make manifests) + kustomization
@@ -433,23 +434,51 @@ resolve to the versions their comments name.
 run in GitHub Actions since 2026-10-21 (Release and CI below).
 
 #### Chart hardening for v0.1.1 (`feat/chart-hardening`)
-**Status:** 🔲 Decided 2026-10-21 for the release after v0.1.0, which is out, so it can start. One PR off main. The chart
-has no PodDisruptionBudget or NetworkPolicy, and `--metrics-secure` turns on TLS only: the manager sets no
-`FilterProvider`, so nothing authenticates or authorizes a scrape.
-- [ ] Metrics over HTTPS with authentication and authorization **on by default** (the user's choice): the manager's
-  `FilterProvider` is controller-runtime's `filters.WithAuthenticationAndAuthorization`, the controller's ClusterRole
-  gains `tokenreviews` and `subjectaccessreviews` create, the chart adds a `metrics-reader` ClusterRole
-  (`nonResourceURLs: /metrics`, get) for Prometheus to bind, and the ServiceMonitor scrapes over HTTPS with its
-  ServiceAccount token. A value turns it back to plain HTTP. It changes how v0.1.0 is scraped, so the release notes
-  say so
-- [ ] PodDisruptionBudget, `maxUnavailable: 1`, created by default only when `replicaCount` > 1 (the user's choice), so
-  a single replica never blocks a node drain; a value turns it off
-- [ ] NetworkPolicy, opt-in (default off: the API server's address varies by cluster): ingress to the metrics port from
-  selected namespaces, egress to DNS, the API server and port 443
-- [ ] values.yaml, values.schema.json, the chart README and deploy.md (Security model, Monitoring, Network access);
-  `make helm-lint`, and a kind install that scrapes `/metrics` with and without a bound token
+**Status:** 🚧 Built 2026-10-22 for [#67](https://github.com/JonathanGraniero/kflare/issues/67), one PR off main,
+awaiting review; ships in v0.1.1 (CHANGELOG.md's Unreleased section says how to upgrade). Not in it: the issue's
+section 4 (no HorizontalPodAutoscaler; sizing guidance and `MaxConcurrentReconciles` are a later proposal, since rule
+kinds reconciling at once share a phase's ruleset)
+- [x] Metrics over HTTPS with authentication and authorization **on by default** (the user's choice), `metrics.secure`.
+  The filter is kflare's own, `pkg/metricsauth`, the user's choice on 2026-10-22: controller-runtime's
+  `filters.WithAuthenticationAndAuthorization` pulls in `k8s.io/apiserver` (26 more modules, among them gRPC,
+  OpenTelemetry and CEL; a stripped manager of 64.5 MB instead of 39.6 MB). `pkg/metricsauth` sends the same
+  TokenReview and SubjectAccessReview through client-go's typed clients, which the manager linked already: 41 KB more,
+  no new module, the image still 58.5 MB. It trusts an allowed token for a minute, remembers no refusal, and rate
+  limits its reviews (5 a second, bursts of 10) apart from the controllers' client. Its envtest tests run against a
+  real API server; 31 of 31 mutations caught. The chart adds the two review rules to the controller's ClusterRole
+  while `metrics.secure` is on (not through markers, so a plain-HTTP install holds no extra permission), and a
+  `<fullname>-metrics-reader` ClusterRole. The ServiceMonitor scrapes over HTTPS with Prometheus' own ServiceAccount
+  token (`bearerTokenFile`). `metrics.certSecret` mounts a certificate from a Secret (`--metrics-cert-path`), which
+  the ServiceMonitor then verifies with the Secret's `ca.crt`; otherwise self-signed and `insecureSkipVerify`. The
+  port stays 8080, so that `metrics.secure: false` alone restores v0.1.0
+- [x] PodDisruptionBudget, `maxUnavailable: 1` (`podDisruptionBudget.maxUnavailable`), created by default only when
+  `replicaCount` > 1 (the user's choice), with `unhealthyPodEvictionPolicy: AlwaysAllow`
+- [x] NetworkPolicy, opt-in (`networkPolicy.enabled`): ingress to the metrics port from `metricsFrom` (any source when
+  empty), egress to DNS (`dns.to`, kube-system's `k8s-app: kube-dns`), the API server (`apiServer.ports` 443 and 6443,
+  any address unless `apiServer.to`) and 443 anywhere, plus `extraEgress`
+- [x] values.yaml, values.schema.json, the chart README, NOTES.txt, deploy.md (install list, Configuration, Security
+  model, Monitoring, Network access), ROADMAP.md, CHANGELOG.md; `make helm-lint` renders the new values
+- Checked 2026-10-22 on a new kind cluster (kindest/node v1.34.11, one control plane and two workers, kindnet
+  `v20260820`, which enforces NetworkPolicies: a deny-all egress policy cut a probe pod off), with the image built
+  from the branch, then deleted:
+  - Default install: `/metrics` over plain HTTP 400, HTTPS without a token or with an invalid one 401, a
+    ServiceAccount token without the role 403, with the role 200; no PDB or NetworkPolicy
+  - `metrics.certSecret` with a test CA: curl verified the certificate and got 200; a new certificate in the Secret
+    was served 45 s later without a restart. `certSecret` without `secure` fails to render
+  - kube-prometheus-stack 92.2.0: its Prometheus scraped kflare (target up) with no binding of its own (its
+    ClusterRole already grants get on `/metrics`), both verifying the CA from `certSecret` and skipping verification
+    of the self-signed certificate
+  - `replicaCount: 2`, both pods on one worker: the PDB showed 1 allowed disruption, and `kubectl drain` evicted one
+    pod and was refused 3 times for the other until its replacement was ready on the other worker; the lease moved
+    to a new pod. Back at one replica the PDB was gone
+  - NetworkPolicy on: a restarted controller took the lease (the API server reached on 172.19.0.6:6443) and a
+    `CloudflareAccount` with the dev token turned `Ready` (`Validated`); metrics answered from the allowed namespaces
+    (curl 200, Prometheus up) and timed out from another; a probe pod under the same egress rules reached
+    api.cloudflare.com and the API server, and timed out on ports 80 and 8443. The log's only error line was an
+    optimistic-concurrency conflict, retried
+  - `metrics.secure: false`: plain HTTP 200 without a token, no metrics-reader role and no review rules
 - Done when: a default install answers `/metrics` only over HTTPS to a token bound to the metrics-reader role, and a
-  two-replica install gets a PDB that a node drain respects
+  two-replica install gets a PDB that a node drain respects. Both hold (above)
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🔲 Proposed, not decided: the user picks what comes after OriginRule, and in what order
