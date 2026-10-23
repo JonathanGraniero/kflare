@@ -29,10 +29,13 @@ type settingsKind struct {
 	svc     *settingsService
 	// unconfigured are the values the settings hold in a zone nobody has
 	// configured, sorted by path, and unconfiguredState the settings of such a
-	// zone that the generated specs start from: the sample's, with those
-	// values.
+	// zone that the generated specs start from: the sample's, with an item no
+	// spec lists in each keyed list (unlisted), and with those values.
+	// configuredStates are those settings with one value each changed to its
+	// other: settings configured outside kflare, in that one respect.
 	unconfigured      []settingsValue
 	unconfiguredState map[string]any
+	configuredStates  []map[string]any
 	// listKeys holds the field that tells apart the items of each keyed list,
 	// and sets the paths of the sets, by path of API names (settingsPath).
 	listKeys     map[string]string
@@ -44,10 +47,11 @@ type settingsKind struct {
 const settingsRoot = "the settings"
 
 // settingsValue is the value the settings of a zone nobody has configured
-// hold at a path of API names, such as managed_request_headers[].enabled.
+// hold at a path of API names, such as managed_request_headers[].enabled, and
+// other another value of the field, which configured settings may hold.
 type settingsValue struct {
-	path  string
-	value any
+	path         string
+	value, other any
 }
 
 // buildSettingsKind builds the model of entry's kind from its service and the
@@ -133,14 +137,76 @@ func (b *settingsKindBuilder) build() (*settingsKind, error) {
 	if !settingsConfigured(k.bodies[0], k.unconfigured) {
 		return nil, fmt.Errorf("sample: it configures nothing: each value it sets is the one unconfigured gives")
 	}
-	k.unconfiguredState = copySpec(k.bodies[0])
-	for _, v := range k.unconfigured {
-		setSettingsValue(k.unconfiguredState, strings.Split(v.path, "."), v.value)
-	}
 	if err := k.edits(entryRules(e.Rules, e.Fields)); err != nil {
 		return nil, err
 	}
+	k.unconfiguredState = copySpec(k.bodies[0])
+	k.unlisted()
+	for _, v := range k.unconfigured {
+		setSettingsValue(k.unconfiguredState, strings.Split(v.path, "."), v.value)
+	}
+	for _, v := range k.unconfigured {
+		settings := copySpec(k.unconfiguredState)
+		setLastSettingsValue(settings, strings.Split(v.path, "."), v.other)
+		if !settingsConfigured(settings, k.unconfigured) {
+			return nil, fmt.Errorf("unconfigured.values.%s: the sample's settings hold no such value, so the "+
+				"generated specs cannot configure it", v.path)
+		}
+		k.configuredStates = append(k.configuredStates, settings)
+	}
 	return k, nil
+}
+
+// unlisted adds to each keyed list of the unconfigured settings an item no
+// spec lists, as Cloudflare holds the items a write leaves out, such as the
+// managed transforms a ManagedTransform does not list: a copy of the first
+// item a spec lists, under a key no spec uses. A list the sample leaves out
+// holds that item alone.
+func (k *settingsKind) unlisted() {
+	bodies := slices.Clone(k.bodies)
+	for _, e := range slices.Concat(k.changes, k.full) {
+		bodies = append(bodies, e.rule)
+	}
+	for _, path := range slices.Sorted(maps.Keys(k.listKeys)) {
+		key := k.listKeys[path]
+		var first map[string]any
+		used := map[any]bool{}
+		for _, body := range bodies {
+			for _, item := range settingsValuesAt(body, strings.Split(path+"[]", ".")) {
+				object, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if first == nil {
+					first = object
+				}
+				used[normalizeNumber(object[key])] = true
+			}
+		}
+		if first == nil {
+			continue
+		}
+		item := copySpec(first)
+		item[key] = unusedKey(first[key], used)
+		appendSettingsItem(k.unconfiguredState, strings.Split(path, "."), item)
+	}
+}
+
+// unusedKey returns a key that used, as normalizeNumber holds them, does not
+// hold: a number if example is one, else "unlisted", or "unlisted-2" and on.
+func unusedKey(example any, used map[any]bool) any {
+	if _, number := normalizeNumber(example).(float64); number {
+		n := int64(1)
+		for used[float64(n)] {
+			n++
+		}
+		return n
+	}
+	key := "unlisted"
+	for i := 2; used[key]; i++ {
+		key = fmt.Sprintf("unlisted-%d", i)
+	}
+	return key
 }
 
 // calls checks that each of the service's calls takes the zone's ID, which
@@ -195,10 +261,11 @@ func (b *settingsKindBuilder) unconfigured(k *settingsKind) error {
 			return fmt.Errorf("unconfigured.values.%s: %w", path, err)
 		}
 		value := values[path]
-		if err := b.checkUnconfigured(leaf, value); err != nil {
+		other, err := b.checkUnconfigured(leaf, value)
+		if err != nil {
 			return fmt.Errorf("unconfigured.values.%s: %w", path, err)
 		}
-		k.unconfigured = append(k.unconfigured, settingsValue{path: path, value: value})
+		k.unconfigured = append(k.unconfigured, settingsValue{path: path, value: value, other: other})
 	}
 	return nil
 }
@@ -231,29 +298,42 @@ func (b *settingsKindBuilder) settingsField(path string) (sdkField, error) {
 }
 
 // checkUnconfigured checks a value an unconfigured zone's settings hold
-// against the type of the field there: a string, a bool or a number.
-func (b *settingsKindBuilder) checkUnconfigured(f sdkField, value any) error {
+// against the type of the field there, a string, a bool or a number, and
+// returns another value of the field: the other bool, the next number,
+// another of an enum's values, or another string.
+func (b *settingsKindBuilder) checkUnconfigured(f sdkField, value any) (any, error) {
 	switch basicClass(f.typ) {
 	case types.IsString:
 		s, ok := value.(string)
 		if !ok {
-			return fmt.Errorf("%v is not a string", value)
+			return nil, fmt.Errorf("%v is not a string", value)
 		}
-		if f.enum != nil && !slices.Contains(f.enum, s) {
-			return fmt.Errorf("%q is not one of %s", s, strings.Join(f.enum, ", "))
+		if f.enum == nil {
+			return s + "-other", nil
 		}
+		if !slices.Contains(f.enum, s) {
+			return nil, fmt.Errorf("%q is not one of %s", s, strings.Join(f.enum, ", "))
+		}
+		for _, other := range f.enum {
+			if other != s {
+				return other, nil
+			}
+		}
+		return nil, fmt.Errorf("%q is the field's only value, so the settings cannot be configured", s)
 	case types.IsBoolean:
-		if _, ok := value.(bool); !ok {
-			return fmt.Errorf("%v is not a bool", value)
+		on, ok := value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("%v is not a bool", value)
 		}
+		return !on, nil
 	case types.IsNumeric:
-		if _, ok := value.(float64); !ok {
-			return fmt.Errorf("%v is not a number", value)
+		n, ok := value.(float64)
+		if !ok {
+			return nil, fmt.Errorf("%v is not a number", value)
 		}
-	default:
-		return fmt.Errorf("the field is a %s; only a string, a bool or a number can be compared", typeName(f.typ))
+		return n + 1, nil
 	}
-	return nil
+	return nil, fmt.Errorf("the field is a %s; only a string, a bool or a number can be compared", typeName(f.typ))
 }
 
 // shapeOf records the keyed lists and the sets of the struct st, at path.
@@ -387,6 +467,55 @@ func setSettingsValue(settings map[string]any, steps []string, value any) {
 	for _, item := range items {
 		if object, ok := item.(map[string]any); ok && len(steps) > 1 {
 			setSettingsValue(object, steps[1:], value)
+		}
+	}
+}
+
+// setLastSettingsValue sets the value at the path made of steps in settings,
+// as setSettingsValue does, but in the last item of each list the path goes
+// through only, and in no object it does not find.
+func setLastSettingsValue(settings map[string]any, steps []string, value any) {
+	name, list := strings.CutSuffix(steps[0], "[]")
+	if len(steps) == 1 && !list {
+		settings[name] = value
+		return
+	}
+	next := settings[name]
+	if list {
+		items, _ := next.([]any)
+		if len(items) == 0 {
+			return
+		}
+		next = items[len(items)-1]
+	}
+	if object, ok := next.(map[string]any); ok && len(steps) > 1 {
+		setLastSettingsValue(object, steps[1:], value)
+	}
+}
+
+// appendSettingsItem appends a copy of item to the list at the path made of
+// steps in settings, the list's name last: in each item of a list the path
+// goes through, and in a new list, and objects, where it finds none.
+func appendSettingsItem(settings map[string]any, steps []string, item map[string]any) {
+	name, list := strings.CutSuffix(steps[0], "[]")
+	if len(steps) == 1 {
+		items, _ := settings[name].([]any)
+		settings[name] = append(items, copySpec(item))
+		return
+	}
+	if !list {
+		next, ok := settings[name].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			settings[name] = next
+		}
+		appendSettingsItem(next, steps[1:], item)
+		return
+	}
+	items, _ := settings[name].([]any)
+	for _, i := range items {
+		if object, ok := i.(map[string]any); ok {
+			appendSettingsItem(object, steps[1:], item)
 		}
 	}
 }

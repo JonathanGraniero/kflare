@@ -48,6 +48,12 @@ var _ = describeSettingsKind(settingsKindSpecs[*cloudflarev1alpha1.TestDNSSEC, T
 	newFake:      func(store *fakeSettingsStore) TestDNSSECAPI { return fakeTestDNSSECAPI{store} },
 	defaultAPI:   defaultTestDNSSECAPI,
 	unconfigured: `{"dnssec_multi_signer":false,"status":"disabled"}`,
+	configured: []settingsSpecCase{
+		{
+			what:     "status \"active\"",
+			settings: `{"dnssec_multi_signer":false,"status":"active"}`,
+		},
+	},
 	samples: []settingsSpecCase{
 		{
 			what:     "the sample",

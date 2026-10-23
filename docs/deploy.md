@@ -51,6 +51,7 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 | `CacheRule` | Zone · Cache Rules · Edit |
 | `ConfigurationRule` | Zone · Config Rules · Edit |
 | `OriginRule` | Zone · Origin Rules · Edit |
+| `ManagedTransform` | Zone · Managed Headers · Edit |
 | `IPList` | Account · Account Rule Lists · Edit |
 
 These are enough on their own: in October 2026 a token holding only them (with Zone · Zone · Read, and without Billing)
@@ -245,6 +246,7 @@ Every other kind references the account (or a resource that does). Examples are 
 | `CacheRule` | Namespaced | `zoneRef` (same namespace) | [static assets for a day](../config/samples/cloudflare_v1alpha1_cacherule.yaml) |
 | `ConfigurationRule` | Namespaced | `zoneRef` (same namespace) | [stricter settings for admin pages](../config/samples/cloudflare_v1alpha1_configurationrule.yaml) |
 | `OriginRule` | Namespaced | `zoneRef` (same namespace) | [API requests to port 8443](../config/samples/cloudflare_v1alpha1_originrule.yaml) |
+| `ManagedTransform` | Namespaced | `zoneRef` (same namespace); one per Cloudflare zone | [visitor location and security headers](../config/samples/cloudflare_v1alpha1_managedtransform.yaml) |
 
 To expose a Service on your domain through a Cloudflare Tunnel, see
 [`examples/expose-a-service`](../examples/expose-a-service). It puts the pieces together: a Zone, a Tunnel, its
@@ -316,6 +318,13 @@ Things to know before pointing kflare at existing infrastructure:
   the only override Free, Pro and Business zones may use: Cloudflare's documentation lists the Host header, SNI and DNS
   record overrides for Enterprise plans, and Cloudflare refuses them on Free, so kflare leaves them out. Cloudflare's
   documentation gives Free zones 10 origin rules.
+- **Managed transforms.** A `ManagedTransform` turns its zone's managed transforms on and off, by ID: those that add
+  or remove request headers (`managedRequestHeaders`) and response headers (`managedResponseHeaders`). The transforms
+  it does not list keep their state. One ManagedTransform configures a zone: another one for the same Cloudflare zone,
+  in any namespace, reports `AlreadyConfigured` until the first is gone. A zone with any transform on counts as
+  configured outside kflare, so a ManagedTransform takes it over only with an adoption policy. Deleting it turns all of
+  the zone's managed transforms off, unless it adopted them or the retain policy is set. Free zones have six
+  transforms; `GET /zones/{zone_id}/managed_headers` lists those a zone has.
 - **Immutable fields.** Names and references (`spec.name`, `accountRef`, `zoneRef`, DNS `type`, ...) cannot be
   changed. Create a new resource instead.
 
@@ -576,13 +585,13 @@ Order matters, because kflare's finalizers need the controller running to clean 
 
 1. **Delete your kflare resources while the controller is still running.** Each one deletes the Cloudflare
    object it created, and keeps one it adopted or one annotated `retain`. The order does not matter: Zones
-   wait for their records, routes and rules, Tunnels for their configurations and the records that point at
-   them, KV namespaces and R2 buckets for the Workers bound to them, IP lists for the rules that use them,
-   accounts until nothing uses them, and token Secrets until no account uses them. An R2 bucket that still
-   holds objects is not deleted: empty it, or annotate the R2Bucket `retain`.
+   wait for their records, routes, rules and managed transforms, Tunnels for their configurations and the
+   records that point at them, KV namespaces and R2 buckets for the Workers bound to them, IP lists for the
+   rules that use them, accounts until nothing uses them, and token Secrets until no account uses them. An R2
+   bucket that still holds objects is not deleted: empty it, or annotate the R2Bucket `retain`.
 
    ```sh
-   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,wafcustomrules.kflare.dev,ratelimitrules.kflare.dev,managedrulesets.kflare.dev,transformrules.kflare.dev,redirectrules.kflare.dev,cacherules.kflare.dev,configurationrules.kflare.dev,originrules.kflare.dev,iplists.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev,kvnamespaces.kflare.dev,r2buckets.kflare.dev,d1databases.kflare.dev --all -A
+   kubectl delete zones.kflare.dev,dnsrecords.kflare.dev,workerroutes.kflare.dev,wafcustomrules.kflare.dev,ratelimitrules.kflare.dev,managedrulesets.kflare.dev,transformrules.kflare.dev,redirectrules.kflare.dev,cacherules.kflare.dev,configurationrules.kflare.dev,originrules.kflare.dev,managedtransforms.kflare.dev,iplists.kflare.dev,tunnels.kflare.dev,tunnelconfigurations.kflare.dev,workerscripts.kflare.dev,kvnamespaces.kflare.dev,r2buckets.kflare.dev,d1databases.kflare.dev --all -A
    kubectl delete cloudflareaccounts.kflare.dev --all
    ```
 

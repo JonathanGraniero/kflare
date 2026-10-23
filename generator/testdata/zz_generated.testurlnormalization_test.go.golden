@@ -47,6 +47,16 @@ var _ = describeSettingsKind(settingsKindSpecs[*cloudflarev1alpha1.TestURLNormal
 	newFake:      func(store *fakeSettingsStore) TestURLNormalizationAPI { return fakeTestURLNormalizationAPI{store} },
 	defaultAPI:   defaultTestURLNormalizationAPI,
 	unconfigured: `{"scope":"incoming","type":"cloudflare"}`,
+	configured: []settingsSpecCase{
+		{
+			what:     "scope \"both\"",
+			settings: `{"scope":"both","type":"cloudflare"}`,
+		},
+		{
+			what:     "type \"rfc3986\"",
+			settings: `{"scope":"incoming","type":"rfc3986"}`,
+		},
+	},
 	samples: []settingsSpecCase{
 		{
 			what:     "the sample",

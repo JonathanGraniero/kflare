@@ -701,3 +701,52 @@ ruleKinds:
       logging: Only skip rules log (20018 on a transform rule, verified live on 2026-10-15).
       ratelimit: Rate limits are refused in the transform phases (20131, verified live on 2026-10-15).
       exposed_credential_check: Refused in the transform phases (20189, verified live on 2026-10-15).
+
+# The settings kinds kflare-gen generates: each resource configures one product's settings in a zone, which always
+# exist, through the shared settings controller (internal/controller/settings_controller.go). One resource configures
+# a zone's settings of a kind, and deleting it resets them. A settings kind's spec holds the fields every settings kind
+# shares (SettingsSpec) and the body of its service's write, which kflare-gen builds from cloudflare-go v7's params and
+# the OpenAPI schema, as for rule kinds. Each entry says what the settings hold in a zone nobody has configured
+# (`unconfigured`), and how that was verified.
+settingsKinds:
+  - kind: ManagedTransform
+    service: managed_transforms.ManagedTransformService
+    shortName: cfmanagedtransform
+    noun: managed transforms
+    doc: |
+      ManagedTransform is the Schema for the managedtransforms API.
+      It turns a zone's managed transforms on and off: the request and response
+      headers Cloudflare adds or removes for the zone. One ManagedTransform
+      configures a zone. Deleting it turns all of the zone's managed transforms
+      off, unless the retain deletion policy is set or it adopted them.
+    sample:
+      managedRequestHeaders:
+        - id: add_visitor_location_headers
+          enabled: true
+      managedResponseHeaders:
+        - id: remove_x-powered-by_header
+          enabled: true
+        - id: add_security_headers
+          enabled: true
+    fields:
+      managed_request_headers:
+        listMapKey: id
+        doc: |
+          ManagedRequestHeaders turns managed request transforms on or off, by
+          ID. A Free zone has add_client_certificate_headers,
+          add_visitor_location_headers, remove_visitor_ip_headers and
+          add_waf_credential_check_status_header. Transforms the list leaves out
+          keep their state.
+      managed_response_headers:
+        listMapKey: id
+        doc: |
+          ManagedResponseHeaders turns managed response transforms on or off, by
+          ID. A Free zone has remove_x-powered-by_header and
+          add_security_headers. Transforms the list leaves out keep their state.
+    unconfigured:
+      values:
+        managed_request_headers[].enabled: false
+        managed_response_headers[].enabled: false
+      reason: >-
+        Every transform is off on kflare.dev, which nobody has configured (read live on 2026-10-22 and 2026-10-23), and
+        the reset turns them all off ("Disables all Managed Transforms", Cloudflare's API documentation).

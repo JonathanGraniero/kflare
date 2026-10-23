@@ -25,6 +25,7 @@ import (
 
 	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/d1"
+	"github.com/cloudflare/cloudflare-go/v7/managed_transforms"
 	"github.com/cloudflare/cloudflare-go/v7/rulesets"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -94,7 +95,9 @@ const (
 // so the zone must hold no other, and two runs cannot share the zone at once.
 // Likewise a Free account holds one IP list, so it must hold no other, and a
 // zone deploys a managed ruleset at most once, so no rule in the zone may
-// deploy the Free Managed Ruleset already.
+// deploy the Free Managed Ruleset already. The ManagedTransform spec turns
+// some of the zone's managed transforms on and then all of them off, so they
+// must all be off before the run.
 var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 	var (
 		ctx       = context.Background()
@@ -110,16 +113,22 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		// ruleService is cloudflare-go v7's ruleset rule service: v0's rule
 		// delete fails on the API's answer.
 		ruleService *rulesets.RuleService
+		// transforms is cloudflare-go v7's managed transforms service, which
+		// kflare calls too.
+		transforms *managed_transforms.ManagedTransformService
 
 		accountKey, tunnelKey, tunnelConfigKey, workerKey, zoneKey, recordKey client.ObjectKey
 		tunnelRecordKey                                                       client.ObjectKey
 		routeKey, exclusionKey, kvKey, bucketKey, wafKey, wafSkipKey          client.ObjectKey
 		rateLimitKey, listKey, listRuleKey, managedKey, d1Key                 client.ObjectKey
 		urlRewriteKey, requestHeadersKey, responseHeadersKey, redirectKey     client.ObjectKey
-		cacheKey, configurationKey, originKey                                 client.ObjectKey
+		cacheKey, configurationKey, originKey, managedTransformKey            client.ObjectKey
 
 		tunnelID, zoneID, recordID, routeID, exclusionID, kvNamespaceID, listID, databaseID string
 		tunnelRecordID                                                                      string
+		// transformsTurnedOn is set once the run may have turned the zone's
+		// managed transforms on, having found them all off.
+		transformsTurnedOn bool
 	)
 
 	// resourceName is the name of every Cloudflare object this run creates.
@@ -203,6 +212,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		databases = d1.NewDatabaseService(cfClient.V7Options()...)
 		ruleService = rulesets.NewRuleService(cfClient.V7Options()...)
+		transforms = managed_transforms.NewManagedTransformService(cfClient.V7Options()...)
 
 		accountKey = client.ObjectKey{Name: resourceName()}
 		tunnelKey = client.ObjectKey{Namespace: e2eNamespace, Name: "tunnel"}
@@ -229,6 +239,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		cacheKey = client.ObjectKey{Namespace: e2eNamespace, Name: "cache"}
 		configurationKey = client.ObjectKey{Namespace: e2eNamespace, Name: "configuration"}
 		originKey = client.ObjectKey{Namespace: e2eNamespace, Name: "origin"}
+		managedTransformKey = client.ObjectKey{Namespace: e2eNamespace, Name: "managed-transform"}
 
 		DeferCleanup(func() {
 			By("removing anything this run left behind in Cloudflare")
@@ -264,6 +275,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				// stops Cloudflare's default deployment of the Free Managed
 				// Ruleset; deleting it restores the zone as found.
 				cleanupEmptyEntrypoint(ctx, cfAPI, zoneID, managedPhase)
+				if transformsTurnedOn {
+					cleanupManagedTransforms(ctx, transforms, zoneID)
+				}
 			}
 			// After the rules: Cloudflare does not delete a list a rule uses.
 			cleanupList(ctx, cfAPI, accountRC, listName())
@@ -1133,6 +1147,43 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		expectIdle(ctx, k8s, cfAPI, zoneID, originPhase, rule)
 	})
 
+	It("turns managed transforms on, and changes them in place without touching those it no longer lists", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		Expect(enabledTransforms(ctx, transforms, zoneID)).To(BeEmpty(),
+			"the zone's managed transforms must all be off: the run turns them all off at the end")
+		transformsTurnedOn = true
+		transform := &cloudflarev1alpha1.ManagedTransform{
+			ObjectMeta: objectMeta(managedTransformKey),
+			Spec: cloudflarev1alpha1.ManagedTransformSpec{
+				SettingsSpec: cloudflarev1alpha1.SettingsSpec{ZoneRef: corev1.LocalObjectReference{Name: zoneKey.Name}},
+				ManagedRequestHeaders: []cloudflarev1alpha1.ManagedTransformManagedRequestHeader{
+					{ID: "add_visitor_location_headers", Enabled: true},
+				},
+				ManagedResponseHeaders: []cloudflarev1alpha1.ManagedTransformManagedResponseHeader{
+					{ID: "remove_x-powered-by_header", Enabled: true},
+				},
+			},
+		}
+		Expect(k8s.Create(ctx, transform)).To(Succeed())
+		expectReady(managedTransformKey, transform, func() []metav1.Condition { return transform.Status.Conditions })
+		Expect(transform.Status.CloudflareMetadata.ZoneID).To(Equal(zoneID))
+		Expect(enabledTransforms(ctx, transforms, zoneID)).To(
+			ConsistOf("add_visitor_location_headers", "remove_x-powered-by_header"))
+
+		By("turning one off and another on, in place, and no longer listing the third")
+		patch := client.MergeFrom(transform.DeepCopy())
+		transform.Spec.ManagedRequestHeaders[0].Enabled = false
+		transform.Spec.ManagedResponseHeaders = []cloudflarev1alpha1.ManagedTransformManagedResponseHeader{
+			{ID: "add_security_headers", Enabled: true},
+		}
+		Expect(k8s.Patch(ctx, transform, patch)).To(Succeed())
+		Eventually(func() []string {
+			return enabledTransforms(ctx, transforms, zoneID)
+		}, e2eTimeout, e2ePoll).Should(ConsistOf("remove_x-powered-by_header", "add_security_headers"))
+	})
+
 	It("deploys the Free Managed Ruleset, updates its overrides in place and then leaves it alone", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")
@@ -1305,6 +1356,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			&cloudflarev1alpha1.CacheRule{ObjectMeta: objectMeta(cacheKey)},
 			&cloudflarev1alpha1.ConfigurationRule{ObjectMeta: objectMeta(configurationKey)},
 			&cloudflarev1alpha1.OriginRule{ObjectMeta: objectMeta(originKey)},
+			&cloudflarev1alpha1.ManagedTransform{ObjectMeta: objectMeta(managedTransformKey)},
 			&cloudflarev1alpha1.WAFCustomRule{ObjectMeta: objectMeta(listRuleKey)},
 			&cloudflarev1alpha1.IPList{ObjectMeta: objectMeta(listKey)},
 			&cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(recordKey)},
@@ -1371,6 +1423,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			Expect(ok).To(BeFalse(), "the configuration rule was not deleted")
 			_, ok = ruleByRef(phaseRules(ctx, cfAPI, zoneID, originPhase), ruleRef("OriginRule", originKey))
 			Expect(ok).To(BeFalse(), "the origin rule was not deleted")
+			Expect(enabledTransforms(ctx, transforms, zoneID)).To(BeEmpty(), "the managed transforms were not turned off")
 			_, err = cfAPI.GetEntrypointRuleset(ctx, cf.ZoneIdentifier(zoneID), managedPhase)
 			Expect(cfpkg.IsNotFound(err)).To(BeTrue(),
 				"the managed phase's emptied entry point was not deleted, which leaves Cloudflare's default off: %v", err)
@@ -1671,5 +1724,41 @@ func cleanupRules(
 		if _, err := ruleService.Delete(ctx, ruleset.ID, rule.ID, params); err != nil && !cfpkg.IsNotFound(err) {
 			GinkgoWriter.Printf("cleanup: deleting %s rule %s: %v\n", phase, rule.ID, err)
 		}
+	}
+}
+
+// enabledTransforms returns the IDs of the zone's managed transforms that are
+// on, request and response transforms alike.
+func enabledTransforms(
+	ctx context.Context, transforms *managed_transforms.ManagedTransformService, zoneID string,
+) []string {
+	var params managed_transforms.ManagedTransformListParams
+	params.ZoneID.Value, params.ZoneID.Present = zoneID, true
+	settings, err := transforms.List(ctx, params)
+	Expect(err).NotTo(HaveOccurred())
+	var ids []string
+	for _, transform := range settings.ManagedRequestHeaders {
+		if transform.Enabled {
+			ids = append(ids, transform.ID)
+		}
+	}
+	for _, transform := range settings.ManagedResponseHeaders {
+		if transform.Enabled {
+			ids = append(ids, transform.ID)
+		}
+	}
+	return ids
+}
+
+// cleanupManagedTransforms turns all of the zone's managed transforms off, as
+// the run found them, with the reset kflare calls. It only reports problems: it
+// runs after the specs, whether or not they passed.
+func cleanupManagedTransforms(
+	ctx context.Context, transforms *managed_transforms.ManagedTransformService, zoneID string,
+) {
+	var params managed_transforms.ManagedTransformDeleteParams
+	params.ZoneID.Value, params.ZoneID.Present = zoneID, true
+	if err := transforms.Delete(ctx, params); err != nil {
+		GinkgoWriter.Printf("cleanup: turning the managed transforms off: %v\n", err)
 	}
 }

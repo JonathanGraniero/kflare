@@ -393,7 +393,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/managed-ruleset-controller` | `ManagedRuleset` (was `WAFPackage`) | rulesets-foundation | ✅ By hand (decided 2026-10-13). Free: only the Cloudflare Free Managed Ruleset, with overrides |
 | Code generator: `feat/cloudflare-go-v7` … `feat/generator-rule-kinds` (8 PRs) | none: `kflare-gen` and the shared CRUD reconciler; KVNamespace moves onto them; the first new generated kind and the first generated rule kind (see [Code generator](../generator/CLAUDE.md#code-generator-kflare-gen)) | — | ✅ 8 of 8 (`feat/cloudflare-go-v7` … `feat/generator-rule-kinds`); decided 2026-10-13 |
 | `feat/d1-database-controller` | `D1Database` | code generator (PR 6) | ✅ Generated end to end. Free: 10 databases, 500 MB each, 5 GB in total |
-| `feat/managed-transform-controller` | `ManagedTransform` | zone-controller | Free: all six transforms |
+| `feat/managed-transform-controller` | `ManagedTransform` | code generator (settings kinds) | 🚧 Generated, the first settings kind; the live run waits on Managed headers Write. Free: all six transforms, none conflicting |
 | `feat/generator-rule-kinds` | `TransformRule` | code generator (rule kinds) | ✅ Generated, the first rule kind (the code generator's PR 8). Free: 10 rules across its three phases, no regex |
 | `feat/redirect-rule-controller` | `RedirectRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔, no regex ✔ |
 | `feat/cache-rule-controller` | `CacheRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔; of a custom cache key, only leaving out the query string ✔ |
@@ -439,7 +439,7 @@ names; deploy.md uses the dashboard's labels, so look those up when each branch 
 | `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `fd8de2`); enough on its own (2026-10-17, see below) |
 | `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `e9994a`); enough on its own (2026-10-19, see below) |
 | `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry runs and ten probe rules written and deleted (2026-10-18); written, updated and deleted by the e2e (run `2748f8`); enough on its own (2026-10-19, see below) |
-| `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run). An empty PATCH was refused on 2026-10-17, so Config Settings Write, which the OpenAPI spec lists for it, is not enough |
+| `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run). An empty PATCH was refused on 2026-10-17, so Config Settings Write, which the OpenAPI spec lists for it, is not enough. The user OK'd adding Managed headers Write on `kflare.dev` to the dev and CI tokens (2026-10-22); the session's safety check blocked the token edit on 2026-10-22 and 2026-10-23. Cloudflare's documentation also lists Account Rulesets Read for the PATCH, which the CI token, holding deploy.md's permissions, lacks: its live run will tell |
 | `IPList` | Account Rule Lists Write (account) | ✅ create, replace and delete verified 2026-10-13; enough on its own |
 | `D1Database` | D1 Write (account) | ✅ create, read, list and delete verified 2026-10-15; enough on its own (2026-10-15, see below) |
 | `AccessGroup`, `AccessPolicy`, `AccessApplication` | Access: Organizations, Identity Providers, and Groups Write; Access: Apps and Policies Write (account) | ✅, but Access is not enabled |
@@ -977,24 +977,52 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
 
 
 #### Branch: `feat/managed-transform-controller`
-**Depends on:** `feat/zone-controller`
-**Status:** 🔲 Not started
+**Depends on:** `feat/zone-controller`, the code generator's settings kinds (`feat/generator-singletons`, #92)
+**Status:** 🚧 Generated; the live probes and e2e run wait on Managed headers Write for the dev and CI tokens
 
-- [ ] `api/v1alpha1/managedtransform_types.go`: `spec.zoneRef` (immutable), `requestHeaders[]` and
-  `responseHeaders[]`: the transforms to enable, by Cloudflare's ID. `kflare.dev` offers
-  `add_client_certificate_headers`, `add_visitor_location_headers`, `remove_visitor_ip_headers` and
-  `add_waf_credential_check_status_header` for requests, `remove_x-powered-by_header` and `add_security_headers` for
-  responses (2026-10-09). Every transform not listed is disabled
-- [ ] Controller: owns the zone's whole configuration, like TunnelConfiguration. The oldest ManagedTransform per zone
-  owns it; the others report `AlreadyConfigured`. `ListZoneManagedHeaders` → compare → `UpdateZoneManagedHeaders`;
-  surfaces Cloudflare's `has_conflict` / `conflicts_with`. Deletion disables every transform unless `retain`
-- [ ] Needs Managed headers Write on the dev token (ask the user). Config Settings Write, which the dev token has on
-  `kflare.dev` and the OpenAPI spec lists for the endpoint, was refused for an empty PATCH on 2026-10-17
-- [ ] A settings-style singleton: build it on kflare-gen's singleton runtime rather than by hand (see
-  [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17)). The runtime is built (`feat/generator-singletons`: settings
-  kinds, see [generator/CLAUDE.md](../generator/CLAUDE.md)); kflare-gen generates the spec from v7's Edit params, so
-  the transforms are lists of `{id, enabled}` keyed by `id` (`listMapKey`) rather than lists of IDs, and Cloudflare's
-  other transforms are not compared
+The first settings kind, generated end to end: its entry in `generator/generator.yaml`, the generated output and a live
+e2e spec. It replaces the plan written before kflare-gen had settings kinds, which listed the transforms to enable by
+ID and disabled every other one.
+
+**ManagedTransform design notes (read live on `kflare.dev`, 2026-10-22 and 2026-10-23; nothing written yet):**
+- Its spec is v7's Edit params, `managedRequestHeaders` and `managedResponseHeaders`: lists of `{id, enabled}` keyed
+  by `id` (`listMapKey`), so the API server refuses a transform listed twice. Drift compares the transforms a spec
+  lists, and those it does not list keep their state, whoever turned them on. The old plan's "every transform not
+  listed is disabled" is a spec that lists them all. Flagged to the user with #92 (2026-10-23), who went ahead
+- Free: six transforms, `add_client_certificate_headers`, `add_visitor_location_headers`, `remove_visitor_ip_headers`
+  and `add_waf_credential_check_status_header` for requests, `remove_x-powered-by_header` and `add_security_headers`
+  for responses, all off on `kflare.dev`, with no conflicts (`conflicts_with` empty). Cloudflare lists only the
+  transforms a zone's plan has, and its documentation says it refuses to turn on one that conflicts with one that is on
+  (`add_true_client_ip_headers` and `remove_visitor_ip_headers`); a Free zone cannot show that refusal
+- Unconfigured: every transform off, as `kflare.dev`, which nobody has configured, holds them; Cloudflare's reset
+  ("Disables all Managed Transforms") turns them all off, those a spec does not list included. Deleting the
+  ManagedTransform that configures the zone resets it, as the resource took over the zone's managed transforms
+- One ManagedTransform per Cloudflare zone, with the settings kinds' sticky ownership (see ARCHITECTURE.md's
+  Settings). The plan's `has_conflict` and `conflicts_with` are not surfaced in status: a conflicting PATCH is refused
+  with Cloudflare's message, which the `TerminalError` condition carries
+- The permission: Managed headers Write, the dashboard's Zone · Managed Headers · Edit. Not a Rulesets endpoint, so no
+  dry run. Config Settings Write, which the OpenAPI spec lists for the PATCH, was refused for an empty PATCH on
+  2026-10-17, with the dev token's account-level Transform Rules Write too
+- Live e2e spec: it checks that the zone's managed transforms are all off, turns `add_visitor_location_headers` and
+  `remove_x-powered-by_header` on, then in place turns the first off and `add_security_headers` on, no longer listing
+  `remove_x-powered-by_header`, which must stay on: the PATCH's merge by ID that the fake (`fakeSettingsStore`)
+  assumes. The all-at-once deletion spec deletes it and checks that every transform is off again; the suite's cleanup
+  turns them off if the run turned them on and stopped before that. A zone's managed transforms carry no version, so
+  the e2e cannot see an idle write: the shared envtest specs check that an idle reconcile writes nothing
+- kflare-gen needed no new mapping, but the kind's mutation check found two gaps in the generated specs, which three
+  mutations survived: a keyed list compared without its key, and an `unconfigured` value left out. kflare-gen now
+  closes them for every settings kind (see [generator/CLAUDE.md](../generator/CLAUDE.md)): the fake writes keyed lists
+  as the table says Cloudflare does, the unconfigured zone holds an item no spec lists in each keyed list, a shared
+  spec checks that the kind keys its lists alike, and another checks each unconfigured value. The kind also turned up
+  a spec that predated settings kinds: `SetupGeneratedReconcilers`' expected the rule kinds and the account's
+  dependents; it now expects every account and Zone dependent
+- Mutations: 45 of the generated kind's calls (read, write and reset, each in its zone), its desired settings,
+  keyed lists and unconfigured values, the conversion of each list and field, the registration (the controller, the
+  Zone's dependents), the API type's accessors, JSON names and scheme registration, and the CRD's refusals (empty or
+  missing IDs, missing `enabled`, an ID listed twice), all caught; 24 of kflare-gen's new code, all caught
+- Waiting on the permission: the live probes (a PATCH of some transforms leaves the others as they are, the reset, an
+  ID the zone does not have) and the live e2e run, with the dev token and with the CI token, which also tells whether
+  deploy.md's permissions are enough on their own
 
 
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)
