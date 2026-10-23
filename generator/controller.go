@@ -131,7 +131,7 @@ func (b *controllerBuilder) build() (*controller, error) {
 // calls checks the shape of the calls the shared CRUD reconciler makes.
 func (b *controllerBuilder) calls(c *controller) error {
 	svc := b.svc
-	for _, name := range []string{"List", "Delete"} {
+	for _, name := range []string{listMethod, "Delete"} {
 		if svc.calls[name] == nil {
 			return fmt.Errorf("the service has no %s, which the shared CRUD reconciler calls", name)
 		}

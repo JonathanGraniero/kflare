@@ -17,10 +17,13 @@ import (
 )
 
 // ruleKind is the model of a generated rule kind: what its types file, its
-// controller, its envtest table and its sample hold.
+// controller, its envtest table and its sample hold. Its paramKind's params
+// are the action parameters, and the bodies, the changes and the full specs
+// ask for a rule, as Cloudflare stores it, its ref aside.
 type ruleKind struct {
-	name, shortName, noun, plural string
-	doc                           []string
+	paramKind
+	shortName, noun, plural string
+	doc                     []string
 	// varName starts the kind's unexported names, as in transformRuleKind.
 	varName string
 	rule    *sdkRule
@@ -32,26 +35,9 @@ type ruleKind struct {
 	phases []rulePhase
 	// typeDoc documents the type field; nil for a kind with one phase.
 	typeDoc []string
-	// params is the struct of the action parameters, whose fields the spec
-	// holds, and structs the nested structs, in the order they appear.
-	params  *paramStruct
-	structs []*paramStruct
-	// specRules are CEL rules on the spec: the action parameters' own, then
-	// the entry's.
-	specRules []celRule
-	// samples are the entry's samples, checked, and tests its tests; rules
-	// are the rule each of them asks for, the samples' first, as Cloudflare
-	// stores it, its ref aside.
-	samples, tests, rules []map[string]any
-	// changes are edits of the samples that change their rule, with the rule
-	// each asks for; retypes are specs a resource of the first sample may
-	// not change to; invalid are specs the CRD refuses; full are specs that
-	// set every field, with the rule each asks for.
-	changes, retypes, invalid, full []ruleEdit
-	printColumns                    []printColumn
-	// cel evaluates the kind's CEL rules on the specs the generated specs
-	// write.
-	cel *celChecker
+	// retypes are specs a resource of the first sample may not change to.
+	retypes      []ruleEdit
+	printColumns []printColumn
 }
 
 // rulePhase is a phase of a rule kind, and the type that picks it.
@@ -89,6 +75,9 @@ const (
 	ruleActionParameters = "action_parameters"
 )
 
+// actionParametersRoot is what messages call a rule kind's params.
+const actionParametersRoot = "the action parameters"
+
 // sharedSpecFields are the spec fields a sample sets besides the action
 // parameters, in the order a sample lists them. zoneRef a generated spec
 // fills in.
@@ -117,9 +106,11 @@ type ruleKindBuilder struct {
 func (b *ruleKindBuilder) build() (*ruleKind, error) {
 	e, rule := b.entry, b.rule
 	k := &ruleKind{
-		name: e.Kind, shortName: e.ShortName, noun: e.Noun, plural: plural(e.Kind), doc: lines(e.Doc),
+		paramKind: paramKind{name: e.Kind, root: actionParametersRoot},
+		shortName: e.ShortName, noun: e.Noun, plural: plural(e.Kind), doc: lines(e.Doc),
 		varName: lowerCamel(e.Kind), rule: rule,
 	}
+	k.check, k.body = k.checkSpec, k.apiRule
 	var err error
 	if k.actionConst, err = rule.r.constantNamed("RulesetNewParamsRulesAction", rule.action); err != nil {
 		return nil, err
@@ -143,7 +134,8 @@ func (b *ruleKindBuilder) build() (*ruleKind, error) {
 		}
 		used[f.apiName] = true
 	}
-	pb := &paramBuilder{kind: e.Kind, r: rule.r, spec: b.spec, adjust: e.Fields, ignore: e.Ignore, used: used}
+	pb := &paramBuilder{kind: e.Kind, r: rule.r, spec: b.spec, adjust: e.Fields, ignore: e.Ignore, used: used,
+		root: actionParametersRoot}
 	if k.params, err = pb.object("", e.Kind+"Spec", e.Kind, rule.params, paramsSchema); err != nil {
 		return nil, err
 	}
@@ -171,57 +163,80 @@ func (b *ruleKindBuilder) build() (*ruleKind, error) {
 	k.printColumns = append(k.printColumns,
 		printColumn{name: "Priority", typ: typeInteger, jsonPath: ".spec.priority"},
 		printColumn{name: "Rule ID", typ: typeString, jsonPath: ".status.cloudflareMetadata.ruleID"},
-		printColumn{name: "Ready", typ: typeString, jsonPath: `.status.conditions[?(@.type=="Ready")].status`},
-		printColumn{name: "Age", typ: "date", jsonPath: ".metadata.creationTimestamp"})
+		readyColumn, ageColumn)
 
 	if k.cel, err = newCELChecker(); err != nil {
 		return nil, err
 	}
-	for i, sample := range e.Samples {
-		checked, err := k.checkSpec(sample, k.phases[i].typeName)
-		if err == nil {
-			err = k.valid(checked)
+	// A sample's type is the one at its place in the types; a test's is the
+	// one it sets, which must be one of them.
+	err = k.addSpecs(e.Samples, e.Tests, func(sample bool, i int, spec map[string]any) (string, error) {
+		if sample {
+			return k.phases[i].typeName, nil
 		}
-		if err != nil {
-			return nil, fmt.Errorf("samples[%d]: %w", i, err)
-		}
-		k.samples = append(k.samples, checked)
-		k.rules = append(k.rules, k.apiRule(checked))
-	}
-	for i, test := range e.Tests {
-		typeName, _ := test[fieldType].(string)
+		typeName, _ := spec[fieldType].(string)
 		if k.typeDoc != nil && !slices.ContainsFunc(k.phases, func(p rulePhase) bool { return p.typeName == typeName }) {
-			return nil, fmt.Errorf("tests[%d]: type %v is none of the kind's types", i, test[fieldType])
+			return "", fmt.Errorf("type %v is none of the kind's types", spec[fieldType])
 		}
-		checked, err := k.checkSpec(test, typeName)
-		if err == nil {
-			err = k.valid(checked)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("tests[%d]: %w", i, err)
-		}
-		k.tests = append(k.tests, checked)
-		k.rules = append(k.rules, k.apiRule(checked))
+		return typeName, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	if err := k.edits(entryRules(e)); err != nil {
+	if err := k.edits(entryRules(e.Rules, e.Fields)); err != nil {
 		return nil, err
 	}
 	return k, nil
 }
 
-// specs returns the specs the generated specs write: the samples, then the
-// tests.
-func (k *ruleKind) specs() []map[string]any {
-	return append(slices.Clone(k.samples), k.tests...)
-}
-
-// specName names the spec specs returns at i in messages: a sample or a test
-// of the entry.
-func (k *ruleKind) specName(i int) string {
-	if i < len(k.samples) {
-		return fmt.Sprintf("samples[%d]", i)
+// edits builds the generated specs' edits of the samples: a rule kind's own,
+// its description and enabled changed and the specs of its other types,
+// around the edits of its action parameters.
+func (k *ruleKind) edits(rules []entryRule) error {
+	e := k.editor()
+	e.change(0, "a new description", func(spec map[string]any) { spec[fieldDescription] = "changed by kflare-gen" })
+	if enabled, ok := k.samples[0][fieldEnabled].(bool); ok && !enabled {
+		e.change(0, "the rule enabled", func(spec map[string]any) { spec[fieldEnabled] = true })
+	} else {
+		e.change(0, "the rule disabled", func(spec map[string]any) { spec[fieldEnabled] = false })
 	}
-	return fmt.Sprintf("tests[%d]", i-len(k.samples))
+	k.scalarChanges(e, false)
+	if e.failed != nil {
+		return e.failed
+	}
+	values := k.sampleValues()
+	k.swaps(values, e.change)
+	if e.failed != nil {
+		return e.failed
+	}
+
+	for i := 1; i < len(k.samples); i++ {
+		k.retypes = append(k.retypes, ruleEdit{what: "type " + k.phases[i].typeName, spec: copySpec(k.samples[i]),
+			message: "type is immutable"})
+	}
+
+	if k.typeDoc != nil {
+		spec := copySpec(k.samples[0])
+		spec[fieldType] = "kflare-not-a-type"
+		k.invalid = append(k.invalid, ruleEdit{what: "a type outside its values", spec: spec,
+			message: "spec.type: Unsupported value"})
+	}
+	if err := k.invalidValues(); err != nil {
+		return err
+	}
+	if err := k.ruleBreaches(values); err != nil {
+		return err
+	}
+	if err := k.entryInvalid(rules); err != nil {
+		return err
+	}
+	shared := map[string]any{}
+	for _, name := range sharedSpecFields {
+		if value, ok := k.samples[0][name]; ok {
+			shared[name] = value
+		}
+	}
+	return k.fullSpecs(values, shared, k.phases[0].typeName)
 }
 
 // phaseOf returns the phase of a checked spec's rule: its type's, or the
@@ -243,13 +258,13 @@ type entryRule struct {
 
 // entryRules returns an entry's CEL rules: those on the spec, then those on
 // objects of its fields, by path.
-func entryRules(e ruleKindConfig) []entryRule {
-	out := make([]entryRule, 0, len(e.Rules))
-	for i, r := range e.Rules {
+func entryRules(rules []ruleConfig, fields map[string]ruleFieldConfig) []entryRule {
+	out := make([]entryRule, 0, len(rules))
+	for i, r := range rules {
 		out = append(out, entryRule{where: fmt.Sprintf("rules[%d]", i), ruleConfig: r})
 	}
-	for _, path := range slices.Sorted(maps.Keys(e.Fields)) {
-		for i, r := range e.Fields[path].Rules {
+	for _, path := range slices.Sorted(maps.Keys(fields)) {
+		for i, r := range fields[path].Rules {
 			out = append(out, entryRule{where: fmt.Sprintf("fields.%s.rules[%d]", path, i), ruleConfig: r})
 		}
 	}
@@ -450,10 +465,18 @@ func checkNode(node paramNode, value any, path string) (any, error) {
 			return nil, fmt.Errorf("%s is not a list with items", path)
 		}
 		out := make([]any, len(items))
+		keys := map[any]bool{}
 		for i, item := range items {
 			checked, err := checkNode(n.items, item, fmt.Sprintf("%s[%d]", path, i))
 			if err != nil {
 				return nil, err
+			}
+			if n.key != nil {
+				key := checked.(map[string]any)[n.key.jsonName]
+				if keys[key] {
+					return nil, fmt.Errorf("%s lists %v twice", path, key)
+				}
+				keys[key] = true
 			}
 			out[i] = checked
 		}

@@ -63,6 +63,13 @@ type printColumn struct {
 	name, typ, jsonPath string
 }
 
+// readyColumn and ageColumn are the print columns every kind's list ends
+// with.
+var (
+	readyColumn = printColumn{name: "Ready", typ: typeString, jsonPath: `.status.conditions[?(@.type=="Ready")].status`}
+	ageColumn   = printColumn{name: "Age", typ: "date", jsonPath: ".metadata.creationTimestamp"}
+)
+
 // typeString is a string, both as a Go type and as a print column's type;
 // typeInt64 and typeBool are the Go types of an integer and a bool, and
 // typeInteger an integer's type in the OpenAPI spec and in a print column.
@@ -217,9 +224,7 @@ func (b *kindBuilder) build() (*kind, error) {
 	if err != nil {
 		return nil, err
 	}
-	k.printColumns = append(append(specColumns, statusColumns...),
-		printColumn{name: "Ready", typ: typeString, jsonPath: `.status.conditions[?(@.type=="Ready")].status`},
-		printColumn{name: "Age", typ: "date", jsonPath: ".metadata.creationTimestamp"})
+	k.printColumns = append(append(specColumns, statusColumns...), readyColumn, ageColumn)
 
 	sections := []struct {
 		name  string
@@ -495,6 +500,11 @@ func goTypeOf(f sdkField, specType string) (goType, column string, err error) {
 // isAccountID reports whether f is the account_id a call's path takes.
 func isAccountID(f sdkField) bool {
 	return f.in == inPath && f.apiName == "account_id"
+}
+
+// isZoneID reports whether f is the zone_id a call's path takes.
+func isZoneID(f sdkField) bool {
+	return f.in == inPath && f.apiName == "zone_id"
 }
 
 // isString reports whether t is a string type.

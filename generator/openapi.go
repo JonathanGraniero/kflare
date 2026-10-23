@@ -194,6 +194,16 @@ func (s *apiSpec) pageSize(list route) (int64, error) {
 // requestProperties returns the properties of an operation's JSON request
 // body.
 func (s *apiSpec) requestProperties(op *operation) (map[string]*schema, error) {
+	sch, err := s.requestSchema(op)
+	if err != nil || sch == nil {
+		return nil, err
+	}
+	return s.properties(sch)
+}
+
+// requestSchema returns the schema of an operation's JSON request body; nil
+// when it takes none.
+func (s *apiSpec) requestSchema(op *operation) (*schema, error) {
 	body := op.RequestBody
 	if body != nil && body.Ref != "" {
 		var err error
@@ -208,7 +218,7 @@ func (s *apiSpec) requestProperties(op *operation) (map[string]*schema, error) {
 	if !ok {
 		return nil, nil
 	}
-	return s.properties(media.Schema)
+	return media.Schema, nil
 }
 
 // resultProperties returns the properties of the result an operation's

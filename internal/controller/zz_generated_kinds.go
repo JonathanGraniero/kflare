@@ -58,8 +58,8 @@ var generatedAccountDependents = []dependentKind{
 // controller drives.
 var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, originRuleKind, redirectRuleKind, transformRuleKind}
 
-// generatedZoneDependents are the generated rule kinds, whose resources
-// reference a Zone in their namespace.
+// generatedZoneDependents are the generated rule and settings kinds, whose
+// resources reference a Zone in their namespace.
 var generatedZoneDependents = []dependentKind{
 	dependents("CacheRule", func() client.ObjectList { return &cloudflarev1alpha1.CacheRuleList{} },
 		func(obj *cloudflarev1alpha1.CacheRule) []string { return []string{obj.Spec.ZoneRef.Name} }),

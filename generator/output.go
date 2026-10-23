@@ -123,6 +123,32 @@ func (o *outputs) addRuleKind(k *ruleKind, header string) error {
 	return nil
 }
 
+// addSettingsKind adds a settings kind's files.
+func (o *outputs) addSettingsKind(k *settingsKind, header string) error {
+	lower := strings.ToLower(k.name)
+	types, err := emitSettingsTypes(k, header)
+	if err != nil {
+		return err
+	}
+	ctrl, err := emitSettingsController(k, header)
+	if err != nil {
+		return err
+	}
+	test, err := emitSettingsKindTest(k, header)
+	if err != nil {
+		return err
+	}
+	sample, err := emitSettingsSample(k)
+	if err != nil {
+		return err
+	}
+	o.files[typesFile(lower)] = types
+	o.files[controllerFile(lower)] = ctrl
+	o.files[controllerTestFile(lower)] = test
+	o.files[sampleFile(lower)] = sample
+	return nil
+}
+
 // write writes the outputs into the repository at root: it removes the
 // generated files of kinds no longer listed, writes every file, and rewrites
 // the blocks of the files kflare-gen edits.

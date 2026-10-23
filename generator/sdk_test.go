@@ -63,6 +63,28 @@ func loadTestRule(t *testing.T, name string) *sdkRule {
 	return rule
 }
 
+var (
+	testSettingsMu sync.Mutex
+	testSettings   = map[string]*settingsService{}
+)
+
+// loadTestSettings loads a cloudflare-go v7 service of settings once per
+// test binary.
+func loadTestSettings(t *testing.T, name string) *settingsService {
+	t.Helper()
+	testSettingsMu.Lock()
+	defer testSettingsMu.Unlock()
+	if svc, ok := testSettings[name]; ok {
+		return svc
+	}
+	svc, err := sdk{dir: "."}.settings(name)
+	if err != nil {
+		t.Fatalf("loading %s: %v", name, err)
+	}
+	testSettings[name] = svc
+	return svc
+}
+
 // summary describes fields compactly, one string each.
 func summary(fields []sdkField) []string {
 	out := make([]string, 0, len(fields))

@@ -147,3 +147,63 @@ ruleKinds:
       logging: Not mapped by rule kinds yet.
       ratelimit: Not mapped by rule kinds yet.
       exposed_credential_check: Not mapped by rule kinds yet.
+
+# Settings kinds, each from a real cloudflare-go v7 service that keeps a zone's settings.
+settingsKinds:
+  # Required enums, read with Get and written with Update (a PUT), reset with a Delete that returns nothing.
+  - kind: TestURLNormalization
+    service: url_normalization.URLNormalizationService
+    shortName: testurlnormalization
+    noun: URL normalization
+    doc: TestURLNormalization configures how Cloudflare normalizes the URLs of a zone's requests.
+    sample:
+      scope: both
+      type: rfc3986
+    unconfigured:
+      values:
+        scope: incoming
+        type: cloudflare
+      reason: >-
+        Cloudflare's defaults, as kflare.dev, which nobody has configured, holds them (read live 2026-10-22).
+
+  # Lists of objects keyed by their IDs, read with a List that returns the settings and written with Edit (a PATCH).
+  - kind: TestManagedTransform
+    service: managed_transforms.ManagedTransformService
+    shortName: testmanagedtransform
+    noun: managed transforms
+    doc: TestManagedTransform turns a zone's managed transforms on and off.
+    sample:
+      managedRequestHeaders:
+        - id: add_visitor_location_headers
+          enabled: true
+      managedResponseHeaders:
+        - id: add_security_headers
+          enabled: true
+    fields:
+      managed_request_headers:
+        listMapKey: id
+      managed_response_headers:
+        listMapKey: id
+    unconfigured:
+      values:
+        managed_request_headers[].enabled: false
+        managed_response_headers[].enabled: false
+      reason: >-
+        Every transform is disabled on kflare.dev, which nobody has configured (read live 2026-10-22), and the reset
+        disables them all, as Cloudflare documents it.
+
+  # Optional bools and an enum, read with Get and written with Edit (a PATCH), reset with a Delete that returns a
+  # result.
+  - kind: TestDNSSEC
+    service: dns.DNSSECService
+    shortName: testdnssec
+    noun: DNSSEC
+    doc: TestDNSSEC signs a zone's DNS records with DNSSEC.
+    sample:
+      status: active
+      dnssecMultiSigner: false
+    unconfigured:
+      values:
+        status: disabled
+      reason: >-
+        DNSSEC is disabled on kflare.dev, which nobody has configured (read live 2026-10-22), and the reset deletes it.

@@ -14,12 +14,12 @@ import (
 	"github.com/google/cel-go/ext"
 )
 
-// kflare-gen evaluates the CEL rules of a rule kind, those it writes and those
-// its entry gives, on the specs its generated specs write: the API server
-// refuses a spec that breaks one. So a change that would is left out, a
-// sample or test that does is an error in the entry, and each invalid spec
-// must break the rule it is for. The environment is CEL's with the strings
-// extension, which the API server's also holds.
+// kflare-gen evaluates the CEL rules of a rule or settings kind, those it
+// writes and those its entry gives, on the specs its generated specs write:
+// the API server refuses a spec that breaks one. So a change that would is
+// left out, a sample or test that does is an error in the entry, and each
+// invalid spec must break the rule it is for. The environment is CEL's with
+// the strings extension, which the API server's also holds.
 
 // celChecker evaluates CEL rules on objects as JSON decodes them.
 type celChecker struct {
@@ -62,7 +62,7 @@ func (c *celChecker) holds(rule string, self any) (bool, error) {
 
 // breaks checks that a spec breaks a rule with message, as an invalid spec
 // must.
-func (k *ruleKind) breaks(spec map[string]any, message string) error {
+func (k *paramKind) breaks(spec map[string]any, message string) error {
 	broken, err := k.broken(spec)
 	if err != nil {
 		return err
@@ -74,7 +74,7 @@ func (k *ruleKind) breaks(spec map[string]any, message string) error {
 }
 
 // valid checks that a spec breaks no rule, as a sample or test must.
-func (k *ruleKind) valid(spec map[string]any) error {
+func (k *paramKind) valid(spec map[string]any) error {
 	broken, err := k.broken(spec)
 	if err != nil {
 		return err
@@ -87,7 +87,7 @@ func (k *ruleKind) valid(spec map[string]any) error {
 
 // broken returns the messages of the rules a checked spec breaks: the spec's
 // own, and those of every object in it.
-func (k *ruleKind) broken(spec map[string]any) ([]string, error) {
+func (k *paramKind) broken(spec map[string]any) ([]string, error) {
 	var messages []string
 	var failed error
 	check := func(rules []celRule, self map[string]any) {

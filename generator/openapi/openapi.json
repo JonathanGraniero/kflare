@@ -18,6 +18,132 @@
         }
       }
     },
+    "requestBodies": {
+      "rulesets_ManagedTransforms": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/rulesets_ManagedTransformsPatch"
+            }
+          }
+        },
+        "required": true
+      },
+      "rulesets_UrlNormalization": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/rulesets_UrlNormalization"
+            }
+          }
+        },
+        "required": true
+      }
+    },
+    "responses": {
+      "rulesets_Failure": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/rulesets_Response"
+                },
+                {
+                  "properties": {
+                    "result": {
+                      "enum": [
+                        null
+                      ],
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "success": {
+                      "enum": [
+                        false
+                      ],
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            }
+          }
+        },
+        "description": "A failure response."
+      },
+      "rulesets_ManagedTransforms": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/rulesets_Response"
+                },
+                {
+                  "properties": {
+                    "errors": {
+                      "enum": [
+                        []
+                      ],
+                      "items": {},
+                      "type": "array"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/rulesets_ManagedTransforms"
+                    },
+                    "success": {
+                      "enum": [
+                        true
+                      ],
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            }
+          }
+        },
+        "description": "A Managed Transforms response."
+      },
+      "rulesets_UrlNormalization": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/rulesets_Response"
+                },
+                {
+                  "properties": {
+                    "errors": {
+                      "enum": [
+                        []
+                      ],
+                      "items": {},
+                      "type": "array"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/rulesets_UrlNormalization"
+                    },
+                    "success": {
+                      "enum": [
+                        true
+                      ],
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            }
+          }
+        },
+        "description": "A URL Normalization response."
+      }
+    },
     "schemas": {
       "d1_account-identifier": {
         "description": "Account identifier tag.",
@@ -300,6 +426,298 @@
         "description": "The number of tables in the D1 database. This count is no longer accurate and should not be relied upon.",
         "example": 12,
         "type": "number",
+        "x-auditable": true
+      },
+      "dnssec_algorithm": {
+        "description": "Algorithm key code.",
+        "example": "13",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_api-response-common": {
+        "properties": {
+          "errors": {
+            "$ref": "#/components/schemas/dnssec_messages"
+          },
+          "messages": {
+            "$ref": "#/components/schemas/dnssec_messages"
+          },
+          "success": {
+            "description": "Whether the API call was successful.",
+            "enum": [
+              true
+            ],
+            "example": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "errors",
+          "messages"
+        ],
+        "type": "object"
+      },
+      "dnssec_api-response-common-failure": {
+        "properties": {
+          "errors": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/dnssec_messages"
+              }
+            ],
+            "example": [
+              {
+                "code": 7003,
+                "message": "No route for the URI"
+              }
+            ],
+            "minLength": 1
+          },
+          "messages": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/dnssec_messages"
+              }
+            ],
+            "example": []
+          },
+          "result": {
+            "enum": [
+              null
+            ],
+            "nullable": true,
+            "type": "object"
+          },
+          "success": {
+            "description": "Whether the API call was successful.",
+            "enum": [
+              false
+            ],
+            "example": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "errors",
+          "messages",
+          "result"
+        ],
+        "type": "object"
+      },
+      "dnssec_api-response-single": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/dnssec_api-response-common"
+          }
+        ],
+        "type": "object"
+      },
+      "dnssec_digest": {
+        "description": "Digest hash.",
+        "example": "48E939042E82C22542CB377B580DFDC52A361CEFDC72E7F9107E2B6BD9306A45",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_digest_algorithm": {
+        "description": "Type of digest algorithm.",
+        "example": "SHA256",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_digest_type": {
+        "description": "Coded type for digest algorithm.",
+        "example": "2",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_dnssec": {
+        "properties": {
+          "algorithm": {
+            "$ref": "#/components/schemas/dnssec_algorithm"
+          },
+          "digest": {
+            "$ref": "#/components/schemas/dnssec_digest"
+          },
+          "digest_algorithm": {
+            "$ref": "#/components/schemas/dnssec_digest_algorithm"
+          },
+          "digest_type": {
+            "$ref": "#/components/schemas/dnssec_digest_type"
+          },
+          "dnssec_multi_signer": {
+            "$ref": "#/components/schemas/dnssec_dnssec_multi_signer"
+          },
+          "dnssec_presigned": {
+            "$ref": "#/components/schemas/dnssec_dnssec_presigned"
+          },
+          "dnssec_use_nsec3": {
+            "$ref": "#/components/schemas/dnssec_dnssec_use_nsec3"
+          },
+          "ds": {
+            "$ref": "#/components/schemas/dnssec_ds"
+          },
+          "flags": {
+            "$ref": "#/components/schemas/dnssec_flags"
+          },
+          "key_tag": {
+            "$ref": "#/components/schemas/dnssec_key_tag"
+          },
+          "key_type": {
+            "$ref": "#/components/schemas/dnssec_key_type"
+          },
+          "modified_on": {
+            "$ref": "#/components/schemas/dnssec_modified_on"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/dnssec_public_key"
+          },
+          "status": {
+            "$ref": "#/components/schemas/dnssec_status"
+          }
+        },
+        "type": "object"
+      },
+      "dnssec_dnssec_multi_signer": {
+        "description": "If true, multi-signer DNSSEC is enabled on the zone, allowing multiple\nproviders to serve a DNSSEC-signed zone at the same time.\nThis is required for DNSKEY records (except those automatically\ngenerated by Cloudflare) to be added to the zone.\n\nSee [Multi-signer DNSSEC](https://developers.cloudflare.com/dns/dnssec/multi-signer-dnssec/) for details.",
+        "example": false,
+        "type": "boolean",
+        "x-auditable": true
+      },
+      "dnssec_dnssec_presigned": {
+        "description": "If true, allows Cloudflare to transfer in a DNSSEC-signed zone\nincluding signatures from an external provider, without requiring\nCloudflare to sign any records on the fly.\n\nNote that this feature has some limitations.\nSee [Cloudflare as Secondary](https://developers.cloudflare.com/dns/zone-setups/zone-transfers/cloudflare-as-secondary/setup/#dnssec) for details.",
+        "example": true,
+        "type": "boolean",
+        "x-auditable": true
+      },
+      "dnssec_dnssec_response_single": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/dnssec_api-response-single"
+          },
+          {
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/dnssec_dnssec"
+              }
+            },
+            "type": "object"
+          }
+        ]
+      },
+      "dnssec_dnssec_use_nsec3": {
+        "description": "If true, enables the use of NSEC3 together with DNSSEC on the zone.\nCombined with setting dnssec_presigned to true, this enables the use of\nNSEC3 records when transferring in from an external provider.\nIf dnssec_presigned is instead set to false (default), NSEC3 records will be\ngenerated and signed at request time.\n\nSee [DNSSEC with NSEC3](https://developers.cloudflare.com/dns/dnssec/enable-nsec3/) for details.",
+        "example": false,
+        "type": "boolean",
+        "x-auditable": true
+      },
+      "dnssec_ds": {
+        "description": "Full DS record.",
+        "example": "example.com. 3600 IN DS 16953 13 2 48E939042E82C22542CB377B580DFDC52A361CEFDC72E7F9107E2B6BD9306A45",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_flags": {
+        "description": "Flag for DNSSEC record.",
+        "example": 257,
+        "nullable": true,
+        "readOnly": true,
+        "type": "number",
+        "x-auditable": true
+      },
+      "dnssec_identifier": {
+        "description": "Identifier.",
+        "example": "023e105f4ecef8ad9ca31a8372d0c353",
+        "maxLength": 32,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_key_tag": {
+        "description": "Code for key tag.",
+        "example": 42,
+        "nullable": true,
+        "readOnly": true,
+        "type": "number",
+        "x-auditable": true
+      },
+      "dnssec_key_type": {
+        "description": "Algorithm key type.",
+        "example": "ECDSAP256SHA256",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_messages": {
+        "example": [],
+        "items": {
+          "properties": {
+            "code": {
+              "minimum": 1000,
+              "type": "integer"
+            },
+            "documentation_url": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "source": {
+              "properties": {
+                "pointer": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "type": "object",
+          "uniqueItems": true
+        },
+        "type": "array"
+      },
+      "dnssec_modified_on": {
+        "description": "When DNSSEC was last modified.",
+        "example": "2014-01-01T05:20:00Z",
+        "format": "date-time",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_public_key": {
+        "description": "Public key for DS record.",
+        "example": "oXiGYrSTO+LSCJ3mohc8EP+CzF9KxBj8/ydXJ22pKuZP3VAC3/Md/k7xZfz470CoRyZJ6gV6vml07IC3d8xqhA==",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string",
+        "x-auditable": true
+      },
+      "dnssec_status": {
+        "description": "Status of DNSSEC, based on user-desired state and presence of necessary records.",
+        "enum": [
+          "active",
+          "pending",
+          "disabled",
+          "pending-disabled",
+          "error"
+        ],
+        "example": "active",
         "x-auditable": true
       },
       "lists_account_id": {
@@ -763,6 +1181,15 @@
           }
         ]
       },
+      "rulesets_Errors": {
+        "description": "A list of error messages.",
+        "items": {
+          "$ref": "#/components/schemas/rulesets_Message"
+        },
+        "title": "Errors",
+        "type": "array",
+        "uniqueItems": true
+      },
       "rulesets_ExecuteCategoryOverrides": {
         "description": "A list of category-level overrides. This option has the second-highest precedence after rule-level overrides.",
         "items": {
@@ -1020,6 +1447,220 @@
         "title": "Sensitivity Level",
         "type": "string"
       },
+      "rulesets_ManagedTransform": {
+        "description": "A Managed Transform object.",
+        "properties": {
+          "conflicts_with": {
+            "description": "The Managed Transforms that this Managed Transform conflicts with.",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/rulesets_ManagedTransformId"
+                },
+                {
+                  "example": "add_true_client_ip_headers",
+                  "type": "string"
+                }
+              ]
+            },
+            "minItems": 1,
+            "readOnly": true,
+            "title": "Conflicts With",
+            "type": "array",
+            "uniqueItems": true,
+            "x-stainless-skip": [
+              "terraform"
+            ]
+          },
+          "enabled": {
+            "description": "Whether the Managed Transform is enabled.",
+            "example": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "has_conflict": {
+            "description": "Whether the Managed Transform conflicts with the currently-enabled Managed Transforms.",
+            "example": false,
+            "readOnly": true,
+            "title": "Has Conflict",
+            "type": "boolean",
+            "x-stainless-skip": [
+              "terraform"
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/rulesets_ManagedTransformId"
+          }
+        },
+        "required": [
+          "id",
+          "enabled",
+          "has_conflict"
+        ],
+        "title": "Managed Transform",
+        "type": "object"
+      },
+      "rulesets_ManagedTransformId": {
+        "description": "The human-readable identifier of the Managed Transform.",
+        "minLength": 1,
+        "title": "Transform ID",
+        "type": "string"
+      },
+      "rulesets_ManagedTransforms": {
+        "description": "A Managed Transforms object.",
+        "properties": {
+          "managed_request_headers": {
+            "description": "The list of Managed Request Transforms.",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/rulesets_ManagedTransform"
+                },
+                {
+                  "properties": {
+                    "id": {
+                      "example": "add_bot_protection_headers",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            "title": "Managed Request Transforms",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "managed_response_headers": {
+            "description": "The list of Managed Response Transforms.",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/rulesets_ManagedTransform"
+                },
+                {
+                  "properties": {
+                    "id": {
+                      "example": "add_security_headers",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            "title": "Managed Response Transforms",
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "managed_request_headers",
+          "managed_response_headers"
+        ],
+        "title": "Managed Transforms",
+        "type": "object"
+      },
+      "rulesets_ManagedTransformsPatch": {
+        "description": "A Managed Transforms patch object. Both fields are optional; only the sections provided will be updated.",
+        "properties": {
+          "managed_request_headers": {
+            "description": "The list of Managed Request Transforms.",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/rulesets_ManagedTransform"
+                },
+                {
+                  "properties": {
+                    "id": {
+                      "example": "add_bot_protection_headers",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            "title": "Managed Request Transforms",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "managed_response_headers": {
+            "description": "The list of Managed Response Transforms.",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/rulesets_ManagedTransform"
+                },
+                {
+                  "properties": {
+                    "id": {
+                      "example": "add_security_headers",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            "title": "Managed Response Transforms",
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "title": "Managed Transforms Patch",
+        "type": "object"
+      },
+      "rulesets_Message": {
+        "description": "A message.",
+        "properties": {
+          "code": {
+            "description": "A unique code for this message.",
+            "example": 10000,
+            "title": "Code",
+            "type": "integer"
+          },
+          "message": {
+            "description": "A text description of this message.",
+            "example": "something bad happened",
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "source": {
+            "description": "The source of this message.",
+            "properties": {
+              "pointer": {
+                "description": "A JSON pointer to the field that is the source of the message.",
+                "example": "/rules/0/action",
+                "minLength": 1,
+                "title": "Pointer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "pointer"
+            ],
+            "title": "Source",
+            "type": "object"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "Message",
+        "type": "object"
+      },
+      "rulesets_Messages": {
+        "description": "A list of warning messages.",
+        "items": {
+          "$ref": "#/components/schemas/rulesets_Message"
+        },
+        "title": "Messages",
+        "type": "array",
+        "uniqueItems": true
+      },
       "rulesets_RedirectFromList": {
         "description": "A redirect based on a bulk list lookup.",
         "properties": {
@@ -1133,6 +1774,53 @@
             "type": "object"
           }
         ]
+      },
+      "rulesets_Response": {
+        "description": "A response object.",
+        "properties": {
+          "errors": {
+            "$ref": "#/components/schemas/rulesets_Errors"
+          },
+          "messages": {
+            "$ref": "#/components/schemas/rulesets_Messages"
+          },
+          "result": {
+            "description": "A result.",
+            "oneOf": [
+              {
+                "nullable": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Result"
+          },
+          "success": {
+            "description": "Whether the API call was successful.",
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "result",
+          "success",
+          "errors",
+          "messages"
+        ],
+        "title": "Response",
+        "type": "object"
       },
       "rulesets_RewriteHeaderExpression": {
         "description": "An expression that evaluates to a value for the header.",
@@ -2890,6 +3578,45 @@
         "title": "Rulesets",
         "type": "array",
         "uniqueItems": true
+      },
+      "rulesets_UrlNormalization": {
+        "description": "A URL Normalization object.",
+        "properties": {
+          "scope": {
+            "description": "The scope of the URL normalization.",
+            "enum": [
+              "incoming",
+              "both",
+              "none"
+            ],
+            "example": "incoming",
+            "title": "Scope",
+            "type": "string"
+          },
+          "type": {
+            "description": "The type of URL normalization performed by Cloudflare.",
+            "enum": [
+              "cloudflare",
+              "rfc3986"
+            ],
+            "example": "cloudflare",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "scope"
+        ],
+        "title": "URL Normalization",
+        "type": "object"
+      },
+      "rulesets_ZoneId": {
+        "description": "The unique ID of the zone.",
+        "example": "9f1839b6152d298aca64c4e906b6d074",
+        "pattern": "^[0-9a-f]{32}$",
+        "title": "Zone ID",
+        "type": "string"
       },
       "workers-kv_api-response-collection": {
         "allOf": [
@@ -4866,6 +5593,265 @@
         "x-fern-availability": "generally-available",
         "x-fern-sdk-group-name": "kv.namespaces",
         "x-fern-sdk-method-name": "update"
+      }
+    },
+    "/zones/{zone_id}/dnssec": {
+      "patch": {
+        "description": "Enable or disable DNSSEC.",
+        "operationId": "dnssec-edit-dnssec-status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/dnssec_identifier"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "dnssec_multi_signer": {
+                    "$ref": "#/components/schemas/dnssec_dnssec_multi_signer"
+                  },
+                  "dnssec_presigned": {
+                    "$ref": "#/components/schemas/dnssec_dnssec_presigned"
+                  },
+                  "dnssec_use_nsec3": {
+                    "$ref": "#/components/schemas/dnssec_dnssec_use_nsec3"
+                  },
+                  "status": {
+                    "description": "Status of DNSSEC, based on user-desired state and presence of necessary records.",
+                    "enum": [
+                      "active",
+                      "disabled"
+                    ],
+                    "example": "active",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dnssec_dnssec_response_single"
+                }
+              }
+            },
+            "description": "Edit DNSSEC Status response."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/dnssec_dnssec_response_single"
+                    },
+                    {
+                      "$ref": "#/components/schemas/dnssec_api-response-common-failure"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Edit DNSSEC Status response failure."
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          }
+        ],
+        "summary": "Edit DNSSEC Status",
+        "tags": [
+          "DNSSEC"
+        ],
+        "x-api-token-group": [
+          "DNS Write"
+        ],
+        "x-cfPermissionsRequired": {
+          "enum": [
+            "#zone_settings:edit"
+          ]
+        },
+        "x-cfPlanAvailability": {
+          "business": true,
+          "enterprise": true,
+          "free": true,
+          "pro": true
+        },
+        "x-fern-availability": "generally-available",
+        "x-fern-sdk-group-name": "dns.dnssec",
+        "x-fern-sdk-method-name": "edit"
+      }
+    },
+    "/zones/{zone_id}/managed_headers": {
+      "patch": {
+        "description": "Updates the status of one or more Managed Transforms.",
+        "operationId": "updateManagedTransforms",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/rulesets_ZoneId"
+            }
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/rulesets_ManagedTransforms"
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/rulesets_ManagedTransforms"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/rulesets_Failure"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          }
+        ],
+        "summary": "Update Managed Transforms",
+        "tags": [
+          "Managed Transforms"
+        ],
+        "x-api-token-group": [
+          "Response Compression Write",
+          "Config Settings Write",
+          "Dynamic URL Redirects Write",
+          "Cache Settings Write",
+          "Custom Errors Write",
+          "Origin Write",
+          "Managed headers Write",
+          "Zone Transform Rules Write",
+          "Mass URL Redirects Write",
+          "Magic Firewall Write",
+          "L4 DDoS Managed Ruleset Write",
+          "HTTP DDoS Managed Ruleset Write",
+          "Sanitize Write",
+          "Transform Rules Write",
+          "Select Configuration Write",
+          "Bot Management Write",
+          "Zone WAF Write",
+          "Account WAF Write",
+          "Account Rulesets Write",
+          "Logs Write",
+          "Logs Write"
+        ],
+        "x-cfPlanAvailability": {
+          "business": true,
+          "enterprise": true,
+          "free": true,
+          "pro": true
+        },
+        "x-fern-availability": "generally-available",
+        "x-fern-sdk-group-name": "managed-transforms",
+        "x-fern-sdk-method-name": "update",
+        "x-forge-hidden": true
+      }
+    },
+    "/zones/{zone_id}/url_normalization": {
+      "put": {
+        "description": "Updates the URL Normalization settings.",
+        "operationId": "updateUrlNormalization",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/rulesets_ZoneId"
+            }
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/rulesets_UrlNormalization"
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/rulesets_UrlNormalization"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/rulesets_Failure"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          }
+        ],
+        "summary": "Update URL Normalization settings",
+        "tags": [
+          "URL Normalization"
+        ],
+        "x-api-token-group": [
+          "Response Compression Write",
+          "Config Settings Write",
+          "Dynamic URL Redirects Write",
+          "Cache Settings Write",
+          "Custom Errors Write",
+          "Origin Write",
+          "Managed headers Write",
+          "Zone Transform Rules Write",
+          "Mass URL Redirects Write",
+          "Magic Firewall Write",
+          "L4 DDoS Managed Ruleset Write",
+          "HTTP DDoS Managed Ruleset Write",
+          "Sanitize Write",
+          "Transform Rules Write",
+          "Select Configuration Write",
+          "Bot Management Write",
+          "Zone WAF Write",
+          "Account WAF Write",
+          "Account Rulesets Write",
+          "Logs Write",
+          "Logs Write"
+        ],
+        "x-cfPlanAvailability": {
+          "business": true,
+          "enterprise": true,
+          "free": true,
+          "pro": true
+        },
+        "x-fern-availability": "generally-available",
+        "x-fern-sdk-group-name": "url-normalization",
+        "x-fern-sdk-method-name": "update",
+        "x-forge-hidden": true
       }
     }
   }
