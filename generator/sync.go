@@ -16,8 +16,8 @@ import (
 
 // syncSpec writes to out the subset of the full OpenAPI spec at from that the
 // kinds of the configurations use: the operations of their services' New, Get,
-// Update (or Edit) and List calls, and the schemas of the rule kinds' rule
-// types, with every component those reach. source says where the full spec
+// Update (or Edit) and List calls, those of the settings kinds' writes, and the
+// schemas of the rule kinds' rule types, with every component those reach. source says where the full spec
 // comes from; the subset records it.
 func syncSpec(configPaths []string, s sdk, from, source, out string) error {
 	var routes []route
@@ -42,6 +42,13 @@ func syncSpec(configPaths []string, s sdk, from, source, out string) error {
 		}
 		for _, entry := range cfg.RuleKinds {
 			schemas = append(schemas, ruleSchemaName(entry.Rule))
+		}
+		for _, entry := range cfg.SettingsKinds {
+			svc, err := s.settings(entry.Service)
+			if err != nil {
+				return fmt.Errorf("%s: %w", entry.Kind, err)
+			}
+			routes = append(routes, svc.writeRoute)
 		}
 	}
 

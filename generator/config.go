@@ -22,6 +22,10 @@ type config struct {
 	// RuleKinds are the kinds whose resources each manage one rule in a zone's
 	// Rulesets phase, which the shared rule controller drives.
 	RuleKinds []ruleKindConfig `json:"ruleKinds,omitempty"`
+	// SettingsKinds are the kinds whose resources each configure one
+	// product's settings in a zone, which the shared settings controller
+	// drives.
+	SettingsKinds []settingsKindConfig `json:"settingsKinds,omitempty"`
 }
 
 // kindConfig is one kind's entry. Every field of the kind's cloudflare-go v7
@@ -170,7 +174,7 @@ func loadConfig(path string) (*config, error) {
 // validate checks what can be checked without the SDK. Field names are
 // checked against the SDK when the kind is built.
 func (c *config) validate() error {
-	if len(c.Kinds) == 0 && len(c.RuleKinds) == 0 {
+	if len(c.Kinds) == 0 && len(c.RuleKinds) == 0 && len(c.SettingsKinds) == 0 {
 		return fmt.Errorf("no kinds")
 	}
 	seen := map[string]bool{}
@@ -189,6 +193,15 @@ func (c *config) validate() error {
 		}
 		if seen[k.Kind] {
 			return fmt.Errorf("ruleKinds[%d]: %s is listed twice", i, k.Kind)
+		}
+		seen[k.Kind] = true
+	}
+	for i, k := range c.SettingsKinds {
+		if err := k.validate(); err != nil {
+			return fmt.Errorf("settingsKinds[%d] (%s): %w", i, k.Kind, err)
+		}
+		if seen[k.Kind] {
+			return fmt.Errorf("settingsKinds[%d]: %s is listed twice", i, k.Kind)
 		}
 		seen[k.Kind] = true
 	}
@@ -346,6 +359,10 @@ type ruleFieldConfig struct {
 	// KeyValidation replaces the key field's validation, a minimum length of
 	// one: what Cloudflare takes as a key.
 	KeyValidation *validationConfig `json:"keyValidation,omitempty"`
+	// ListMapKey, for a list of objects, names the field of its items, by API
+	// name, that no two items share: the list is keyed by it (listType=map),
+	// and the API server refuses two items with the same key.
+	ListMapKey string `json:"listMapKey,omitempty"`
 	// Validation replaces what the OpenAPI spec says the field's value may
 	// be.
 	Validation *validationConfig `json:"validation,omitempty"`
@@ -427,7 +444,12 @@ func (k *ruleKindConfig) validateTypes() error {
 
 // validateRules checks a rule kind's CEL rules on the spec.
 func (k *ruleKindConfig) validateRules() error {
-	for i, r := range k.Rules {
+	return validateRules(k.Rules)
+}
+
+// validateRules checks an entry's CEL rules on the spec.
+func validateRules(rules []ruleConfig) error {
+	for i, r := range rules {
 		if err := r.validate(); err != nil {
 			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
@@ -452,15 +474,21 @@ func (r ruleConfig) validate() error {
 
 // validateFields checks a rule kind's ignored and adjusted fields.
 func (k *ruleKindConfig) validateFields() error {
-	for name, reason := range k.Ignore {
+	return validateParamFields(k.Fields, k.Ignore)
+}
+
+// validateParamFields checks the ignored and adjusted fields of an entry
+// whose spec holds a tree of params: a rule kind's or a settings kind's.
+func validateParamFields(fields map[string]ruleFieldConfig, ignore map[string]string) error {
+	for name, reason := range ignore {
 		if strings.TrimSpace(reason) == "" {
 			return fmt.Errorf("ignore.%s gives no reason", name)
 		}
-		if _, ok := k.Fields[name]; ok {
+		if _, ok := fields[name]; ok {
 			return fmt.Errorf("%s is both ignored and adjusted in fields", name)
 		}
 	}
-	for name, f := range k.Fields {
+	for name, f := range fields {
 		if (f.Key == "") != (f.KeyDoc == "") {
 			return fmt.Errorf("fields.%s: set key and keyDoc together", name)
 		}
@@ -485,6 +513,98 @@ func (k *ruleKindConfig) validateFields() error {
 				return fmt.Errorf("fields.%s.rules[%d]: %w", name, i, err)
 			}
 		}
+		if f.ListMapKey != "" && f.Key != "" {
+			return fmt.Errorf("fields.%s: set key for a map or listMapKey for a list, not both", name)
+		}
 	}
 	return nil
 }
+
+// settingsKindConfig is the entry of a settings kind: a kind whose resources
+// each configure one product's settings in a zone, such as its managed
+// transforms, through the shared settings controller. The service's write
+// (Update or Edit) gives the settings, which kflare-gen builds from
+// cloudflare-go v7's param types: every field of them becomes a field of the
+// spec (fields are opt-out), except those the entry ignores.
+type settingsKindConfig struct {
+	// Kind is the API type's name, such as ManagedTransform.
+	Kind string `json:"kind"`
+	// Service is the cloudflare-go v7 service the kind calls, as
+	// <package>.<type>: managed_transforms.ManagedTransformService. Its read
+	// (Get, or List where it returns the settings), its write (Update or
+	// Edit) and its reset (Delete) each take the zone's ID, and nothing else
+	// kflare does not send.
+	Service string `json:"service"`
+	// ShortName is the kind's short name for kubectl, such as
+	// cfmanagedtransform.
+	ShortName string `json:"shortName"`
+	// Noun is what docs and messages call the settings, such as "managed
+	// transforms".
+	Noun string `json:"noun"`
+	// Doc is the kind's documentation, from the type's name on.
+	Doc string `json:"doc"`
+	// Sample is a valid spec, zoneRef aside, that configures the settings:
+	// config/samples holds it, and the generated specs start from it.
+	Sample map[string]any `json:"sample"`
+	// Tests are more valid specs, which the generated specs write and edit as
+	// they do the sample, for fields it does not set.
+	Tests []map[string]any `json:"tests,omitempty"`
+	// Fields adjusts fields of the settings, by their path of API names.
+	Fields map[string]ruleFieldConfig `json:"fields,omitempty"`
+	// Rules are CEL rules on the spec, for what Cloudflare refuses that its
+	// API description does not say.
+	Rules []ruleConfig `json:"rules,omitempty"`
+	// Unconfigured says what the settings hold in a zone nobody has
+	// configured.
+	Unconfigured unconfiguredConfig `json:"unconfigured"`
+	// Ignore leaves out fields of the settings, by path, each with the
+	// reason.
+	Ignore map[string]string `json:"ignore,omitempty"`
+}
+
+// unconfiguredConfig says what a kind's settings hold in a zone nobody has
+// configured: a new zone, or one whose settings were reset.
+type unconfiguredConfig struct {
+	// Values are those settings' values, by path: the API names of the
+	// fields to each, joined by dots, a list's items marked by [] after its
+	// name, as in managed_request_headers[].enabled for every item's. Settings
+	// that hold another value at one of these paths were configured outside
+	// kflare, and a resource takes them over only as its adoption policy
+	// allows.
+	Values map[string]any `json:"values"`
+	// Reason says how that was verified.
+	Reason string `json:"reason"`
+}
+
+func (k *settingsKindConfig) validate() error {
+	switch {
+	case !kindName.MatchString(k.Kind):
+		return fmt.Errorf("kind %q is not a Go type name", k.Kind)
+	case strings.Count(k.Service, ".") == 0 || strings.HasPrefix(k.Service, ".") || strings.HasSuffix(k.Service, "."):
+		return fmt.Errorf("service %q is not <package>.<type>", k.Service)
+	case !shortName.MatchString(k.ShortName):
+		return fmt.Errorf("shortName %q is not lower-case letters and digits", k.ShortName)
+	case strings.TrimSpace(k.Noun) == "":
+		return fmt.Errorf("noun is empty")
+	case !strings.HasPrefix(k.Doc, k.Kind+" "):
+		return fmt.Errorf("doc does not start with %q", k.Kind+" ")
+	case len(k.Sample) == 0:
+		return fmt.Errorf("sample is empty")
+	case len(k.Unconfigured.Values) == 0:
+		return fmt.Errorf("unconfigured.values is empty: say what a zone nobody has configured holds")
+	case strings.TrimSpace(k.Unconfigured.Reason) == "":
+		return fmt.Errorf("unconfigured gives no reason")
+	}
+	for path := range k.Unconfigured.Values {
+		if !settingsValuePath.MatchString(path) {
+			return fmt.Errorf("unconfigured.values: %q is not a path of API names, such as a.b[].c", path)
+		}
+	}
+	if err := validateRules(k.Rules); err != nil {
+		return err
+	}
+	return validateParamFields(k.Fields, k.Ignore)
+}
+
+// settingsValuePath matches a path of API names, each list's marked by [].
+var settingsValuePath = regexp.MustCompile(`^[a-z][a-z0-9_-]*(\[\])?(\.[a-z][a-z0-9_-]*(\[\])?)*$`)

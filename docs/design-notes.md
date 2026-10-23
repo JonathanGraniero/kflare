@@ -991,7 +991,10 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
 - [ ] Needs Managed headers Write on the dev token (ask the user). Config Settings Write, which the dev token has on
   `kflare.dev` and the OpenAPI spec lists for the endpoint, was refused for an empty PATCH on 2026-10-17
 - [ ] A settings-style singleton: build it on kflare-gen's singleton runtime rather than by hand (see
-  [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17))
+  [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17)). The runtime is built (`feat/generator-singletons`: settings
+  kinds, see [generator/CLAUDE.md](../generator/CLAUDE.md)); kflare-gen generates the spec from v7's Edit params, so
+  the transforms are lists of `{id, enabled}` keyed by `id` (`listMapKey`) rather than lists of IDs, and Cloudflare's
+  other transforms are not compared
 
 
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)

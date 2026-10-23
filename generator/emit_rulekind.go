@@ -68,8 +68,11 @@ func (f *paramField) markers() []string {
 		return field{enum: n.enum, validation: n.validation}.markers()
 	case *paramList:
 		out := []string{"+listType=atomic"}
-		if n.set {
+		switch {
+		case n.set:
 			out = []string{"+listType=set"}
+		case n.key != nil:
+			out = []string{"+listType=map", "+listMapKey=" + n.key.jsonName}
 		}
 		out = append(out, itemBounds(n.minItems, n.maxItems)...)
 		if items, ok := n.items.(*paramScalar); ok {
@@ -205,13 +208,32 @@ func emitRuleTypes(k *ruleKind, header string) ([]byte, error) {
 	return src, nil
 }
 
-// conversionName returns the name of the function that converts a struct of
-// the action parameters into its SDK struct.
-func (k *ruleKind) conversionName(st *paramStruct) string {
-	if st == k.params {
-		return k.varName + "ActionParameters"
+// conversions names a kind's conversion functions, which turn the structs of
+// its spec's params into cloudflare-go v7's param structs, one function each,
+// and documents them.
+type conversions struct {
+	// kind is the kind's name, and params the struct of its params, which the
+	// spec holds.
+	kind   string
+	params *paramStruct
+	// root names the conversion of params, and rootWhat says what it
+	// returns.
+	root, rootWhat string
+}
+
+// name returns the name of the function that converts st into its SDK
+// struct.
+func (c conversions) name(st *paramStruct) string {
+	if st == c.params {
+		return c.root
 	}
 	return lowerCamel(st.goName) + "Param"
+}
+
+// conversions returns a rule kind's conversions, of its action parameters.
+func (k *ruleKind) conversions() conversions {
+	return conversions{kind: k.name, params: k.params, root: k.varName + "ActionParameters",
+		rootWhat: fmt.Sprintf("the action parameters of %s as cloudflare-go v7 sends them", article(k.name))}
 }
 
 // emitRuleController returns the Go source of a rule kind's controller: its
@@ -286,12 +308,12 @@ func emitRuleController(k *ruleKind, header string) ([]byte, error) {
 		"%s action and the action parameters its spec holds.", k.varName, article(k.name), k.rule.action)))
 	f.printf("func %sDefinition(rule *%s.%s) %s.RulesetNewParamsRule {\n", k.varName, api, k.name, rs)
 	f.printf("definition := rulesetRuleDefinition(%s.%s, rule.Spec.RulesetRuleSpec)\n", rs, k.actionConst)
-	f.printf("params := %s(rule.Spec)\n", k.conversionName(k.params))
+	f.printf("params := %s(rule.Spec)\n", k.conversions().name(k.params))
 	f.printf("definition.ActionParameters.Value, definition.ActionParameters.Present = params, true\n")
 	f.printf("return definition\n}\n\n")
 
 	for _, st := range append([]*paramStruct{k.params}, k.structs...) {
-		if err := emitConversion(f, k, st); err != nil {
+		if err := emitConversion(f, k.conversions(), st); err != nil {
 			return nil, fmt.Errorf("%s: %w", k.name, err)
 		}
 	}
@@ -307,28 +329,28 @@ func phrasePhases(k *ruleKind) string {
 	return "phase its type picks"
 }
 
-// emitConversion writes the function that converts a struct of the action
-// parameters into its SDK struct: it sets each field the spec sets.
-func emitConversion(f *goFile, k *ruleKind, st *paramStruct) error {
+// emitConversion writes the function that converts a struct of a kind's
+// params into its SDK struct: it sets each field the spec sets.
+func emitConversion(f *goFile, c conversions, st *paramStruct) error {
 	in := f.api() + "." + st.goName
-	what := fmt.Sprintf("%s of %s as cloudflare-go v7 sends it", st.path, article(k.name))
+	what := fmt.Sprintf("%s of %s as cloudflare-go v7 sends it", st.path, article(c.kind))
 	switch {
-	case st == k.params:
-		in = f.api() + "." + k.name + "Spec"
-		what = fmt.Sprintf("the action parameters of %s as cloudflare-go v7 sends them", article(k.name))
+	case st == c.params:
+		in = f.api() + "." + c.kind + "Spec"
+		what = c.rootWhat
 	case strings.HasSuffix(st.path, "[]"):
 		what = fmt.Sprintf("an item of %s in %s as cloudflare-go v7 sends it", strings.TrimSuffix(st.path, "[]"),
-			article(k.name))
+			article(c.kind))
 	}
 	sdk := f.typ(st.sdk)
-	name := k.conversionName(st)
+	name := c.name(st)
 	comment(&f.Builder, "", wrap(fmt.Sprintf("%s returns %s.", name, what)))
 	f.printf("func %s(in %s) %s {\nvar out %s\n", name, in, sdk, sdk)
 	for _, pf := range st.fields {
 		if pf.key {
 			continue
 		}
-		if err := emitAssignment(f, k, pf); err != nil {
+		if err := emitAssignment(f, c, pf); err != nil {
 			return fmt.Errorf("%s.%s: %w", st.goName, pf.goName, err)
 		}
 	}
@@ -338,7 +360,7 @@ func emitConversion(f *goFile, k *ruleKind, st *paramStruct) error {
 
 // emitAssignment writes the statements that set the SDK struct's field for a
 // param field, when the spec sets it.
-func emitAssignment(f *goFile, k *ruleKind, pf *paramField) error {
+func emitAssignment(f *goFile, c conversions, pf *paramField) error {
 	value := "in." + pf.goName
 	set := func(expr string) {
 		f.printf("out.%s.Value, out.%s.Present = %s, true\n", pf.sdkGoName, pf.sdkGoName, expr)
@@ -368,18 +390,18 @@ func emitAssignment(f *goFile, k *ruleKind, pf *paramField) error {
 	case *paramStruct:
 		if pf.pointer() {
 			open("in." + pf.goName + " != nil")
-			set(k.conversionName(n) + "(*" + value + ")")
+			set(c.name(n) + "(*" + value + ")")
 			f.printf("}\n")
 			return nil
 		}
-		set(k.conversionName(n) + "(" + value + ")")
+		set(c.name(n) + "(" + value + ")")
 	case *paramList:
 		items := f.typ(n.sdkItems)
 		open("len(" + value + ") > 0")
 		switch item := n.items.(type) {
 		case *paramStruct:
 			f.printf("items := make([]%s, 0, len(%s))\nfor _, item := range %s {\n", items, value, value)
-			f.printf("items = append(items, %s(item))\n}\n", k.conversionName(item))
+			f.printf("items = append(items, %s(item))\n}\n", c.name(item))
 		case *paramScalar:
 			expr, err := scalarExpr(f, item, "item", n.sdkItems)
 			if err != nil {
@@ -400,7 +422,7 @@ func emitAssignment(f *goFile, k *ruleKind, pf *paramField) error {
 	case *paramMap:
 		open("len(" + value + ") > 0")
 		f.printf("entries := make(map[string]%s, len(%s))\nfor _, item := range %s {\n", f.typ(n.sdkValue), value, value)
-		f.printf("entries[item.%s] = %s(item)\n}\n", n.value.fields[0].goName, k.conversionName(n.value))
+		f.printf("entries[item.%s] = %s(item)\n}\n", n.value.fields[0].goName, c.name(n.value))
 		set("entries")
 		f.printf("}\n")
 	}
@@ -505,7 +527,7 @@ func emitRuleKindTest(k *ruleKind, header string) ([]byte, error) {
 				what += ", of type " + k.phaseOf(spec).typeName
 			}
 		}
-		samples[i] = ruleEdit{what: what, spec: spec, rule: k.rules[i]}
+		samples[i] = ruleEdit{what: what, spec: spec, rule: k.bodies[i]}
 	}
 	phase := func(i int) string { return rs + "." + k.phaseOf(specs[i]).constant }
 	if err := cases("samples", samples, phase); err != nil {

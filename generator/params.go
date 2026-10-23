@@ -134,7 +134,10 @@ type paramScalar struct {
 type paramList struct {
 	items paramNode
 	// set is true for unique scalars, which the conversion sorts.
-	set                bool
+	set bool
+	// key is the field of a list of objects that tells its items apart, when
+	// the entry names one (listMapKey): the list is keyed by it.
+	key                *paramField
 	minItems, maxItems *int64
 	// sdkItems is the type of the SDK slice's items.
 	sdkItems types.Type
@@ -163,6 +166,12 @@ type paramBuilder struct {
 	// structs are the nested structs, in the order they appear: a parent
 	// before its children.
 	structs []*paramStruct
+	// zoneParams is set when the root struct is a call's params, whose zone_id
+	// the shared settings controller sets, rather than the spec.
+	zoneParams bool
+	// root is what messages call the root struct, such as "the action
+	// parameters".
+	root string
 }
 
 // joinPath appends a field's API name to a path.
@@ -211,8 +220,15 @@ func (b *paramBuilder) object(path, goName, prefix string, sdkType *types.Named,
 	}
 	for _, f := range fields {
 		fieldPath := joinPath(path, f.apiName)
+		if path == "" && b.zoneParams && isZoneID(f) {
+			continue
+		}
 		if b.ignored(fieldPath) {
 			continue
+		}
+		if f.in != inBody {
+			return nil, fmt.Errorf("%s is a %s parameter, which kflare-gen cannot map yet; ignore it with a reason",
+				fieldPath, f.in)
 		}
 		pf, err := b.field(fieldPath, prefix, f, f.typ, props[f.apiName], f.required || required[f.apiName])
 		if err != nil {
@@ -221,7 +237,7 @@ func (b *paramBuilder) object(path, goName, prefix string, sdkType *types.Named,
 		st.fields = append(st.fields, pf)
 	}
 	if len(st.fields) == 0 {
-		return nil, fmt.Errorf("%s: every field is ignored", describePath(path))
+		return nil, fmt.Errorf("%s: every field is ignored", b.describePath(path))
 	}
 	st.rules = append(st.rules, countRules(resolved, st.fields)...)
 	st.rules = append(st.rules, b.entryRules(path)...)
@@ -243,9 +259,9 @@ func (b *paramBuilder) entryRules(path string) []celRule {
 }
 
 // describePath names a path in messages.
-func describePath(path string) string {
+func (b *paramBuilder) describePath(path string) string {
 	if path == "" {
-		return "the action parameters"
+		return b.root
 	}
 	return path
 }
@@ -278,6 +294,9 @@ func (b *paramBuilder) field(path, prefix string, f sdkField, t types.Type, sch 
 	if _, isMap := node.(*paramMap); !isMap && adjust.Key != "" {
 		return nil, fmt.Errorf("fields.%s.key: %s is not a map", path, path)
 	}
+	if list, isList := node.(*paramList); (!isList || list.key == nil) && adjust.ListMapKey != "" {
+		return nil, fmt.Errorf("fields.%s.listMapKey: %s is not a list of objects", path, path)
+	}
 	if _, isScalar := node.(*paramScalar); !isScalar && adjust.Validation != nil {
 		return nil, fmt.Errorf("fields.%s.validation: only a string or an integer is validated", path)
 	}
@@ -300,7 +319,7 @@ func (b *paramBuilder) node(path, prefix, goName string, t types.Type, sch *sche
 		}
 		return b.object(path, prefix+goName, prefix+goName, named, sch)
 	case *types.Slice:
-		return b.list(path, prefix, goName, u.Elem(), sch)
+		return b.list(path, prefix, goName, u.Elem(), sch, adjust)
 	case *types.Map:
 		return b.mapOf(path, prefix, goName, u, sch, adjust)
 	case *types.Interface:
@@ -366,8 +385,10 @@ func (b *paramBuilder) scalar(path string, t types.Type, sch *schema, adjust rul
 	return out, nil
 }
 
-// list builds an array field: a list of scalars or of structs.
-func (b *paramBuilder) list(path, prefix, goName string, elem types.Type, sch *schema) (*paramList, error) {
+// list builds an array field: a list of scalars or of structs, keyed by the
+// field the entry names.
+func (b *paramBuilder) list(path, prefix, goName string, elem types.Type, sch *schema,
+	adjust ruleFieldConfig) (*paramList, error) {
 	resolved, err := b.spec.resolve(sch)
 	if err != nil {
 		return nil, err
@@ -382,10 +403,25 @@ func (b *paramBuilder) list(path, prefix, goName string, elem types.Type, sch *s
 	if err != nil {
 		return nil, err
 	}
-	switch node.(type) {
+	switch n := node.(type) {
 	case *paramScalar:
 		out.set = resolved != nil && resolved.UniqueItems
 	case *paramStruct:
+		if adjust.ListMapKey == "" {
+			break
+		}
+		i := slices.IndexFunc(n.fields, func(f *paramField) bool { return f.apiName == adjust.ListMapKey })
+		if i < 0 {
+			return nil, fmt.Errorf("fields.%s.listMapKey: the items of %s have no field %s", path, path,
+				adjust.ListMapKey)
+		}
+		key := n.fields[i]
+		scalar, ok := key.node.(*paramScalar)
+		if !ok || !key.required || (scalar.goType != typeString && scalar.goType != typeInt64) {
+			return nil, fmt.Errorf("fields.%s.listMapKey: %s is not a required string or integer, which a list "+
+				"is keyed by", path, adjust.ListMapKey)
+		}
+		out.key = key
 	default:
 		return nil, fmt.Errorf("%s is a list of lists or maps, which kflare-gen cannot map yet; ignore it with a reason",
 			path)

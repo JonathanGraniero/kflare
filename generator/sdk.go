@@ -109,11 +109,12 @@ type sdk struct {
 	dir string
 }
 
-// service loads the service an entry names.
-func (s sdk) service(name string) (*service, error) {
+// load loads the type an entry names as <package>.<type>, as what (a
+// service, a rule), with its package.
+func (s sdk) load(name, what string) (*packages.Package, *types.TypeName, error) {
 	dot := strings.LastIndex(name, ".")
 	if dot <= 0 || dot == len(name)-1 {
-		return nil, fmt.Errorf("service %q is not <package>.<type>", name)
+		return nil, nil, fmt.Errorf("%s %q is not <package>.<type>", what, name)
 	}
 	path, typeName := sdkModule+"/"+name[:dot], name[dot+1:]
 	pkgs, err := packages.Load(&packages.Config{
@@ -121,19 +122,29 @@ func (s sdk) service(name string) (*service, error) {
 		Dir:  s.dir,
 	}, path)
 	if err != nil {
-		return nil, fmt.Errorf("loading %s: %w", path, err)
+		return nil, nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	if len(pkgs) != 1 {
-		return nil, fmt.Errorf("loading %s: got %d packages", path, len(pkgs))
+		return nil, nil, fmt.Errorf("loading %s: got %d packages", path, len(pkgs))
 	}
 	pkg := pkgs[0]
 	if len(pkg.Errors) > 0 {
-		return nil, fmt.Errorf("loading %s: %v", path, pkg.Errors[0])
+		return nil, nil, fmt.Errorf("loading %s: %v", path, pkg.Errors[0])
 	}
 	typ, ok := pkg.Types.Scope().Lookup(typeName).(*types.TypeName)
 	if !ok {
-		return nil, fmt.Errorf("%s has no type %s", path, typeName)
+		return nil, nil, fmt.Errorf("%s has no type %s", path, typeName)
 	}
+	return pkg, typ, nil
+}
+
+// service loads the service an entry names.
+func (s sdk) service(name string) (*service, error) {
+	pkg, typ, err := s.load(name, "service")
+	if err != nil {
+		return nil, err
+	}
+	path, typeName := pkg.PkgPath, typ.Name()
 
 	routes, err := readRoutes(pkg)
 	if err != nil {
@@ -182,7 +193,7 @@ func (s sdk) service(name string) (*service, error) {
 	}
 	// What List returns is a page of objects, and what Delete returns goes
 	// unread: only their params are read.
-	for _, method := range []string{"List", "Delete"} {
+	for _, method := range []string{listMethod, "Delete"} {
 		c, err := r.method(methods, method)
 		if errors.Is(err, errNoMethod) {
 			continue
@@ -255,6 +266,10 @@ func parseRoutes(apiMD, pkgPath string) map[string]route {
 	}
 	return routes
 }
+
+// listMethod names a service's method that lists its objects, or, in a
+// service of settings, may read them.
+const listMethod = "List"
 
 // errNoMethod is the error for a service without the method asked for.
 var errNoMethod = errors.New("no such method")
@@ -446,29 +461,11 @@ type sdkRule struct {
 
 // rule loads the rule type an entry names.
 func (s sdk) rule(name string) (*sdkRule, error) {
-	dot := strings.LastIndex(name, ".")
-	if dot <= 0 || dot == len(name)-1 {
-		return nil, fmt.Errorf("rule %q is not <package>.<type>", name)
-	}
-	path, typeName := sdkModule+"/"+name[:dot], name[dot+1:]
-	pkgs, err := packages.Load(&packages.Config{
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo,
-		Dir:  s.dir,
-	}, path)
+	pkg, obj, err := s.load(name, "rule")
 	if err != nil {
-		return nil, fmt.Errorf("loading %s: %w", path, err)
+		return nil, err
 	}
-	if len(pkgs) != 1 {
-		return nil, fmt.Errorf("loading %s: got %d packages", path, len(pkgs))
-	}
-	pkg := pkgs[0]
-	if len(pkg.Errors) > 0 {
-		return nil, fmt.Errorf("loading %s: %v", path, pkg.Errors[0])
-	}
-	obj, ok := pkg.Types.Scope().Lookup(typeName).(*types.TypeName)
-	if !ok {
-		return nil, fmt.Errorf("%s has no type %s", path, typeName)
-	}
+	path := pkg.PkgPath
 	named, ok := obj.Type().(*types.Named)
 	if !ok {
 		return nil, fmt.Errorf("%s is not a named type", name)
@@ -553,4 +550,139 @@ func (r *sdkReader) isUnion(t types.Type) (*types.Named, bool) {
 	}
 	iface, ok := named.Underlying().(*types.Interface)
 	return named, ok && iface.NumMethods() > 0
+}
+
+// settingsService is what kflare-gen reads off a cloudflare-go v7 service
+// that keeps one product's settings in a zone: a read, a write and a reset,
+// and no New, since the settings always exist.
+type settingsService struct {
+	// name is the service as an entry names it, such as
+	// managed_transforms.ManagedTransformService.
+	name string
+	// pkg is the service's package, typeName the service type's name, and r
+	// reads the package's types.
+	pkg      *types.Package
+	typeName string
+	r        *sdkReader
+	// read is the service's Get, or its List where that returns the settings
+	// rather than a page of them; write is its Update or Edit; reset is its
+	// Delete, which restores Cloudflare's defaults.
+	read, write, reset *sdkCall
+	// settings is the struct read returns.
+	settings *types.Named
+	// readRoute, writeRoute and resetRoute are their routes, which find their
+	// operations in the OpenAPI spec.
+	readRoute, writeRoute, resetRoute route
+}
+
+// settings loads the service of settings an entry names.
+func (s sdk) settings(name string) (*settingsService, error) {
+	pkg, typ, err := s.load(name, "service")
+	if err != nil {
+		return nil, err
+	}
+	routes, err := readRoutes(pkg)
+	if err != nil {
+		return nil, err
+	}
+	r := newSDKReader(pkg)
+	methods := types.NewMethodSet(types.NewPointer(typ.Type()))
+	if methods.Lookup(pkg.Types, "New") != nil {
+		return nil, fmt.Errorf("%s has a New: it creates objects, which a settings kind does not", name)
+	}
+	svc := &settingsService{name: name, pkg: pkg.Types, typeName: typ.Name(), r: r}
+
+	for _, method := range []string{"Get", listMethod} {
+		c, err := r.method(methods, method)
+		if errors.Is(err, errNoMethod) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		result := c.sig.Results().At(0).Type()
+		settings, ok := structOf(result, pkg.Types)
+		if !ok {
+			return nil, fmt.Errorf("%s returns %s, not settings: a pointer to a struct of %s", method,
+				typeName(result), pkg.PkgPath)
+		}
+		svc.read, svc.settings = c, settings
+		break
+	}
+	if svc.read == nil {
+		return nil, fmt.Errorf("%s has no Get or List to read the settings with", name)
+	}
+	for _, method := range []string{"Update", "Edit"} {
+		c, err := r.method(methods, method)
+		if errors.Is(err, errNoMethod) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		svc.write = c
+		break
+	}
+	if svc.write == nil {
+		return nil, fmt.Errorf("%s has no Update or Edit to write the settings with", name)
+	}
+	svc.reset, err = r.resetMethod(methods, "Delete")
+	if errors.Is(err, errNoMethod) {
+		return nil, fmt.Errorf("%s has no Delete, which the shared settings reconciler resets the settings with",
+			name)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	for _, c := range []struct {
+		call *sdkCall
+		into *route
+	}{{svc.read, &svc.readRoute}, {svc.write, &svc.writeRoute}, {svc.reset, &svc.resetRoute}} {
+		route, ok := routes[typ.Name()+"."+c.call.name]
+		if !ok {
+			return nil, fmt.Errorf("%s's api.md has no route for %s.%s", pkg.PkgPath, typ.Name(), c.call.name)
+		}
+		*c.into = route
+	}
+	return svc, nil
+}
+
+// structOf returns T for *T, a struct the package pkg declares.
+func structOf(t types.Type, pkg *types.Package) (*types.Named, bool) {
+	ptr, ok := t.(*types.Pointer)
+	if !ok {
+		return nil, false
+	}
+	named, ok := ptr.Elem().(*types.Named)
+	if !ok || named.Obj().Pkg() != pkg {
+		return nil, false
+	}
+	_, isStruct := named.Underlying().(*types.Struct)
+	return named, isStruct
+}
+
+// resetMethod reads a method shaped (ctx, params, opts...) error, as
+// cloudflare-go v7 declares a call whose response has no body, or shaped as
+// method reads one: a Delete, whose result goes unread.
+func (r *sdkReader) resetMethod(methods *types.MethodSet, name string) (*sdkCall, error) {
+	sel := methods.Lookup(r.pkg.Types, name)
+	if sel == nil {
+		return nil, fmt.Errorf("%s: %w", name, errNoMethod)
+	}
+	sig := sel.Type().(*types.Signature)
+	if sig.Results().Len() == 2 {
+		return r.method(methods, name)
+	}
+	errorType := types.Universe.Lookup("error").Type()
+	if !sig.Variadic() || sig.Params().Len() < 3 || sig.Results().Len() != 1 ||
+		!types.Identical(sig.Results().At(0).Type(), errorType) {
+		return nil, fmt.Errorf("%s is not shaped (ctx, params, opts...) error, or (*result, error)", name)
+	}
+	c := &sdkCall{name: name, sig: sig, params: sig.Params().At(sig.Params().Len() - 2).Type()}
+	var err error
+	if c.paramFields, err = r.fields(c.params, true); err != nil {
+		return nil, fmt.Errorf("%s's params: %w", name, err)
+	}
+	return c, nil
 }

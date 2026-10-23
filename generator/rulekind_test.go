@@ -82,8 +82,8 @@ func TestBuildRuleKindMapsTheRewriteRule(t *testing.T) {
 	if header.fields[0].jsonName != "name" || !header.fields[0].key || !header.fields[1].required {
 		t.Errorf("the header's key and operation are not the first, required fields: %+v", header.fields[:2])
 	}
-	if k.rules[1]["action_parameters"].(map[string]any)["headers"].(map[string]any)["x-a"] == nil {
-		t.Errorf("the second sample's rule keys its headers by name: %v", k.rules[1])
+	if k.bodies[1]["action_parameters"].(map[string]any)["headers"].(map[string]any)["x-a"] == nil {
+		t.Errorf("the second sample's rule keys its headers by name: %v", k.bodies[1])
 	}
 
 	if names := []string{k.specName(0), k.specName(2)}; !slices.Equal(names, []string{"samples[0]", "tests[0]"}) {
@@ -426,7 +426,7 @@ func TestRuleBreachesMustBreakTheRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k := &ruleKind{params: params, cel: checker, phases: []rulePhase{{}},
+	k := &paramKind{params: params, cel: checker,
 		samples: []map[string]any{{"expression": "true", "a": "x", "b": "y"}}}
 	// Both fields are required, so the breach leaves them set, and the rule
 	// still holds.
@@ -495,7 +495,7 @@ func TestVariants(t *testing.T) {
 }
 
 func TestVariantBreaches(t *testing.T) {
-	k := &ruleKind{samples: []map[string]any{{"expression": "true",
+	k := &paramKind{samples: []map[string]any{{"expression": "true",
 		"items": []any{map[string]any{"name": "a", "op": "set", "value": "1"}}}}}
 	k.variantBreaches(testItem(), itemsVariants, 0, []step{{field: "items"}, {index: 0}}, nil)
 	got := map[string]any{}
@@ -795,9 +795,9 @@ func TestBuildRuleKindTestsRulesAndKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(k.samples) != 2 || len(k.tests) != 1 || len(k.specs()) != 3 || len(k.rules) != 3 {
+	if len(k.samples) != 2 || len(k.tests) != 1 || len(k.specs()) != 3 || len(k.bodies) != 3 {
 		t.Errorf("samples, tests, specs and rules = %d, %d, %d, %d", len(k.samples), len(k.tests), len(k.specs()),
-			len(k.rules))
+			len(k.bodies))
 	}
 	if p := k.phaseOf(k.tests[0]); p.constant != "PhaseHTTPResponseHeadersTransform" {
 		t.Errorf("the test's phase = %s", p.constant)

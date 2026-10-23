@@ -56,7 +56,7 @@ var refusedControllers = map[string]string{
 // real cloudflare-go v7 service, by golden file name: a kind's types, and the
 // controller, envtest table and sample of a kind whose controller kflare-gen
 // does not refuse. It checks that it refuses the others, and why. Its rule
-// kinds, each from a real rule type, get all four.
+// kinds, each from a real rule type, and its settings kinds get all four.
 func goldenFiles(t *testing.T) map[string][]byte {
 	t.Helper()
 	cfg, err := loadConfig(filepath.Join("testdata", "generator.yaml"))
@@ -107,23 +107,48 @@ func goldenFiles(t *testing.T) map[string][]byte {
 			files[filepath.Base(path)] = src
 		}
 	}
+	for _, entry := range cfg.SettingsKinds {
+		k, err := buildSettingsKind(entry, loadTestSettings(t, entry.Service), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := &outputs{files: map[string][]byte{}}
+		if err := out.addSettingsKind(k, testHeader); err != nil {
+			t.Fatal(err)
+		}
+		for path, src := range out.files {
+			files[filepath.Base(path)] = src
+		}
+	}
 	return files
 }
 
-// TestRuleKindPutsAnBeforeAVowel generates the test rule kinds and the committed
-// ones, between them a phase map, unions, maps and lists of objects, under names
-// that start with a vowel, and checks that no file they get says "a" before one.
-func TestRuleKindPutsAnBeforeAVowel(t *testing.T) {
-	var entries []ruleKindConfig
+// TestKindsPutAnBeforeAVowel generates the test rule and settings kinds and the
+// committed ones, between them a phase map, unions, maps and lists of objects,
+// under names that start with a vowel, and checks that no file they get says
+// "a" before one.
+func TestKindsPutAnBeforeAVowel(t *testing.T) {
+	var ruleKinds []ruleKindConfig
+	var settingsKinds []settingsKindConfig
 	for _, path := range []string{filepath.Join("testdata", "generator.yaml"), "generator.yaml"} {
 		cfg, err := loadConfig(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		entries = append(entries, cfg.RuleKinds...)
+		ruleKinds = append(ruleKinds, cfg.RuleKinds...)
+		settingsKinds = append(settingsKinds, cfg.SettingsKinds...)
 	}
 	spec := loadTestSpec(t)
-	for _, entry := range entries {
+	check := func(kind string, files map[string][]byte) {
+		for path, src := range files {
+			// The docs are wrapped, so read them as one line of words.
+			text := " " + strings.Join(strings.Fields(strings.ReplaceAll(string(src), "//", "")), " ")
+			if strings.Contains(text, " a "+kind) {
+				t.Errorf("%s says \"a %s\"", filepath.Base(path), kind)
+			}
+		}
+	}
+	for _, entry := range ruleKinds {
 		entry.Kind = "Every" + strings.TrimPrefix(entry.Kind, "Test")
 		k, err := buildRuleKind(entry, loadTestRule(t, entry.Rule), spec)
 		if err != nil {
@@ -133,13 +158,20 @@ func TestRuleKindPutsAnBeforeAVowel(t *testing.T) {
 		if err := out.addRuleKind(k, testHeader); err != nil {
 			t.Fatal(err)
 		}
-		for path, src := range out.files {
-			// The docs are wrapped, so read them as one line of words.
-			text := " " + strings.Join(strings.Fields(strings.ReplaceAll(string(src), "//", "")), " ")
-			if strings.Contains(text, " a "+entry.Kind) {
-				t.Errorf("%s says \"a %s\"", filepath.Base(path), entry.Kind)
-			}
+		check(entry.Kind, out.files)
+	}
+	for _, entry := range settingsKinds {
+		entry.Kind = "Every" + strings.TrimPrefix(entry.Kind, "Test")
+		entry.Doc = entry.Kind + " " + strings.SplitN(entry.Doc, " ", 2)[1]
+		k, err := buildSettingsKind(entry, loadTestSettings(t, entry.Service), spec)
+		if err != nil {
+			t.Fatal(err)
 		}
+		out := &outputs{files: map[string][]byte{}}
+		if err := out.addSettingsKind(k, testHeader); err != nil {
+			t.Fatal(err)
+		}
+		check(entry.Kind, out.files)
 	}
 }
 
@@ -147,9 +179,9 @@ func TestRuleKindPutsAnBeforeAVowel(t *testing.T) {
 // golden files.
 func TestGolden(t *testing.T) {
 	files := goldenFiles(t)
-	if want := 4 + 3 + 2*4; len(files) != want {
+	if want := 4 + 3 + 2*4 + 3*4; len(files) != want {
 		t.Errorf("generated %d files, want %d: four types files, the controller, specs and sample of one kind, and "+
-			"the four files of each of two rule kinds", len(files), want)
+			"the four files of each of two rule kinds and of three settings kinds", len(files), want)
 	}
 	for name, got := range files {
 		golden := filepath.Join("testdata", name+".golden")
@@ -171,8 +203,9 @@ func TestGolden(t *testing.T) {
 }
 
 // TestGoldenControllerCompiles type-checks the golden controllers and envtest
-// tables of TestKVNamespace and the test rule kinds in internal/controller, as
-// if they were generated there, with their golden types in api/v1alpha1.
+// tables of TestKVNamespace, the test rule kinds and the test settings kinds
+// in internal/controller, as if they were generated there, with their golden
+// types in api/v1alpha1.
 // controller-gen writes a kind's deepcopy methods, so the test writes the two
 // each kind's types need.
 func TestGoldenControllerCompiles(t *testing.T) {
@@ -188,7 +221,8 @@ func TestGoldenControllerCompiles(t *testing.T) {
 		return src
 	}
 	overlay := map[string][]byte{}
-	for _, kind := range []string{"TestKVNamespace", "TestExecuteRule", "TestSkipRule"} {
+	for _, kind := range []string{"TestKVNamespace", "TestExecuteRule", "TestSkipRule", "TestURLNormalization",
+		"TestManagedTransform", "TestDNSSEC"} {
 		lower := strings.ToLower(kind)
 		overlay[filepath.Join(root, typesFile(lower))] = read(filepath.Base(typesFile(lower)))
 		overlay[filepath.Join(root, apiDir, lower+"_deepcopy.go")] = fmt.Appendf(nil, `package v1alpha1
@@ -220,7 +254,8 @@ func (in *%[1]sList) DeepCopyObject() runtime.Object { out := *in; return &out }
 		}
 		scope := pkg.Types.Scope()
 		if scope.Lookup("fakeTestKVNamespaceAPI") != nil && scope.Lookup("testExecuteRuleKind") != nil &&
-			scope.Lookup("testSkipRuleKind") != nil {
+			scope.Lookup("testSkipRuleKind") != nil && scope.Lookup("fakeTestURLNormalizationAPI") != nil &&
+			scope.Lookup("fakeTestManagedTransformAPI") != nil && scope.Lookup("fakeTestDNSSECAPI") != nil {
 			checked++
 		}
 	}

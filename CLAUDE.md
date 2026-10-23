@@ -149,18 +149,25 @@ an entry cannot express (the kinds that stay hand-written are listed there). One
 its own worktree. Before changing an existing kind, read its notes in [docs/design-notes.md](docs/design-notes.md):
 what was decided and verified live, and why.
 
-1. **Check the shape.** kflare-gen generates two:
+1. **Check the shape.** kflare-gen generates three:
    - CRUD kinds (`kinds:` in `generator/generator.yaml`, run by `crudresource_controller.go`): an account-level v7
      service with `New`, `Get`, a `List` that pages with `V4PagePaginationArray`, `Delete`, and optionally `Update` or
      `Edit`, its objects identified by an ID. Closest examples: `D1Database`, `KVNamespace`
    - Rule kinds (`ruleKinds:`, run by `rulesetrule_controller.go`): one rule in a zone's Rulesets phase, typed by v7's
      `rulesets.<Action>RuleParam`. Closest examples: `OriginRule` (small), `CacheRule` (CEL rules and `tests`)
+   - Settings kinds (`settingsKinds:`, run by `settings_controller.go`): a zone's settings of one product, a v7 service
+     without `New` whose read (`Get`, or a `List` that returns the settings), `Update` or `Edit`, and `Delete` (the
+     reset) take only the zone's ID. Closest examples, none committed yet: `generator/testdata/generator.yaml`'s
+     TestManagedTransform (keyed lists) and TestURLNormalization (enums)
 
    Anything else needs a kflare-gen capability first ([Next wave](#next-wave-proposed-2026-10-17) lists them). A
    draft entry is the quickest check: `make codegen` refuses what it cannot generate, and says why.
 2. **A new capability is its own PR, merged before the kind's.** Build it on a test kind in
-   `generator/testdata/generator.yaml`, with golden tests. The kind's PR is then its entry, the generated output, its
-   live e2e spec and docs. A kflare-gen fix the kind turns up can go in it; new mapping or runtime code cannot.
+   `generator/testdata/generator.yaml`, with golden tests. A new runtime, with no generated kind to run its shared
+   specs yet, also gets a kind only the tests know, so that they run in CI (`SettingsFixture`, whose CRD controller-gen
+   wrote into `internal/controller/testdata/crd`); generate the test kinds into a copy of the tree once to run their
+   own tables too. The kind's PR is then its entry, the generated output, its live e2e spec and docs. A kflare-gen fix
+   the kind turns up can go in it; new mapping or runtime code cannot.
 3. **Check the token permission first.** The OpenAPI operation's `x-api-token-group` names it, but is not always right
    (for managed transforms it names one that is refused). Try it with `CF_API_TOKEN`: a `?dry_run=true` write for a
    rule kind, a throwaway `kflare-probe-*` object otherwise. Adding a permission to the token needs the user's OK.
@@ -179,7 +186,7 @@ what was decided and verified live, and why.
    - Dry-run every expression a sample or the e2e spec uses: one naming no real field fails the whole live run
      (`cf.colo.name`, 20087)
 6. **Tests.** kflare-gen writes the kind's envtest table, which the shared specs run (`crudresource_specs_test.go`,
-   `rulesetrule_specs_test.go`). Written by hand:
+   `rulesetrule_specs_test.go`, `settings_specs_test.go`). Written by hand:
    - The live e2e spec, in `test/e2e/cloudflare_test.go`. A rule kind's follows OriginRule's: a phase constant, a key,
      a `cleanupRules` line in the suite's `DeferCleanup`, and a spec that writes the sample's rule, checks the JSON
      Cloudflare stores, changes a field in place and expects an idle reconcile (`expectIdle`). Keep the suite within
@@ -434,10 +441,10 @@ resolve to the versions their comments name.
 run in GitHub Actions since 2026-10-21 (Release and CI below).
 
 #### Chart hardening for v0.1.1 (`feat/chart-hardening`)
-**Status:** 🚧 Built 2026-10-22 for [#67](https://github.com/JonathanGraniero/kflare/issues/67), one PR off main,
-awaiting review; ships in v0.1.1 (CHANGELOG.md's Unreleased section says how to upgrade). Not in it: the issue's
-section 4 (no HorizontalPodAutoscaler; sizing guidance and `MaxConcurrentReconciles` are a later proposal, since rule
-kinds reconciling at once share a phase's ruleset)
+**Status:** ✅ Merged 2026-10-22 for [#67](https://github.com/JonathanGraniero/kflare/issues/67) (#68), and the e2e suite
+installs the chart since #71; ships in v0.1.1 (CHANGELOG.md's Unreleased section says how to upgrade). Not in it: the
+issue's section 4 (no HorizontalPodAutoscaler; sizing guidance and `MaxConcurrentReconciles` are a later proposal, since
+rule kinds reconciling at once share a phase's ruleset)
 - [x] Metrics over HTTPS with authentication and authorization **on by default** (the user's choice), `metrics.secure`.
   The filter is kflare's own, `pkg/metricsauth`, the user's choice on 2026-10-22: controller-runtime's
   `filters.WithAuthenticationAndAuthorization` pulls in `k8s.io/apiserver` (26 more modules, among them gRPC,
@@ -491,7 +498,8 @@ kinds reconciling at once share a phase's ruleset)
   two-replica install gets a PDB that a node drain respects. Both hold (above)
 
 ### Next wave (proposed 2026-10-17)
-**Status:** 🔲 Proposed, not decided: the user picks what comes after OriginRule, and in what order
+**Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated, so capability 1 below comes first: built in
+`feat/generator-singletons`. The rest is still proposed, not decided
 
 Phase 3's table ([docs/design-notes.md](docs/design-notes.md#phase-3--expanded-api-surface)) ends with the Rules
 kinds. Below is what else this account can build and live-test, checked on
@@ -500,7 +508,7 @@ row also says what kflare-gen needs before it can generate the kind.
 
 | Candidate | What it manages | Free, on this account | Dev token | What kflare-gen needs first |
 |---|---|---|---|---|
-| `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ❌ needs Managed headers Write (ask) | a runtime for settings-style singletons |
+| `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ❌ needs Managed headers Write (the user's OK 2026-10-22; not added yet) | ✅ the settings kinds (capability 1) |
 | Zone settings (one kind, or one per group of settings) | SSL mode, Always Use HTTPS, minimum TLS version, HSTS, and the other settings a zone has | most settings (to check one by one) | ❌ needs Zone Settings Write (ask) | the singleton runtime |
 | `Queue` | a Workers queue (consumers later) | ✔ probe queue created and deleted | ✔ Queues Write | `SinglePage` lists: the shared CRUD reconciler pages only `V4PagePaginationArray` |
 | `VectorizeIndex` | a Vectorize index | ✔ probe index (dimensions 32 to 1,536) | ✔ Vectorize Write | objects identified by name (no ID, like R2 buckets), `SinglePage` lists |
@@ -517,7 +525,9 @@ kflare-gen capabilities, in the order the candidates above need them:
 1. **A runtime for settings-style singletons** (v7 services with `Get` and `Update` or `Edit`, without `New` or
    `Delete`, 90 of them): one resource owns the configuration, the oldest per zone, as with TunnelConfiguration; the
    others report `AlreadyConfigured`; deletion resets the settings unless retain. ManagedTransform, zone settings, URL
-   normalization and DNSSEC have this shape (DNSSEC only on a zone that is not the e2e zone)
+   normalization and DNSSEC have this shape (DNSSEC only on a zone that is not the e2e zone). ✅ Built for services
+   whose `Delete` resets the settings (`feat/generator-singletons`, see
+   [generator/CLAUDE.md](generator/CLAUDE.md)); zone settings, named by an ID and without a reset, need more
 2. **`SinglePage` lists and objects identified by name** in the shared CRUD reconciler: queues, Vectorize indexes,
    Workers custom domains
 3. **Secrets:** an `x-sensitive` field written to a Kubernetes Secret (the Turnstile secret), or read from one (the
@@ -584,9 +594,10 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > cloudflare-go is at v0.119, with v7.12.0 next to it for the generated kinds and the rule kinds; rule kinds share the
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
-> OriginRule on the shared rule controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
+> OriginRule on the shared rule controller; settings kinds, on the shared settings controller, are built but none is
+> committed yet. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
 > L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on hold.
-> The proposed [Next wave](#next-wave-proposed-2026-10-17) comes after the announcement.
+> The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is next.
 > deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
 > [Deferred](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup) in docs/design-notes.md.

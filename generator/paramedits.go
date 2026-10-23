@@ -7,7 +7,6 @@ SPDX-License-Identifier: MIT
 package main
 
 import (
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -18,14 +17,16 @@ import (
 	"strings"
 )
 
-// The edits of a rule kind's samples that its generated specs write: changes
-// of each sample, which update its rule in place; the other samples, to
-// which the first sample's resource may not change type; specs the CRD
-// refuses: a type, enum value or key it does not allow, a value out of
-// bounds or not matching its pattern, an empty or repeating list, a breach of
-// each rule of the action parameters (of each variant of a oneOf), and each
-// entry rule's invalid spec; and specs that set every field, which the
-// generated specs convert without the API server.
+// The edits of a kind's samples that its generated specs write, from its
+// spec's tree of params: changes of each sample, which update what it asks
+// for in place; specs the CRD refuses: an enum value or key it does not
+// allow, a value out of bounds or not matching its pattern, an empty or
+// repeating list, a breach of each rule of the params (of each variant of a
+// oneOf), and each entry rule's invalid spec; and specs that set every field,
+// which the generated specs convert without the API server. A rule kind adds
+// its own (rulekind.go): its description and enabled changed, the other
+// samples, to which the first sample's resource may not change type, and a
+// type outside its values.
 
 // step is one step into a spec: into a field, or into an item of a list.
 type step struct {
@@ -128,65 +129,31 @@ func setAt(spec map[string]any, path []step, value any) {
 	parent.(map[string]any)[last.field] = value
 }
 
-// edits builds the generated specs' edits of the samples.
-func (k *ruleKind) edits(rules []entryRule) error {
-	first, specs := k.samples[0], k.specs()
-	var failed error
-	// change adds an edit of a spec, unless it breaks a CEL rule, as flipping
-	// a bool that another field needs would.
-	change := func(sample int, what string, edit func(spec map[string]any)) {
-		spec := copySpec(specs[sample])
-		edit(spec)
-		broken, err := k.broken(spec)
-		switch {
-		case err != nil:
-			failed = cmp.Or(failed, fmt.Errorf("%s, %s: %w", k.specName(sample), what, err))
-		case len(broken) == 0:
-			k.changes = append(k.changes, ruleEdit{what: what, sample: sample, spec: spec, rule: k.apiRule(spec)})
-		}
-	}
-	change(0, "a new description", func(spec map[string]any) { spec[fieldDescription] = "changed by kflare-gen" })
-	if enabled, ok := first[fieldEnabled].(bool); ok && !enabled {
-		change(0, "the rule enabled", func(spec map[string]any) { spec[fieldEnabled] = true })
-	} else {
-		change(0, "the rule disabled", func(spec map[string]any) { spec[fieldEnabled] = false })
-	}
-	for i, sample := range specs {
+// scalarChanges adds a change of each scalar of each spec but keys, and but
+// enums unless enums is set: another value of an enum, the other bool, the
+// next integer in range, or a string with its last character changed.
+func (k *paramKind) scalarChanges(e *editor, enums bool) {
+	for i, sample := range e.specs {
 		visitor{scalar: func(path []step, f *paramField, n *paramScalar, value any) {
-			if f.key || len(n.enum) > 0 || failed != nil {
+			if f.key || (len(n.enum) > 0 && !enums) || e.failed != nil {
 				return
 			}
 			other, err := otherScalar(n, value)
 			if err != nil {
-				failed = fmt.Errorf("%s: %s: %w", k.specName(i), pathString(path), err)
+				e.failed = fmt.Errorf("%s: %s: %w", k.specName(i), pathString(path), err)
 				return
 			}
-			change(i, "a new "+relativePath(path), func(spec map[string]any) { setAt(spec, path, other) })
+			e.change(i, "a new "+relativePath(path), func(spec map[string]any) { setAt(spec, path, other) })
 		}}.visitStruct(nil, k.params, sample)
 	}
-	if failed != nil {
-		return failed
-	}
-	values := k.sampleValues()
-	k.swaps(values, change)
-	if failed != nil {
-		return failed
-	}
+}
 
-	for i := 1; i < len(k.samples); i++ {
-		k.retypes = append(k.retypes, ruleEdit{what: "type " + k.phases[i].typeName, spec: copySpec(k.samples[i]),
-			message: "type is immutable"})
-	}
-
-	if err := k.invalidValues(); err != nil {
-		return err
-	}
-	if err := k.ruleBreaches(values); err != nil {
-		return err
-	}
+// entryInvalid adds the invalid spec of each of the entry's CEL rules, which
+// must break its rule.
+func (k *paramKind) entryInvalid(rules []entryRule) error {
 	for _, r := range rules {
 		typeName, _ := r.Invalid[fieldType].(string)
-		spec, err := k.checkSpec(r.Invalid, typeName)
+		spec, err := k.check(r.Invalid, typeName)
 		if err != nil {
 			return fmt.Errorf("%s.invalid: %w", r.where, err)
 		}
@@ -195,14 +162,14 @@ func (k *ruleKind) edits(rules []entryRule) error {
 		}
 		k.invalid = append(k.invalid, ruleEdit{what: "a breach of: " + r.Message, spec: spec, message: r.Message})
 	}
-	return k.fullSpecs(values)
+	return nil
 }
 
 // swaps adds, for each object that takes exactly one of its fields, the
 // changes that set each other scalar field in place of the one the first
 // sample holding the object sets, so that every alternative is written and
 // refused when invalid.
-func (k *ruleKind) swaps(values map[*paramField]any, change func(int, string, func(map[string]any))) {
+func (k *paramKind) swaps(values map[*paramField]any, change func(int, string, func(map[string]any))) {
 	swapped := map[*paramStruct]bool{}
 	for i, sample := range k.specs() {
 		visitor{object: func(path []step, st *paramStruct, value map[string]any) {
@@ -219,7 +186,7 @@ func (k *ruleKind) swaps(values map[*paramField]any, change func(int, string, fu
 				if !ok {
 					continue
 				}
-				change(i, describeObject(path)+" holding "+f.jsonName+" instead", func(spec map[string]any) {
+				change(i, k.describeObject(path)+" holding "+f.jsonName+" instead", func(spec map[string]any) {
 					object := objectAt(spec, path)
 					for _, g := range st.fields {
 						if !g.key && !g.required {
@@ -241,21 +208,15 @@ func takesOne(st *paramStruct) bool {
 }
 
 // invalidValues adds the values the CRD refuses, each in the first spec that
-// holds the field, a sample or a change of one: a type, enum value or key it
-// does not allow, a value out of bounds or not matching its pattern, an empty
-// or repeating list, and a required field left out.
-func (k *ruleKind) invalidValues() error {
+// holds the field, a sample or a change of one: an enum value or key it does
+// not allow, a value out of bounds or not matching its pattern, an empty or
+// repeating list, and a required field left out.
+func (k *paramKind) invalidValues() error {
 	var sample map[string]any
 	invalid := func(what, message string, edit func(spec map[string]any)) {
 		spec := copySpec(sample)
 		edit(spec)
 		k.invalid = append(k.invalid, ruleEdit{what: what, spec: spec, message: message})
-	}
-	sample = k.samples[0]
-	if k.typeDoc != nil {
-		invalid("a type outside its values", "spec.type: Unsupported value", func(spec map[string]any) {
-			spec[fieldType] = "kflare-not-a-type"
-		})
 	}
 	var failed error
 	seen, seenField := map[*paramField]bool{}, map[*paramField]bool{}
@@ -382,7 +343,7 @@ func outsideEnum(n *paramScalar) (any, bool) {
 func listBounds(node paramNode) (minItems *int64, unique bool) {
 	switch n := node.(type) {
 	case *paramList:
-		return n.minItems, n.set
+		return n.minItems, n.set || n.key != nil
 	case *paramMap:
 		return n.minItems, true
 	}
@@ -398,12 +359,16 @@ func tooMany(node paramNode, items []any) ([]any, bool) {
 	var copyOf func(i int) (any, bool)
 	switch n := node.(type) {
 	case *paramList:
+		maximum = n.maxItems
+		if n.key != nil {
+			copyOf = keyedCopies(n.key, items[0].(map[string]any))
+			break
+		}
 		first, isString := items[0].(string)
 		scalar, isScalar := n.items.(*paramScalar)
 		if !isString || !isScalar {
 			return nil, false
 		}
-		maximum = n.maxItems
 		copyOf = func(i int) (any, bool) {
 			value := fmt.Sprintf("%s%d", first, i)
 			_, err := checkScalar(scalar, value, "")
@@ -411,15 +376,7 @@ func tooMany(node paramNode, items []any) ([]any, bool) {
 		}
 	case *paramMap:
 		maximum = n.maxItems
-		key := n.value.fields[0]
-		first := items[0].(map[string]any)
-		copyOf = func(i int) (any, bool) {
-			entry := maps.Clone(first)
-			name := fmt.Sprintf("%v%d", first[key.jsonName], i)
-			entry[key.jsonName] = name
-			_, err := checkScalar(key.node.(*paramScalar), name, "")
-			return entry, err == nil
-		}
+		copyOf = keyedCopies(n.value.fields[0], items[0].(map[string]any))
 	default:
 		return nil, false
 	}
@@ -435,6 +392,22 @@ func tooMany(node paramNode, items []any) ([]any, bool) {
 		long = append(long, item)
 	}
 	return long, true
+}
+
+// keyedCopies returns copies of first, an item of a list or map keyed by key,
+// each with its own key: a string key with a number after it, an integer one
+// plus the number.
+func keyedCopies(key *paramField, first map[string]any) func(i int) (any, bool) {
+	return func(i int) (any, bool) {
+		entry := maps.Clone(first)
+		var name any = fmt.Sprintf("%v%d", first[key.jsonName], i)
+		if n, ok := first[key.jsonName].(int64); ok {
+			name = n + int64(i)
+		}
+		entry[key.jsonName] = name
+		_, err := checkScalar(key.node.(*paramScalar), name, "")
+		return entry, err == nil
+	}
 }
 
 // mismatch returns a string of a length a scalar allows that its pattern
@@ -455,7 +428,7 @@ func mismatch(n *paramScalar) (string, bool) {
 
 // sampleValues returns the first value the samples give each scalar field, or
 // each item of a list of scalars.
-func (k *ruleKind) sampleValues() map[*paramField]any {
+func (k *paramKind) sampleValues() map[*paramField]any {
 	values := map[*paramField]any{}
 	for _, sample := range k.specs() {
 		visitor{scalar: func(_ []step, f *paramField, _ *paramScalar, value any) {
@@ -482,26 +455,22 @@ func scalarValue(f *paramField, n *paramScalar, values map[*paramField]any) (any
 	return someValue(n)
 }
 
-// fullSpecs adds specs of the kind's first type that set every field of the
-// action parameters, to values the samples hold or kflare-gen makes up, and,
-// when an optional scalar allows its zero value, one with every such scalar
-// zero, which the conversion must still send. The generated specs convert
-// them without the API server, which may refuse them: they can hold several
-// variants of a union at once.
-func (k *ruleKind) fullSpecs(values map[*paramField]any) error {
+// fullSpecs adds specs that set every field of the params, to values the
+// samples hold or kflare-gen makes up, and, when an optional scalar allows its
+// zero value, one with every such scalar zero, which the conversion must still
+// send. Each also holds base, the spec fields outside the params, and is of
+// the type typeName. The generated specs convert them without the API server,
+// which may refuse them: they can hold several variants of a union at once.
+func (k *paramKind) fullSpecs(values map[*paramField]any, base map[string]any, typeName string) error {
 	for _, zero := range []bool{false, true} {
 		params, err := fullStruct(k.params, values, zero)
 		if err != nil {
 			return fmt.Errorf("a spec that sets every field: %w", err)
 		}
 		spec := map[string]any{}
-		for _, name := range sharedSpecFields {
-			if value, ok := k.samples[0][name]; ok {
-				spec[name] = value
-			}
-		}
+		maps.Copy(spec, base)
 		maps.Copy(spec, params)
-		checked, err := k.checkSpec(spec, k.phases[0].typeName)
+		checked, err := k.check(spec, typeName)
 		if err != nil {
 			return fmt.Errorf("a spec that sets every field: %w", err)
 		}
@@ -512,7 +481,7 @@ func (k *ruleKind) fullSpecs(values map[*paramField]any) error {
 			}
 			what = "every field set, optional scalars to their zero values where allowed"
 		}
-		k.full = append(k.full, ruleEdit{what: what, spec: checked, rule: k.apiRule(checked)})
+		k.full = append(k.full, ruleEdit{what: what, spec: checked, rule: k.body(checked)})
 	}
 	return nil
 }
@@ -611,7 +580,7 @@ func zeroValue(n *paramScalar) any {
 // the first sample that holds an object of the rule's struct, with that
 // object changed to break it; for a oneOf's rule, one for each way to break
 // each variant (see variantBreaches).
-func (k *ruleKind) ruleBreaches(values map[*paramField]any) error {
+func (k *paramKind) ruleBreaches(values map[*paramField]any) error {
 	type site struct {
 		sample int
 		path   []step
@@ -643,7 +612,7 @@ func (k *ruleKind) ruleBreaches(values map[*paramField]any) error {
 			if err := k.breaks(spec, rule.message); err != nil {
 				return fmt.Errorf("%s: %w", pathString(s.path), err)
 			}
-			k.invalid = append(k.invalid, ruleEdit{what: describeObject(s.path) + " breaking: " + rule.message,
+			k.invalid = append(k.invalid, ruleEdit{what: k.describeObject(s.path) + " breaking: " + rule.message,
 				spec: spec, message: rule.message})
 		}
 	}
@@ -655,9 +624,9 @@ func (k *ruleKind) ruleBreaches(values map[*paramField]any) error {
 // then given each field outside it (the value the object had, or another
 // sample's), or left without each field it requires, when no variant holds
 // what results. A variant whose object kflare-gen cannot fill in is left out.
-func (k *ruleKind) variantBreaches(st *paramStruct, rule celRule, sample int, path []step,
+func (k *paramKind) variantBreaches(st *paramStruct, rule celRule, sample int, path []step,
 	values map[*paramField]any) {
-	where := describeObject(path)
+	where := k.describeObject(path)
 	seen := map[string]bool{}
 	for _, v := range rule.variants {
 		base := objectAt(copySpec(k.specs()[sample]), path)
@@ -702,9 +671,9 @@ func (k *ruleKind) variantBreaches(st *paramStruct, rule celRule, sample int, pa
 }
 
 // describeObject names the object at path in messages.
-func describeObject(path []step) string {
+func (k *paramKind) describeObject(path []step) string {
 	if len(path) == 0 {
-		return describePath("")
+		return k.root
 	}
 	return relativePath(path)
 }
@@ -816,21 +785,25 @@ func someValue(node paramNode) (any, bool) {
 	return value, true
 }
 
-// otherScalar returns a valid value of a scalar that differs from value: the
-// other bool, the next integer in range, or a string with its last character
-// changed.
+// otherScalar returns a valid value of a scalar that differs from value:
+// another value of its enum, the other bool, the next integer in range, or a
+// string with its last character changed.
 func otherScalar(n *paramScalar, value any) (any, error) {
 	var candidates []any
-	switch n.goType {
-	case typeBool:
+	switch {
+	case len(n.enum) > 0:
+		for _, member := range n.enum {
+			candidates = append(candidates, enumValue(n, member))
+		}
+	case n.goType == typeBool:
 		candidates = []any{!value.(bool)}
-	case typeInt64:
+	case n.goType == typeInt64:
 		candidates = []any{value.(int64) + 1, value.(int64) - 1}
 	default:
 		candidates = changedStrings(value.(string))
 	}
 	for _, candidate := range candidates {
-		if _, err := checkScalar(n, candidate, ""); err == nil {
+		if _, err := checkScalar(n, candidate, ""); err == nil && candidate != value {
 			return candidate, nil
 		}
 	}

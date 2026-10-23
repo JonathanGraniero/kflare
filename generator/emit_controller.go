@@ -347,7 +347,7 @@ func emitController(c *controller, header string) ([]byte, error) {
 }
 
 // interfaceMethod declares call as the narrow interface does, with the SDK's
-// parameter names.
+// parameter names: returning a result and an error, or an error alone.
 func interfaceMethod(f *goFile, call *sdkCall) string {
 	params := call.sig.Params()
 	args := make([]string, 0, params.Len())
@@ -359,14 +359,17 @@ func interfaceMethod(f *goFile, call *sdkCall) string {
 		}
 		args = append(args, p.Name()+" "+t)
 	}
-	result := f.typ(call.sig.Results().At(0).Type())
+	results := "error"
+	if call.sig.Results().Len() == 2 {
+		results = "(" + f.typ(call.sig.Results().At(0).Type()) + ", error)"
+	}
 	joined := strings.Join(args, ", ")
 	// The last parameter goes on a line of its own when the declaration
 	// would be long.
-	if len(call.name)+len(joined)+len(result) > 100 {
+	if len(call.name)+len(joined)+len(results) > 109 {
 		joined = strings.Join(args[:len(args)-1], ", ") + ",\n" + args[len(args)-1]
 	}
-	return fmt.Sprintf("%s(%s) (%s, error)", call.name, joined, result)
+	return fmt.Sprintf("%s(%s) %s", call.name, joined, results)
 }
 
 // callBody writes the body of a descriptor's call: its params, with the
@@ -720,20 +723,25 @@ func goValue(f *goFile, sf field, value any) string {
 
 // emitKinds returns the Go source of what registers the generated kinds: the
 // function cmd/main.go sets their reconcilers up with, the CRUD kinds'
-// entries as dependents of their account, and the rule kinds, which the
-// shared rule controller lists, as dependents of their Zone.
-func emitKinds(kinds []*controller, ruleKinds []*ruleKind, header string) ([]byte, error) {
+// entries as dependents of their account, the rule kinds, which the shared
+// rule controller lists, and the rule and settings kinds as dependents of
+// their Zone.
+func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*settingsKind,
+	header string) ([]byte, error) {
 	f := newGoFile()
 	ctrl := f.use("sigs.k8s.io/controller-runtime", "ctrl")
 	client := f.use(clientPackage, "client")
 	comment(&f.Builder, "", wrap("SetupGeneratedReconcilers registers the reconciler of every kind kflare-gen "+
 		"generates with mgr."))
 	f.printf("func SetupGeneratedReconcilers(mgr %s.Manager) error {\n", ctrl)
-	names := make([]string, 0, len(kinds)+len(ruleKinds))
+	names := make([]string, 0, len(kinds)+len(ruleKinds)+len(settingsKinds))
 	for _, c := range kinds {
 		names = append(names, c.name)
 	}
 	for _, k := range ruleKinds {
+		names = append(names, k.name)
+	}
+	for _, k := range settingsKinds {
 		names = append(names, k.name)
 	}
 	for _, name := range slices.Sorted(slices.Values(names)) {
@@ -762,12 +770,19 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, header string) ([]byt
 		f.printf("%sKind", k.varName)
 	}
 	f.printf("}\n\n")
-	comment(&f.Builder, "", wrap("generatedZoneDependents are the generated rule kinds, whose resources reference "+
-		"a Zone in their namespace."))
+	comment(&f.Builder, "", wrap("generatedZoneDependents are the generated rule and settings kinds, whose "+
+		"resources reference a Zone in their namespace."))
 	f.printf("var generatedZoneDependents = []dependentKind{\n")
+	zoneKinds := make([]string, 0, len(ruleKinds)+len(settingsKinds))
 	for _, k := range ruleKinds {
-		f.printf("dependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", k.name, client, f.api(), k.name)
-		f.printf("func(obj *%s.%s) []string { return []string{obj.Spec.ZoneRef.Name} }),\n", f.api(), k.name)
+		zoneKinds = append(zoneKinds, k.name)
+	}
+	for _, k := range settingsKinds {
+		zoneKinds = append(zoneKinds, k.name)
+	}
+	for _, name := range slices.Sorted(slices.Values(zoneKinds)) {
+		f.printf("dependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", name, client, f.api(), name)
+		f.printf("func(obj *%s.%s) []string { return []string{obj.Spec.ZoneRef.Name} }),\n", f.api(), name)
 	}
 	f.printf("}\n")
 	return f.source(header)
