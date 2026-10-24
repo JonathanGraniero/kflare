@@ -648,7 +648,7 @@ Every kflare resource reports a single `Ready` condition. Start with:
 
 ```sh
 kubectl get <kind>.kflare.dev -A                      # READY column
-kubectl describe <kind>.kflare.dev <name> -n <ns>     # condition reason and message
+kubectl describe <kind>.kflare.dev <name> -n <ns>     # condition reason and message; Events of Ready changes
 kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 ```
 

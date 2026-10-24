@@ -9,9 +9,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -61,14 +66,80 @@ func setReady(obj conditionedObject, status metav1.ConditionStatus, reason, mess
 // updateReady sets Ready=True and writes obj's status. Callers set any other
 // status fields first, so they are written in the same update.
 func updateReady(ctx context.Context, c client.StatusClient, obj conditionedObject, reason, message string) error {
-	setReady(obj, metav1.ConditionTrue, reason, message)
-	return c.Status().Update(ctx, obj)
+	return updateReadyCondition(ctx, c, obj, metav1.ConditionTrue, reason, message)
 }
 
 // updateNotReady sets Ready=False and writes obj's status.
 func updateNotReady(ctx context.Context, c client.StatusClient, obj conditionedObject, reason, message string) error {
-	setReady(obj, metav1.ConditionFalse, reason, message)
-	return c.Status().Update(ctx, obj)
+	return updateReadyCondition(ctx, c, obj, metav1.ConditionFalse, reason, message)
+}
+
+// updateReadyCondition sets obj's Ready condition and writes obj's status.
+// Once the write succeeds, a new status or reason is recorded as an Event
+// (recordReadyChange); a new message alone is not.
+func updateReadyCondition(
+	ctx context.Context,
+	c client.StatusClient,
+	obj conditionedObject,
+	status metav1.ConditionStatus,
+	reason, message string,
+) error {
+	old := meta.FindStatusCondition(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
+	changed := old == nil || old.Status != status || old.Reason != reason
+	setReady(obj, status, reason, message)
+	if err := c.Status().Update(ctx, obj); err != nil {
+		return err
+	}
+	if changed {
+		recordReadyChange(obj, status, reason, message)
+	}
+	return nil
+}
+
+// readyEvents records the Events of Ready changes. Until SetEventRecorder
+// is called, none is recorded.
+var readyEvents atomic.Pointer[events.EventRecorder]
+
+// SetEventRecorder makes the status helpers record every change of a
+// resource's Ready condition as an Event, so that kubectl describe and
+// kubectl get events show its history. cmd/main.go calls it once, with the
+// manager's recorder, before the manager starts.
+func SetEventRecorder(recorder events.EventRecorder) {
+	readyEvents.Store(&recorder)
+}
+
+// eventNoteLimit is the longest note, in bytes, the API server accepts in an
+// Event.
+const eventNoteLimit = 1024
+
+//+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+
+// recordReadyChange records obj's new Ready condition as an Event: Normal
+// when Ready is True and Warning when it is False, with the condition's
+// reason, and its message as the note.
+func recordReadyChange(obj conditionedObject, status metav1.ConditionStatus, reason, message string) {
+	recorder := readyEvents.Load()
+	if recorder == nil || *recorder == nil {
+		return
+	}
+	eventType := corev1.EventTypeWarning
+	if status == metav1.ConditionTrue {
+		eventType = corev1.EventTypeNormal
+	}
+	(*recorder).Eventf(obj, nil, eventType, reason, "Reconcile", "%s", eventNote(message))
+}
+
+// eventNote is message, shortened at a character boundary to fit an Event's
+// note, and then ending in "...".
+func eventNote(message string) string {
+	if len(message) <= eventNoteLimit {
+		return message
+	}
+	end := eventNoteLimit - len("...")
+	for !utf8.RuneStart(message[end]) {
+		end--
+	}
+	return message[:end] + "..."
 }
 
 // notReadyRetryAfter reports condErr on obj and retries after

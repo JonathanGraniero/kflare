@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
@@ -635,6 +636,29 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				store.createErr = errors.New("unavailable")
 				_, err = reconcileIt()
 				Expect(err).To(MatchError("unavailable"))
+			})
+
+			It("records an Event when Ready changes, and none on a reconcile that changes nothing", func() {
+				recorder := events.NewFakeRecorder(10)
+				SetEventRecorder(recorder)
+				DeferCleanup(func() { SetEventRecorder(nil) })
+				createAccount(true)
+				create(key, nil)
+				store.listErr = errors.New("connection reset")
+				_, err := reconcileIt()
+				Expect(err).To(MatchError("connection reset"))
+				Expect(recorder.Events).To(Receive(Equal("Warning APIError " + ready().Message)))
+
+				store.listErr = nil
+				_, err = reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				cond := ready()
+				Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+				Expect(recorder.Events).To(Receive(Equal("Normal " + cond.Reason + " " + cond.Message)))
+
+				_, err = reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(recorder.Events).To(BeEmpty(), "a reconcile that changes nothing records nothing")
 			})
 
 			It("returns a failed read of the "+k.noun+" for back-off", func() {
