@@ -107,7 +107,7 @@ type RateLimitRuleBlockResponse struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfratelimit
+// +kubebuilder:resource:scope=Namespaced,shortName=cfratelimit,categories=kflare
 // +kubebuilder:printcolumn:name="Requests",type=integer,JSONPath=`.spec.requestsPerPeriod`
 // +kubebuilder:printcolumn:name="Period",type=integer,JSONPath=`.spec.period`
 // +kubebuilder:printcolumn:name="Action",type=string,JSONPath=`.spec.action`

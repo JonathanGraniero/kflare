@@ -60,7 +60,7 @@ type ManagedTransformManagedResponseHeader struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=managedtransforms,scope=Namespaced,shortName=cfmanagedtransform
+// +kubebuilder:resource:path=managedtransforms,scope=Namespaced,shortName=cfmanagedtransform,categories=kflare
 // +kubebuilder:printcolumn:name="Zone ID",type=string,JSONPath=`.status.cloudflareMetadata.zoneID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

@@ -66,7 +66,7 @@ type TestR2BucketStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=testr2buckets,scope=Namespaced,shortName=testr2
+// +kubebuilder:resource:path=testr2buckets,scope=Namespaced,shortName=testr2,categories=kflare
 // +kubebuilder:printcolumn:name="Bucket Name",type=string,JSONPath=`.status.cloudflareMetadata.bucketName`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

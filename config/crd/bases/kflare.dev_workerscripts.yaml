@@ -8,6 +8,8 @@ metadata:
 spec:
   group: kflare.dev
   names:
+    categories:
+    - kflare
     kind: WorkerScript
     listKind: WorkerScriptList
     plural: workerscripts

@@ -72,7 +72,7 @@ type TunnelStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cftunnel
+// +kubebuilder:resource:scope=Namespaced,shortName=cftunnel,categories=kflare
 // +kubebuilder:printcolumn:name="Tunnel",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Tunnel ID",type=string,JSONPath=`.status.cloudflareMetadata.tunnelID`
 // +kubebuilder:printcolumn:name="CF Status",type=string,JSONPath=`.status.cloudflareMetadata.status`

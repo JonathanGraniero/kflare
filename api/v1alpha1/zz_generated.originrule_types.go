@@ -33,7 +33,7 @@ type OriginRuleOrigin struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=originrules,scope=Namespaced,shortName=cforigin
+// +kubebuilder:resource:path=originrules,scope=Namespaced,shortName=cforigin,categories=kflare
 // +kubebuilder:printcolumn:name="Priority",type=integer,JSONPath=`.spec.priority`
 // +kubebuilder:printcolumn:name="Rule ID",type=string,JSONPath=`.status.cloudflareMetadata.ruleID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

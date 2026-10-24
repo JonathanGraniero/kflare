@@ -74,7 +74,7 @@ type D1DatabaseStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=d1databases,scope=Namespaced,shortName=cfd1
+// +kubebuilder:resource:path=d1databases,scope=Namespaced,shortName=cfd1,categories=kflare
 // +kubebuilder:printcolumn:name="Name",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Database ID",type=string,JSONPath=`.status.cloudflareMetadata.databaseID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

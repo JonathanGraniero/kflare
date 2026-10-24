@@ -8,6 +8,8 @@ metadata:
 spec:
   group: kflare.dev
   names:
+    categories:
+    - kflare
     kind: D1Database
     listKind: D1DatabaseList
     plural: d1databases

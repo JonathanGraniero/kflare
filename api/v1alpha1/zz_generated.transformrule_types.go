@@ -123,7 +123,7 @@ type TransformRuleURIQuery struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=transformrules,scope=Namespaced,shortName=cftransform
+// +kubebuilder:resource:path=transformrules,scope=Namespaced,shortName=cftransform,categories=kflare
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Priority",type=integer,JSONPath=`.spec.priority`
 // +kubebuilder:printcolumn:name="Rule ID",type=string,JSONPath=`.status.cloudflareMetadata.ruleID`

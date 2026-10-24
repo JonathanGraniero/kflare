@@ -124,7 +124,7 @@ type DNSRecordStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfrecord
+// +kubebuilder:resource:scope=Namespaced,shortName=cfrecord,categories=kflare
 // +kubebuilder:printcolumn:name="Record Name",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Content",type=string,JSONPath=`.spec.content`

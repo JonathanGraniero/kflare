@@ -58,7 +58,7 @@ type TestIPListStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=testiplists,scope=Namespaced,shortName=testiplist
+// +kubebuilder:resource:path=testiplists,scope=Namespaced,shortName=testiplist,categories=kflare
 // +kubebuilder:printcolumn:name="List ID",type=string,JSONPath=`.status.cloudflareMetadata.listID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

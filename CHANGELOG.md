@@ -45,6 +45,8 @@ What will ship in v0.1.1: the Helm chart hardened for production
 - **`ManagedTransform`**: a zone's managed transforms, the request and response headers Cloudflare adds or removes,
   turned on and off by ID. One ManagedTransform configures a zone, and deleting it turns them all off unless it
   adopted them. It needs Zone · Managed Headers · Edit
+- **Every kind is in the `kflare` category**, so `kubectl get kflare` lists the resources of all of them, in one
+  namespace (`-n`) or in all (`-A`) ([#54](https://github.com/JonathanGraniero/kflare/issues/54))
 
 ## v0.1.0 (alpha)
 

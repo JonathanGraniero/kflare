@@ -96,7 +96,7 @@ type WAFCustomRuleBlockResponse struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfwaf
+// +kubebuilder:resource:scope=Namespaced,shortName=cfwaf,categories=kflare
 // +kubebuilder:printcolumn:name="Action",type=string,JSONPath=`.spec.action`
 // +kubebuilder:printcolumn:name="Priority",type=integer,JSONPath=`.spec.priority`
 // +kubebuilder:printcolumn:name="Rule ID",type=string,JSONPath=`.status.cloudflareMetadata.ruleID`

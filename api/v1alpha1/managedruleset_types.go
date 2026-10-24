@@ -101,7 +101,7 @@ type ManagedRulesetAction string
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfmanaged
+// +kubebuilder:resource:scope=Namespaced,shortName=cfmanaged,categories=kflare
 // +kubebuilder:printcolumn:name="Ruleset",type=string,JSONPath=`.spec.rulesetID`
 // +kubebuilder:printcolumn:name="Priority",type=integer,JSONPath=`.spec.priority`
 // +kubebuilder:printcolumn:name="Rule ID",type=string,JSONPath=`.status.cloudflareMetadata.ruleID`

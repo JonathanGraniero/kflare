@@ -153,7 +153,7 @@ type WorkerScriptStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfworker
+// +kubebuilder:resource:scope=Namespaced,shortName=cfworker,categories=kflare
 // +kubebuilder:printcolumn:name="Script",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Modified",type=string,JSONPath=`.status.cloudflareMetadata.modifiedOn`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

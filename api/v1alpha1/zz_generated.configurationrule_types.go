@@ -126,7 +126,7 @@ type ConfigurationRuleSpec struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=configurationrules,scope=Namespaced,shortName=cfconfig
+// +kubebuilder:resource:path=configurationrules,scope=Namespaced,shortName=cfconfig,categories=kflare
 // +kubebuilder:printcolumn:name="Priority",type=integer,JSONPath=`.spec.priority`
 // +kubebuilder:printcolumn:name="Rule ID",type=string,JSONPath=`.status.cloudflareMetadata.ruleID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

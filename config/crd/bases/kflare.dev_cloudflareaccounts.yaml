@@ -8,6 +8,8 @@ metadata:
 spec:
   group: kflare.dev
   names:
+    categories:
+    - kflare
     kind: CloudflareAccount
     listKind: CloudflareAccountList
     plural: cloudflareaccounts

@@ -54,7 +54,7 @@ type KVNamespaceStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=kvnamespaces,scope=Namespaced,shortName=cfkv
+// +kubebuilder:resource:path=kvnamespaces,scope=Namespaced,shortName=cfkv,categories=kflare
 // +kubebuilder:printcolumn:name="Title",type=string,JSONPath=`.spec.title`
 // +kubebuilder:printcolumn:name="Namespace ID",type=string,JSONPath=`.status.cloudflareMetadata.namespaceID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
