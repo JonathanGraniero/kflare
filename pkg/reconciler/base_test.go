@@ -8,6 +8,7 @@ package reconciler_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -228,29 +229,74 @@ func TestRetainOnDelete(t *testing.T) {
 		del     = reconciler.DeletionPolicyDelete
 		adopted = reconciler.AdoptedAnnotation
 	)
+	// withDelete and withRetain are RetainOnDelete's answers with the default
+	// deletion policy at delete and at retain.
 	cases := []struct {
-		name        string
-		annotations map[string]string
-		want        bool
+		name                   string
+		annotations            map[string]string
+		withDelete, withRetain bool
 	}{
-		{name: "no annotations", annotations: nil, want: false},
-		{name: "retain", annotations: map[string]string{policy: retain}, want: true},
-		{name: "delete", annotations: map[string]string{policy: del}, want: false},
-		{name: "unknown policy", annotations: map[string]string{policy: "keep"}, want: false},
-		{name: "unrelated annotation", annotations: map[string]string{"example.com/other": retain}, want: false},
-		{name: "adopted", annotations: map[string]string{adopted: "true"}, want: true},
-		{name: "adopted, retain", annotations: map[string]string{adopted: "true", policy: retain}, want: true},
-		{name: "adopted, delete", annotations: map[string]string{adopted: "true", policy: del}, want: false},
-		{name: "adopted, unknown policy", annotations: map[string]string{adopted: "true", policy: "keep"}, want: true},
-		{name: "adopted not true", annotations: map[string]string{adopted: "false"}, want: false},
+		{name: "no annotations", annotations: nil, withDelete: false, withRetain: true},
+		{name: "retain", annotations: map[string]string{policy: retain}, withDelete: true, withRetain: true},
+		{name: "delete", annotations: map[string]string{policy: del}, withDelete: false, withRetain: false},
+		{name: "unknown policy", annotations: map[string]string{policy: "keep"}, withDelete: false, withRetain: true},
+		{name: "unrelated annotation", annotations: map[string]string{"example.com/other": retain},
+			withDelete: false, withRetain: true},
+		{name: "adopted", annotations: map[string]string{adopted: "true"}, withDelete: true, withRetain: true},
+		{name: "adopted, retain", annotations: map[string]string{adopted: "true", policy: retain},
+			withDelete: true, withRetain: true},
+		{name: "adopted, delete", annotations: map[string]string{adopted: "true", policy: del},
+			withDelete: false, withRetain: false},
+		{name: "adopted, unknown policy", annotations: map[string]string{adopted: "true", policy: "keep"},
+			withDelete: true, withRetain: true},
+		{name: "adopted not true", annotations: map[string]string{adopted: "false"},
+			withDelete: false, withRetain: true},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cm := newConfigMap("retain-cm")
-			cm.Annotations = tc.annotations
-			if got := reconciler.RetainOnDelete(cm); got != tc.want {
-				t.Errorf("RetainOnDelete() = %v, want %v", got, tc.want)
+	for _, defaultPolicy := range []string{del, retain} {
+		t.Run("default "+defaultPolicy, func(t *testing.T) {
+			setDefaultDeletionPolicy(t, defaultPolicy)
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					want := tc.withDelete
+					if defaultPolicy == retain {
+						want = tc.withRetain
+					}
+					cm := newConfigMap("retain-cm")
+					cm.Annotations = tc.annotations
+					if got := reconciler.RetainOnDelete(cm); got != want {
+						t.Errorf("RetainOnDelete() = %v, want %v", got, want)
+					}
+				})
 			}
 		})
+	}
+}
+
+// setDefaultDeletionPolicy sets the default deletion policy until the test
+// ends, then puts back delete.
+func setDefaultDeletionPolicy(t *testing.T, policy string) {
+	t.Helper()
+	if err := reconciler.SetDefaultDeletionPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reconciler.SetDefaultDeletionPolicy(reconciler.DeletionPolicyDelete); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+func TestSetDefaultDeletionPolicyRefusesOtherPolicies(t *testing.T) {
+	setDefaultDeletionPolicy(t, reconciler.DeletionPolicyRetain)
+	for _, policy := range []string{"", "keep", "Retain"} {
+		err := reconciler.SetDefaultDeletionPolicy(policy)
+		want := fmt.Sprintf(`unknown deletion policy %q: want "delete" or "retain"`, policy)
+		if err == nil || err.Error() != want {
+			t.Errorf("SetDefaultDeletionPolicy(%q) = %v, want %s", policy, err, want)
+		}
+	}
+	// A refused policy leaves the default as it was.
+	if !reconciler.RetainOnDelete(newConfigMap("retain-cm")) {
+		t.Error("a refused policy changed the default deletion policy")
 	}
 }

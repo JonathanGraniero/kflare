@@ -28,6 +28,7 @@ import (
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	"github.com/JonathanGraniero/kflare/internal/controller"
 	"github.com/JonathanGraniero/kflare/pkg/metricsauth"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -50,6 +51,7 @@ func main() {
 	var secureMetrics bool
 	var metricsCertPath string
 	var enableHTTP2 bool
+	var defaultDeletionPolicy string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -63,6 +65,10 @@ func main() {
 			"change. Without it, the secure metrics endpoint uses a self-signed certificate.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&defaultDeletionPolicy, "default-deletion-policy", reconciler.DeletionPolicyDelete,
+		"What deleting a resource without a kflare.dev/deletion-policy annotation does to the Cloudflare object "+
+			"kflare created for it: delete or retain it. An object kflare adopted is kept unless the annotation "+
+			"says delete.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -70,6 +76,11 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if err := reconciler.SetDefaultDeletionPolicy(defaultDeletionPolicy); err != nil {
+		setupLog.Error(err, "invalid --default-deletion-policy")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will

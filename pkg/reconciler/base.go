@@ -12,6 +12,8 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,12 +25,13 @@ const (
 	// Finalizer is the finalizer added to every kflare-managed resource.
 	// Its presence prevents Kubernetes from deleting the object until the
 	// controller has had a chance to clean up the corresponding Cloudflare
-	// resource (unless the deletion-policy annotation says "retain").
+	// resource (unless its deletion policy keeps it).
 	Finalizer = "kflare.dev/finalizer"
 
 	// DeletionPolicyAnnotation chooses what happens to the Cloudflare resource
-	// when its Kubernetes resource is deleted. Without it, a resource deletes
-	// the Cloudflare resource it created and keeps one it adopted.
+	// when its Kubernetes resource is deleted. Without it, a resource keeps
+	// the Cloudflare resource it adopted, and deletes one it created unless
+	// the default deletion policy is retain (SetDefaultDeletionPolicy).
 	DeletionPolicyAnnotation = "kflare.dev/deletion-policy"
 
 	// DeletionPolicyRetain keeps the Cloudflare resource when its Kubernetes
@@ -36,8 +39,8 @@ const (
 	DeletionPolicyRetain = "retain"
 
 	// DeletionPolicyDelete deletes the Cloudflare resource when its Kubernetes
-	// resource is deleted, even one the resource adopted. Any value other than
-	// DeletionPolicyRetain has this effect on a resource kflare created.
+	// resource is deleted, even one the resource adopted. An annotation with
+	// any other value counts as none.
 	DeletionPolicyDelete = "delete"
 
 	// AdoptionPolicyAnnotation lets a resource take over an existing
@@ -69,17 +72,42 @@ func Adopted(obj client.Object) bool {
 	return obj.GetAnnotations()[AdoptedAnnotation] == "true"
 }
 
-// RetainOnDelete reports whether the Cloudflare resource is kept when obj is
-// deleted: when obj's deletion-policy annotation asks for it, and when obj
-// adopted its Cloudflare resource, unless the annotation asks to delete it.
-// Deleting something kflare did not create is the one step that cannot be
-// undone, so an adopted resource is only deleted on request.
-func RetainOnDelete(obj client.Object) bool {
-	policy := obj.GetAnnotations()[DeletionPolicyAnnotation]
-	if Adopted(obj) {
-		return policy != DeletionPolicyDelete
+// retainByDefault is the default deletion policy: whether a resource without
+// a deletion-policy annotation keeps the Cloudflare resource it created.
+var retainByDefault atomic.Bool
+
+// SetDefaultDeletionPolicy sets the deletion policy of resources whose
+// annotation sets none: DeletionPolicyDelete, the default, or
+// DeletionPolicyRetain, with which deleting a resource keeps the Cloudflare
+// resource it created too. The manager calls it once, before its controllers
+// start (--default-deletion-policy).
+func SetDefaultDeletionPolicy(policy string) error {
+	switch policy {
+	case DeletionPolicyDelete:
+		retainByDefault.Store(false)
+	case DeletionPolicyRetain:
+		retainByDefault.Store(true)
+	default:
+		return fmt.Errorf("unknown deletion policy %q: want %q or %q",
+			policy, DeletionPolicyDelete, DeletionPolicyRetain)
 	}
-	return policy == DeletionPolicyRetain
+	return nil
+}
+
+// RetainOnDelete reports whether the Cloudflare resource is kept when obj is
+// deleted. obj's deletion-policy annotation decides when it says retain or
+// delete. Otherwise an adopted Cloudflare resource is kept, and a created one
+// follows the default deletion policy. Deleting something kflare did not
+// create is the one step that cannot be undone, so an adopted resource is
+// only deleted on request.
+func RetainOnDelete(obj client.Object) bool {
+	switch obj.GetAnnotations()[DeletionPolicyAnnotation] {
+	case DeletionPolicyRetain:
+		return true
+	case DeletionPolicyDelete:
+		return false
+	}
+	return Adopted(obj) || retainByDefault.Load()
 }
 
 // SetCondition upserts a standard Kubernetes condition on the provided slice.

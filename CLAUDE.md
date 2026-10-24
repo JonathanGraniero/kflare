@@ -117,8 +117,8 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    that lost the record of a create finds the object as its own
 5. **FieldExport** (planned, Phase 4) — `FieldExport` CR pipes `.status.*` fields into ConfigMaps for cross-namespace consumption
 6. **Deletion policy** — annotation `kflare.dev/deletion-policy: retain | delete` controls whether the
-   Cloudflare resource is deleted on CR deletion. Without it, a created object is deleted and an adopted one kept;
-   check it with `reconciler.RetainOnDelete`
+   Cloudflare resource is deleted on CR deletion. Without it, an adopted object is kept and a created one deleted,
+   unless the manager's `--default-deletion-policy` is `retain`; check it with `reconciler.RetainOnDelete`
 7. **Immutability** — fields that identify the Cloudflare resource (names, refs) are immutable via CEL
    `self == oldSelf`, with an envtest case per field
 8. **Status helpers** — set conditions and report errors through `internal/controller/status.go`
