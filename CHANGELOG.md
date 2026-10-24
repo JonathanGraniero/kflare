@@ -5,7 +5,7 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
-What will ship next: the Helm chart hardened for production
+What will ship in v0.1.1: the Helm chart hardened for production
 ([#67](https://github.com/JonathanGraniero/kflare/issues/67)), and a new kind, `ManagedTransform`.
 
 ### Upgrading from v0.1.0
