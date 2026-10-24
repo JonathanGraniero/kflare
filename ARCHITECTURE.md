@@ -304,6 +304,12 @@ another rule already deploys, with reason `RulesetConflict`, and a ManagedTransf
 with reason `AlreadyConfigured`. Terminal errors are also
 retried by the 10-hour resync.
 
+Every change of a resource's Ready condition to another status or reason is also recorded as a Kubernetes Event, so
+that `kubectl describe` and `kubectl get events` show the resource's history: `Normal` when Ready turns True,
+`Warning` when it turns False, with the condition's reason, and its message as the note (shortened to the 1 kB an
+Event holds). A reconcile that leaves the condition's status and reason as they were records none, and neither does
+a status write that fails. The manager's ClusterRole may create and patch Events (`events.k8s.io`).
+
 ## Deletion
 
 Each resource carries `kflare.dev/finalizer`. On deletion, kflare deletes the Cloudflare object the resource created,

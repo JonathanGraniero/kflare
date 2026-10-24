@@ -123,7 +123,7 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    `self == oldSelf`, with an envtest case per field
 8. **Status helpers** — set conditions and report errors through `internal/controller/status.go`
    (`updateReady`, `updateNotReady`, `handleCloudflareError`, `notReadyRetryAfter`); API types implement
-   `GetConditions/SetConditions`
+   `GetConditions/SetConditions`. The helpers record each change of Ready's status or reason as an Event
 9. **Prefix** — every finalizer, annotation and label kflare owns starts with `kflare.dev/`
 10. **ARCHITECTURE.md** — a new controller, or a change to drift detection, adoption, error handling or deletion,
     updates the matching section and tables in `ARCHITECTURE.md`

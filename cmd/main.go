@@ -152,6 +152,7 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+	controller.SetEventRecorder(mgr.GetEventRecorder("kflare"))
 
 	if err = (&controller.CloudflareAccountReconciler{
 		Client: mgr.GetClient(),
