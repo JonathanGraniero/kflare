@@ -14,6 +14,8 @@ metadata:
 spec:
   group: kflare.dev
   names:
+    categories:
+    - kflare
     kind: TunnelConfiguration
     listKind: TunnelConfigurationList
     plural: tunnelconfigurations

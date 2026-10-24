@@ -66,7 +66,7 @@ type R2BucketStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfr2
+// +kubebuilder:resource:scope=Namespaced,shortName=cfr2,categories=kflare
 // +kubebuilder:printcolumn:name="Bucket",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Location",type=string,JSONPath=`.status.cloudflareMetadata.location`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

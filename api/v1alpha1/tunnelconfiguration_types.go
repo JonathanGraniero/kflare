@@ -103,7 +103,7 @@ type TunnelConfigurationStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cftunnelconfig
+// +kubebuilder:resource:scope=Namespaced,shortName=cftunnelconfig,categories=kflare
 // +kubebuilder:printcolumn:name="Tunnel",type=string,JSONPath=`.spec.tunnelRef.name`
 // +kubebuilder:printcolumn:name="Version",type=integer,JSONPath=`.status.cloudflareMetadata.version`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

@@ -66,7 +66,7 @@ type WorkerRouteStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfroute
+// +kubebuilder:resource:scope=Namespaced,shortName=cfroute,categories=kflare
 // +kubebuilder:printcolumn:name="Pattern",type=string,JSONPath=`.spec.pattern`
 // +kubebuilder:printcolumn:name="Worker",type=string,JSONPath=`.spec.workerScriptRef.name`
 // +kubebuilder:printcolumn:name="Route ID",type=string,JSONPath=`.status.cloudflareMetadata.routeID`

@@ -62,7 +62,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:scope=Cluster,shortName=cfaccount
+//+kubebuilder:resource:scope=Cluster,shortName=cfaccount,categories=kflare
 //+kubebuilder:printcolumn:name="Account ID",type=string,JSONPath=`.spec.accountID`
 //+kubebuilder:printcolumn:name="Account Name",type=string,JSONPath=`.status.accountName`
 //+kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

@@ -174,7 +174,7 @@ func emitRuleTypes(k *ruleKind, header string) ([]byte, error) {
 	}
 
 	write("// +kubebuilder:object:root=true\n// +kubebuilder:subresource:status\n")
-	write("// +kubebuilder:resource:path=%s,scope=Namespaced,shortName=%s\n", k.plural, k.shortName)
+	write("// +kubebuilder:resource:path=%s,scope=Namespaced,shortName=%s,categories=kflare\n", k.plural, k.shortName)
 	for _, c := range k.printColumns {
 		write("// +kubebuilder:printcolumn:name=%q,type=%s,JSONPath=`%s`\n", c.name, c.typ, c.jsonPath)
 	}

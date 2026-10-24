@@ -297,7 +297,7 @@ type CacheRuleVaryHeader struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=cacherules,scope=Namespaced,shortName=cfcache
+// +kubebuilder:resource:path=cacherules,scope=Namespaced,shortName=cfcache,categories=kflare
 // +kubebuilder:printcolumn:name="Priority",type=integer,JSONPath=`.spec.priority`
 // +kubebuilder:printcolumn:name="Rule ID",type=string,JSONPath=`.status.cloudflareMetadata.ruleID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

@@ -249,6 +249,17 @@ Every other kind references the account (or a resource that does). Examples are 
 | `OriginRule` | Namespaced | `zoneRef` (same namespace) | [API requests to port 8443](../config/samples/cloudflare_v1alpha1_originrule.yaml) |
 | `ManagedTransform` | Namespaced | `zoneRef` (same namespace); one per Cloudflare zone | [visitor location and security headers](../config/samples/cloudflare_v1alpha1_managedtransform.yaml) |
 
+Every kind is in the `kflare` category, so one command lists everything kflare manages, the way `kubectl get all`
+lists a namespace's workloads. With `-n`, the list also holds the cluster's CloudflareAccounts:
+
+```sh
+kubectl get kflare -n my-namespace
+kubectl get kflare -A
+```
+
+Right after the CRDs are installed or upgraded, the first `kubectl get kflare` can answer `the server doesn't have a
+resource type "kflare"`; the next one works.
+
 To expose a Service on your domain through a Cloudflare Tunnel, see
 [`examples/expose-a-service`](../examples/expose-a-service). It puts the pieces together: a Zone, a Tunnel, its
 TunnelConfiguration, a DNSRecord whose `tunnelRef` points the hostname at the tunnel, and a `cloudflared` Deployment

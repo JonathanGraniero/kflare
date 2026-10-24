@@ -60,7 +60,7 @@ type RedirectRuleFromValueTargetURL struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=redirectrules,scope=Namespaced,shortName=cfredirect
+// +kubebuilder:resource:path=redirectrules,scope=Namespaced,shortName=cfredirect,categories=kflare
 // +kubebuilder:printcolumn:name="Priority",type=integer,JSONPath=`.spec.priority`
 // +kubebuilder:printcolumn:name="Rule ID",type=string,JSONPath=`.status.cloudflareMetadata.ruleID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

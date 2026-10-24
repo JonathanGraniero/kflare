@@ -14,6 +14,8 @@ metadata:
 spec:
   group: kflare.dev
   names:
+    categories:
+    - kflare
     kind: WAFCustomRule
     listKind: WAFCustomRuleList
     plural: wafcustomrules

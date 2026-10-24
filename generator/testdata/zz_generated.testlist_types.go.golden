@@ -65,7 +65,7 @@ type TestListStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=testlists,scope=Namespaced,shortName=testlist
+// +kubebuilder:resource:path=testlists,scope=Namespaced,shortName=testlist,categories=kflare
 // +kubebuilder:printcolumn:name="Name",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="List ID",type=string,JSONPath=`.status.cloudflareMetadata.listID`
 // +kubebuilder:printcolumn:name="Created",type=string,JSONPath=`.status.cloudflareMetadata.createdOn`

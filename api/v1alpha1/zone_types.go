@@ -73,7 +73,7 @@ type ZoneStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfzone
+// +kubebuilder:resource:scope=Namespaced,shortName=cfzone,categories=kflare
 // +kubebuilder:printcolumn:name="Domain",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Zone ID",type=string,JSONPath=`.status.cloudflareMetadata.zoneID`
 // +kubebuilder:printcolumn:name="Plan",type=string,JSONPath=`.status.cloudflareMetadata.plan`

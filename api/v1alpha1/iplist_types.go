@@ -87,7 +87,7 @@ type IPListStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfiplist
+// +kubebuilder:resource:scope=Namespaced,shortName=cfiplist,categories=kflare
 // +kubebuilder:printcolumn:name="Name",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Items",type=integer,JSONPath=`.status.cloudflareMetadata.numItems`
 // +kubebuilder:printcolumn:name="List ID",type=string,JSONPath=`.status.cloudflareMetadata.listID`
