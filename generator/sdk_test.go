@@ -113,12 +113,14 @@ func TestServiceReadsTheKVNamespaceService(t *testing.T) {
 		"path account_id string required",
 		"body title string required",
 		"body jurisdiction kv.NamespaceNewParamsJurisdiction enum=eu,fedramp,us",
+		"body mode kv.NamespaceNewParamsMode enum=instant",
 	})
 	check("update", summary(svc.update), []string{"path account_id string required", "body title string required"})
 	check("object", summary(svc.object), []string{
 		"body id string required",
 		"body title string required",
 		"body jurisdiction kv.NamespaceJurisdiction enum=eu,fedramp,us",
+		"body mode kv.NamespaceMode enum=instant",
 		"body supports_url_encoding bool",
 	})
 	if svc.create[1].doc != "Human-readable string name for a Workers KV namespace." {

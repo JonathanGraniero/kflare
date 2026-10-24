@@ -16,6 +16,7 @@ const TestKVNamespaceIDLabel = "kflare.dev/test-kv-namespace-id"
 
 // TestKVNamespaceSpec defines the desired state of TestKVNamespace.
 // +kubebuilder:validation:XValidation:rule="has(self.jurisdiction) == has(oldSelf.jurisdiction)",message="jurisdiction is immutable"
+// +kubebuilder:validation:XValidation:rule="has(self.mode) == has(oldSelf.mode)",message="mode is immutable"
 type TestKVNamespaceSpec struct {
 	// AccountRef references the CloudflareAccount that owns the KV namespace.
 	// Immutable after creation.
@@ -32,6 +33,15 @@ type TestKVNamespaceSpec struct {
 	// +kubebuilder:validation:Enum=eu;fedramp;us
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="jurisdiction is immutable"
 	Jurisdiction string `json:"jurisdiction,omitempty"`
+
+	// The mode of the Workers KV namespace. Specify `instant` when creating a
+	// namespace to create a KV Instant namespace. Omit this field when creating a
+	// namespace to create a classic namespace. Currently, `instant` is the only
+	// supported explicit value.
+	// +optional
+	// +kubebuilder:validation:Enum=instant
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="mode is immutable"
+	Mode string `json:"mode,omitempty"`
 }
 
 // TestKVNamespaceCloudflareMetadata holds identifiers and metadata returned by

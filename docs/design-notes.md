@@ -484,8 +484,8 @@ names; deploy.md uses the dashboard's labels, so look those up when each branch 
 
 #### SDK decision
 **Status:** Accepted 2026-10-09. Step 1 is done: kflare uses cloudflare-go **v0.119.0**. Step 3 is brought forward
-for generated kinds (2026-10-13): **v7.12.0** sits next to v0.119 since `feat/cloudflare-go-v7`, and the rule kinds use
-it since `feat/rulesets-v7`
+for generated kinds (2026-10-13): **v7** sits next to v0.119 since `feat/cloudflare-go-v7` (v7.12.0, v7.13.0 since
+2026-10-23), and the rule kinds use it since `feat/rulesets-v7`
 
 kflare pinned cloudflare-go v0.89.0 until October 2026, and its gaps kept costing features. Checked 2026-10-09:
 
