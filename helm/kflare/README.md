@@ -45,6 +45,7 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `crds.keep` | `true` | Keep the CRDs on uninstall |
 | `rbac.aggregateToDefaultRoles` | `true` | Extend the built-in `view`/`edit`/`admin` roles |
 | `leaderElection` | `true` | Run with leader election |
+| `defaultDeletionPolicy` | `delete` | `retain` keeps the Cloudflare objects of deleted resources, unless they say `delete` |
 | `logging.level` | `info` | `debug`, `info` or `error` |
 | `logging.format` | `json` | `json` or `console` |
 | `metrics.enabled` | `true` | Serve Prometheus metrics on `metrics.port` |

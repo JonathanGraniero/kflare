@@ -39,6 +39,9 @@ What will ship in v0.1.1: the Helm chart hardened for production
   an allowed token is trusted for a minute. Before, it only turned on TLS
 - `--metrics-cert-path` serves the metrics certificate and key from a directory (`tls.crt`, `tls.key`), reloaded
   when they change
+- `--default-deletion-policy`, the chart's `defaultDeletionPolicy`: `retain` keeps the Cloudflare objects of deleted
+  resources, unless a resource says `kflare.dev/deletion-policy: delete`. The default, `delete`, keeps v0.1.0's
+  behavior ([#80](https://github.com/JonathanGraniero/kflare/issues/80))
 
 ### Resource kinds
 

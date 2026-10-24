@@ -317,6 +317,10 @@ metadata:
     kflare.dev/deletion-policy: retain
 ```
 
+A cluster can make keeping objects the rule: with the manager's `--default-deletion-policy=retain` (the chart's
+`defaultDeletionPolicy`), a resource without the annotation keeps the object it created too, and only `delete`
+deletes it. The default, `delete`, is the behavior above. Keeping an object only removes the finalizer.
+
 Per-resource details:
 
 - **Tunnel** removes the tunnel's connections first, which immediately disconnects any running `cloudflared`, then deletes

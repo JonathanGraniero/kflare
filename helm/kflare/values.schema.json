@@ -80,6 +80,13 @@
     "leaderElection": {
       "type": "boolean"
     },
+    "defaultDeletionPolicy": {
+      "type": "string",
+      "enum": [
+        "delete",
+        "retain"
+      ]
+    },
     "logging": {
       "type": "object",
       "additionalProperties": false,

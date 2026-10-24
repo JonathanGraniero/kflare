@@ -51,6 +51,12 @@ rbac:
 # rolling updates can briefly run two pods.
 leaderElection: true
 
+# -- What deleting a kflare resource without a kflare.dev/deletion-policy
+# annotation does to the Cloudflare object kflare created for it: delete it,
+# or retain it. The annotation always wins, and an object kflare adopted is
+# kept unless the annotation says delete.
+defaultDeletionPolicy: delete
+
 logging:
   # -- Log level: debug, info or error.
   level: info

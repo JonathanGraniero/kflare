@@ -674,6 +674,19 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				expectGone()
 			})
 
+			It("keeps the "+k.noun+" it created when the default deletion policy is retain", func() {
+				Expect(reconciler.SetDefaultDeletionPolicy(reconciler.DeletionPolicyRetain)).To(Succeed())
+				DeferCleanup(reconciler.SetDefaultDeletionPolicy, reconciler.DeletionPolicyDelete)
+				synced(nil)
+				writes := store.writes
+				startDeletion()
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.objects).To(HaveLen(1))
+				Expect(store.writes).To(Equal(writes))
+				expectGone()
+			})
+
 			// adopted creates a resource with annotations that adopts an
 			// existing object.
 			adopted := func(annotations map[string]string) {

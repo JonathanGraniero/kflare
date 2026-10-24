@@ -159,7 +159,7 @@ helm-lint: helm ## Lint the chart and render it with default and non-default val
 		$(HELM) lint --strict --kube-version $$v helm/kflare; \
 		$(HELM) template kflare helm/kflare --kube-version $$v > /dev/null; \
 		$(HELM) template kflare helm/kflare --kube-version $$v \
-			--set crds.enabled=false,leaderElection=false,metrics.serviceMonitor.enabled=true \
+			--set crds.enabled=false,leaderElection=false,defaultDeletionPolicy=retain,metrics.serviceMonitor.enabled=true \
 			--set replicaCount=2,networkPolicy.enabled=true,metrics.certSecret=kflare-metrics-tls > /dev/null; \
 		$(HELM) template kflare helm/kflare --kube-version $$v \
 			--set metrics.secure=false,metrics.serviceMonitor.enabled=true,replicaCount=2 > /dev/null; \

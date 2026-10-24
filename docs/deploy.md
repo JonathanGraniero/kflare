@@ -379,6 +379,10 @@ resources:
     memory: 512Mi
 ```
 
+`defaultDeletionPolicy: retain` keeps the Cloudflare objects of deleted resources, unless a resource says
+`kflare.dev/deletion-policy: delete` (see
+[Protecting objects that must outlive their manifests](#protecting-objects-that-must-outlive-their-manifests)).
+
 The pod runs under the restricted Pod Security Standard: non-root, no privilege escalation, all
 capabilities dropped and a read-only root filesystem.
 
@@ -551,6 +555,10 @@ Cloudflare:
 - an `R2Bucket` you want to keep (kflare never deletes objects in a bucket, but deletes an empty bucket)
 
 Objects kflare adopted (`kflare.dev/adoption-policy`) are already kept when their resource is deleted.
+
+To make keeping objects the rule for the whole cluster, set the chart's `defaultDeletionPolicy: retain`. Deleting
+a resource then leaves the object it created in Cloudflare too, unless the resource is annotated
+`kflare.dev/deletion-policy: delete`.
 
 ### Moving to a new cluster
 

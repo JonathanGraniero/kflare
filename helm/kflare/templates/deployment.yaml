@@ -44,6 +44,7 @@ spec:
           command: ["/manager"]
           args:
             - --leader-elect={{ .Values.leaderElection }}
+            - --default-deletion-policy={{ .Values.defaultDeletionPolicy }}
             - --health-probe-bind-address=:{{ .Values.healthPort }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
