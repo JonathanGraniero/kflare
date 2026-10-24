@@ -30,6 +30,7 @@
   - iplists
   - kvnamespaces
   - managedrulesets
+  - managedtransforms
   - originrules
   - r2buckets
   - ratelimitrules
@@ -60,6 +61,7 @@
   - iplists/finalizers
   - kvnamespaces/finalizers
   - managedrulesets/finalizers
+  - managedtransforms/finalizers
   - originrules/finalizers
   - r2buckets/finalizers
   - ratelimitrules/finalizers
@@ -84,6 +86,7 @@
   - iplists/status
   - kvnamespaces/status
   - managedrulesets/status
+  - managedtransforms/status
   - originrules/status
   - r2buckets/status
   - ratelimitrules/status

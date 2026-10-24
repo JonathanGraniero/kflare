@@ -183,16 +183,39 @@ func TestBuildSettingsKindMapsTheManagedTransforms(t *testing.T) {
 		t.Errorf("listKeys = %v and sets = %v, want %v and none", k.listKeys, k.sets, want)
 	}
 	if got := k.unconfigured; len(got) != 2 || got[0].path != "managed_request_headers[].enabled" ||
-		got[1].path != "managed_response_headers[].enabled" || got[0].value != false {
-		t.Errorf("unconfigured = %v, sorted by path", got)
+		got[1].path != "managed_response_headers[].enabled" || got[0].value != false || got[0].other != true {
+		t.Errorf("unconfigured = %v, sorted by path, each with its other value", got)
 	}
 	state, err := json.Marshal(k.unconfiguredState)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"managed_request_headers":[{"enabled":false,"id":"add_visitor_location_headers"}],` +
-		`"managed_response_headers":[{"enabled":false,"id":"add_security_headers"}]}`; string(state) != want {
-		t.Errorf("unconfiguredState = %s, want the sample's settings with every transform disabled", state)
+	if want := `{"managed_request_headers":[{"enabled":false,"id":"add_visitor_location_headers"},` +
+		`{"enabled":false,"id":"unlisted"}],"managed_response_headers":[{"enabled":false,"id":"add_security_headers"},` +
+		`{"enabled":false,"id":"unlisted"}]}`; string(state) != want {
+		t.Errorf("unconfiguredState = %s, want the sample's settings and a transform no spec lists, all disabled",
+			state)
+	}
+	configured := make([]string, 0, len(k.configuredStates))
+	for _, settings := range k.configuredStates {
+		data, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !settingsConfigured(settings, k.unconfigured) {
+			t.Errorf("configured settings %s count as unconfigured", data)
+		}
+		configured = append(configured, string(data))
+	}
+	if want := []string{
+		`{"managed_request_headers":[{"enabled":false,"id":"add_visitor_location_headers"},` +
+			`{"enabled":true,"id":"unlisted"}],"managed_response_headers":[{"enabled":false,"id":"add_security_headers"},` +
+			`{"enabled":false,"id":"unlisted"}]}`,
+		`{"managed_request_headers":[{"enabled":false,"id":"add_visitor_location_headers"},` +
+			`{"enabled":false,"id":"unlisted"}],"managed_response_headers":[{"enabled":false,"id":"add_security_headers"},` +
+			`{"enabled":true,"id":"unlisted"}]}`,
+	}; !reflect.DeepEqual(configured, want) {
+		t.Errorf("configuredStates = %v, want the transform no spec lists turned on, in each list", configured)
 	}
 	if body := k.bodies[0]; settingsConfigured(k.unconfiguredState, k.unconfigured) || !settingsConfigured(body,
 		k.unconfigured) {
@@ -282,6 +305,12 @@ func TestBuildSettingsKindRefuses(t *testing.T) {
 			_ *apiSpec) {
 			e.Sample = map[string]any{"scope": "incoming", "type": "cloudflare"}
 		}, "sample: it configures nothing"},
+		{"an unconfigured value in a list the sample leaves out", managedTransforms, func(e *settingsKindConfig,
+			_ *settingsService, _ *apiSpec) {
+			// Unkeyed, so no item no spec lists stands in.
+			e.Fields = map[string]ruleFieldConfig{"managed_request_headers": {ListMapKey: "id"}}
+			delete(e.Sample, "managedResponseHeaders")
+		}, "unconfigured.values.managed_response_headers[].enabled: the sample's settings hold no such value"},
 		{"a sample with an unknown field", urlNormalization, func(e *settingsKindConfig, _ *settingsService,
 			_ *apiSpec) {
 			e.Sample["colour"] = "blue"
@@ -416,6 +445,111 @@ func TestSettingsValues(t *testing.T) {
 	}
 	if !reflect.DeepEqual(settings, want) {
 		t.Errorf("after setSettingsValue: %v, want %v", settings, want)
+	}
+
+	setLastSettingsValue(settings, []string{"items[]", "on"}, true)
+	setLastSettingsValue(settings, []string{"nested", "deep"}, "y")
+	setLastSettingsValue(settings, []string{"absent", "deep"}, "y")
+	setLastSettingsValue(settings, []string{"scope", "deep"}, "y")
+	settings["empty"] = []any{}
+	setLastSettingsValue(settings, []string{"empty[]", "on"}, true)
+	want["items"] = []any{map[string]any{"on": false}, map[string]any{"on": true}}
+	want["nested"] = map[string]any{"deep": "y"}
+	want["empty"] = []any{}
+	if !reflect.DeepEqual(settings, want) {
+		t.Errorf("after setLastSettingsValue: %v, want %v", settings, want)
+	}
+}
+
+func TestAppendSettingsItem(t *testing.T) {
+	item := map[string]any{"id": "unlisted"}
+	settings := map[string]any{
+		"items":  []any{map[string]any{"id": "a"}},
+		"groups": []any{map[string]any{"members": []any{}}, map[string]any{}, "not an object"},
+	}
+	appendSettingsItem(settings, []string{"items"}, item)
+	appendSettingsItem(settings, []string{"new", "list"}, item)
+	appendSettingsItem(settings, []string{"groups[]", "members"}, item)
+	appendSettingsItem(settings, []string{"absent[]", "members"}, item)
+	item["id"] = "changed"
+	want := map[string]any{
+		"items": []any{map[string]any{"id": "a"}, map[string]any{"id": "unlisted"}},
+		"new":   map[string]any{"list": []any{map[string]any{"id": "unlisted"}}},
+		"groups": []any{
+			map[string]any{"members": []any{map[string]any{"id": "unlisted"}}},
+			map[string]any{"members": []any{map[string]any{"id": "unlisted"}}},
+			"not an object",
+		},
+	}
+	if !reflect.DeepEqual(settings, want) {
+		t.Errorf("after appendSettingsItem: %v, want %v", settings, want)
+	}
+}
+
+func TestUnusedKey(t *testing.T) {
+	for _, tc := range []struct {
+		example any
+		used    map[any]bool
+		want    any
+	}{
+		{"a", map[any]bool{"a": true}, "unlisted"},
+		{"a", map[any]bool{"unlisted": true}, "unlisted-2"},
+		{"a", map[any]bool{"unlisted": true, "unlisted-2": true}, "unlisted-3"},
+		{int64(1), map[any]bool{float64(1): true, float64(2): true}, int64(3)},
+		{float64(5), map[any]bool{float64(5): true}, int64(1)},
+	} {
+		if got := unusedKey(tc.example, tc.used); got != tc.want {
+			t.Errorf("unusedKey(%v, %v) = %#v, want %#v", tc.example, tc.used, got, tc.want)
+		}
+	}
+}
+
+func TestUnlistedItems(t *testing.T) {
+	entry := testSettingsEntry(t, "TestManagedTransform")
+	entry.Sample["managedRequestHeaders"] = []any{map[string]any{"id": "unlisted", "enabled": true}}
+	k, err := buildSettingsKind(entry, loadTestSettings(t, entry.Service), loadTestSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := settingsValuesAt(k.unconfiguredState, []string{"managed_request_headers[]", "id"})
+	if want := []any{"unlisted", "unlisted-2"}; !reflect.DeepEqual(ids, want) {
+		t.Errorf("the request transforms' IDs = %v, want %v: the added one under a key no spec uses", ids, want)
+	}
+
+	// A keyed list no spec sets gets no item.
+	k = &settingsKind{listKeys: map[string]string{"items": "id"}, unconfiguredState: map[string]any{}}
+	k.unlisted()
+	if len(k.unconfiguredState) != 0 {
+		t.Errorf("unconfiguredState = %v, want it left empty", k.unconfiguredState)
+	}
+}
+
+func TestCheckUnconfiguredReturnsAnotherValue(t *testing.T) {
+	str, boolean, number := types.Typ[types.String], types.Typ[types.Bool], types.Typ[types.Float64]
+	for _, tc := range []struct {
+		field sdkField
+		value any
+		other any
+		err   string
+	}{
+		{sdkField{typ: boolean}, false, true, ""},
+		{sdkField{typ: boolean}, true, false, ""},
+		{sdkField{typ: number}, float64(2), float64(3), ""},
+		{sdkField{typ: str}, "x", "x-other", ""},
+		{sdkField{typ: str, enum: []string{"on", "off"}}, "on", "off", ""},
+		{sdkField{typ: str, enum: []string{"on", "off"}}, "off", "on", ""},
+		{sdkField{typ: str, enum: []string{"only"}}, "only", nil, `"only" is the field's only value`},
+	} {
+		other, err := (&settingsKindBuilder{}).checkUnconfigured(tc.field, tc.value)
+		if tc.err != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("checkUnconfigured(%v) = %v, want an error with %q", tc.value, err, tc.err)
+			}
+			continue
+		}
+		if err != nil || other != tc.other {
+			t.Errorf("checkUnconfigured(%v) = %#v, %v, want %#v", tc.value, other, err, tc.other)
+		}
 	}
 }
 

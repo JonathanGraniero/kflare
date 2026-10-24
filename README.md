@@ -104,6 +104,7 @@ rather than creating it.
 | `CacheRule` | One cache rule | Zone · Cache Rules · Edit | [rule](config/samples/cloudflare_v1alpha1_cacherule.yaml) |
 | `ConfigurationRule` | One configuration rule (SSL mode, security level and other settings) | Zone · Config Rules · Edit | [rule](config/samples/cloudflare_v1alpha1_configurationrule.yaml) |
 | `OriginRule` | One origin rule (the origin's destination port) | Zone · Origin Rules · Edit | [rule](config/samples/cloudflare_v1alpha1_originrule.yaml) |
+| `ManagedTransform` | A zone's managed transforms, the request and response headers Cloudflare adds or removes (one per zone) | Zone · Managed Headers · Edit | [transforms](config/samples/cloudflare_v1alpha1_managedtransform.yaml) |
 
 Grant a token only the permissions of the kinds you use. Setting a `Zone`'s `spec.plan` also needs Account · Billing ·
 Edit, and changes your bill.

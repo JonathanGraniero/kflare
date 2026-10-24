@@ -843,11 +843,11 @@ var _ = Describe("SetupGeneratedReconcilers", func() {
 			Expect(name.IsValid()).To(BeTrue(), "%T has no Name field", r)
 			names = append(names, name.String())
 		}
-		want := make([]string, 0, len(generatedRulesetRuleKinds)+len(generatedAccountDependents))
-		for _, k := range generatedRulesetRuleKinds {
-			want = append(want, strings.ToLower(k.name))
-		}
-		for _, d := range generatedAccountDependents {
+		// Every generated kind's resources use a CloudflareAccount's
+		// credentials directly (CRUD kinds), or reference a Zone (rule and
+		// settings kinds).
+		want := make([]string, 0, len(generatedAccountDependents)+len(generatedZoneDependents))
+		for _, d := range slices.Concat(generatedAccountDependents, generatedZoneDependents) {
 			want = append(want, strings.ToLower(d.kind))
 		}
 		Expect(names).To(ConsistOf(want))

@@ -239,6 +239,10 @@ var _ = describeSettingsKind(settingsKindSpecs[*SettingsFixture, SettingsFixture
 	newFake:      func(store *fakeSettingsStore) SettingsFixtureAPI { return fakeSettingsFixtureAPI{store} },
 	defaultAPI:   defaultSettingsFixtureAPI,
 	unconfigured: `{"scope":"incoming","type":"cloudflare"}`,
+	configured: []settingsSpecCase{
+		{what: `scope "both"`, settings: `{"scope":"both","type":"cloudflare"}`},
+		{what: `type "rfc3986"`, settings: `{"scope":"incoming","type":"rfc3986"}`},
+	},
 	samples: []settingsSpecCase{
 		{what: "the sample", spec: `{"scope":"both","type":"rfc3986"}`, settings: `{"scope":"both","type":"rfc3986"}`},
 	},

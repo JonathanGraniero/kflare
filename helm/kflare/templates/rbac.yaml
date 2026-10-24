@@ -134,6 +134,7 @@ rules:
       - configurationrules
       - d1databases
       - kvnamespaces
+      - managedtransforms
       - originrules
       - redirectrules
       - transformrules

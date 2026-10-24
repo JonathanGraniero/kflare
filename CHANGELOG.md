@@ -6,7 +6,7 @@ read the notes before upgrading. The chart and the controller image share one ve
 ## Unreleased
 
 What will ship in v0.1.1: the Helm chart hardened for production
-([#67](https://github.com/JonathanGraniero/kflare/issues/67)).
+([#67](https://github.com/JonathanGraniero/kflare/issues/67)), and a new kind, `ManagedTransform`.
 
 ### Upgrading from v0.1.0
 
@@ -39,6 +39,12 @@ What will ship in v0.1.1: the Helm chart hardened for production
   an allowed token is trusted for a minute. Before, it only turned on TLS
 - `--metrics-cert-path` serves the metrics certificate and key from a directory (`tls.crt`, `tls.key`), reloaded
   when they change
+
+### Resource kinds
+
+- **`ManagedTransform`**: a zone's managed transforms, the request and response headers Cloudflare adds or removes,
+  turned on and off by ID. One ManagedTransform configures a zone, and deleting it turns them all off unless it
+  adopted them. It needs Zone · Managed Headers · Edit
 
 ## v0.1.0 (alpha)
 

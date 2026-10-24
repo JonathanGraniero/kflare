@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/format"
 	"go/types"
@@ -318,11 +319,33 @@ func emitSettingsKindTest(k *settingsKind, header string) ([]byte, error) {
 	f.printf("return &%sReconciler{Client: c, Scheme: c.Scheme(), New%s: newAPI}\n},\n", name, api)
 	f.printf("newFake: func(store *fakeSettingsStore) %s { return %s{store} },\n", api, fake)
 	f.printf("defaultAPI: default%s,\n", api)
+	// The fake writes the keyed lists as Cloudflare does, from the table's
+	// own copy of them, so that the specs check the kind's.
+	if len(k.listKeys) > 0 {
+		f.printf("keyedLists: map[string]string{\n")
+		for _, path := range slices.Sorted(maps.Keys(k.listKeys)) {
+			f.printf("%q: %q,\n", path, k.listKeys[path])
+		}
+		f.printf("},\n")
+	}
 	unconfigured, err := specJSON(k.unconfiguredState)
 	if err != nil {
 		return nil, err
 	}
 	f.printf("unconfigured: %s,\n", unconfigured)
+	f.printf("configured: []settingsSpecCase{\n")
+	for i, v := range k.unconfigured {
+		other, err := json.Marshal(v.other)
+		if err != nil {
+			return nil, err
+		}
+		settings, err := specJSON(k.configuredStates[i])
+		if err != nil {
+			return nil, err
+		}
+		f.printf("{\nwhat: %q,\nsettings: %s,\n},\n", v.path+" "+string(other), settings)
+	}
+	f.printf("},\n")
 	cases := func(label string, edits []ruleEdit) error {
 		if len(edits) == 0 {
 			return nil

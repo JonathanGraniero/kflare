@@ -310,6 +310,20 @@ kinds:
   the untested watches and a check that changed nothing, now gone. On the way: rule kinds' spec model and edits moved
   onto `paramKind` (`paramkind.go`, `paramedits.go`), which the two shapes share, and the conversions emitter is shared
   too; the committed and golden output did not change
+- **ManagedTransform**, the first committed settings kind (`feat/managed-transform-controller`): its entry, with field
+  docs, `listMapKey: id` on both lists and the `unconfigured` values, needed no new mapping. Its mutation check found
+  two gaps in the generated specs, closed for every settings kind:
+  - The fake wrote keyed lists with the kind's own shape, so a list the kind compared without its key went unseen.
+    The table now carries `keyedLists`, how Cloudflare writes, for the fake, and a shared spec checks that the kind
+    keys its lists alike. The unconfigured zone holds an item no spec lists in each keyed list, under a key no spec
+    uses (`unlisted`), as Cloudflare holds the transforms a ManagedTransform does not list
+  - Nothing checked each `unconfigured` value on its own. The table now carries `configured`: the unconfigured zone
+    with one value changed each, in the last item of each list on its path, which for a keyed list is the unlisted
+    one. A shared spec checks that each counts as configured outside kflare, and kflare-gen refuses a value the
+    sample's settings cannot hold
+
+  It also turned up a spec that predates settings kinds: `SetupGeneratedReconcilers`' expected the rule kinds and the
+  account's dependents, and now expects every account and Zone dependent
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without `New`, secrets, and
   settings identified by an ID with a reset that writes defaults (zone settings). Also cross-kind references such as

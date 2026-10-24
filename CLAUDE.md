@@ -157,8 +157,8 @@ what was decided and verified live, and why.
      `rulesets.<Action>RuleParam`. Closest examples: `OriginRule` (small), `CacheRule` (CEL rules and `tests`)
    - Settings kinds (`settingsKinds:`, run by `settings_controller.go`): a zone's settings of one product, a v7 service
      without `New` whose read (`Get`, or a `List` that returns the settings), `Update` or `Edit`, and `Delete` (the
-     reset) take only the zone's ID. Closest examples, none committed yet: `generator/testdata/generator.yaml`'s
-     TestManagedTransform (keyed lists) and TestURLNormalization (enums)
+     reset) take only the zone's ID. Closest example: `ManagedTransform` (keyed lists); for enums,
+     `generator/testdata/generator.yaml`'s TestURLNormalization
 
    Anything else needs a kflare-gen capability first ([Next wave](#next-wave-proposed-2026-10-17) lists them). A
    draft entry is the quickest check: `make codegen` refuses what it cannot generate, and says why.
@@ -189,9 +189,12 @@ what was decided and verified live, and why.
    `rulesetrule_specs_test.go`, `settings_specs_test.go`). Written by hand:
    - The live e2e spec, in `test/e2e/cloudflare_test.go`. A rule kind's follows OriginRule's: a phase constant, a key,
      a `cleanupRules` line in the suite's `DeferCleanup`, and a spec that writes the sample's rule, checks the JSON
-     Cloudflare stores, changes a field in place and expects an idle reconcile (`expectIdle`). Keep the suite within
-     the Free limits ([docs/design-notes.md](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup)), and
-     never run two live runs at once
+     Cloudflare stores, changes a field in place and expects an idle reconcile (`expectIdle`). A settings kind's
+     follows ManagedTransform's: a key, a spec that checks that nobody has configured the zone's settings, writes some
+     and changes them in place, a line in the all-at-once deletion spec that checks the reset, and a cleanup line that
+     resets the settings if the run changed them. Keep the suite within the Free limits
+     ([docs/design-notes.md](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup)), and never run two live
+     runs at once
    - The mutation check: `MUTATE_FOCUS=<Kind> hack/mutate.sh <mutations.json>`, until every mutation is caught. The
      rule kinds so far took 21 to 40, of: the generated conversion (each field), the phase and action, the kind's name
      and registration, the CRD's bounds, patterns, enums, required fields and CEL rules, and any kflare-gen code the
@@ -203,9 +206,11 @@ what was decided and verified live, and why.
      (`gh pr review <number> --comment -b /live-e2e`) runs the same suite in GitHub Actions instead. Never run both at
      once: the script's lock does not see a CI run
 7. **Docs.** Every place that lists the kinds names the last one of the same shape, so
-   `git grep -n OriginRule -- '*.md'` (or `D1Database`) finds them: README's kinds, deploy.md's permission row (the
-   label Cloudflare's docs give it), kinds table and uninstall command, ARCHITECTURE.md's ownership tree, drift and
-   deletion lists, plus a section on the kind's behavior (convention 10), and Current Status below. In
+   `git grep -n OriginRule -- '*.md' '*.yml'` (or `D1Database`, `ManagedTransform`) finds them: README's kinds,
+   deploy.md's permission row (the label Cloudflare's docs give it), kinds table and uninstall command,
+   ARCHITECTURE.md's ownership tree, drift, adoption and deletion lists, plus a section on the kind's behavior
+   (convention 10), CONTRIBUTING.md's generated kinds, the bug report template, CHANGELOG.md, ROADMAP.md, and Current
+   Status below. In
    [docs/design-notes.md](docs/design-notes.md), add the kind's section (what was verified live: refusals and their
    codes, quota, what Cloudflare stores, the permission) and its rows in Phase 3's table and Token permissions.
 8. **Before the PR:** `go fix -diff ./...` prints nothing, `make lint` passes, and `make generate manifests helm`
@@ -498,8 +503,9 @@ rule kinds reconciling at once share a phase's ruleset)
   two-replica install gets a PDB that a node drain respects. Both hold (above)
 
 ### Next wave (proposed 2026-10-17)
-**Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated, so capability 1 below comes first: built in
-`feat/generator-singletons`. The rest is still proposed, not decided
+**Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first
+(`feat/generator-singletons`, #92), then the kind (`feat/managed-transform-controller`, #96), verified live on
+2026-10-23. The rest is still proposed, not decided
 
 Phase 3's table ([docs/design-notes.md](docs/design-notes.md#phase-3--expanded-api-surface)) ends with the Rules
 kinds. Below is what else this account can build and live-test, checked on
@@ -508,7 +514,7 @@ row also says what kflare-gen needs before it can generate the kind.
 
 | Candidate | What it manages | Free, on this account | Dev token | What kflare-gen needs first |
 |---|---|---|---|---|
-| `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ❌ needs Managed headers Write (the user's OK 2026-10-22; not added yet) | ✅ the settings kinds (capability 1) |
+| `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ✔ Managed headers Write, added 2026-10-23 | ✅ the settings kinds (capability 1); generated in `feat/managed-transform-controller` |
 | Zone settings (one kind, or one per group of settings) | SSL mode, Always Use HTTPS, minimum TLS version, HSTS, and the other settings a zone has | most settings (to check one by one) | ❌ needs Zone Settings Write (ask) | the singleton runtime |
 | `Queue` | a Workers queue (consumers later) | ✔ probe queue created and deleted | ✔ Queues Write | `SinglePage` lists: the shared CRUD reconciler pages only `V4PagePaginationArray` |
 | `VectorizeIndex` | a Vectorize index | ✔ probe index (dimensions 32 to 1,536) | ✔ Vectorize Write | objects identified by name (no ID, like R2 buckets), `SinglePage` lists |
@@ -594,11 +600,13 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > cloudflare-go is at v0.119, with v7.12.0 next to it for the generated kinds and the rule kinds; rule kinds share the
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
 > generated in full on the shared CRUD reconciler, and TransformRule, RedirectRule, CacheRule, ConfigurationRule and
-> OriginRule on the shared rule controller; settings kinds, on the shared settings controller, are built but none is
-> committed yet. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
+> OriginRule on the shared rule controller, and ManagedTransform, the first settings kind, on the shared settings
+> controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
 > L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on hold.
-> The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is next.
-> deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
+> The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
+> generated and verified live.
+> deploy.md's permissions are verified on their own for every kind but ManagedTransform. Zero Trust still waits on
+> account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
 > [Deferred](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup) in docs/design-notes.md.
 > Last updated: October 2026

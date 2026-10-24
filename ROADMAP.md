@@ -14,20 +14,21 @@ since what people ask for decides the order.
 | Workers and storage | `WorkerScript`, `WorkerRoute`, `KVNamespace`, `R2Bucket`, `D1Database` |
 | Security | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `IPList` |
 | Rules (the products that replace Page Rules) | `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` |
+| Zone settings | `ManagedTransform` |
 
 Each is tested live against a real Cloudflare account on the Free plan, in GitHub Actions, with an API token holding
-only the permissions the [deploy guide](docs/deploy.md) lists. Existing Cloudflare objects are only taken over when a
-resource asks for it (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs
-the CRDs and the controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.1.1 it serves
-metrics over HTTPS to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an
-optional NetworkPolicy.
+only the permissions the [deploy guide](docs/deploy.md) lists; `ManagedTransform`, the newest, so far only with a
+broader token, outside GitHub Actions. Existing Cloudflare objects are only taken over when a resource asks for it
+(see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs the CRDs and the
+controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.1.1 it serves metrics over HTTPS
+to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an optional
+NetworkPolicy.
 
 ## Next
 
 Candidates that a Free account can use and test, roughly in the order the code generator can support them:
 
-- **Managed transforms and zone settings**: a zone's managed request and response headers, and settings such as the
-  SSL mode, Always Use HTTPS, the minimum TLS version and HSTS
+- **Zone settings**: settings such as the SSL mode, Always Use HTTPS, the minimum TLS version and HSTS
 - **Queues** and **Vectorize indexes** for Workers
 - **Turnstile widgets**, with the widget's secret written to a Kubernetes Secret
 - **Workers custom domains**, next to `WorkerRoute`

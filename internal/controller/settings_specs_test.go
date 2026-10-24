@@ -40,9 +40,10 @@ import (
 
 // The specs every settings kind runs. kflare-gen writes a table per settings
 // kind (zz_generated.<kind>_test.go): a fake of its service on
-// fakeSettingsStore, the settings of a zone nobody has configured, its sample
-// and tests, each with the settings it asks for, edits of them, and specs that
-// set every field. describeSettingsKind runs the shared settings reconciler's
+// fakeSettingsStore, with the lists Cloudflare keys, the settings of a zone
+// nobody has configured and those settings configured in each one respect,
+// its sample and tests, each with the settings it asks for, edits of them, and
+// specs that set every field. describeSettingsKind runs the shared settings reconciler's
 // lifecycle against them: the finalizer, waiting for the Zone and the
 // credentials, the sample and each test written to an unconfigured zone, an
 // idle reconcile that writes nothing, drift corrected, each change written in
@@ -79,9 +80,17 @@ type settingsKindSpecs[O settingsObject, A any] struct {
 	// production factory.
 	newFake    func(store *fakeSettingsStore) A
 	defaultAPI func(token string) (A, error)
+	// keyedLists are the lists Cloudflare writes item by item, each by the
+	// key given, keeping the items a write leaves out. The fake writes them
+	// so, whatever the kind compares.
+	keyedLists map[string]string
 	// unconfigured are the settings of a zone nobody has configured, as JSON,
-	// which every zone of the fake starts with.
+	// which every zone of the fake starts with: with an item no spec lists in
+	// each keyed list, as Cloudflare's hold items a spec leaves out.
+	// configured are such settings with one of the values of the kind's
+	// unconfigured changed each, which count as configured outside kflare.
 	unconfigured string
+	configured   []settingsSpecCase
 	// samples are valid specs: the entry's sample, then its tests; changes
 	// edit them; invalid are specs the CRD refuses; full are specs that set
 	// every field, which the specs convert without the API server.
@@ -295,7 +304,7 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 		}
 
 		BeforeEach(func() {
-			fake = newFakeSettingsStore(specs.kind.shape, specs.unconfigured)
+			fake = newFakeSettingsStore(settingsShape{listKeys: specs.keyedLists}, specs.unconfigured)
 			r = specs.newReconciler(k8sClient, func(string) (A, error) { return specs.newFake(fake), nil })
 
 			create(&corev1.Secret{
@@ -405,11 +414,11 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			return k8sClient.Update(ctx, updated)
 		}
 		// holds reports whether the fake zone's settings hold what settings,
-		// as a table holds them, ask for.
+		// as a table holds them, ask for, as Cloudflare keys its lists.
 		holds := func(settings string) bool {
 			stored, err := json.Marshal(fake.settings(zoneID))
 			Expect(err).NotTo(HaveOccurred())
-			matches, err := specs.kind.shape.matches([]byte(settings), stored)
+			matches, err := fake.shape.matches([]byte(settings), stored)
 			Expect(err).NotTo(HaveOccurred())
 			return matches
 		}
@@ -422,11 +431,11 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			for _, c := range append(slices.Clone(specs.changes), specs.samples[0]) {
 				var body any
 				Expect(json.Unmarshal([]byte(c.settings), &body)).To(Succeed())
-				data, err := json.Marshal(specs.kind.shape.written(unconfigured, body, ""))
+				data, err := json.Marshal(fake.shape.written(unconfigured, body, ""))
 				Expect(err).NotTo(HaveOccurred())
 				configured, err := settingsConfigured(data, specs.kind.unconfigured)
 				Expect(err).NotTo(HaveOccurred())
-				matches, err := specs.kind.shape.matches([]byte(specs.samples[0].settings), data)
+				matches, err := fake.shape.matches([]byte(specs.samples[0].settings), data)
 				Expect(err).NotTo(HaveOccurred())
 				if configured && (!matches || c == specs.samples[0]) {
 					return string(data)
@@ -489,6 +498,11 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			}
 		})
 
+		It("compares its keyed lists by the keys Cloudflare writes them by", func() {
+			Expect(maps.Equal(specs.kind.shape.listKeys, specs.keyedLists)).To(BeTrue(),
+				"the kind keys %v, Cloudflare %v", specs.kind.shape.listKeys, specs.keyedLists)
+		})
+
 		It("writes its settings again when they change outside kflare", func() {
 			createSynced("drift", specs.samples[0].spec)
 			fake.seed(zoneID, specs.unconfigured)
@@ -549,6 +563,22 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			deleteAndReconcile("adopting-deleted")
 			Expect(fake.resets).To(Equal(1))
 			Expect(fake.settings(zoneID)).To(Equal(fake.unconfigured))
+		})
+
+		It("takes settings that differ from an unconfigured zone's in any one value for configured outside kflare", func() {
+			Expect(specs.configured).To(HaveLen(len(specs.kind.unconfigured)), "a configured case per unconfigured value")
+			for i, c := range specs.configured {
+				By(c.what)
+				name := fmt.Sprintf("configured-%d", i)
+				fake.seed(zoneID, c.settings)
+				withFinalizer(name, specs.samples[0].spec, nil)
+				_, err := reconcileOnce(name)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready(name).Reason).To(Equal(reasonAlreadyExists))
+				deleteAndReconcile(name)
+			}
+			Expect(fake.writes).To(BeEmpty())
+			Expect(fake.resets).To(BeZero())
 		})
 
 		It("takes settings it wrote and did not record for its own", func() {
