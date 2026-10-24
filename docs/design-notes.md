@@ -393,7 +393,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/managed-ruleset-controller` | `ManagedRuleset` (was `WAFPackage`) | rulesets-foundation | ✅ By hand (decided 2026-10-13). Free: only the Cloudflare Free Managed Ruleset, with overrides |
 | Code generator: `feat/cloudflare-go-v7` … `feat/generator-rule-kinds` (8 PRs) | none: `kflare-gen` and the shared CRUD reconciler; KVNamespace moves onto them; the first new generated kind and the first generated rule kind (see [Code generator](../generator/CLAUDE.md#code-generator-kflare-gen)) | — | ✅ 8 of 8 (`feat/cloudflare-go-v7` … `feat/generator-rule-kinds`); decided 2026-10-13 |
 | `feat/d1-database-controller` | `D1Database` | code generator (PR 6) | ✅ Generated end to end. Free: 10 databases, 500 MB each, 5 GB in total |
-| `feat/managed-transform-controller` | `ManagedTransform` | code generator (settings kinds) | 🚧 Generated, the first settings kind; the live run waits on Managed headers Write. Free: all six transforms, none conflicting |
+| `feat/managed-transform-controller` | `ManagedTransform` | code generator (settings kinds) | ✅ Generated, the first settings kind. Free: all six transforms, none conflicting |
 | `feat/generator-rule-kinds` | `TransformRule` | code generator (rule kinds) | ✅ Generated, the first rule kind (the code generator's PR 8). Free: 10 rules across its three phases, no regex |
 | `feat/redirect-rule-controller` | `RedirectRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔, no regex ✔ |
 | `feat/cache-rule-controller` | `CacheRule` | code generator (rule kinds) | ✅ Generated. Free: 10 rules ✔; of a custom cache key, only leaving out the query string ✔ |
@@ -439,7 +439,7 @@ names; deploy.md uses the dashboard's labels, so look those up when each branch 
 | `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `fd8de2`); enough on its own (2026-10-17, see below) |
 | `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `e9994a`); enough on its own (2026-10-19, see below) |
 | `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry runs and ten probe rules written and deleted (2026-10-18); written, updated and deleted by the e2e (run `2748f8`); enough on its own (2026-10-19, see below) |
-| `ManagedTransform` | Managed headers Write | ❌ Read only (not a Rulesets endpoint, so no dry run). An empty PATCH was refused on 2026-10-17, so Config Settings Write, which the OpenAPI spec lists for it, is not enough. The user OK'd adding Managed headers Write on `kflare.dev` to the dev and CI tokens (2026-10-22); the session's safety check blocked the token edit on 2026-10-22 and 2026-10-23. Cloudflare's documentation also lists Account Rulesets Read for the PATCH, which the CI token, holding deploy.md's permissions, lacks: its live run will tell |
+| `ManagedTransform` | Managed headers Write | ✅ added on `kflare.dev` to the dev and CI tokens on 2026-10-23, with the user's OK (not a Rulesets endpoint, so no dry run; an empty PATCH was refused on 2026-10-17 with Config Settings Write, which the OpenAPI spec lists for it); written, changed and reset by the e2e (run `3f5c86`, 23 of 27 with the dev token). Not yet checked on its own: Cloudflare's documentation also lists Account Rulesets Read for the PATCH, which deploy.md's permissions lack, and a CI run (the CI token holds deploy.md's) has not been made (the user's choice, 2026-10-23) |
 | `IPList` | Account Rule Lists Write (account) | ✅ create, replace and delete verified 2026-10-13; enough on its own |
 | `D1Database` | D1 Write (account) | ✅ create, read, list and delete verified 2026-10-15; enough on its own (2026-10-15, see below) |
 | `AccessGroup`, `AccessPolicy`, `AccessApplication` | Access: Organizations, Identity Providers, and Groups Write; Access: Apps and Policies Write (account) | ✅, but Access is not enabled |
@@ -978,13 +978,13 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
 
 #### Branch: `feat/managed-transform-controller`
 **Depends on:** `feat/zone-controller`, the code generator's settings kinds (`feat/generator-singletons`, #92)
-**Status:** 🚧 Generated; the live probes and e2e run wait on Managed headers Write for the dev and CI tokens
+**Status:** ✅ Generated, and verified live on 2026-10-23 (run `3f5c86`)
 
 The first settings kind, generated end to end: its entry in `generator/generator.yaml`, the generated output and a live
 e2e spec. It replaces the plan written before kflare-gen had settings kinds, which listed the transforms to enable by
 ID and disabled every other one.
 
-**ManagedTransform design notes (read live on `kflare.dev`, 2026-10-22 and 2026-10-23; nothing written yet):**
+**ManagedTransform design notes (verified live on `kflare.dev`, 2026-10-22 and 2026-10-23):**
 - Its spec is v7's Edit params, `managedRequestHeaders` and `managedResponseHeaders`: lists of `{id, enabled}` keyed
   by `id` (`listMapKey`), so the API server refuses a transform listed twice. Drift compares the transforms a spec
   lists, and those it does not list keep their state, whoever turned them on. The old plan's "every transform not
@@ -1008,7 +1008,11 @@ ID and disabled every other one.
   `remove_x-powered-by_header`, which must stay on: the PATCH's merge by ID that the fake (`fakeSettingsStore`)
   assumes. The all-at-once deletion spec deletes it and checks that every transform is off again; the suite's cleanup
   turns them off if the run turned them on and stopped before that. A zone's managed transforms carry no version, so
-  the e2e cannot see an idle write: the shared envtest specs check that an idle reconcile writes nothing
+  the e2e cannot see an idle write: the shared envtest specs check that an idle reconcile writes nothing. Passed on
+  2026-10-23 (run `3f5c86`, 23 of 27 with the dev token; the 4 skipped are the chart's smoke specs, which a manager
+  outside the cluster skips). The transform no longer listed stayed on, so Cloudflare's PATCH merges by ID, as the
+  fake assumes, and the reset turned all six off. The manager logged two writes of the managed transforms (the create
+  and the change), one reset, and no refusal
 - kflare-gen needed no new mapping, but the kind's mutation check found two gaps in the generated specs, which three
   mutations survived: a keyed list compared without its key, and an `unconfigured` value left out. kflare-gen now
   closes them for every settings kind (see [generator/CLAUDE.md](../generator/CLAUDE.md)): the fake writes keyed lists
@@ -1020,9 +1024,8 @@ ID and disabled every other one.
   keyed lists and unconfigured values, the conversion of each list and field, the registration (the controller, the
   Zone's dependents), the API type's accessors, JSON names and scheme registration, and the CRD's refusals (empty or
   missing IDs, missing `enabled`, an ID listed twice), all caught; 24 of kflare-gen's new code, all caught
-- Waiting on the permission: the live probes (a PATCH of some transforms leaves the others as they are, the reset, an
-  ID the zone does not have) and the live e2e run, with the dev token and with the CI token, which also tells whether
-  deploy.md's permissions are enough on their own
+- Not verified live: what Cloudflare does with an ID the zone does not have, and whether deploy.md's permissions are
+  enough on their own (no CI run, see Token permissions)
 
 
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)

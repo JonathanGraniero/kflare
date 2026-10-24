@@ -504,8 +504,8 @@ rule kinds reconciling at once share a phase's ruleset)
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first
-(`feat/generator-singletons`, #92), then the kind (`feat/managed-transform-controller`), whose live run waits on the
-token's permission. The rest is still proposed, not decided
+(`feat/generator-singletons`, #92), then the kind (`feat/managed-transform-controller`, #96), verified live on
+2026-10-23. The rest is still proposed, not decided
 
 Phase 3's table ([docs/design-notes.md](docs/design-notes.md#phase-3--expanded-api-surface)) ends with the Rules
 kinds. Below is what else this account can build and live-test, checked on
@@ -514,7 +514,7 @@ row also says what kflare-gen needs before it can generate the kind.
 
 | Candidate | What it manages | Free, on this account | Dev token | What kflare-gen needs first |
 |---|---|---|---|---|
-| `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ❌ needs Managed headers Write (the user's OK 2026-10-22; the session's safety check blocked adding it on 2026-10-22 and 2026-10-23) | ✅ the settings kinds (capability 1); generated in `feat/managed-transform-controller` |
+| `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ✔ Managed headers Write, added 2026-10-23 | ✅ the settings kinds (capability 1); generated in `feat/managed-transform-controller` |
 | Zone settings (one kind, or one per group of settings) | SSL mode, Always Use HTTPS, minimum TLS version, HSTS, and the other settings a zone has | most settings (to check one by one) | ❌ needs Zone Settings Write (ask) | the singleton runtime |
 | `Queue` | a Workers queue (consumers later) | ✔ probe queue created and deleted | ✔ Queues Write | `SinglePage` lists: the shared CRUD reconciler pages only `V4PagePaginationArray` |
 | `VectorizeIndex` | a Vectorize index | ✔ probe index (dimensions 32 to 1,536) | ✔ Vectorize Write | objects identified by name (no ID, like R2 buckets), `SinglePage` lists |
@@ -604,8 +604,9 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
 > L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on hold.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
-> generated; its live run waits on Managed headers Write for the dev and CI tokens.
-> deploy.md's permissions are verified on their own for every kind. Zero Trust still waits on account setup. Items
+> generated and verified live.
+> deploy.md's permissions are verified on their own for every kind but ManagedTransform. Zero Trust still waits on
+> account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
 > [Deferred](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup) in docs/design-notes.md.
 > Last updated: October 2026
