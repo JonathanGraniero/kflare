@@ -4,7 +4,7 @@
 # Only TestKVNamespace gets a controller: the shared CRUD reconciler cannot drive the list and R2 bucket services yet,
 # and TestGolden checks that kflare-gen says why. The others get their types.
 kinds:
-  # Every field of the KV namespace service: an optional create-only enum (jurisdiction) and a computed bool.
+  # Every field of the KV namespace service: optional create-only enums (jurisdiction, mode) and a computed bool.
   - kind: TestKVNamespace
     service: kv.NamespaceService
     scope: account

@@ -46,6 +46,7 @@ kinds:
             2026-10-14).
     ignore:
       jurisdiction: Not sent by the controller, and restricting a namespace to a jurisdiction is not verified live yet.
+      mode: Not sent by the controller, and KV Instant namespaces (cloudflare-go v7.13.0) are not verified live yet.
       supports_url_encoding: Not observed by the controller yet.
 
   - kind: D1Database

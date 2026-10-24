@@ -94,7 +94,7 @@ func TestBuildControllerForTheKVNamespaceService(t *testing.T) {
 		pairs = append(pairs, fmt.Sprintf("%s %s %s %s", f.apiName, mark(f.create, "New"), mark(f.update, "Update"),
 			mark(f.object, "Get")))
 	}
-	if !slices.Equal(pairs, []string{"title New Update Get", "jurisdiction New - Get"}) {
+	if !slices.Equal(pairs, []string{"title New Update Get", "jurisdiction New - Get", "mode New - Get"}) {
 		t.Errorf("fields and their counterparts = %q", pairs)
 	}
 	status := make([]string, 0, len(c.status))
@@ -107,12 +107,14 @@ func TestBuildControllerForTheKVNamespaceService(t *testing.T) {
 	if got := describeEdits(c.changes); !slices.Equal(got, []string{`title="examplf" (changing title)`}) {
 		t.Errorf("changes = %q", got)
 	}
-	if got := describeEdits(c.immutable); !slices.Equal(got, []string{`jurisdiction="eu" (setting jurisdiction)`}) {
+	if got := describeEdits(c.immutable); !slices.Equal(got, []string{`jurisdiction="eu" (setting jurisdiction)`,
+		`mode="instant" (setting mode)`}) {
 		t.Errorf("immutable = %q", got)
 	}
-	if got := describeEdits(c.invalid); len(got) != 2 ||
+	if got := describeEdits(c.invalid); len(got) != 3 ||
 		got[0] != fmt.Sprintf("title=%q (a title longer than 512 characters)", strings.Repeat("a", 513)) ||
-		got[1] != `jurisdiction="kflare-not-in-enum" (a jurisdiction outside its enum)` {
+		got[1] != `jurisdiction="kflare-not-in-enum" (a jurisdiction outside its enum)` ||
+		got[2] != `mode="kflare-not-in-enum" (a mode outside its enum)` {
 		t.Errorf("invalid = %q", got)
 	}
 }

@@ -35,6 +35,7 @@ func (f fakeTestKVNamespaceAPI) New(_ context.Context, params kv.NamespaceNewPar
 			ID:           id,
 			Title:        params.Title.Value,
 			Jurisdiction: kv.NamespaceJurisdiction(params.Jurisdiction.Value),
+			Mode:         kv.NamespaceMode(params.Mode.Value),
 		}
 	})
 }
@@ -92,7 +93,8 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.TestKVNamespace, Test
 	seed: func(id, key string) kv.Namespace { return kv.Namespace{ID: id, Title: key} },
 	created: func(obj *cloudflarev1alpha1.TestKVNamespace, current *kv.Namespace) bool {
 		return current.Title == obj.Spec.Title &&
-			(obj.Spec.Jurisdiction == "" || string(current.Jurisdiction) == obj.Spec.Jurisdiction)
+			(obj.Spec.Jurisdiction == "" || string(current.Jurisdiction) == obj.Spec.Jurisdiction) &&
+			(obj.Spec.Mode == "" || string(current.Mode) == obj.Spec.Mode)
 	},
 	changes: []crudSpecEdit[*cloudflarev1alpha1.TestKVNamespace]{
 		{field: "title", what: "changing title",
@@ -103,11 +105,15 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.TestKVNamespace, Test
 			edit: func(obj *cloudflarev1alpha1.TestKVNamespace) { obj.Spec.AccountRef.Name = "other-account" }},
 		{field: "jurisdiction", what: "setting jurisdiction",
 			edit: func(obj *cloudflarev1alpha1.TestKVNamespace) { obj.Spec.Jurisdiction = "eu" }},
+		{field: "mode", what: "setting mode",
+			edit: func(obj *cloudflarev1alpha1.TestKVNamespace) { obj.Spec.Mode = "instant" }},
 	},
 	invalid: []crudSpecEdit[*cloudflarev1alpha1.TestKVNamespace]{
 		{field: "title", what: "a title longer than 512 characters",
 			edit: func(obj *cloudflarev1alpha1.TestKVNamespace) { obj.Spec.Title = strings.Repeat("a", 513) }},
 		{field: "jurisdiction", what: "a jurisdiction outside its enum",
 			edit: func(obj *cloudflarev1alpha1.TestKVNamespace) { obj.Spec.Jurisdiction = "kflare-not-in-enum" }},
+		{field: "mode", what: "a mode outside its enum",
+			edit: func(obj *cloudflarev1alpha1.TestKVNamespace) { obj.Spec.Mode = "kflare-not-in-enum" }},
 	},
 })

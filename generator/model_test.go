@@ -92,7 +92,7 @@ func TestBuildKindMapsTheKVNamespaceService(t *testing.T) {
 		}
 		return out
 	}
-	if got := names(k.spec); !slices.Equal(got, []string{"AccountRef", "Title", "Jurisdiction"}) {
+	if got := names(k.spec); !slices.Equal(got, []string{"AccountRef", "Title", "Jurisdiction", "Mode"}) {
 		t.Errorf("spec = %q", got)
 	}
 	if got := names(k.metadata); !slices.Equal(got, []string{"NamespaceID", "SupportsURLEncoding"}) {
@@ -109,8 +109,16 @@ func TestBuildKindMapsTheKVNamespaceService(t *testing.T) {
 	}) {
 		t.Errorf("jurisdiction, an optional create-only enum: %+v %q", jurisdiction, jurisdiction.markers())
 	}
-	if len(k.specRules) != 1 || !strings.Contains(k.specRules[0], "has(self.jurisdiction) == has(oldSelf.jurisdiction)") {
-		t.Errorf("specRules = %q, want the rule that keeps jurisdiction from being added or removed", k.specRules)
+	mode := fieldNamed(t, k.spec, "Mode")
+	if !mode.optional || mode.goType != "string" || !slices.Equal(mode.markers(), []string{
+		"+kubebuilder:validation:Enum=instant", immutable("mode"),
+	}) {
+		t.Errorf("mode, an optional create-only enum: %+v %q", mode, mode.markers())
+	}
+	if len(k.specRules) != 2 || !strings.Contains(k.specRules[0], "has(self.jurisdiction) == has(oldSelf.jurisdiction)") ||
+		!strings.Contains(k.specRules[1], "has(self.mode) == has(oldSelf.mode)") {
+		t.Errorf("specRules = %q, want the rules that keep jurisdiction and mode from being added or removed",
+			k.specRules)
 	}
 	if url := fieldNamed(t, k.metadata, "SupportsURLEncoding"); url.goType != "bool" || !url.optional ||
 		len(url.markers()) != 0 {

@@ -45,8 +45,9 @@ part from Cloudflare's own description of its API. What Cloudflare does not desc
   `name` and `locationHint` and the list's `name` are in the create params but not the update params. R2's
   `storageClass` is in `Edit`, so mutable, as Deferred says, and v7 sends the jurisdiction and storage-class headers
   that v0.119 cannot
-- The OpenAPI spec runs ahead of the SDK (its KV create takes a `mode` that v7.12.0 lacks), and it is not always the
-  live API: its list-name pattern allows uppercase, which Cloudflare refuses (10029, see IPList)
+- The OpenAPI spec runs ahead of the SDK (its KV create takes a `mode` that v7.12.0 lacks; v7.13.0 added it, and
+  KVNamespace ignores it), and it is not always the live API: its list-name pattern allows uppercase, which Cloudflare
+  refuses (10029, see IPList)
 
 **Design.** It follows ACK's code-generator (AWS Controllers for Kubernetes): per-kind YAML plus the SDK's model, and
 generated code on a shared runtime. Unlike ACK, hooks are Go functions rather than templates, and API defaults become
@@ -126,6 +127,7 @@ kinds:
         validation: {minLength: 1, maxLength: 512, reason: The spec gives no minimum, and Cloudflare refuses ...}
     ignore:                           # every other field of the service is generated, so leaving one out takes a reason
       jurisdiction: Not sent by the controller, and restricting a namespace to a jurisdiction is not verified live yet.
+      mode: Not sent by the controller, and KV Instant namespaces (cloudflare-go v7.13.0) are not verified live yet.
       supports_url_encoding: Not observed by the controller yet.
 ```
 
