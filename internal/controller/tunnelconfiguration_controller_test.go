@@ -395,6 +395,22 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			expectReady(configKey, metav1.ConditionTrue, "Synced")
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			readyEnv(nil)
+			setStatusTunnelID(fakeTunnelID)
+			fake := &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{
+				TunnelID: fakeTunnelID,
+				Version:  7,
+				Config: cf.TunnelConfiguration{
+					Ingress:     expectedRules("http_status:404"),
+					WarpRouting: &cf.WarpRoutingConfig{Enabled: false},
+				},
+			}}
+			r := reconcilerWithFakeTunnelConfigurationAPI(fake)
+			expectDriftCheck(func() (reconcile.Result, error) { return reconcileConfig(r, configKey) })
+			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration", "GetTunnelConfiguration"}))
+		})
+
 		DescribeTable("overwrites drift made outside kflare",
 			func(mutate func(*cf.TunnelConfiguration)) {
 				readyEnv(nil)

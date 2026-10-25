@@ -46,6 +46,10 @@ What will ship in v0.1.1: the Helm chart hardened for production
   it turns True and `Warning` when it turns False, so `kubectl describe` shows the resource's history. The
   controller's ClusterRole may create and patch `events.k8s.io` Events
   ([#56](https://github.com/JonathanGraniero/kflare/issues/56))
+- `--drift-check-interval`, the chart's `driftCheckInterval`, off by default: every resource is checked against
+  Cloudflare that long after each successful reconcile, give or take a tenth, so that a change made outside kflare is
+  corrected within about the interval instead of at the 10-hour resync. The deploy guide says how to pick one for the
+  number of resources ([#55](https://github.com/JonathanGraniero/kflare/issues/55))
 
 ### Resource kinds
 

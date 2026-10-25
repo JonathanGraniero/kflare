@@ -498,6 +498,14 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			}
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			createSynced("drift-check", specs.samples[0].spec)
+			writes := len(fake.writes)
+			expectDriftCheck(func() (reconcile.Result, error) { return reconcileOnce("drift-check") })
+			Expect(fake.writes).To(HaveLen(writes))
+			deleteAndReconcile("drift-check")
+		})
+
 		It("compares its keyed lists by the keys Cloudflare writes them by", func() {
 			Expect(maps.Equal(specs.kind.shape.listKeys, specs.keyedLists)).To(BeTrue(),
 				"the kind keys %v, Cloudflare %v", specs.kind.shape.listKeys, specs.keyedLists)

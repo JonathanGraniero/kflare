@@ -226,6 +226,14 @@ var _ = Describe("IPList Controller", func() {
 				Expect(readyCondition(key("a")).Reason).To(Equal("Synced"))
 			})
 
+			It("schedules a drift check after a sync, once the manager sets an interval", func() {
+				createList("a", nil)
+				syncList(key("a"))
+				writes := fake.writes
+				expectDriftCheck(func() (reconcile.Result, error) { return reconcileList(key("a")) })
+				Expect(fake.writes).To(Equal(writes))
+			})
+
 			It("updates the description and replaces the items when the spec changes, keeping the list", func() {
 				createList("a", nil)
 				syncList(key("a"))

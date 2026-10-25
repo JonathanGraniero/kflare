@@ -11,6 +11,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -52,6 +53,7 @@ func main() {
 	var metricsCertPath string
 	var enableHTTP2 bool
 	var defaultDeletionPolicy string
+	var driftCheckInterval time.Duration
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -69,6 +71,11 @@ func main() {
 		"What deleting a resource without a kflare.dev/deletion-policy annotation does to the Cloudflare object "+
 			"kflare created for it: delete or retain it. An object kflare adopted is kept unless the annotation "+
 			"says delete.")
+	flag.DurationVar(&driftCheckInterval, "drift-check-interval", 0,
+		"How long after a successful reconcile a resource is reconciled again, so that a change made outside kflare "+
+			"(in the Cloudflare dashboard, through the API, by Terraform) is corrected within about that long. Each "+
+			"check is moved by up to a tenth either way at random, and makes one or more Cloudflare API calls per "+
+			"resource, which count against Cloudflare's rate limit. 0 turns the checks off.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -79,6 +86,10 @@ func main() {
 
 	if err := reconciler.SetDefaultDeletionPolicy(defaultDeletionPolicy); err != nil {
 		setupLog.Error(err, "invalid --default-deletion-policy")
+		os.Exit(1)
+	}
+	if err := reconciler.SetDriftCheckInterval(driftCheckInterval); err != nil {
+		setupLog.Error(err, "invalid --drift-check-interval")
 		os.Exit(1)
 	}
 

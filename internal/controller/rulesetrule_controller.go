@@ -186,13 +186,13 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 		Ref:       ref,
 		Version:   state.version,
 	}
-	if err := updateReady(ctx, r.Client, obj, "Synced", "Rule is synced with Cloudflare"); err != nil {
-		return ctrl.Result{}, err
+	result, err := readyWithDriftCheck(ctx, r.Client, obj, "Synced", "Rule is synced with Cloudflare")
+	if err != nil || !state.moved {
+		return result, err
 	}
-	if state.moved {
-		return ctrl.Result{RequeueAfter: rulesetRuleRecheckInterval}, nil
-	}
-	return ctrl.Result{}, nil
+	// Rules that moved get their order checked again soon, whatever the drift
+	// check interval.
+	return ctrl.Result{RequeueAfter: rulesetRuleRecheckInterval}, nil
 }
 
 // peers lists the rules kflare manages in zoneID and phase: those of every

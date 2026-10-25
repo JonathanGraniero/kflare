@@ -113,7 +113,8 @@ Runs never overlap.
 
 Every controller follows the loop [ARCHITECTURE.md](ARCHITECTURE.md#the-reconcile-loop) describes (spec → Cloudflare's
 copy → difference → write only on drift), and the same conventions: a single `Ready` condition, set through the helpers
-in `internal/controller/status.go`; `*Ref` fields instead of copied IDs; fields that identify the Cloudflare object
+in `internal/controller/status.go`, with a successful reconcile ending in `readyWithDriftCheck`, which schedules the
+next drift check; `*Ref` fields instead of copied IDs; fields that identify the Cloudflare object
 immutable through CEL; the adoption and deletion policies of `internal/controller/adoption.go` and
 `reconciler.RetainOnDelete`; and the `kflare.dev/` prefix on every finalizer, label and annotation kflare owns.
 

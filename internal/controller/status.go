@@ -69,6 +69,23 @@ func updateReady(ctx context.Context, c client.StatusClient, obj conditionedObje
 	return updateReadyCondition(ctx, c, obj, metav1.ConditionTrue, reason, message)
 }
 
+// readyWithDriftCheck ends a successful reconcile: it sets Ready=True and
+// writes obj's status, as updateReady does, and schedules obj's next drift
+// check (reconciler.NextDriftCheck), since a change made in Cloudflare outside
+// kflare triggers no reconcile of its own. Without a drift check interval it
+// schedules nothing.
+func readyWithDriftCheck(
+	ctx context.Context,
+	c client.StatusClient,
+	obj conditionedObject,
+	reason, message string,
+) (ctrl.Result, error) {
+	if err := updateReady(ctx, c, obj, reason, message); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: reconciler.NextDriftCheck()}, nil
+}
+
 // updateNotReady sets Ready=False and writes obj's status.
 func updateNotReady(ctx context.Context, c client.StatusClient, obj conditionedObject, reason, message string) error {
 	return updateReadyCondition(ctx, c, obj, metav1.ConditionFalse, reason, message)

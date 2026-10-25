@@ -46,6 +46,7 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `rbac.aggregateToDefaultRoles` | `true` | Extend the built-in `view`/`edit`/`admin` roles |
 | `leaderElection` | `true` | Run with leader election |
 | `defaultDeletionPolicy` | `delete` | `retain` keeps the Cloudflare objects of deleted resources, unless they say `delete` |
+| `driftCheckInterval` | unset (off) | Check each resource against Cloudflare this often, such as `30m`, to correct changes made outside kflare |
 | `logging.level` | `info` | `debug`, `info` or `error` |
 | `logging.format` | `json` | `json` or `console` |
 | `metrics.enabled` | `true` | Serve Prometheus metrics on `metrics.port` |

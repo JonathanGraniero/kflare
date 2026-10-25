@@ -57,6 +57,16 @@ leaderElection: true
 # kept unless the annotation says delete.
 defaultDeletionPolicy: delete
 
+# -- How long after a successful reconcile each resource is checked against
+# Cloudflare again, as a duration such as 30m or 1h, so that a change made
+# outside kflare (in the dashboard, through the API, by Terraform) is
+# corrected within about that long. Empty turns the checks off: a resource is
+# then reconciled again only when it, or something it watches, changes, or at
+# the 10-hour resync. Each check makes Cloudflare API calls, which count
+# against Cloudflare's rate limit: the deploy guide's Configuration says how
+# to pick an interval for the number of resources.
+driftCheckInterval: ""
+
 logging:
   # -- Log level: debug, info or error.
   level: info

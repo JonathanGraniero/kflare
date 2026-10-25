@@ -201,7 +201,7 @@ func (r *TunnelConfigurationReconciler) syncConfiguration(
 
 	tc.Status.CloudflareMetadata.TunnelID = tunnelID
 	tc.Status.CloudflareMetadata.Version = current.Version
-	return ctrl.Result{}, updateReady(ctx, r.Client, tc, "Synced",
+	return readyWithDriftCheck(ctx, r.Client, tc, "Synced",
 		"Tunnel configuration is synced with Cloudflare")
 }
 

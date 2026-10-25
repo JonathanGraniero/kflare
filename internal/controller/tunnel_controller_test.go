@@ -510,6 +510,16 @@ var _ = Describe("Tunnel Controller", func() {
 			Expect(after.ResourceVersion).To(Equal(before.ResourceVersion))
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			readyEnv(nil)
+			setTunnelStatus(fakeTunnelID, credsName)
+			r := reconcilerWithFakeTunnelAPI(&fakeTunnelAPI{
+				getTunnel: cf.Tunnel{ID: fakeTunnelID, Name: cfTunnelName},
+				token:     fakeTunnelTok,
+			})
+			expectDriftCheck(func() (reconcile.Result, error) { return reconcileTunnel(r) })
+		})
+
 		It("restores the token when the owned Secret's data was removed", func() {
 			readyEnv(nil)
 			setTunnelStatus(fakeTunnelID, credsName)

@@ -404,6 +404,12 @@ var _ = Describe("WorkerRoute Controller", func() {
 			Expect(fake.writes).To(Equal(writes))
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			readyEnv()
+			createRoute(routeName, pattern, true, nil)
+			expectDriftCheck(reconcileRoute)
+		})
+
 		It("adopts the existing route with the pattern and points it at the Worker", func() {
 			readyEnv()
 			fake = newFakeWorkerRouteAPI(cf.WorkerRoute{ID: "existing", Pattern: pattern, ScriptName: "someone-elses-worker"})

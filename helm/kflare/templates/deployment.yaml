@@ -45,6 +45,9 @@ spec:
           args:
             - --leader-elect={{ .Values.leaderElection }}
             - --default-deletion-policy={{ .Values.defaultDeletionPolicy }}
+            {{- with .Values.driftCheckInterval }}
+            - --drift-check-interval={{ . }}
+            {{- end }}
             - --health-probe-bind-address=:{{ .Values.healthPort }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}

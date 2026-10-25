@@ -90,11 +90,20 @@ by itself trigger a reconcile**. Reconciles are triggered by:
 - a change to a watched dependency (for example a Zone becoming ready re-triggers its DNSRecords; a ConfigMap or Secret
   change re-triggers WorkerScripts that use it);
 - a scheduled retry after an error (see below);
+- a drift check, when the manager has a drift check interval (`--drift-check-interval`, the chart's
+  `driftCheckInterval`): every successful reconcile schedules the next one that long later, moved by up to a tenth of
+  the interval either way at random, so that resources synced together, as after a restart, spread their checks;
 - the informer resync, which re-reconciles every resource. kflare does not set a sync period, so it uses
   controller-runtime's default of **10 hours**.
 
-A successful reconcile does not schedule another one. In practice, a record edited in the dashboard can stay changed for
-up to about 10 hours before kflare reverts it.
+Without a drift check interval, the default, a successful reconcile does not schedule another one, and a record edited
+in the dashboard can stay changed for up to about 10 hours before kflare reverts it. With one, it stays changed for at
+most 1.1 times the interval. A drift check is an ordinary reconcile, idle when nothing changed (see
+[The reconcile loop](#the-reconcile-loop)). It reads the object from Cloudflare and writes only what differs. The
+reads are one call for most kinds and two for a Tunnel (the tunnel and its token). An IPList takes two, plus one per
+500 items past the first 500. The short requeues stay as they are: an IPList whose items Cloudflare is replacing checks
+every 2 seconds, and a rule that moved other rules checks their order again 10 seconds later, whatever the interval. A
+CloudflareAccount's drift check validates its token again.
 
 To force a reconcile, change the resource's metadata:
 
@@ -383,9 +392,10 @@ hang, and leaves its Cloudflare object, or the zone's settings, as they are.
 
 ## Known limitations
 
-- **Drift is not corrected promptly.** Out-of-band changes wait for the next trigger, at worst the 10-hour resync. A
-  configurable periodic requeue on successful reconciles would bound this; it needs to stay within Cloudflare's API
-  rate limits when many resources are managed.
+- **Drift is corrected promptly only with a drift check interval.** Without `--drift-check-interval`, the default,
+  out-of-band changes wait for the next trigger, at worst the 10-hour resync. With it, they wait about the interval,
+  and every resource's checks cost Cloudflare API calls, which count against Cloudflare's rate limit (see
+  [When drift is detected](#when-drift-is-detected)).
 - **Adoption goes by key only.** A resource adopts the object with its key (a name, a title, a pattern), and there is
   no way to name an object by its ID. Tunnel names are not unique: a Tunnel adopts the first one listed with its name.
 - **No ownership marker on the Cloudflare side, except for rules.** kflare tracks what it owns only in Kubernetes, so if

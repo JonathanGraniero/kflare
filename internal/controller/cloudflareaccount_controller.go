@@ -96,7 +96,7 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	logger.Info("Cloudflare account validated", "accountName", cfAccount.Name)
 	account.Status.AccountName = cfAccount.Name
-	return ctrl.Result{}, updateReady(ctx, r.Client, account, "Validated",
+	return readyWithDriftCheck(ctx, r.Client, account, "Validated",
 		"Credentials are valid and account is reachable")
 }
 

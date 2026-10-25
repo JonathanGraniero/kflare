@@ -230,7 +230,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 	}
 
 	k.observe(obj, current)
-	return ctrl.Result{}, updateReady(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
+	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
 }
 
 // findInPages pages through a list of objects, from page 1, and returns the
