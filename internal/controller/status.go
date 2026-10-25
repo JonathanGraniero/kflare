@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,23 @@ func updateReadyCondition(
 	return nil
 }
 
+// statusWriteTimeout bounds the status write of a reconcile that ran out of
+// time (statusContext).
+const statusWriteTimeout = 10 * time.Second
+
+// statusContext returns the context handleCloudflareError writes a
+// resource's status with: ctx, unless its deadline has passed. A reconcile
+// whose Cloudflare call ran out of time (the manager's --reconcile-timeout)
+// still reports why it failed, so its write gets a context of its own, with
+// ctx's values and statusWriteTimeout to finish in. A reconcile cancelled for
+// another reason, such as the manager stopping, writes nothing.
+func statusContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
+}
+
 // readyEvents records the Events of Ready changes. Until SetEventRecorder
 // is called, none is recorded.
 var readyEvents atomic.Pointer[events.EventRecorder]
@@ -168,14 +186,22 @@ func invalidToken(ctx context.Context, c client.StatusClient, obj conditionedObj
 // credentials, which re-triggers the reconcile. Anything else is returned so
 // controller-runtime retries with back-off. The condition shows Cloudflare's
 // messages and codes (cfpkg.ErrorMessage); the returned error, which
-// controller-runtime logs, keeps everything.
+// controller-runtime logs, keeps everything. A call cut short because the
+// reconcile ran out of time fails with the context's error alone, so the
+// condition adds the context's cause: "reconciliation timeout", from
+// controller-runtime.
 func handleCloudflareError(ctx context.Context, c client.StatusClient, obj conditionedObject, err error) (ctrl.Result, error) {
 	message := cfpkg.ErrorMessage(err)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		message = fmt.Sprintf("%s (%v)", message, context.Cause(ctx))
+	}
+	statusCtx, cancel := statusContext(ctx)
+	defer cancel()
 	if cfpkg.IsTerminalError(err) {
-		return ctrl.Result{}, updateNotReady(ctx, c, obj, "TerminalError",
+		return ctrl.Result{}, updateNotReady(statusCtx, c, obj, "TerminalError",
 			fmt.Sprintf("Terminal Cloudflare API error: %s", message))
 	}
-	if statusErr := updateNotReady(ctx, c, obj, "APIError", fmt.Sprintf("Cloudflare API error: %s", message)); statusErr != nil {
+	if statusErr := updateNotReady(statusCtx, c, obj, "APIError", fmt.Sprintf("Cloudflare API error: %s", message)); statusErr != nil {
 		return ctrl.Result{}, statusErr
 	}
 	return ctrl.Result{}, err

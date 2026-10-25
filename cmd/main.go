@@ -11,6 +11,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -20,6 +21,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -52,6 +54,7 @@ func main() {
 	var metricsCertPath string
 	var enableHTTP2 bool
 	var defaultDeletionPolicy string
+	var reconcileTimeout time.Duration
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -69,6 +72,10 @@ func main() {
 		"What deleting a resource without a kflare.dev/deletion-policy annotation does to the Cloudflare object "+
 			"kflare created for it: delete or retain it. An object kflare adopted is kept unless the annotation "+
 			"says delete.")
+	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 5*time.Minute,
+		"How long a reconcile may run. A reconcile that runs out of time, such as one waiting on a call that gets "+
+			"no answer, ends with reason APIError and is retried with back-off, and its controller goes on to the "+
+			"next resource. 0 turns the timeout off.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -79,6 +86,10 @@ func main() {
 
 	if err := reconciler.SetDefaultDeletionPolicy(defaultDeletionPolicy); err != nil {
 		setupLog.Error(err, "invalid --default-deletion-policy")
+		os.Exit(1)
+	}
+	if reconcileTimeout < 0 {
+		setupLog.Error(nil, "--reconcile-timeout must be 0 (off) or a positive duration", "value", reconcileTimeout)
 		os.Exit(1)
 	}
 
@@ -134,8 +145,12 @@ func main() {
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "a634e97e.kflare.dev",
+		// Every controller cancels a reconcile's context after
+		// --reconcile-timeout, which both Cloudflare SDKs and the Kubernetes
+		// client honor.
+		Controller:       config.Controller{ReconciliationTimeout: reconcileTimeout},
+		LeaderElection:   enableLeaderElection,
+		LeaderElectionID: "a634e97e.kflare.dev",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
