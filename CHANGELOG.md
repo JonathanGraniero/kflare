@@ -46,6 +46,12 @@ What will ship in v0.1.1: the Helm chart hardened for production
   it turns True and `Warning` when it turns False, so `kubectl describe` shows the resource's history. The
   controller's ClusterRole may create and patch `events.k8s.io` Events
   ([#56](https://github.com/JonathanGraniero/kflare/issues/56))
+- **Timeouts on every call to Cloudflare**, so that one that gets no answer cannot stall a controller: 10 seconds for
+  a TLS handshake, a minute for a response to start, two for a whole request, and an HTTP/2 connection that goes 30
+  seconds without a word is pinged and closed if the ping gets no answer. Before, a call could wait forever
+  ([#72](https://github.com/JonathanGraniero/kflare/issues/72))
+- `--reconcile-timeout`, the chart's `reconcileTimeout` (5 minutes by default): a reconcile that runs longer ends with
+  reason `APIError` and is retried with back-off, and its controller goes on to the next resource
 
 ### Resource kinds
 

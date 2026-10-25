@@ -57,6 +57,12 @@ leaderElection: true
 # kept unless the annotation says delete.
 defaultDeletionPolicy: delete
 
+# -- How long a reconcile may run, as a duration such as 5m or 90s; 0s turns
+# the timeout off. A reconcile that runs out of time, such as one waiting on a
+# call that gets no answer, ends with reason APIError and is retried with
+# back-off, and its controller goes on to the next resource.
+reconcileTimeout: 5m
+
 logging:
   # -- Log level: debug, info or error.
   level: info

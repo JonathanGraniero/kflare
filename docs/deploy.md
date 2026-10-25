@@ -383,6 +383,14 @@ resources:
 `kflare.dev/deletion-policy: delete` (see
 [Protecting objects that must outlive their manifests](#protecting-objects-that-must-outlive-their-manifests)).
 
+Each controller reconciles one resource at a time, so kflare bounds every call to Cloudflare: one that gets no
+answer, from a proxy that goes silent or over a connection a network change broke, cannot stall the others. A
+connection attempt gives up after 30 seconds, a TLS handshake after 10, the wait for a response to start after a
+minute, and a whole request, a Worker's upload included, after two. An HTTP/2 connection that goes 30 seconds without
+a frame from Cloudflare is pinged, and closed if the ping gets no answer within 15 seconds. `reconcileTimeout` (5
+minutes by default) bounds a whole reconcile on top of that: one that runs out of time ends with reason `APIError`
+and is retried with back-off. `0s` turns that timeout off.
+
 The pod runs under the restricted Pod Security Standard: non-root, no privilege escalation, all
 capabilities dropped and a read-only root filesystem.
 
@@ -410,8 +418,9 @@ capabilities dropped and a read-only root filesystem.
 Every kflare resource reports a single `Ready` condition with a reason (see [Troubleshooting](#troubleshooting)), and
 the `READY` column of `kubectl get` shows it. kflare does not record Kubernetes Events yet.
 
-The controller serves controller-runtime's standard Prometheus metrics: `controller_runtime_reconcile_total` and
-`controller_runtime_reconcile_errors_total`, labelled by `controller`, `controller_runtime_reconcile_time_seconds`,
+The controller serves controller-runtime's standard Prometheus metrics: `controller_runtime_reconcile_total`,
+`controller_runtime_reconcile_errors_total` and `controller_runtime_reconcile_timeouts_total` (reconciles that ran
+longer than `reconcileTimeout`), labelled by `controller`, `controller_runtime_reconcile_time_seconds`,
 `workqueue_depth`, and the Go runtime's. Turn on `metrics.serviceMonitor.enabled` to have the Prometheus Operator scrape
 them.
 
@@ -467,7 +476,8 @@ ServiceMonitor's TLS settings, for a CA kept elsewhere.
 
 Two things to alert on:
 
-- **Errors from Cloudflare that kflare retries** (5xx, rate limiting, network failures) count as reconcile errors.
+- **Errors from Cloudflare that kflare retries** (5xx, rate limiting, network failures, timeouts) count as reconcile
+  errors.
   A rate that stays above zero means kflare cannot reach Cloudflare or is being rate limited:
 
   ```yaml
@@ -656,7 +666,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 |---|---|---|
 | `Synced`, `Validated` | In sync with Cloudflare | Nothing |
 | `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change |
-| `APIError` | Transient failure (5xx, rate limit, network) | Retried automatically with back-off |
+| `APIError` | Transient failure (5xx, rate limit, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout` |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
 | `SecretNotFound`, `TokenKeyMissing`, `InvalidToken` | The token Secret is missing, lacks the key, or is empty | Fix the Secret; the account re-validates immediately |
 | `ZoneNotFound`, `ZoneNotReady`, `TunnelNotFound`, `TunnelNotReady` | The referenced parent is missing or not ready | Check the parent resource |

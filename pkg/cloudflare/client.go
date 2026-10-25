@@ -9,6 +9,7 @@ package cloudflare
 import (
 	"net/http"
 	"slices"
+	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/option"
@@ -40,19 +41,81 @@ type Client struct {
 // SDK.  An error is returned if the token string is empty or malformed; note
 // that credential correctness (i.e. whether the token is accepted by the
 // Cloudflare API) is only confirmed when the first API call is made.
+//
+// Both SDKs send their requests through httpClient, whose timeouts bound
+// every request.
 func New(token string) (*Client, error) {
-	api, err := cf.NewWithAPIToken(token)
+	return newClient(token, httpClient)
+}
+
+// newClient is New, with the HTTP client both SDKs send their requests
+// through.
+func newClient(token string, hc *http.Client) (*Client, error) {
+	api, err := cf.NewWithAPIToken(token, cf.HTTPClient(hc))
 	if err != nil {
 		return nil, err
 	}
 	return &Client{
 		API: api,
 		v7: []option.RequestOption{
-			option.WithHTTPClient(http.DefaultClient),
+			option.WithHTTPClient(hc),
 			option.WithEnvironmentProduction(),
 			option.WithAPIToken(token),
 		},
 	}, nil
+}
+
+// httpTimeouts bound the requests kflare sends to Cloudflare. A controller
+// reconciles one resource at a time, so a request that never gets an answer,
+// from a proxy that accepts a connection and goes silent or over a TCP
+// connection a network change left half-open, would otherwise stall its
+// kind until the manager restarts. Opening a connection is bounded already:
+// http.DefaultTransport's dialer gives up after 30 seconds.
+type httpTimeouts struct {
+	// tlsHandshake bounds the TLS handshake.
+	tlsHandshake time.Duration
+	// responseHeader bounds the wait for a response's headers, from the end
+	// of the request's body.
+	responseHeader time.Duration
+	// request bounds a whole request, from the dial to the last byte of the
+	// response, so it also stops an upload or a response body that stalls.
+	request time.Duration
+	// http2Ping is how long an HTTP/2 connection may go without a frame
+	// from Cloudflare before the transport pings it, and http2PingTimeout
+	// how long it waits for the answer before it closes the connection.
+	// Without the ping, a request that times out leaves a dead connection
+	// in use, and every request after it times out the same way.
+	http2Ping, http2PingTimeout time.Duration
+}
+
+// defaultHTTPTimeouts are httpClient's. Cloudflare usually answers in well
+// under a second. The largest request kflare sends is a WorkerScript's
+// upload: its script comes from the resource itself or from a ConfigMap, so
+// a Kubernetes object's size limit keeps it under about 1.5 MiB, which takes
+// seconds to send even over a slow link.
+var defaultHTTPTimeouts = httpTimeouts{
+	tlsHandshake:     10 * time.Second,
+	responseHeader:   time.Minute,
+	request:          2 * time.Minute,
+	http2Ping:        30 * time.Second,
+	http2PingTimeout: 15 * time.Second,
+}
+
+// httpClient is the HTTP client of every Client: one, so that both SDKs and
+// every reconcile, each of which builds its own Client, reuse its
+// connections.
+var httpClient = newHTTPClient(defaultHTTPTimeouts)
+
+// newHTTPClient returns an HTTP client with timeouts t. Its transport is a
+// copy of http.DefaultTransport, so it keeps the proxy that the standard
+// variables (HTTPS_PROXY, NO_PROXY) set, connection reuse, HTTP/2 and the
+// dialer's timeout.
+func newHTTPClient(t httpTimeouts) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSHandshakeTimeout = t.tlsHandshake
+	transport.ResponseHeaderTimeout = t.responseHeader
+	transport.HTTP2 = &http.HTTP2Config{SendPingTimeout: t.http2Ping, PingTimeout: t.http2PingTimeout}
+	return &http.Client{Transport: transport, Timeout: t.request}
 }
 
 // V7Options returns the request options for the cloudflare-go v7 services a
@@ -71,9 +134,12 @@ func New(token string) (*Client, error) {
 //
 //	params.Title.Value, params.Title.Present = title, true
 //
-// The services share http.DefaultClient, as v0 does, so that connections are
-// reused across reconciles. They keep v7's retries: two, after a 408, 409,
-// 429, 5xx or connection error.
+// The services share httpClient with v0, whose timeouts bound each attempt.
+// They keep v7's retries: two, after a 408, 409, 429, 5xx or connection
+// error, which includes a request that timed out. They set no per-attempt
+// timeout of v7's own (option.WithRequestTimeout): httpClient's already
+// bounds each attempt, and v7 gives up without a retry when its own runs
+// out.
 func (c *Client) V7Options() []option.RequestOption {
 	return slices.Clone(c.v7)
 }
