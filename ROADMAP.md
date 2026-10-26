@@ -17,14 +17,13 @@ since what people ask for decides the order.
 | Zone settings | `ManagedTransform` |
 
 Each is tested live against a real Cloudflare account on the Free plan, in GitHub Actions, with an API token holding
-only the permissions the [deploy guide](docs/deploy.md) lists; `ManagedTransform`, the newest, so far only with a
-broader token, outside GitHub Actions. Existing Cloudflare objects are only taken over when a resource asks for it
-(see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs the CRDs and the
-controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.2.0 it serves metrics over HTTPS
-to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an optional
-NetworkPolicy. A drift check interval (`driftCheckInterval`) corrects changes made outside kflare on a schedule,
-each change of a resource's `Ready` condition is recorded as a Kubernetes Event, and `kubectl get kflare` lists every
-kflare resource.
+only the permissions the [deploy guide](docs/deploy.md) lists. Existing Cloudflare objects are only taken over when a
+resource asks for it (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs
+the CRDs and the controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.2.0 it serves
+metrics over HTTPS to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an
+optional NetworkPolicy. A drift check interval (`driftCheckInterval`) corrects changes made outside kflare on a
+schedule, each change of a resource's `Ready` condition is recorded as a Kubernetes Event, and `kubectl get kflare`
+lists every kflare resource.
 
 ## Next
 

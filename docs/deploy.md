@@ -55,8 +55,8 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 | `IPList` | Account · Account Rule Lists · Edit |
 
 These are enough on their own: in October 2026 a token holding only them (with Zone · Zone · Read, and without Billing)
-ran kflare's full live test suite against an existing zone. `ManagedTransform`'s row came later, and has been tested
-live with a broader token only.
+ran kflare's full live test suite against an existing zone, and again before v0.2.0 with `ManagedTransform`'s row,
+which came later.
 Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's overview page.
 
 ## 2. Install the chart
