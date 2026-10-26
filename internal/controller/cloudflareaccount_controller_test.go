@@ -211,6 +211,15 @@ var _ = Describe("CloudflareAccount Controller", func() {
 			Expect(acct.Status.AccountName).To(Equal("My CF Account"))
 		})
 
+		It("schedules a drift check after a successful validation, once the manager sets an interval", func() {
+			createAccount()
+			createSecret(tokenKey, fakeToken)
+			r := reconcilerWithFake(&fakeCFClient{account: cloudflare.Account{Name: "My CF Account"}})
+			expectDriftCheck(func() (reconcile.Result, error) {
+				return r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
+			})
+		})
+
 		It("uses CF_API_TOKEN as the default key when TokenSecretRef.Key is empty", func() {
 			// Create account with no explicit key set.
 			acct := &cloudflarev1alpha1.CloudflareAccount{

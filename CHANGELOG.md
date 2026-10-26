@@ -52,6 +52,10 @@ What will ship in v0.1.1: the Helm chart hardened for production
   ([#72](https://github.com/JonathanGraniero/kflare/issues/72))
 - `--reconcile-timeout`, the chart's `reconcileTimeout` (5 minutes by default): a reconcile that runs longer ends with
   reason `APIError` and is retried with back-off, and its controller goes on to the next resource
+- `--drift-check-interval`, the chart's `driftCheckInterval`, off by default: every resource is checked against
+  Cloudflare that long after each successful reconcile, give or take a tenth, so that a change made outside kflare is
+  corrected within about the interval instead of at the 10-hour resync. The deploy guide says how to pick one for the
+  number of resources ([#55](https://github.com/JonathanGraniero/kflare/issues/55))
 
 ### Resource kinds
 

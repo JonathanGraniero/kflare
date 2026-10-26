@@ -255,7 +255,7 @@ func (r *IPListReconciler) syncList(
 	}
 
 	ipList.Status.CloudflareMetadata.NumItems = int32(len(items))
-	return ctrl.Result{}, updateReady(ctx, r.Client, ipList, "Synced", "IP list is synced with Cloudflare")
+	return readyWithDriftCheck(ctx, r.Client, ipList, "Synced", "IP list is synced with Cloudflare")
 }
 
 // listWithID returns the list with id, which must not be empty.

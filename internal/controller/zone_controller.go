@@ -228,7 +228,7 @@ func (r *ZoneReconciler) syncZone(
 	zone.Status.CloudflareMetadata.Status = cfZone.Status
 	zone.Status.CloudflareMetadata.Plan = cfZone.Plan.LegacyID
 	zone.Status.CloudflareMetadata.PendingPlan = cfZone.PlanPending.LegacyID
-	return ctrl.Result{}, updateReady(ctx, r.Client, zone, "Synced", "Zone is synced with Cloudflare")
+	return readyWithDriftCheck(ctx, r.Client, zone, "Synced", "Zone is synced with Cloudflare")
 }
 
 // zoneInAccount returns the zone owned by accountID. The token may reach

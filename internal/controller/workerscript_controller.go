@@ -181,7 +181,7 @@ func (r *WorkerScriptReconciler) syncWorker(
 		ws.Status.AppliedHash = hash
 	}
 
-	return ctrl.Result{}, updateReady(ctx, r.Client, ws, "Synced", "Worker is synced with Cloudflare")
+	return readyWithDriftCheck(ctx, r.Client, ws, "Synced", "Worker is synced with Cloudflare")
 }
 
 // workerDrift returns why the Worker named scriptName must be uploaded again,

@@ -394,6 +394,29 @@ and is retried with back-off. `0s` turns that timeout off.
 The pod runs under the restricted Pod Security Standard: non-root, no privilege escalation, all
 capabilities dropped and a read-only root filesystem.
 
+### Correcting changes made outside kflare
+
+kflare reverts a change made in the Cloudflare dashboard, through the API or by Terraform only when it reconciles the
+resource: when the resource, or something it depends on, changes, or at the resync every 10 hours (see
+[When drift is detected](../ARCHITECTURE.md#when-drift-is-detected)). To bound that, set a drift check interval:
+
+```yaml
+driftCheckInterval: 30m
+```
+
+Every resource is then checked against Cloudflare that long after each successful reconcile, give or take a tenth at
+random, so that resources synced together spread their checks. A check reads the resource's object and writes only
+what differs. The read is one Cloudflare API call for most kinds and two for a `Tunnel`. An `IPList` takes two, plus
+one per 500 items past the first 500.
+
+Pick the interval for the number of resources. Cloudflare allows 1,200 API calls per five minutes, 4 a second, for a
+user, counting the dashboard and all of the user's tokens, or for an account-owned token. Past that it refuses every
+call for five minutes
+([Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/)). Checks of N
+resources take about N calls per interval, so an interval of at least N seconds keeps them to a quarter of the limit:
+10 minutes for 600 resources, 30 minutes for 1,800. That leaves room for kflare's own changes and for anything else
+using the token's budget. `0s`, or leaving the value empty, turns the checks off.
+
 ## Security model
 
 - **The controller can read every Secret in the cluster.** It needs to read token Secrets wherever

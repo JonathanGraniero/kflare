@@ -55,6 +55,7 @@ func main() {
 	var enableHTTP2 bool
 	var defaultDeletionPolicy string
 	var reconcileTimeout time.Duration
+	var driftCheckInterval time.Duration
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -76,6 +77,11 @@ func main() {
 		"How long a reconcile may run. A reconcile that runs out of time, such as one waiting on a call that gets "+
 			"no answer, ends with reason APIError and is retried with back-off, and its controller goes on to the "+
 			"next resource. 0 turns the timeout off.")
+	flag.DurationVar(&driftCheckInterval, "drift-check-interval", 0,
+		"How long after a successful reconcile a resource is reconciled again, so that a change made outside kflare "+
+			"(in the Cloudflare dashboard, through the API, by Terraform) is corrected within about that long. Each "+
+			"check is moved by up to a tenth either way at random, and makes one or more Cloudflare API calls per "+
+			"resource, which count against Cloudflare's rate limit. 0 turns the checks off.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -90,6 +96,10 @@ func main() {
 	}
 	if reconcileTimeout < 0 {
 		setupLog.Error(nil, "--reconcile-timeout must be 0 (off) or a positive duration", "value", reconcileTimeout)
+		os.Exit(1)
+	}
+	if err := reconciler.SetDriftCheckInterval(driftCheckInterval); err != nil {
+		setupLog.Error(err, "invalid --drift-check-interval")
 		os.Exit(1)
 	}
 

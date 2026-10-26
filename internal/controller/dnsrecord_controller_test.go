@@ -669,6 +669,26 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			createDNSAccount(true)
+			createReadyZone()
+			createDNSSecret()
+			createDNSRecord(nil)
+			setRecordIDInStatus(dnsFakeRecordID)
+			record := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
+			record.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, record)).To(Succeed())
+
+			fake := &fakeDNSRecordAPI{getRecord: cf.DNSRecord{ID: dnsFakeRecordID, Name: dnsRecordName,
+				Type: dnsRecordType, Content: dnsRecordIP, TTL: 300, Proxied: new(false), Tags: []string{}}}
+			r := reconcilerWithFakeDNSAPI(fake)
+			expectDriftCheck(func() (reconcile.Result, error) {
+				return r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			})
+			Expect(fake.updateCalled).To(BeFalse())
+		})
+
 		It("does not update a record that leaves ttl and proxied unset", func() {
 			createDNSAccount(true)
 			createReadyZone()

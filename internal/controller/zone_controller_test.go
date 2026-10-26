@@ -414,6 +414,24 @@ var _ = Describe("Zone Controller", func() {
 			Expect(updated.Status.CloudflareMetadata.NameServers).To(ConsistOf("ns1.cloudflare.com", "ns2.cloudflare.com"))
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			createAccount(true)
+			createSecret()
+			createZone(nil)
+			setZoneIDInStatus(fakeZoneID)
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+			zone.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, zone)).To(Succeed())
+
+			r := reconcilerWithFakeZoneAPI(&fakeZoneAPI{
+				getZone: cf.Zone{ID: fakeZoneID, Name: domainName, Type: "full", Status: "active"},
+			})
+			expectDriftCheck(func() (reconcile.Result, error) {
+				return r.Reconcile(ctx, reconcile.Request{NamespacedName: zoneKey})
+			})
+		})
+
 		It("recreates a zone that was deleted externally (Get returns NotFound)", func() {
 			createAccount(true)
 			createSecret()

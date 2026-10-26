@@ -263,7 +263,7 @@ func (r *WorkerRouteReconciler) syncRoute(
 	route.Status.CloudflareMetadata.RouteID = current.ID
 	route.Status.CloudflareMetadata.ZoneID = zoneID
 	route.Status.CloudflareMetadata.Script = current.ScriptName
-	return ctrl.Result{}, updateReady(ctx, r.Client, route, "Synced", "Worker route is synced with Cloudflare")
+	return readyWithDriftCheck(ctx, r.Client, route, "Synced", "Worker route is synced with Cloudflare")
 }
 
 // routeWithPattern returns the route whose pattern is pattern.

@@ -237,7 +237,7 @@ func (r *TunnelReconciler) syncTunnel(
 	}
 	tunnel.Status.CredentialsSecretName = tunnel.Spec.CredentialsSecretRef.Name
 
-	return ctrl.Result{}, updateReady(ctx, r.Client, tunnel, "Synced", "Tunnel is synced with Cloudflare")
+	return readyWithDriftCheck(ctx, r.Client, tunnel, "Synced", "Tunnel is synced with Cloudflare")
 }
 
 // secretConflictError reports that the credentials Secret exists but belongs

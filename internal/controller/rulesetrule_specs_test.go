@@ -279,6 +279,15 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			}
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			createSynced("drift-check", specs.samples[0].spec)
+			writes := fake.writes
+			expectDriftCheck(func() (reconcile.Result, error) {
+				return r.Reconcile(ctx, reconcile.Request{NamespacedName: key("drift-check")})
+			})
+			Expect(fake.writes).To(Equal(writes))
+		})
+
 		It("updates the rule in place when the spec changes", func() {
 			for i, change := range specs.changes {
 				By(change.what)

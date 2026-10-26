@@ -127,7 +127,8 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how kflare finds, owns, corrects and deletes Cloudflare objects, and its
 known limitations. One to know up front: a change made in the Cloudflare dashboard is corrected on the next
-reconcile, which can be up to 10 hours away.
+reconcile, which can be up to 10 hours away, unless you set a drift check interval (the chart's `driftCheckInterval`,
+from v0.1.1).
 
 ## Why kflare
 

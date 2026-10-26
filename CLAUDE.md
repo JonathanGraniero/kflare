@@ -123,7 +123,9 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    `self == oldSelf`, with an envtest case per field
 8. **Status helpers** — set conditions and report errors through `internal/controller/status.go`
    (`updateReady`, `updateNotReady`, `handleCloudflareError`, `notReadyRetryAfter`); API types implement
-   `GetConditions/SetConditions`. The helpers record each change of Ready's status or reason as an Event
+   `GetConditions/SetConditions`. The helpers record each change of Ready's status or reason as an Event. A
+   successful reconcile ends with `readyWithDriftCheck`, which also schedules the next drift check
+   (`--drift-check-interval`, `reconciler.NextDriftCheck`)
 9. **Prefix** — every finalizer, annotation and label kflare owns starts with `kflare.dev/`
 10. **ARCHITECTURE.md** — a new controller, or a change to drift detection, adoption, error handling or deletion,
     updates the matching section and tables in `ARCHITECTURE.md`
@@ -442,8 +444,9 @@ resolve to the versions their comments name.
   verification behind it in the post itself
 - [ ] Be around for the first hours to answer comments, and file issues for the bugs people report
 
-**After the announcement**, not blocking it: the drift correction period (Known limitations). The live e2e suite has
-run in GitHub Actions since 2026-10-21 (Release and CI below).
+**After the announcement**, not blocking it: the drift correction period (Known limitations), bounded since #55 by
+`--drift-check-interval`, off by default. The live e2e suite has run in GitHub Actions since 2026-10-21 (Release and
+CI below).
 
 #### Chart hardening for v0.1.1 (`feat/chart-hardening`)
 **Status:** ✅ Merged 2026-10-22 for [#67](https://github.com/JonathanGraniero/kflare/issues/67) (#68), and the e2e suite
@@ -544,8 +547,9 @@ kflare-gen capabilities, in the order the candidates above need them:
    and union variants told apart by a number or a bool
 
 Cross-cutting, from ARCHITECTURE.md's known limitations:
-- **Drift correction period:** out-of-band changes wait for the next trigger, at worst the 10-hour resync. A
-  configurable requeue after a successful sync would bound it, within Cloudflare's rate limits
+- **Drift correction period:** ✅ `--drift-check-interval` (#55; the chart's `driftCheckInterval`, off by default):
+  a successful reconcile requeues after the interval, give or take a tenth, which deploy.md sizes against
+  Cloudflare's rate limit
 - **R2Bucket and Tunnel onto v7:** jurisdictions and storage class for buckets, renames for tunnels (both blocked on
   v0.119), as SDK decision step 3 foresees
 

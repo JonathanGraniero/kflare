@@ -46,6 +46,9 @@ spec:
             - --leader-elect={{ .Values.leaderElection }}
             - --default-deletion-policy={{ .Values.defaultDeletionPolicy }}
             - --reconcile-timeout={{ .Values.reconcileTimeout }}
+            {{- with .Values.driftCheckInterval }}
+            - --drift-check-interval={{ . }}
+            {{- end }}
             - --health-probe-bind-address=:{{ .Values.healthPort }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}

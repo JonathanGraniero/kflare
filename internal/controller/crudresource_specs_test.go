@@ -375,6 +375,13 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(store.listPages).To(HaveLen(pages), "the object is read by its ID, not found in the list")
 			})
 
+			It("schedules a drift check after a sync, once the manager sets an interval", func() {
+				synced(nil)
+				writes := store.writes
+				expectDriftCheck(reconcileIt)
+				Expect(store.writes).To(Equal(writes))
+			})
+
 			It("adopts the "+k.noun+" with the same "+t.keyField+" from a later page of the list", func() {
 				createAccount(true)
 				obj := create(key, adopt)
@@ -669,6 +676,27 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(err).To(MatchError(store.getErr))
 				Expect(ready().Reason).To(Equal("APIError"))
 				Expect(ready().Message).To(Equal("Cloudflare API error: HTTP 503 Service Unavailable"))
+			})
+
+			It("keeps its error paths as they are with a drift check interval", func() {
+				turnOnDriftChecks()
+				synced(nil)
+
+				By("returning a retryable error for back-off, with nothing scheduled")
+				store.getErr = v7APIError(http.MethodGet, "accounts/"+accountID+"/objects/1",
+					http.StatusServiceUnavailable, 0, "")
+				result, err := reconcileIt()
+				Expect(err).To(MatchError(store.getErr))
+				Expect(result).To(BeZero())
+				Expect(ready().Reason).To(Equal("APIError"))
+
+				By("waiting for a change after a terminal error")
+				store.getErr = v7APIError(http.MethodGet, "accounts/"+accountID+"/objects/1", http.StatusForbidden,
+					10000, "forbidden")
+				result, err = reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeZero())
+				Expect(ready().Reason).To(Equal("TerminalError"))
 			})
 		})
 

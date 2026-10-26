@@ -184,7 +184,7 @@ func (r *R2BucketReconciler) syncBucket(
 
 	bucket.Status.CloudflareMetadata.Location = current.Location
 	bucket.Status.CloudflareMetadata.CreationDate = metaTime(current.CreationDate)
-	return ctrl.Result{}, updateReady(ctx, r.Client, bucket, "Synced", "R2 bucket exists in Cloudflare")
+	return readyWithDriftCheck(ctx, r.Client, bucket, "Synced", "R2 bucket exists in Cloudflare")
 }
 
 // managesBucket reports whether bucket has claimed the Cloudflare bucket its

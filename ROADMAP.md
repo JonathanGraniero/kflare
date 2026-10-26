@@ -22,7 +22,7 @@ broader token, outside GitHub Actions. Existing Cloudflare objects are only take
 (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs the CRDs and the
 controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.1.1 it serves metrics over HTTPS
 to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an optional
-NetworkPolicy.
+NetworkPolicy. A drift check interval (`driftCheckInterval`) corrects changes made outside kflare on a schedule.
 
 ## Next
 
@@ -38,9 +38,6 @@ Candidates that a Free account can use and test, roughly in the order the code g
 
 For running kflare:
 
-- **Correcting drift on a schedule** ([#55](https://github.com/JonathanGraniero/kflare/issues/55)): today, a change
-  made outside kflare is corrected on the next reconcile, which can be up to 10 hours away (see
-  [When drift is detected](ARCHITECTURE.md#when-drift-is-detected))
 - **Kubernetes Events** when a resource's `Ready` condition changes
   ([#56](https://github.com/JonathanGraniero/kflare/issues/56))
 - **`kubectl get kflare`**, listing every kflare resource ([#54](https://github.com/JonathanGraniero/kflare/issues/54))

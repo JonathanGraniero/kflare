@@ -344,6 +344,31 @@ var _ = Describe("WAFCustomRule Controller", func() {
 			Expect(fake.writes).To(Equal(3), "moving rules does not rewrite them")
 		})
 
+		It("checks the order again shortly after moving rules, whatever the drift check interval", func() {
+			readyEnv()
+			createRule(ns, "a", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 10 })
+			createRule(ns, "b", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 1 })
+			for _, k := range []types.NamespacedName{key("a"), key("b")} {
+				_, err := reconcileRule(k)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(order()).To(Equal([]string{"b", "a"}))
+
+			turnOnDriftChecks()
+			rule := getRule(key("a"))
+			rule.Spec.Priority = 0
+			Expect(k8sClient.Update(ctx, rule)).To(Succeed())
+			result, err := reconcileRule(key("a"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(rulesetRuleRecheckInterval))
+			Expect(order()).To(Equal([]string{"a", "b"}))
+
+			By("going back to drift checks once the order holds")
+			result, err = reconcileRule(key("a"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically("~", driftCheckTestInterval, driftCheckTestSpread))
+		})
+
 		It("sets TerminalError without requeueing when Cloudflare rejects the rule", func() {
 			readyEnv()
 			createRule(ns, "a", nil)

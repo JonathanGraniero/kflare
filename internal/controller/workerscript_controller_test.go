@@ -430,6 +430,14 @@ var _ = Describe("WorkerScript Controller", func() {
 			expectReady(metav1.ConditionTrue, "Synced")
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			readyEnv(nil)
+			fake := syncedFake()
+			r := reconcilerWithFakeWorkerScriptAPI(fake)
+			expectDriftCheck(func() (reconcile.Result, error) { return reconcileWorker(r) })
+			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers"}))
+		})
+
 		DescribeTable("uploads again when the Worker changed outside kflare",
 			func(workers []cf.WorkerMetaData) {
 				readyEnv(nil)

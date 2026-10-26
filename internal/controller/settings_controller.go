@@ -238,7 +238,7 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, zo
 	}
 
 	obj.GetSettingsStatus().CloudflareMetadata = cloudflarev1alpha1.SettingsCloudflareMetadata{ZoneID: zoneID}
-	return ctrl.Result{}, updateReady(ctx, r.Client, obj, "Synced",
+	return readyWithDriftCheck(ctx, r.Client, obj, "Synced",
 		fmt.Sprintf("The configuration of the %s is synced with Cloudflare", k.noun))
 }
 

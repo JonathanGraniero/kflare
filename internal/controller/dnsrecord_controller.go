@@ -271,7 +271,7 @@ func (r *DNSRecordReconciler) syncDNSRecord(
 	record.Status.CloudflareMetadata.RecordID = cfRecord.ID
 	record.Status.CloudflareMetadata.ZoneID = zoneID
 	record.Status.CloudflareMetadata.Proxiable = cfRecord.Proxiable
-	return ctrl.Result{}, updateReady(ctx, r.Client, record, "Synced", "DNS record is synced with Cloudflare")
+	return readyWithDriftCheck(ctx, r.Client, record, "Synced", "DNS record is synced with Cloudflare")
 }
 
 // dnsRecordKey is the key of record's creating annotation: its type and name,

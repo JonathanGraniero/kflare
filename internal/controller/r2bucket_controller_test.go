@@ -293,6 +293,12 @@ var _ = Describe("R2Bucket Controller", func() {
 			Expect(fake.writes).To(Equal(writes))
 		})
 
+		It("schedules a drift check after a sync, once the manager sets an interval", func() {
+			createAccount(true)
+			createR2(r2Name, accountName, nil)
+			expectDriftCheck(reconcileR2)
+		})
+
 		It("adopts the existing bucket with its name and keeps its location", func() {
 			createAccount(true)
 			fake = newFakeR2BucketAPI(cf.R2Bucket{Name: bucketName, Location: "APAC"})
