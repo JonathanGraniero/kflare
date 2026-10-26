@@ -4,7 +4,7 @@ go 1.26.0
 
 // go1.26.0, which a Go older than 1.26 switches to for the go line, cannot find
 // the covdata tool, so `go test -cover` fails on packages without tests.
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/cloudflare/cloudflare-go/v7 v7.13.0

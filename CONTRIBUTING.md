@@ -25,11 +25,14 @@ pinned versions.
 make build   # runs codegen, manifests, generate, fmt, fix and vet, then builds bin/manager
 make test    # the same generators, then the unit and envtest suites (Kubernetes 1.34.1)
 make lint    # golangci-lint
+make vulncheck  # govulncheck: known vulnerabilities in the modules and the Go standard library the code calls
 ```
 
-CI runs `make test`, `make lint`, `make helm-lint` and a Docker build, runs the envtest suites again on the newest
+CI runs `make test`, `make lint`, `make helm-lint`, `make vulncheck` and a Docker build, scans the image with Grype
+(failing on a fixable vulnerability of high or critical severity), runs the envtest suites again on the newest
 Kubernetes (`make test ENVTEST_K8S_VERSION=1.37.0`), and fails if `git diff` shows anything afterwards: commit what
-the generators write, and run `go fix ./...` (part of `make test`) before you push.
+the generators write, and run `go fix ./...` (part of `make test`) before you push. [SECURITY.md](SECURITY.md) lists
+the other checks.
 
 The unit tests need no Cloudflare account: each controller talks to Cloudflare through a narrow interface, and the
 tests use fakes that follow what the live API was seen to do.
