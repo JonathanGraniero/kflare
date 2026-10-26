@@ -11,7 +11,7 @@ helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
 
 Requires Kubernetes 1.34 or newer and Helm 3.8 or newer. Install one release per cluster.
 
-From the release after 0.2.0, the chart and the controller image are signed with cosign, keyless, and the image comes
+From 0.2.1, the chart and the controller image are signed with cosign, keyless, and the image comes
 with SBOMs and provenance. The deploy guide's
 [Verifying a release](https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#verifying-a-release) has
 the commands, and a Kyverno policy that admits only signed images.

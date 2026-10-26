@@ -24,7 +24,7 @@ metrics over HTTPS to authorized scrapers only, adds a PodDisruptionBudget to a 
 optional NetworkPolicy. A drift check interval (`driftCheckInterval`) corrects changes made outside kflare on a
 schedule, each change of a resource's `Ready` condition is recorded as a Kubernetes Event, and `kubectl get kflare`
 lists every kflare resource. A resource annotated `kflare.dev/paused: "true"` is left alone, its Cloudflare object
-included, until the annotation is removed. From the release after v0.2.0, the image and the chart are signed with
+included, until the annotation is removed. From v0.2.1, the image and the chart are signed with
 cosign, and the image comes with SBOMs and provenance (see [Verifying a release](docs/deploy.md#verifying-a-release)).
 
 ## Next
