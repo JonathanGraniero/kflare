@@ -589,8 +589,10 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   binary with govulncheck's binary mode, which knows the Go project's advisories first. `scorecard.yml` publishes the
   README badge's score. Grype rather than Trivy: `aquasecurity/trivy-action`'s tags were rewritten to steal CI secrets
   in March 2026 (CVE-2026-33634). Checked 2026-10-25: govulncheck found GO-2026-6809 (crypto/x509) in go1.26.9, the
-  toolchain go.mod pinned for local builds (now go1.26.10); v0.1.0 and v0.2.0 were built with go1.26.10 (`go version`
-  on the binaries in their images), and Grype found nothing in them or in main's image (78 packages, Debian 13.7)
+  toolchain go.mod pinned for local builds (now go1.26.10), and in CI, whose setup-go took the runner image's cached
+  go1.26.9 for `"1.26"` (now `check-latest: true`: the PR's first CI run failed on it). v0.1.0 and v0.2.0 were built
+  with go1.26.10 by the Dockerfile's golang:1.26 (`go version` on the binaries in their images), and Grype found
+  nothing in them or in main's image (78 packages, Debian 13.7)
 - [ ] Triage Scorecard's first published results, after the merge: fix each finding or file an issue
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 

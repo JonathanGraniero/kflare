@@ -22,10 +22,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # The newest 1.26 patch, which the Dockerfile's golang:1.26 builder also
+      # uses: without check-latest, setup-go takes the older patch the runner
+      # image has cached, and govulncheck checks that patch's standard library.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
 
       - name: Verify go.mod is tidy
@@ -91,6 +95,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
 
       # The envtest suites again, on the newest Kubernetes release kflare supports.
