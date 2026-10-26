@@ -11,6 +11,7 @@ account, and covers running it in production, upgrades, uninstalling and trouble
 - [4. Manage Cloudflare resources](#4-manage-cloudflare-resources)
 - [Configuration](#configuration)
 - [Security model](#security-model)
+- [Verifying a release](#verifying-a-release)
 - [Running in production](#running-in-production)
   - [Monitoring](#monitoring)
   - [Network access](#network-access)
@@ -73,7 +74,8 @@ helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
 
 Keep `kflare-values.yaml` in git (see [Configuration](#configuration)). The chart's version pins the image too:
 `image.tag` defaults to the chart's `appVersion`. To pull from a registry mirror, set `image.repository` and, if it
-needs credentials, `imagePullSecrets`.
+needs credentials, `imagePullSecrets`. From the release after v0.2.0, the image and the chart are signed:
+[Verifying a release](#verifying-a-release) checks them, and pins the image by digest.
 
 From a checkout of this repository, for example to run unreleased changes:
 
@@ -433,6 +435,97 @@ using the token's budget. `0s`, or leaving the value empty, turns the checks off
   which the `kflare-metrics-reader` ClusterRole grants. The controller checks a token with a TokenReview and a
   SubjectAccessReview, which its ClusterRole may create, and trusts an allowed token for a minute.
   `metrics.secure: false` serves plain HTTP to anyone who can reach the port instead.
+
+## Verifying a release
+
+From the release after v0.2.0, the release workflow signs the controller image and the chart with
+[cosign](https://github.com/sigstore/cosign), keyless: Sigstore issues the signing certificate to kflare's release
+workflow, for the tag it ran on, and records the signature in its public transparency log, so there is no key to
+distribute. v0.1.0 and v0.2.0 are not signed.
+
+Check both before you install a version. This needs cosign 2.6.5 or newer, and no login to `ghcr.io`:
+
+```sh
+version=<version>
+identity="https://github.com/JonathanGraniero/kflare/.github/workflows/release.yml@refs/tags/v$version"
+issuer=https://token.actions.githubusercontent.com
+cosign verify "ghcr.io/jonathangraniero/kflare:$version" \
+  --certificate-identity "$identity" --certificate-oidc-issuer "$issuer"
+cosign verify "ghcr.io/jonathangraniero/charts/kflare:$version" \
+  --certificate-identity "$identity" --certificate-oidc-issuer "$issuer"
+```
+
+cosign prints the digest it verified, as `docker-manifest-digest`. The image's is that of the image index, which
+holds both platforms. To run exactly that image rather than whatever the tag points to later, set it as the chart's
+`image.digest`:
+
+```sh
+digest="$(cosign verify "ghcr.io/jonathangraniero/kflare:$version" --certificate-identity "$identity" \
+  --certificate-oidc-issuer "$issuer" | jq -r '.[0].critical.image."docker-manifest-digest"')"
+helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare --version "$version" \
+  --namespace kflare-system --create-namespace --values kflare-values.yaml \
+  --set image.digest="${digest:?the image did not verify}"
+```
+
+**SBOMs and provenance.** Each platform's image comes with an SPDX SBOM, which lists the Debian packages of the
+distroless base and the Go modules in the binary, and SLSA provenance, which records how and from what it was built.
+Both are stored in the image index, so its signature covers them:
+
+```sh
+docker buildx imagetools inspect "ghcr.io/jonathangraniero/kflare:$version" \
+  --format '{{ json (index .SBOM "linux/amd64").SPDX }}'
+docker buildx imagetools inspect "ghcr.io/jonathangraniero/kflare:$version" \
+  --format '{{ json (index .Provenance "linux/amd64").SLSA }}'
+```
+
+The GitHub release has the same SBOMs as files, each with a Sigstore bundle to check it with:
+
+```sh
+cosign verify-blob "kflare-$version-linux-amd64.spdx.json" \
+  --bundle "kflare-$version-linux-amd64.spdx.json.sigstore.json" \
+  --certificate-identity "$identity" --certificate-oidc-issuer "$issuer"
+```
+
+**Admitting only signed images.** With Kyverno 1.19 or newer, this policy refuses a pod whose kflare image is not
+signed by kflare's release workflow, and pins the pod to the digest it verified:
+
+```yaml
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: kflare-signed
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  matchImageReferences:
+    - glob: 'ghcr.io/jonathangraniero/kflare*'
+  attestors:
+    - name: kflare
+      cosign:
+        keyless:
+          identities:
+            - subjectRegExp: '^https://github\.com/JonathanGraniero/kflare/\.github/workflows/release\.yml@refs/tags/v'
+              issuer: https://token.actions.githubusercontent.com
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.kflare])).all(e, e > 0)
+      message: the kflare image is not signed by kflare's release workflow
+```
+
+The policy checks only the images its glob matches: for an install from a registry mirror, change the glob, and make
+sure the mirror carries the signature too.
+
+cosign 3 stores a signature as a Sigstore bundle, under the tag `sha256-<digest>` next to what it signs, rather than
+in the older `.sig` format, so some tools need a setting to read it. Kyverno's `ClusterPolicy` `verifyImages` rules,
+which Kyverno 1.19 deprecates, need `type: SigstoreBundle`. Sigstore's policy-controller (0.13 or newer) needs
+`signatureFormat: bundle` on the authority. Flux (2.8 or newer) can check the chart itself: `verify` on its
+`OCIRepository`, with `provider: cosign` and a `matchOIDCIdentity` entry whose `issuer` and `subject` regular
+expressions match the issuer above and the policy's `subjectRegExp`.
 
 ## Running in production
 

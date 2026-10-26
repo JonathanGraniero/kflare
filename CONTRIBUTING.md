@@ -144,7 +144,9 @@ A change to how a controller behaves comes with:
 Maintainers release by bumping `version` and `appVersion` in `helm/kflare/Chart.yaml` and adding the release's
 section to [CHANGELOG.md](CHANGELOG.md) through a pull request, then pushing a `vX.Y.Z` tag that matches them. The
 GitHub release's notes are that section. The `Release` workflow refuses a tag that does not match, and otherwise
-publishes the image (`linux/amd64` and `linux/arm64`) and the chart to `ghcr.io`.
+publishes the image (`linux/amd64` and `linux/arm64`, with an SBOM and provenance for each) and the chart to `ghcr.io`,
+signs both with cosign, keyless, and drafts the GitHub release with the SBOMs. A maintainer then replaces the draft's
+notes with the CHANGELOG.md section and publishes it.
 
 ## License
 

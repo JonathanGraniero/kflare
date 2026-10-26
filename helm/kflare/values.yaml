@@ -10,6 +10,10 @@ image:
   repository: ghcr.io/jonathangraniero/kflare
   # -- Image tag. Defaults to the chart's appVersion.
   tag: ""
+  # -- Image digest, such as sha256:0123…, run instead of the tag when set:
+  # pin the digest whose signature you verified (docs/deploy.md, Verifying a
+  # release).
+  digest: ""
   # -- Image pull policy.
   pullPolicy: IfNotPresent
 

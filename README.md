@@ -117,6 +117,8 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 - **Install it like any other platform component.** Pin the chart version, keep your values in git, and let Argo CD or
   Flux install it; the guide has an `Application` and a `HelmRelease` to start from. The chart installs and upgrades
   the CRDs, keeps them on uninstall, and runs under the restricted Pod Security Standard.
+- **Releases are signed** (from the release after v0.2.0): the image and the chart with cosign, keyless, with SBOMs
+  and provenance, so that cosign, an admission policy or Flux can check them; the guide has a Kyverno policy.
 - **One installation per cluster**, with leader election; two replicas give a quick failover.
 - **kflare never takes over what it did not create**, unless a resource asks with the
   `kflare.dev/adoption-policy` annotation. Objects it adopted are kept when their resource is deleted, and
