@@ -30,7 +30,7 @@ Note your account ID, shown on the account's overview page.
 
 ```sh
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
-  --version 0.1.0 --namespace kflare-system --create-namespace
+  --version 0.2.0 --namespace kflare-system --create-namespace
 kubectl -n kflare-system rollout status deployment/kflare
 ```
 
@@ -60,7 +60,7 @@ your existing domain, a `Tunnel`, its `TunnelConfiguration`, a `DNSRecord` point
 tunnel, and a `cloudflared` Deployment that connects it. Apply it with your domain in place of `example.com`:
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.1.0/examples/expose-a-service/expose-a-service.yaml \
+curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.2.0/examples/expose-a-service/expose-a-service.yaml \
   | sed 's/example\.com/your-domain.com/g' | kubectl apply -f -
 
 kubectl -n kflare-example wait --for=condition=Ready dnsrecords.kflare.dev/hello --timeout=5m
@@ -130,7 +130,7 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how kflare finds, owns, corrects and deletes Cloudflare objects, and its
 known limitations. One to know up front: a change made in the Cloudflare dashboard is corrected on the next
 reconcile, which can be up to 10 hours away, unless you set a drift check interval (the chart's `driftCheckInterval`,
-from v0.1.1).
+from v0.2.0).
 
 ## Why kflare
 

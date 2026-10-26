@@ -3,10 +3,21 @@
 kflare follows [semantic versioning](https://semver.org). While its API is `v1alpha1`, any release can change it:
 read the notes before upgrading. The chart and the controller image share one version.
 
-## Unreleased
+## v0.2.0 (alpha)
 
-What will ship in v0.1.1: the Helm chart hardened for production
-([#67](https://github.com/JonathanGraniero/kflare/issues/67)), and a new kind, `ManagedTransform`.
+The second alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It hardens
+the Helm chart for production ([#67](https://github.com/JonathanGraniero/kflare/issues/67)), bounds every call to
+Cloudflare with timeouts, can check every resource for drift on a schedule, records Kubernetes Events, and adds a
+new kind, `ManagedTransform`. v0.1.0's notes announced the chart hardening as v0.1.1; it ships as a minor release
+instead, because upgrading changes how Prometheus scrapes kflare (see below).
+
+```sh
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version 0.2.0 -n kflare-system \
+  --values kflare-values.yaml
+```
+
+The image is `ghcr.io/jonathangraniero/kflare:0.2.0`, for `linux/amd64` and `linux/arm64`. To install kflare for
+the first time, follow the [README's quickstart](README.md#quickstart-expose-a-service-through-a-cloudflare-tunnel).
 
 ### Upgrading from v0.1.0
 
@@ -20,6 +31,10 @@ What will ship in v0.1.1: the Helm chart hardened for production
 - **Any other scraper** must use HTTPS, send a bearer token whose user is bound to `kflare-metrics-reader`, and either
   skip verifying the self-signed certificate or trust one from `metrics.certSecret`
 - **To keep v0.1.0's plain HTTP**, set `metrics.secure: false`
+
+**If you manage the CRDs yourself** (`crds.enabled=false`), apply `config/crd/bases` from v0.2.0 before upgrading
+the chart: it adds the `ManagedTransform` CRD, which the controller watches, and puts every CRD in the `kflare`
+category.
 
 ### The Helm chart
 
@@ -68,6 +83,23 @@ What will ship in v0.1.1: the Helm chart hardened for production
   adopted them. It needs Zone · Managed Headers · Edit
 - **Every kind is in the `kflare` category**, so `kubectl get kflare` lists the resources of all of them, in one
   namespace (`-n`) or in all (`-A`) ([#54](https://github.com/JonathanGraniero/kflare/issues/54))
+
+### Known limitations
+
+Those of v0.1.0, except the two this release fixes (no Kubernetes Events, and metrics over plain HTTP).
+[ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains each:
+
+- **Drift is corrected promptly only with a drift check interval** (`driftCheckInterval`). Without one, the default,
+  a change made outside kflare waits for the next reconcile, at worst the 10-hour resync
+- **Adoption goes by key** (a name, a title, a pattern), never by ID. Tunnel names are not unique: a Tunnel adopts the
+  first one listed with its name
+- **Ownership is recorded in the cluster**, except for rules, which carry a ref in Cloudflare. A cluster rebuilt from
+  git sees its existing objects as `AlreadyExists` until they are adopted; the deploy guide's
+  [Moving to a new cluster](docs/deploy.md#moving-to-a-new-cluster) describes how
+- **Rule order covers kflare's rules only.** Rules created outside kflare keep their place
+- **Some limits of cloudflare-go v0.119**, which most controllers still use (the generated kinds and the rule kinds
+  use v7): Tunnels cannot be renamed, `originRequest` timeouts are not exposed, and R2 buckets live in the default
+  jurisdiction only
 
 ## v0.1.0 (alpha)
 
