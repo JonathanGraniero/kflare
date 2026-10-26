@@ -162,7 +162,8 @@ helm-lint: helm ## Lint the chart and render it with default and non-default val
 			--set crds.enabled=false,leaderElection=false,defaultDeletionPolicy=retain \
 			--set reconcileTimeout=90s,driftCheckInterval=30m \
 			--set metrics.serviceMonitor.enabled=true \
-			--set replicaCount=2,networkPolicy.enabled=true,metrics.certSecret=kflare-metrics-tls > /dev/null; \
+			--set replicaCount=2,networkPolicy.enabled=true,metrics.certSecret=kflare-metrics-tls \
+			--set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 > /dev/null; \
 		$(HELM) template kflare helm/kflare --kube-version $$v \
 			--set metrics.secure=false,metrics.serviceMonitor.enabled=true,replicaCount=2 > /dev/null; \
 	done

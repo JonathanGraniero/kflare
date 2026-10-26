@@ -11,6 +11,11 @@ helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
 
 Requires Kubernetes 1.34 or newer and Helm 3.8 or newer. Install one release per cluster.
 
+From the release after 0.2.0, the chart and the controller image are signed with cosign, keyless, and the image comes
+with SBOMs and provenance. The deploy guide's
+[Verifying a release](https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#verifying-a-release) has
+the commands, and a Kyverno policy that admits only signed images.
+
 Then connect a Cloudflare account. The
 [deploy guide](https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md) covers API token permissions,
 accounts, installing with Argo CD or Flux, running in production, upgrades and uninstalling.
@@ -39,6 +44,7 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 |---|---|---|
 | `image.repository` | `ghcr.io/jonathangraniero/kflare` | Controller image |
 | `image.tag` | chart `appVersion` | Image tag |
+| `image.digest` | `""` | Image digest, run instead of the tag when set: the digest whose signature you verified |
 | `imagePullSecrets` | `[]` | Secrets for pulling the image from a private registry or mirror |
 | `replicaCount` | `1` | Replicas; leader election keeps one active |
 | `crds.enabled` | `true` | Install and upgrade the CRDs with the chart |

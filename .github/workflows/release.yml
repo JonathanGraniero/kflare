@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a vX.Y.Z tag publishes the controller image and the Helm chart to
-# GitHub Container Registry. Bump version and appVersion in
+# GitHub Container Registry, signs both with cosign, and drafts the GitHub
+# release with the image's SBOMs. Bump version and appVersion in
 # helm/kflare/Chart.yaml (through a PR) before tagging; the tag must match.
 on:
   push:
@@ -9,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE: ghcr.io/jonathangraniero/kflare
@@ -19,9 +19,21 @@ jobs:
   release:
     name: Publish image and chart
     runs-on: ubuntu-latest
+    permissions:
+      # Drafts the GitHub release and attaches the SBOMs.
+      contents: write
+      # Pushes the image, the chart and their signatures.
+      packages: write
+      # Signs keyless: cosign trades the job's OpenID Connect token for a
+      # short-lived Sigstore certificate that names this workflow and the tag.
+      id-token: write
     steps:
+      # No git credentials left on disk: nothing here pushes to git, and the
+      # Docker build context would include them.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Check the tag matches the chart
         id: version
@@ -45,12 +57,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Each platform's image gets an SPDX SBOM and SLSA provenance (mode=max:
+      # the whole build definition), stored in the image index next to it, so
+      # the index's signature covers them too.
       - name: Build and push image
+        id: image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          sbom: true
+          provenance: mode=max
           tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
           # Links the package to this repository on GitHub.
           labels: |
@@ -58,13 +76,71 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.licenses=MIT
 
+      # cosign 3.1.3 rather than the installer's default (3.0.6), which leaves
+      # the bundle's type out of GHCR's referrers index: Kyverno's ClusterPolicy
+      # check (type: SigstoreBundle) then finds no signature. Dependabot doesn't
+      # update this input.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      # Keyless, in cosign's default format: a Sigstore bundle, recorded in
+      # Sigstore's public transparency log. GHCR has no referrers API, so cosign
+      # stores the bundle under the tag sha256-<digest> next to the image.
+      - name: Sign image
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Package and push chart
+        id: chart
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
           helm package helm/kflare --destination dist
-          helm push "dist/kflare-${{ steps.version.outputs.version }}.tgz" "$CHART_REPO"
+          set -o pipefail
+          helm push "dist/kflare-$VERSION.tgz" "$CHART_REPO" 2>&1 | tee dist/push.log
+          digest="$(awk '$1 == "Digest:" {print $2}' dist/push.log)"
+          if [[ "$digest" != sha256:* ]]; then
+            echo "::error::helm push printed no digest to sign"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Sign chart
+        env:
+          DIGEST: ${{ steps.chart.outputs.digest }}
+        run: cosign sign --yes "${CHART_REPO#oci://}/kflare@$DIGEST"
+
+      # The SBOMs from the image index, each with the Sigstore bundle that
+      # cosign verify-blob checks it with. A maintainer then replaces the
+      # draft's notes with CHANGELOG.md's section and publishes it.
+      - name: Draft the GitHub release with the SBOMs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist/sbom
+          for platform in linux/amd64 linux/arm64; do
+            file="dist/sbom/kflare-$VERSION-${platform/\//-}.spdx.json"
+            docker buildx imagetools inspect "$IMAGE@$DIGEST" \
+              --format "{{ json (index .SBOM \"$platform\").SPDX }}" > "$file"
+            # The template prints null for a platform without an SBOM.
+            jq -e .spdxVersion "$file" > /dev/null
+            cosign sign-blob --yes --bundle "$file.sigstore.json" "$file"
+          done
+          # A rerun replaces the assets of the release it drafted.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/sbom/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/sbom/* --draft --verify-tag --title "$GITHUB_REF_NAME" \
+              --notes "Draft: the notes are CHANGELOG.md's $GITHUB_REF_NAME section."
+          fi

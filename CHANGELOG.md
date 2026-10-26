@@ -5,6 +5,20 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
+### Releases
+
+- **The controller image and the chart are signed** with cosign, keyless: Sigstore issues the signing certificate to
+  kflare's release workflow, for the release's tag, and records the signature in its public transparency log. Each
+  platform's image comes with an SPDX SBOM and SLSA provenance, stored in the signed image index, and the GitHub
+  release has the SBOMs as files, each with a Sigstore bundle. The deploy guide's
+  [Verifying a release](docs/deploy.md#verifying-a-release) has the commands, and a Kyverno policy that admits only
+  signed kflare images ([#84](https://github.com/JonathanGraniero/kflare/issues/84))
+
+### The Helm chart
+
+- **`image.digest`** runs the controller image by digest instead of by tag: set it to the digest whose signature you
+  verified
+
 ### The controller
 
 - **Pausing a resource**: with the annotation `kflare.dev/paused: "true"`, kflare leaves the resource and its Cloudflare

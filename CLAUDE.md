@@ -579,6 +579,24 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     `helm upgrade` to the branch's chart: 20 CRDs, all in the `kflare` category, the resource kept, the review and
     Events rules applied. The first `kubectl get kflare` after it hit the stale discovery cache, as deploy.md says
   - The tag goes on #104's merge commit
+- [x] Signed releases (#84, `feat/signed-releases`). `release.yml` builds with BuildKit's attestations (`sbom: true`,
+  `provenance: mode=max`: SPDX 2.3 and SLSA v1 per platform, in the image index), signs the index's digest and the
+  chart's (which `helm push` prints) with cosign 3.1.3, keyless, and drafts the GitHub release with each platform's
+  SBOM and its Sigstore bundle (`cosign sign-blob`); a maintainer then sets the notes and publishes it. The job holds
+  `packages`, `id-token` and `contents: write`; the workflow, only `contents: read`. The format, checked 2026-10-26:
+  cosign 3 signs a Sigstore bundle, which GHCR (no referrers API) keeps under the tag `sha256-<digest>`. Its legacy
+  `.sig` format is deprecated, and cosign 3 writes it without the certificate chain: Kyverno's `ClusterPolicy`
+  `type: Cosign` check refused such a signature (x509: unknown authority) and accepted one cosign 2 made, with the
+  chain, so only the bundle is published. With Kyverno 1.19.2's CLI (not its admission controller: a third kind
+  cluster needs the inotify limit raised), deploy.md's `ImageValidatingPolicy`, the identity swapped, admitted Flux
+  2.10.0's `flux-cli` image (keyless, bundle only) and refused it with kflare's identity, and refused v0.2.0,
+  unsigned. cosign is pinned to 3.1.3 because the installer's default, 3.0.6 (Flux's), types the bundle's entry in
+  GHCR's referrers index as empty, and `ClusterPolicy` `type: SigstoreBundle` then found nothing; it found
+  github-mcp-server's, made by 3.1.3, which types it as a bundle (as did the dry run). Artifact Hub's code reads
+  bundles through the referrers fallback tag. A dry
+  run against a local `registry:2` ran the chart step under Helm 4.3.1, signed and verified the image and the chart
+  with a key, and read the SBOMs (80 packages each) and the provenance back. Left for the next release: the keyless
+  signatures, `cosign verify` from a machine not logged in to GHCR, and Artifact Hub's signed badge
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
@@ -589,7 +607,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 - [ ] Full `FieldExport` implementation (export any CRD field → ConfigMap/Secret)
 - [ ] `AdoptedResource` full implementation (import existing CF resources into management)
 - [x] Helm chart (`helm/kflare`) with deploy guide (`docs/deploy.md`); `.github/workflows/release.yml` publishes
-  the image and chart to `ghcr.io` on a `vX.Y.Z` tag matching `Chart.yaml`
+  the image and chart to `ghcr.io` on a `vX.Y.Z` tag matching `Chart.yaml`, signs both with cosign and drafts the
+  GitHub release with the SBOMs (#84)
   - CRDs are templates (upgraded by `helm upgrade`, `helm.sh/resource-policy: keep`), generated from
     `config/crd/bases` with the manager ClusterRole rules by `make helm`; CI fails if they drift
   - `view`/`edit` aggregated ClusterRoles; CloudflareAccount is never in `edit` (it can point at any Secret)
