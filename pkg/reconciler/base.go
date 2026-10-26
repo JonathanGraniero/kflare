@@ -65,11 +65,22 @@ const (
 	// the resource records what it created. A later reconcile that finds an
 	// object with that key knows it as its own, not as one to adopt.
 	CreatingAnnotation = "kflare.dev/creating"
+
+	// PausedAnnotation, set to "true", tells kflare to leave a resource alone
+	// until the annotation is removed: kflare makes no Cloudflare call for
+	// it, and does not finish deleting it.
+	PausedAnnotation = "kflare.dev/paused"
 )
 
 // Adopted reports whether kflare adopted obj's Cloudflare resource.
 func Adopted(obj client.Object) bool {
 	return obj.GetAnnotations()[AdoptedAnnotation] == "true"
+}
+
+// Paused reports whether obj's PausedAnnotation is "true". Any other value,
+// "false" included, counts as none.
+func Paused(obj client.Object) bool {
+	return obj.GetAnnotations()[PausedAnnotation] == "true"
 }
 
 // retainByDefault is the default deletion policy: whether a resource without

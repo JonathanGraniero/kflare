@@ -334,6 +334,80 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			}
 		})
 
+		// reconcilePaused reconciles the resource name, and checks that it made
+		// no Cloudflare call and scheduled nothing.
+		reconcilePaused := func(name string) {
+			GinkgoHelper()
+			calls := 0
+			fake.before = func(string) { calls++ }
+			defer func() { fake.before = nil }()
+			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key(name)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsZero()).To(BeTrue())
+			Expect(calls).To(BeZero(), "a paused resource called Cloudflare")
+		}
+		// readyOf returns the Ready condition of the resource name.
+		readyOf := func(name string) metav1.Condition {
+			GinkgoHelper()
+			condition := meta.FindStatusCondition(get(name).GetConditions(), cloudflarev1alpha1.ConditionReady)
+			Expect(condition).NotTo(BeNil())
+			return *condition
+		}
+
+		It("calls Cloudflare for nothing while paused, and writes the changed rule once unpaused", func() {
+			sample, spec, rule := specs.samples[0], specs.samples[0].spec, specs.samples[0].rule
+			if len(specs.changes) > 0 {
+				change := specs.changes[0]
+				sample, spec, rule = specs.samples[change.sample], change.spec, change.rule
+			}
+			createSynced("paused", sample.spec)
+			observed := readyOf("paused").ObservedGeneration
+			Expect(replaceSpec("paused", spec)).To(Succeed())
+			setPaused(ctx, get("paused"), true)
+			reconcilePaused("paused")
+			Expect(readyOf("paused").Status).To(Equal(metav1.ConditionTrue))
+			Expect(readyOf("paused").Reason).To(Equal(reasonPaused))
+			Expect(readyOf("paused").ObservedGeneration).To(Equal(observed), "the spec changed while paused is not observed")
+			Expect(comparableStoredRule(storedRule(sample.phase, "paused"))).To(Equal(comparableJSONRule(sample.rule)),
+				"the rule is as the last sync left it")
+
+			By("writing the changed rule once unpaused")
+			setPaused(ctx, get("paused"), false)
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("paused")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comparableStoredRule(storedRule(sample.phase, "paused"))).To(Equal(comparableJSONRule(rule)))
+			Expect(readyOf("paused").Reason).To(Equal("Synced"))
+		})
+
+		It("keeps a paused resource's rule and finalizer when it is deleted, and deletes both once unpaused", func() {
+			sample := specs.samples[0]
+			createSynced("paused-deleted", sample.spec)
+			setPaused(ctx, get("paused-deleted"), true)
+			Expect(k8sClient.Delete(ctx, get("paused-deleted"))).To(Succeed())
+			reconcilePaused("paused-deleted")
+			Expect(holdsRule(sample.phase, "paused-deleted")).To(BeTrue())
+			Expect(get("paused-deleted").GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+			Expect(readyOf("paused-deleted").Reason).To(Equal(reasonPaused))
+			Expect(readyOf("paused-deleted").Message).To(Equal(pausedDeletionMessage))
+
+			By("deleting both once unpaused")
+			setPaused(ctx, get("paused-deleted"), false)
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("paused-deleted")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(holdsRule(sample.phase, "paused-deleted")).To(BeFalse())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("paused-deleted"), specs.newObject()))).To(BeTrue())
+		})
+
+		It("adds no finalizer to a resource created paused", func() {
+			obj := object("created-paused", specs.samples[0].spec)
+			obj.SetAnnotations(map[string]string{reconciler.PausedAnnotation: "true"})
+			create(obj)
+			reconcilePaused("created-paused")
+			Expect(get("created-paused").GetFinalizers()).To(BeEmpty())
+			Expect(readyOf("created-paused").Status).To(Equal(metav1.ConditionUnknown))
+			Expect(readyOf("created-paused").Reason).To(Equal(reasonPaused))
+		})
+
 		It("keeps zoneRef and the type immutable", func() {
 			obj := object("immutable", specs.samples[0].spec)
 			create(obj)

@@ -58,6 +58,12 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// A paused resource is left as it is, deletion included, until its
+	// kflare.dev/paused annotation is removed.
+	if reconciler.Paused(account) {
+		return ctrl.Result{}, updatePaused(ctx, r.Client, account)
+	}
+
 	if !account.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, account)
 	}

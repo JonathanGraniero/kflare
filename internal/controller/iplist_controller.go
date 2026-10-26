@@ -86,7 +86,13 @@ func (r *IPListReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion before anything else.
+	// A paused resource is left as it is, deletion included, until its
+	// kflare.dev/paused annotation is removed.
+	if reconciler.Paused(ipList) {
+		return ctrl.Result{}, updatePaused(ctx, r.Client, ipList)
+	}
+
+	// Then handle deletion, before anything else.
 	if !ipList.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, ipList)
 	}

@@ -107,7 +107,8 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
 1. **Conditions** — every resource has a single `Ready` condition. Reasons: `Synced`/`Validated` (True);
    `TerminalError` (Cloudflare 4xx, not requeued until something changes); `APIError` (retryable, the error
    is returned so controller-runtime backs off); credential reasons from `credentials.go`
-   (`AccountNotFound`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a minute)
+   (`AccountNotFound`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a minute); `Paused`
+   (the status kept, see convention 11)
 2. **Status fields** — every CRD status has `conditions []metav1.Condition` and a `cloudflareMetadata` block
 3. **References** — foreign-key relationships use `*Ref` fields (e.g., `zoneRef`, `tunnelRef`) not raw IDs
 4. **Adoption** — a resource creates its Cloudflare object, and takes over an existing one with its key only when its
@@ -122,13 +123,17 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
 7. **Immutability** — fields that identify the Cloudflare resource (names, refs) are immutable via CEL
    `self == oldSelf`, with an envtest case per field
 8. **Status helpers** — set conditions and report errors through `internal/controller/status.go`
-   (`updateReady`, `updateNotReady`, `handleCloudflareError`, `notReadyRetryAfter`); API types implement
+   (`updateReady`, `updateNotReady`, `handleCloudflareError`, `notReadyRetryAfter`, `updatePaused`); API types implement
    `GetConditions/SetConditions`. The helpers record each change of Ready's status or reason as an Event. A
    successful reconcile ends with `readyWithDriftCheck`, which also schedules the next drift check
    (`--drift-check-interval`, `reconciler.NextDriftCheck`)
 9. **Prefix** — every finalizer, annotation and label kflare owns starts with `kflare.dev/`
 10. **ARCHITECTURE.md** — a new controller, or a change to drift detection, adoption, error handling or deletion,
     updates the matching section and tables in `ARCHITECTURE.md`
+11. **Pause** — kflare leaves a resource annotated `kflare.dev/paused: "true"` alone, its deletion included: every
+    `Reconcile` checks `reconciler.Paused` right after reading its resource, before deletion and the finalizer, and
+    returns `updatePaused`. The shared reconcilers do it for the generated kinds; a new hand-written controller does
+    it itself, and gets an entry in `pausedKinds` (`internal/controller/paused_test.go`)
 
 ---
 

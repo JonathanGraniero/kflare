@@ -44,16 +44,17 @@ v7 service, built from the client's v7 options. Tests inject fakes.
 
 Every controller follows the same shape:
 
-1. Handle deletion first if the resource is being deleted (see [Deletion](#deletion)).
-2. Add the `kflare.dev/finalizer` finalizer and return; the update re-triggers the reconcile.
-3. Resolve the parent resource and credentials. If the parent is missing or not ready, report `Ready=False` and wait
+1. Stop if the resource is paused, reporting it, before anything else (see [Pausing a resource](#pausing-a-resource)).
+2. Handle deletion if the resource is being deleted (see [Deletion](#deletion)).
+3. Add the `kflare.dev/finalizer` finalizer and return; the update re-triggers the reconcile.
+4. Resolve the parent resource and credentials. If the parent is missing or not ready, report `Ready=False` and wait
    for the parent's watch event.
-4. Observe: fetch the Cloudflare resource by the ID stored in status (a rule: by its ref, see [Rules](#rules)). If there
+5. Observe: fetch the Cloudflare resource by the ID stored in status (a rule: by its ref, see [Rules](#rules)). If there
    is no ID, or Cloudflare says it no longer exists, look for an existing resource with the same key: the resource's
    own, one to adopt if its adoption policy allows, or none, and then create one (see
    [Adoption and ownership](#adoption-and-ownership)).
-5. Compare the spec with what Cloudflare reported, and write to Cloudflare only when they differ.
-6. Record IDs and metadata in status and set `Ready=True`.
+6. Compare the spec with what Cloudflare reported, and write to Cloudflare only when they differ.
+7. Record IDs and metadata in status and set `Ready=True`.
 
 A DNSRecord with a `tunnelRef` has a second parent, its Tunnel. It waits until the Tunnel is ready with an ID
 (`TunnelNotFound`, `TunnelNotReady`), and refuses a Tunnel that uses another CloudflareAccount than its Zone
@@ -75,7 +76,7 @@ from the kind's entry in `generator/generator.yaml`, cloudflare-go v7 and Cloudf
 table of envtest specs that the shared specs of its shape run on (`zz_generated.<kind>_test.go`). The generated kinds
 register together (`SetupGeneratedReconcilers`), and each counts as a user of its CloudflareAccount or its Zone.
 
-Step 5 is deliberate: an idle reconcile makes read calls only. The live e2e suite checks this for DNSRecord,
+Step 6 is deliberate: an idle reconcile makes read calls only. The live e2e suite checks this for DNSRecord,
 WAFCustomRule, RateLimitRule, ManagedRuleset, TransformRule (each type), RedirectRule, CacheRule, ConfigurationRule,
 OriginRule and IPList, and TunnelConfiguration's comparison ignores fields Cloudflare adds on its own so an unchanged
 config does not bump its version. A zone's managed transforms carry no version to check this by, so ManagedTransform's
@@ -83,8 +84,9 @@ envtest specs check it instead.
 
 ## When drift is detected
 
-kflare corrects drift whenever a resource is reconciled, but **a change made in the Cloudflare dashboard or API does not
-by itself trigger a reconcile**. Reconciles are triggered by:
+kflare corrects drift whenever a resource is reconciled, unless it is paused (see
+[Pausing a resource](#pausing-a-resource)), but **a change made in the Cloudflare dashboard or API does not by itself
+trigger a reconcile**. Reconciles are triggered by:
 
 - a change to the resource itself, including a metadata-only change such as an annotation;
 - a change to a watched dependency (for example a Zone becoming ready re-triggers its DNSRecords; a ConfigMap or Secret
@@ -128,6 +130,33 @@ What each controller compares when it does reconcile:
 | `WorkerRoute` | Pattern and the Worker it runs; recreated if deleted externally, including when Cloudflare deletes it together with its Worker |
 | `ManagedTransform` | Whether each managed transform its spec lists is on, by ID. The transforms it does not list are neither compared nor changed |
 | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` | The rule's whole definition: expression, action and its parameters, enabled, description, for a rate limiting rule how it counts (characteristics, period, requests per period, mitigation timeout, counting expression, origin requests only), for a managed ruleset deployment the ruleset and its overrides, and for a transform rule its URL rewrite or header changes. Also its place among kflare's rules in the zone and phase (see [Rules](#rules)). Recreated if deleted externally |
+
+## Pausing a resource
+
+The annotation `kflare.dev/paused: "true"` makes kflare leave a resource alone, for example while someone fixes its
+object in the dashboard during an incident, or changes it by hand during a migration:
+
+```sh
+kubectl annotate dnsrecord my-record kflare.dev/paused=true
+```
+
+Every controller checks for it first: the reconcile of a paused resource returns before it reads credentials or calls
+Cloudflare, so kflare neither corrects drift nor applies changes to the spec, and schedules no drift check. Any other
+value, `"false"` included, counts as none. No controller filters out metadata changes, so adding or removing the
+annotation reconciles the resource straight away; once it is removed, kflare applies the spec, which reverts a change
+made in Cloudflare meanwhile unless the spec was changed to match.
+
+- **Status.** `Ready` takes the reason `Paused`, with a `Normal` Event, but keeps its status and its
+  `observedGeneration`: the Cloudflare object is as the last reconcile left it, so a Ready Zone, Tunnel or account
+  still serves the resources that use it, and a spec changed while paused shows as not observed yet. A resource that
+  was paused before kflare reconciled it reports `Ready=Unknown`.
+- **Deletion.** Deleting a paused resource changes nothing in Cloudflare: it keeps its finalizer, and its condition
+  says the deletion waits, until the annotation is removed. kflare then deletes or keeps the object as the deletion
+  policy says (see [Deletion](#deletion)). A resource created paused gets no finalizer, since kflare made nothing for
+  it.
+- **One resource at a time.** Pausing a Zone or a CloudflareAccount does not pause the resources that use it. A paused
+  rule keeps its place in its phase, as a rule created outside kflare does: the other rules' reconciles order kflare's
+  rules around it, and it takes its place again once unpaused (see [Rules](#rules)).
 
 ## Adoption and ownership
 
@@ -229,9 +258,10 @@ not, so kflare:
 - Keeps its own rules in a zone and phase in order of `spec.priority`, lower first, with ties broken by namespace and
   name, across namespaces (two Zones in different namespaces can point at the same Cloudflare zone). Each phase is
   its own list: a WAF custom rule's priority does not order rate limiting rules. Rules created outside kflare keep
-  their place. Reordering moves rules without changing them: Cloudflare keeps a moved rule's definition and version
-  (verified live). A reconcile that moved rules checks the order again 10 seconds later, in case another resource was
-  reordering the same rules at the same time.
+  their place, and so do the rules of paused resources (see [Pausing a resource](#pausing-a-resource)). Reordering
+  moves rules without changing them: Cloudflare keeps a moved rule's definition and version (verified live). A
+  reconcile that moved rules checks the order again 10 seconds later, in case another resource was reordering the
+  same rules at the same time.
 - Leaves the entry point in place when its last rule is deleted, as Cloudflare does, except in the managed phase (see
   below).
 - Writes a rule that uses a custom list (`$name`, managed by an `IPList`) once the list exists. Cloudflare refuses the
@@ -332,10 +362,10 @@ with reason `AlreadyConfigured`. Terminal errors are also
 retried by the 10-hour resync.
 
 Every change of a resource's Ready condition to another status or reason is also recorded as a Kubernetes Event, so
-that `kubectl describe` and `kubectl get events` show the resource's history: `Normal` when Ready turns True,
-`Warning` when it turns False, with the condition's reason, and its message as the note (shortened to the 1 kB an
-Event holds). A reconcile that leaves the condition's status and reason as they were records none, and neither does
-a status write that fails. The manager's ClusterRole may create and patch Events (`events.k8s.io`).
+that `kubectl describe` and `kubectl get events` show the resource's history: `Normal` when Ready turns True or the
+resource is paused, `Warning` when it turns False, with the condition's reason, and its message as the note (shortened
+to the 1 kB an Event holds). A reconcile that leaves the condition's status and reason as they were records none, and
+neither does a status write that fails. The manager's ClusterRole may create and patch Events (`events.k8s.io`).
 
 ## Deletion
 
@@ -353,6 +383,9 @@ metadata:
 A cluster can make keeping objects the rule: with the manager's `--default-deletion-policy=retain` (the chart's
 `defaultDeletionPolicy`), a resource without the annotation keeps the object it created too, and only `delete`
 deletes it. The default, `delete`, is the behavior above. Keeping an object only removes the finalizer.
+
+A paused resource keeps its finalizer, and its object, until its `kflare.dev/paused` annotation is removed (see
+[Pausing a resource](#pausing-a-resource)).
 
 Per-resource details:
 

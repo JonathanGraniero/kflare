@@ -56,6 +56,10 @@ What will ship in v0.1.1: the Helm chart hardened for production
   Cloudflare that long after each successful reconcile, give or take a tenth, so that a change made outside kflare is
   corrected within about the interval instead of at the 10-hour resync. The deploy guide says how to pick one for the
   number of resources ([#55](https://github.com/JonathanGraniero/kflare/issues/55))
+- **Pausing a resource**: with the annotation `kflare.dev/paused: "true"`, kflare leaves the resource and its Cloudflare
+  object alone, neither reverting changes made in Cloudflare nor applying changes to the spec, until the annotation is
+  removed. A paused resource being deleted keeps its finalizer until then. `Ready` keeps its status and takes the
+  reason `Paused` ([#81](https://github.com/JonathanGraniero/kflare/issues/81))
 
 ### Resource kinds
 

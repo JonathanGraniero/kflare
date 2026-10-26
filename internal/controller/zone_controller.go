@@ -75,7 +75,13 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion before anything else.
+	// A paused resource is left as it is, deletion included, until its
+	// kflare.dev/paused annotation is removed.
+	if reconciler.Paused(zone) {
+		return ctrl.Result{}, updatePaused(ctx, r.Client, zone)
+	}
+
+	// Then handle deletion, before anything else.
 	if !zone.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, zone)
 	}

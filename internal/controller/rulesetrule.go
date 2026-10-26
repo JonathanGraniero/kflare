@@ -38,7 +38,7 @@ import (
 //     manage.
 //   - kflare keeps the rules it manages in a zone and phase in priority
 //     order, moving them with position-only updates. Rules created outside
-//     kflare keep their place.
+//     kflare keep their place, and so do the rules of paused resources.
 //   - An emptied entry point stays, except in the phases where an entry point
 //     changes what Cloudflare runs even without rules
 //     (emptiedEntrypointPhases).

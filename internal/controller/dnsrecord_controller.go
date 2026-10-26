@@ -66,7 +66,13 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion before anything else.
+	// A paused resource is left as it is, deletion included, until its
+	// kflare.dev/paused annotation is removed.
+	if reconciler.Paused(record) {
+		return ctrl.Result{}, updatePaused(ctx, r.Client, record)
+	}
+
+	// Then handle deletion, before anything else.
 	if !record.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, record)
 	}

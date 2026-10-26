@@ -1422,6 +1422,95 @@ var _ = Describe("DNSRecord Controller", func() {
 		})
 	})
 
+	Describe("pausing", func() {
+		// inSync is the record as Cloudflare holds it after a sync of the spec
+		// createDNSRecord writes.
+		inSync := cf.DNSRecord{ID: dnsFakeRecordID, Name: dnsRecordName, Type: dnsRecordType,
+			Content: dnsRecordIP, TTL: 300, Proxied: new(false), Tags: []string{}}
+		var (
+			fake   *fakeDNSRecordAPI
+			r      *DNSRecordReconciler
+			builds int
+		)
+		get := func() *cloudflarev1alpha1.DNSRecord {
+			record := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, recordKey, record)).To(Succeed())
+			return record
+		}
+		reconcileRecord := func() {
+			GinkgoHelper()
+			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: recordKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeZero())
+		}
+
+		// Each spec starts from a record in sync with Cloudflare, then paused.
+		BeforeEach(func() {
+			createDNSAccount(true)
+			createReadyZone()
+			createDNSSecret()
+			createDNSRecord(nil)
+			setRecordIDInStatus(dnsFakeRecordID)
+			record := get()
+			record.Finalizers = []string{reconciler.Finalizer}
+			Expect(k8sClient.Update(ctx, record)).To(Succeed())
+			fake = &fakeDNSRecordAPI{getRecord: inSync}
+			r = &DNSRecordReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+				NewDNSRecordAPI: func(string) (DNSRecordAPI, error) {
+					builds++
+					return fake, nil
+				}}
+			reconcileRecord()
+			Expect(getRecordCondition(cloudflarev1alpha1.ConditionReady).Reason).To(Equal("Synced"))
+			setPaused(ctx, get(), true)
+			builds = 0
+		})
+
+		It("makes no Cloudflare call while paused, its spec changed included, and applies the spec once unpaused",
+			func() {
+				observed := getRecordCondition(cloudflarev1alpha1.ConditionReady).ObservedGeneration
+				record := get()
+				record.Spec.Content = "198.51.100.7"
+				Expect(k8sClient.Update(ctx, record)).To(Succeed())
+				reconcileRecord()
+				Expect(builds).To(BeZero(), "a paused record built a Cloudflare client")
+				cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
+				Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+				Expect(cond.Reason).To(Equal(reasonPaused))
+				Expect(cond.ObservedGeneration).To(Equal(observed))
+
+				By("writing the new content once unpaused")
+				written := inSync
+				written.Content = "198.51.100.7"
+				fake.updateRecord = written
+				setPaused(ctx, get(), false)
+				reconcileRecord()
+				params, updated := fake.lastUpdate()
+				Expect(updated).To(BeTrue())
+				Expect(params.Content).To(Equal("198.51.100.7"))
+				cond = getRecordCondition(cloudflarev1alpha1.ConditionReady)
+				Expect(cond.Reason).To(Equal("Synced"))
+				Expect(cond.ObservedGeneration).To(Equal(get().Generation))
+			})
+
+		It("keeps a paused record, and its finalizer, when it is deleted, and deletes it once unpaused", func() {
+			Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+			reconcileRecord()
+			Expect(builds).To(BeZero())
+			Expect(fake.deleteCalled).To(BeFalse())
+			Expect(get().Finalizers).To(ContainElement(reconciler.Finalizer))
+			cond := getRecordCondition(cloudflarev1alpha1.ConditionReady)
+			Expect(cond.Reason).To(Equal(reasonPaused))
+			Expect(cond.Message).To(Equal(pausedDeletionMessage))
+
+			By("deleting the record once unpaused")
+			setPaused(ctx, get(), false)
+			reconcileRecord()
+			Expect(fake.deleteCalled).To(BeTrue())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, recordKey, &cloudflarev1alpha1.DNSRecord{}))).To(BeTrue())
+		})
+	})
+
 	Describe("with a tunnelRef", func() {
 		const (
 			tunnelCRName = "dns-test-tunnel"

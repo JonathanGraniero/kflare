@@ -780,6 +780,71 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(fake.resets).To(Equal(2))
 		})
 
+		// reconcilePaused reconciles the resource name, and checks that it made
+		// no Cloudflare call, which the fake records the zone of, and scheduled
+		// nothing.
+		reconcilePaused := func(name string) {
+			GinkgoHelper()
+			calls := len(fake.zoneIDs)
+			result, err := reconcileOnce(name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsZero()).To(BeTrue())
+			Expect(fake.zoneIDs).To(HaveLen(calls), "a paused resource called Cloudflare")
+			Expect(ready(name).Reason).To(Equal(reasonPaused))
+		}
+
+		It("calls Cloudflare for nothing while paused, and writes its changed settings once unpaused", func() {
+			sample, spec, settings := specs.samples[0], specs.samples[0].spec, specs.samples[0].settings
+			if len(specs.changes) > 0 {
+				change := specs.changes[0]
+				sample, spec, settings = specs.samples[change.sample], change.spec, change.settings
+			}
+			createSynced("paused", sample.spec)
+			observed := ready("paused").ObservedGeneration
+			Expect(replaceSpec("paused", spec)).To(Succeed())
+			setPaused(ctx, get("paused"), true)
+			reconcilePaused("paused")
+			Expect(ready("paused").Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready("paused").ObservedGeneration).To(Equal(observed), "the spec changed while paused is not observed")
+			Expect(holds(sample.settings)).To(BeTrue(), "the settings are as the last sync left them")
+
+			By("writing the changed settings once unpaused")
+			setPaused(ctx, get("paused"), false)
+			_, err := reconcileOnce("paused")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(holds(settings)).To(BeTrue())
+			Expect(ready("paused").Reason).To(Equal("Synced"))
+			deleteAndReconcile("paused")
+		})
+
+		It("keeps a paused resource's settings and finalizer when it is deleted, and resets them once unpaused", func() {
+			createSynced("paused-deleted", specs.samples[0].spec)
+			setPaused(ctx, get("paused-deleted"), true)
+			Expect(k8sClient.Delete(ctx, get("paused-deleted"))).To(Succeed())
+			resets := fake.resets
+			reconcilePaused("paused-deleted")
+			Expect(fake.resets).To(Equal(resets))
+			Expect(holds(specs.samples[0].settings)).To(BeTrue())
+			Expect(get("paused-deleted").GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+			Expect(ready("paused-deleted").Message).To(Equal(pausedDeletionMessage))
+
+			By("resetting them once unpaused")
+			setPaused(ctx, get("paused-deleted"), false)
+			_, err := reconcileOnce("paused-deleted")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.resets).To(Equal(resets + 1))
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("paused-deleted"), specs.newObject()))).To(BeTrue())
+		})
+
+		It("adds no finalizer to a resource created paused", func() {
+			obj := object("created-paused", specs.samples[0].spec)
+			obj.SetAnnotations(map[string]string{reconciler.PausedAnnotation: "true"})
+			create(obj)
+			reconcilePaused("created-paused")
+			Expect(get("created-paused").GetFinalizers()).To(BeEmpty())
+			Expect(ready("created-paused").Status).To(Equal(metav1.ConditionUnknown))
+		})
+
 		It("has nothing to do for a resource whose finalizer is gone", func() {
 			result, err := r.settings().reconcileDelete(ctx, object("no-finalizer", specs.samples[0].spec))
 			Expect(err).NotTo(HaveOccurred())
