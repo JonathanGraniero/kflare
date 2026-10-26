@@ -448,9 +448,9 @@ resolve to the versions their comments name.
 `--drift-check-interval`, off by default. The live e2e suite has run in GitHub Actions since 2026-10-21 (Release and
 CI below).
 
-#### Chart hardening for v0.1.1 (`feat/chart-hardening`)
+#### Chart hardening for v0.2.0 (`feat/chart-hardening`)
 **Status:** ✅ Merged 2026-10-22 for [#67](https://github.com/JonathanGraniero/kflare/issues/67) (#68), and the e2e suite
-installs the chart since #71; ships in v0.1.1 (CHANGELOG.md's Unreleased section says how to upgrade). Not in it: the
+installs the chart since #71; ships in v0.2.0 (CHANGELOG.md's v0.2.0 section says how to upgrade). Not in it: the
 issue's section 4 (no HorizontalPodAutoscaler; sizing guidance and `MaxConcurrentReconciles` are a later proposal, since
 rule kinds reconciling at once share a phase's ruleset)
 - [x] Metrics over HTTPS with authentication and authorization **on by default** (the user's choice), `metrics.secure`.
