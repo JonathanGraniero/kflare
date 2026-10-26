@@ -621,6 +621,18 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   can't bypass), and requiring CI's checks before a merge is the user's call, as is the optional CII-Best-Practices
   badge (0); Signed-Releases (-1) is scored once a release has files (#84). The release scan's first run, by hand
   (40387436013): v0.2.0's image, Grype 0 matches in 78 packages, its SARIF in code scanning, the binary clean
+- [ ] v0.2.1's pre-tag checks, the user's version (a pause annotation, a chart value and signing, so a minor by #87's
+  proposed rule), and the first release `release.yml` signs:
+  - An upgrade from 0.2.0 needs nothing: the chart pulled anonymously from GHCR and the branch's render the same 30
+    objects with the default values, and 33 with two replicas, the NetworkPolicy, the ServiceMonitor, a drift check
+    interval and `retain`, but for the version (no CRD, RBAC or template change since v0.2.0 but `kflare.image`)
+  - The live suite on the release branch, with the manager on this machine (`hack/e2e-live.sh` on the dev cluster,
+    the dev token, the user's OK), the first live run since the pause annotation (#105): e2e run `12fa0f`, 23 of 27,
+    the other 4 being the specs that need the manager in the cluster (CI's E2E ran those on the branch). The
+    manager's 11 error lines were optimistic-concurrency conflicts, retried, and writes refused in the example's
+    namespace while it was being deleted. Afterwards Cloudflare held no DNS record, tunnel, IP list, managed
+    transform or e2e object, and the nine phases' entry points were empty (#57)
+  - The tag goes on the release PR's merge commit; after the run, the checks #84 left for a release
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---

@@ -21,7 +21,7 @@ For how kflare handles credentials and what its controller can access, see the d
   every week, once a release is a week old, and security updates as soon as an advisory is published. Every action is
   pinned to a commit. The base images stay on their tags, so that a release is built with the newest Go patch and base
   files rather than a week later; the weekly scan checks what each release was built with.
-- **Releases** are signed with cosign, from the release after v0.2.0, and the image comes with SBOMs and provenance:
+- **Releases** are signed with cosign, from v0.2.1, and the image comes with SBOMs and provenance:
   the deploy guide's [Verifying a release](docs/deploy.md#verifying-a-release) checks them.
 - **The repository's practices:**
   [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/JonathanGraniero/kflare) checks them every week

@@ -3,7 +3,23 @@
 kflare follows [semantic versioning](https://semver.org). While its API is `v1alpha1`, any release can change it:
 read the notes before upgrading. The chart and the controller image share one version.
 
-## Unreleased
+## v0.2.1 (alpha)
+
+The third alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It is the first
+signed release, with SBOMs and provenance for the image, and any resource can now be paused with an annotation.
+
+```sh
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version 0.2.1 -n kflare-system \
+  --values kflare-values.yaml
+```
+
+The image is `ghcr.io/jonathangraniero/kflare:0.2.1`, for `linux/amd64` and `linux/arm64`. The deploy guide's
+[Verifying a release](docs/deploy.md#verifying-a-release) checks both signatures before you install. To install kflare
+for the first time, follow the [README's quickstart](README.md#quickstart-expose-a-service-through-a-cloudflare-tunnel).
+
+### Upgrading from v0.2.0
+
+Nothing to change: the CRDs, the controller's permissions and the chart's defaults are v0.2.0's.
 
 ### Releases
 
@@ -25,6 +41,10 @@ read the notes before upgrading. The chart and the controller image share one ve
   object alone, neither reverting changes made in Cloudflare nor applying changes to the spec, until the annotation is
   removed. A paused resource being deleted keeps its finalizer until then. `Ready` keeps its status and takes the
   reason `Paused` ([#81](https://github.com/JonathanGraniero/kflare/issues/81))
+
+### Known limitations
+
+v0.2.0's, unchanged: [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains each.
 
 ## v0.2.0 (alpha)
 

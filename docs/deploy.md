@@ -74,7 +74,7 @@ helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
 
 Keep `kflare-values.yaml` in git (see [Configuration](#configuration)). The chart's version pins the image too:
 `image.tag` defaults to the chart's `appVersion`. To pull from a registry mirror, set `image.repository` and, if it
-needs credentials, `imagePullSecrets`. From the release after v0.2.0, the image and the chart are signed:
+needs credentials, `imagePullSecrets`. From v0.2.1, the image and the chart are signed:
 [Verifying a release](#verifying-a-release) checks them, and pins the image by digest.
 
 From a checkout of this repository, for example to run unreleased changes:
@@ -438,7 +438,7 @@ using the token's budget. `0s`, or leaving the value empty, turns the checks off
 
 ## Verifying a release
 
-From the release after v0.2.0, the release workflow signs the controller image and the chart with
+From v0.2.1, the release workflow signs the controller image and the chart with
 [cosign](https://github.com/sigstore/cosign), keyless: Sigstore issues the signing certificate to kflare's release
 workflow, for the tag it ran on, and records the signature in its public transparency log, so there is no key to
 distribute. v0.1.0 and v0.2.0 are not signed.

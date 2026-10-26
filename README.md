@@ -31,7 +31,7 @@ Note your account ID, shown on the account's overview page.
 
 ```sh
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
-  --version 0.2.0 --namespace kflare-system --create-namespace
+  --version 0.2.1 --namespace kflare-system --create-namespace
 kubectl -n kflare-system rollout status deployment/kflare
 ```
 
@@ -61,7 +61,7 @@ your existing domain, a `Tunnel`, its `TunnelConfiguration`, a `DNSRecord` point
 tunnel, and a `cloudflared` Deployment that connects it. Apply it with your domain in place of `example.com`:
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.2.0/examples/expose-a-service/expose-a-service.yaml \
+curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.2.1/examples/expose-a-service/expose-a-service.yaml \
   | sed 's/example\.com/your-domain.com/g' | kubectl apply -f -
 
 kubectl -n kflare-example wait --for=condition=Ready dnsrecords.kflare.dev/hello --timeout=5m
@@ -117,14 +117,14 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 - **Install it like any other platform component.** Pin the chart version, keep your values in git, and let Argo CD or
   Flux install it; the guide has an `Application` and a `HelmRelease` to start from. The chart installs and upgrades
   the CRDs, keeps them on uninstall, and runs under the restricted Pod Security Standard.
-- **Releases are signed** (from the release after v0.2.0): the image and the chart with cosign, keyless, with SBOMs
+- **Releases are signed** (from v0.2.1): the image and the chart with cosign, keyless, with SBOMs
   and provenance, so that cosign, an admission policy or Flux can check them; the guide has a Kyverno policy.
 - **One installation per cluster**, with leader election; two replicas give a quick failover.
 - **kflare never takes over what it did not create**, unless a resource asks with the
   `kflare.dev/adoption-policy` annotation. Objects it adopted are kept when their resource is deleted, and
   `kflare.dev/deletion-policy: retain` keeps any object, for zones and storage that must outlive a manifest.
 - **Any resource can be paused** with `kflare.dev/paused: "true"`, during an incident or a migration done by hand:
-  kflare leaves its Cloudflare object alone until the annotation is removed (in the release after v0.2.0).
+  kflare leaves its Cloudflare object alone until the annotation is removed (from v0.2.1).
 - **Credentials stay in Secrets** that you can manage with External Secrets Operator or Sealed Secrets. A rotated token
   is picked up straight away. Only cluster administrators can create a `CloudflareAccount`; the namespaced kinds are
   added to the built-in `edit` and `admin` roles, so teams manage their own records and rules.
