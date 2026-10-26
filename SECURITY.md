@@ -18,8 +18,11 @@ For how kflare handles credentials and what its controller can access, see the d
   the release's binary, so that a vulnerability published after a release shows up without a new commit. A fix goes
   into the next release.
 - **Dependencies:** Dependabot proposes updates to the Go modules, the GitHub Actions and the Dockerfile's base images
-  every week, once a release is a week old, and security updates as soon as an advisory is published. Actions from
-  outside GitHub are pinned to a commit.
+  every week, once a release is a week old, and security updates as soon as an advisory is published. Every action is
+  pinned to a commit. The base images stay on their tags, so that a release is built with the newest Go patch and base
+  files rather than a week later; the weekly scan checks what each release was built with.
+- **Releases** are signed with cosign, from the release after v0.2.0, and the image comes with SBOMs and provenance:
+  the deploy guide's [Verifying a release](docs/deploy.md#verifying-a-release) checks them.
 - **The repository's practices:**
   [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/JonathanGraniero/kflare) checks them every week
   and on every push to `main`.

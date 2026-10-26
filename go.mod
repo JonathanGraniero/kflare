@@ -9,7 +9,7 @@ toolchain go1.26.10
 require (
 	github.com/cloudflare/cloudflare-go/v7 v7.13.0
 	github.com/go-logr/logr v1.4.4
-	github.com/google/cel-go v0.29.2
+	github.com/google/cel-go v0.30.0
 	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
 	k8s.io/apimachinery v0.37.1
