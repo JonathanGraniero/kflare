@@ -524,7 +524,8 @@ cosign 3 stores a signature as a Sigstore bundle, under the tag `sha256-<digest>
 in the older `.sig` format, so some tools need a setting to read it. Kyverno's `ClusterPolicy` `verifyImages` rules,
 which Kyverno 1.19 deprecates, need `type: SigstoreBundle`. Sigstore's policy-controller (0.13 or newer) needs
 `signatureFormat: bundle` on the authority. Flux (2.8 or newer) can check the chart itself: `verify` on its
-`OCIRepository`, with `provider: cosign` and a `matchOIDCIdentity` holding the issuer and identity above.
+`OCIRepository`, with `provider: cosign` and a `matchOIDCIdentity` entry whose `issuer` and `subject` regular
+expressions match the issuer above and the policy's `subjectRegExp`.
 
 ## Running in production
 
