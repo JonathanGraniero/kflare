@@ -814,6 +814,72 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			})
 		})
 
+		Describe("pausing", func() {
+			// reconcilePaused reconciles the resource, and checks that it made no
+			// Cloudflare call, which the fake records the account of, and
+			// scheduled nothing.
+			reconcilePaused := func() {
+				GinkgoHelper()
+				calls := len(store.accountIDs)
+				result, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeZero())
+				Expect(store.accountIDs).To(HaveLen(calls), "a paused resource called Cloudflare")
+				Expect(ready().Reason).To(Equal(reasonPaused))
+			}
+
+			It("calls Cloudflare for nothing while paused, and applies the spec once unpaused", func() {
+				id := synced(nil)
+				observed := ready().ObservedGeneration
+				setPaused(ctx, get(), true)
+				obj := get()
+				for _, change := range t.changes {
+					change.edit(obj)
+				}
+				Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+				reconcilePaused()
+				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+				Expect(ready().ObservedGeneration).To(Equal(observed), "the spec changed while paused is not observed")
+
+				By("applying the spec once unpaused")
+				setPaused(ctx, get(), false)
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				object := store.objects[id]
+				Expect(k.matches(get(), &object)).To(BeTrue(), "the object is what the spec asks for")
+				Expect(ready().Reason).To(Equal("Synced"))
+				Expect(ready().ObservedGeneration).To(Equal(get().GetGeneration()))
+			})
+
+			It("keeps a paused resource's "+k.noun+" and finalizer when it is deleted, and deletes both once unpaused",
+				func() {
+					id := synced(nil)
+					setPaused(ctx, get(), true)
+					Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+					reconcilePaused()
+					Expect(store.objects).To(HaveKey(id))
+					Expect(get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+					Expect(ready().Message).To(Equal(pausedDeletionMessage))
+
+					By("deleting both once unpaused")
+					setPaused(ctx, get(), false)
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.objects).NotTo(HaveKey(id))
+					Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue())
+				})
+
+			It("adds no finalizer to a resource created paused", func() {
+				createAccount(true)
+				obj := t.newResource(key, accountName)
+				obj.SetAnnotations(map[string]string{reconciler.PausedAnnotation: "true"})
+				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+				reconcilePaused()
+				Expect(get().GetFinalizers()).To(BeEmpty())
+				Expect(ready().Status).To(Equal(metav1.ConditionUnknown))
+			})
+		})
+
 		Describe("validation", func() {
 			for _, change := range t.immutable {
 				It("refuses "+change.what, func() {

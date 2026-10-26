@@ -115,7 +115,13 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion before anything else.
+	// A paused resource is left as it is, deletion included, until its
+	// kflare.dev/paused annotation is removed.
+	if reconciler.Paused(obj) {
+		return ctrl.Result{}, updatePaused(ctx, r.Client, obj)
+	}
+
+	// Then handle deletion, before anything else.
 	if !obj.GetDeletionTimestamp().IsZero() {
 		return r.reconcileDelete(ctx, obj)
 	}
@@ -198,7 +204,9 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 // peers lists the rules kflare manages in zoneID and phase: those of every
 // kind writing to the phase, in every namespace, since Zones in different
 // namespaces can point at the same Cloudflare zone. Resources being deleted
-// are left out: their rules are about to go.
+// are left out: their rules are about to go. So are paused resources, whose
+// rules kflare leaves alone: they keep their place, as rules created outside
+// kflare do, rather than being moved by another rule's sync.
 func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase rulesets.Phase) ([]rulesetRulePeer,
 	error) {
 	var peers []rulesetRulePeer
@@ -220,7 +228,7 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 			if !ok {
 				return nil, fmt.Errorf("unexpected %T in a %s list", item, kind.name)
 			}
-			if !obj.GetDeletionTimestamp().IsZero() || kind.phase(obj) != phase {
+			if !obj.GetDeletionTimestamp().IsZero() || reconciler.Paused(obj) || kind.phase(obj) != phase {
 				continue
 			}
 			spec := obj.GetRulesetRuleSpec()

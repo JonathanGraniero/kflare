@@ -300,3 +300,33 @@ func TestSetDefaultDeletionPolicyRefusesOtherPolicies(t *testing.T) {
 		t.Error("a refused policy changed the default deletion policy")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Paused
+// ---------------------------------------------------------------------------
+
+func TestPaused(t *testing.T) {
+	const paused = reconciler.PausedAnnotation
+	cases := []struct {
+		name        string
+		annotations map[string]string
+		want        bool
+	}{
+		{name: "no annotations", annotations: nil, want: false},
+		{name: "true", annotations: map[string]string{paused: "true"}, want: true},
+		{name: "the documented key", annotations: map[string]string{"kflare.dev/paused": "true"}, want: true},
+		{name: "false", annotations: map[string]string{paused: "false"}, want: false},
+		{name: "empty", annotations: map[string]string{paused: ""}, want: false},
+		{name: "another spelling of true", annotations: map[string]string{paused: "True"}, want: false},
+		{name: "unrelated annotation", annotations: map[string]string{"example.com/paused": "true"}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cm := newConfigMap("paused-cm")
+			cm.Annotations = tc.annotations
+			if got := reconciler.Paused(cm); got != tc.want {
+				t.Errorf("Paused() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

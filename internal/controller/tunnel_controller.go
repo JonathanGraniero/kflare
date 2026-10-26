@@ -86,7 +86,13 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion before anything else.
+	// A paused resource is left as it is, deletion included, until its
+	// kflare.dev/paused annotation is removed.
+	if reconciler.Paused(tunnel) {
+		return ctrl.Result{}, updatePaused(ctx, r.Client, tunnel)
+	}
+
+	// Then handle deletion, before anything else.
 	if !tunnel.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, tunnel)
 	}

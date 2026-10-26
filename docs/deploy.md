@@ -440,8 +440,8 @@ using the token's budget. `0s`, or leaving the value empty, turns the checks off
 
 Every kflare resource reports a single `Ready` condition with a reason (see [Troubleshooting](#troubleshooting)), and
 the `READY` column of `kubectl get` shows it. Each change of its status or reason is also recorded as an Event on the
-resource, `Normal` when it turns True and `Warning` when it turns False, so `kubectl describe` shows the resource's
-history.
+resource, `Normal` when it turns True or the resource is paused and `Warning` when it turns False, so
+`kubectl describe` shows the resource's history.
 
 The controller serves controller-runtime's standard Prometheus metrics: `controller_runtime_reconcile_total`,
 `controller_runtime_reconcile_errors_total` and `controller_runtime_reconcile_timeouts_total` (reconciles that ran
@@ -595,6 +595,32 @@ To make keeping objects the rule for the whole cluster, set the chart's `default
 a resource then leaves the object it created in Cloudflare too, unless the resource is annotated
 `kflare.dev/deletion-policy: delete`.
 
+### Pausing a resource
+
+To stop kflare from changing one resource's Cloudflare object for a while, for example during an incident, while
+someone fixes a record or a rule in the dashboard, or during a migration that changes an object by hand, annotate the
+resource:
+
+```sh
+kubectl annotate dnsrecord my-record -n my-namespace kflare.dev/paused=true
+```
+
+kflare then makes no Cloudflare call for it: it neither reverts changes made in Cloudflare nor applies changes to the
+spec. `kubectl describe` shows the `Ready` condition with the reason `Paused`, and an Event records the pause.
+`Ready` keeps its status, so pausing a resource sets off no alert on `Ready` being `False`, and the resources that use
+a paused one, such as a paused Zone's records, carry on. Pausing a Zone or an account does not pause them.
+
+To resume, remove the annotation:
+
+```sh
+kubectl annotate dnsrecord my-record -n my-namespace kflare.dev/paused-
+```
+
+kflare reconciles the resource straight away and applies its spec, which reverts a change made in Cloudflare while it
+was paused: to keep such a change, put it in the spec first. Deleting a paused resource changes nothing in Cloudflare
+either: the resource keeps its finalizer until the annotation is removed, so `kubectl delete` waits for that (pass
+`--wait=false` not to). See [Pausing a resource](../ARCHITECTURE.md#pausing-a-resource) for the details.
+
 ### Moving to a new cluster
 
 kflare keeps its record of what it owns in the cluster: the object's ID in the resource's status, and for some kinds
@@ -605,7 +631,10 @@ changes nothing, while rules find their rules and carry on. To move kflare's res
 
 1. **Stop the old installation**: uninstall it, or scale `deployment/kflare` to zero replicas and keep your GitOps tool
    from scaling it back. Two installations must never manage the same objects; for rules, both would find the same
-   rule by its ref and keep rewriting it.
+   rule by its ref and keep rewriting it. To move only some resources, or to keep a way back, pause the old cluster's
+   resources that move instead (`kflare.dev/paused: "true"`, see [Pausing a resource](#pausing-a-resource)): the old
+   installation leaves them alone and goes on managing the rest. To move back, pause the new cluster's resources
+   first, then unpause the old ones.
 2. **In the new cluster, annotate the resources whose objects exist** with
    `kflare.dev/adoption-policy: adopt-or-create` (rules need nothing) and apply them. Each adopts its object and
    corrects it to the spec, which is what it already holds.
@@ -613,7 +642,7 @@ changes nothing, while rules find their rules and carry on. To move kflare's res
    it would have before the move, annotate the resource `kflare.dev/deletion-policy: delete`.
 4. **Retire the old cluster.** Deleting the cluster leaves the Cloudflare objects alone. To keep the cluster, remove
    the finalizers from the old kflare resources by hand (see [Uninstalling](#uninstalling)), which also leaves the
-   objects in place; never delete them while the old controller still runs.
+   objects in place; never delete them while the old controller still runs, unless they are paused.
 
 This procedure follows from the adoption rules above, but has not been run end to end yet: try it with a test zone
 first.
@@ -690,6 +719,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | Reason | Meaning | What to do |
 |---|---|---|
 | `Synced`, `Validated` | In sync with Cloudflare | Nothing |
+| `Paused` | The resource is annotated `kflare.dev/paused: "true"`: kflare leaves it and its Cloudflare object alone, and a deleted one keeps its finalizer. `Ready` keeps the status it had | Remove the annotation to resume (see [Pausing a resource](#pausing-a-resource)) |
 | `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change |
 | `APIError` | Transient failure (5xx, rate limit, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout` |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |

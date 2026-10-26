@@ -3,6 +3,15 @@
 kflare follows [semantic versioning](https://semver.org). While its API is `v1alpha1`, any release can change it:
 read the notes before upgrading. The chart and the controller image share one version.
 
+## Unreleased
+
+### The controller
+
+- **Pausing a resource**: with the annotation `kflare.dev/paused: "true"`, kflare leaves the resource and its Cloudflare
+  object alone, neither reverting changes made in Cloudflare nor applying changes to the spec, until the annotation is
+  removed. A paused resource being deleted keeps its finalizer until then. `Ready` keeps its status and takes the
+  reason `Paused` ([#81](https://github.com/JonathanGraniero/kflare/issues/81))
+
 ## v0.2.0 (alpha)
 
 The second alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It hardens

@@ -369,6 +369,34 @@ var _ = Describe("WAFCustomRule Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically("~", driftCheckTestInterval, driftCheckTestSpread))
 		})
 
+		It("leaves a paused rule where it is while it orders the others, and orders it again once unpaused", func() {
+			readyEnv()
+			createRule(ns, "a", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 10 })
+			createRule(ns, "b", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 1 })
+			for _, k := range []types.NamespacedName{key("a"), key("b")} {
+				_, err := reconcileRule(k)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(order()).To(Equal([]string{"b", "a"}))
+
+			By("keeping b after a, where it was moved outside kflare while paused")
+			setPaused(ctx, getRule(key("b")), true)
+			rules := fake.entrypoint().rules
+			rules[0], rules[1] = rules[1], rules[0]
+			result, err := reconcileRule(key("a"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsZero()).To(BeTrue(), "nothing was moved")
+			Expect(order()).To(Equal([]string{"a", "b"}))
+			Expect(fake.moves).To(BeZero())
+
+			By("moving the rules back into order once b is unpaused")
+			setPaused(ctx, getRule(key("b")), false)
+			result, err = reconcileRule(key("b"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(rulesetRuleRecheckInterval))
+			Expect(order()).To(Equal([]string{"b", "a"}))
+		})
+
 		It("sets TerminalError without requeueing when Cloudflare rejects the rule", func() {
 			readyEnv()
 			createRule(ns, "a", nil)
@@ -607,7 +635,7 @@ var _ = Describe("WAFCustomRule peers", func() {
 		Expect(k8sClient.Status().Update(ctx, zone)).To(Succeed())
 	}
 
-	It("are the kind's rules for the same Cloudflare zone in every namespace, without those being deleted", func() {
+	It("are the kind's rules for one Cloudflare zone in every namespace, but not those being deleted or paused", func() {
 		createZone("default", "peers-zone", "zone-peers")
 		createZone("kube-public", "peers-zone", "zone-peers")
 		createZone("default", "peers-other-zone", "zone-elsewhere")
@@ -619,6 +647,10 @@ var _ = Describe("WAFCustomRule peers", func() {
 		Expect(k8sClient.Delete(ctx, &cloudflarev1alpha1.WAFCustomRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "peers-deleting", Namespace: "default"},
 		})).To(Succeed())
+		createRule("default", "peers-paused", "peers-zone", 1)
+		setPaused(ctx, &cloudflarev1alpha1.WAFCustomRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "peers-paused", Namespace: "default"},
+		}, true)
 
 		rules := (&WAFCustomRuleReconciler{Client: k8sClient}).rules()
 		peers, err := rules.peers(ctx, "zone-peers", rulesets.PhaseHTTPRequestFirewallCustom)

@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
@@ -55,6 +56,19 @@ const reasonAccountMismatch = "AccountMismatch"
 // reasonNameConflict reports that the Cloudflare object a resource names is
 // already taken: managed by another resource, or of another kind.
 const reasonNameConflict = "NameConflict"
+
+// reasonPaused reports a resource that kflare leaves alone because of its
+// kflare.dev/paused annotation (reconciler.Paused).
+const reasonPaused = "Paused"
+
+// The messages of a paused resource's Ready condition, while it is in use and
+// while it is being deleted.
+const (
+	pausedMessage = "Reconciling is paused by the " + reconciler.PausedAnnotation +
+		" annotation: kflare changes nothing in Cloudflare until the annotation is removed"
+	pausedDeletionMessage = "Deletion is paused by the " + reconciler.PausedAnnotation +
+		" annotation: kflare goes on with it once the annotation is removed"
+)
 
 // setReady sets obj's Ready condition for its current generation, in memory.
 func setReady(obj conditionedObject, status metav1.ConditionStatus, reason, message string) {
@@ -114,6 +128,48 @@ func updateReadyCondition(
 	return nil
 }
 
+// updatePaused reports that obj is paused (reconciler.Paused), which every
+// controller checks before anything else: kflare makes no Cloudflare call for
+// it, and keeps the finalizer of a paused resource being deleted, and with it
+// its Cloudflare object, until the annotation is removed. Ready takes the
+// reason Paused but keeps its status and the generation it was observed at:
+// the Cloudflare object is as the last reconcile left it, so a resource that
+// was Ready still works for the resources that use it, and a spec changed
+// while paused shows as not yet observed. A resource never reconciled
+// reports Ready=Unknown. A resource being deleted without kflare's finalizer
+// has nothing left for kflare to do, and is not written.
+func updatePaused(ctx context.Context, c client.StatusClient, obj conditionedObject) error {
+	deleting := !obj.GetDeletionTimestamp().IsZero()
+	if deleting && !controllerutil.ContainsFinalizer(obj, reconciler.Finalizer) {
+		return nil
+	}
+	paused := metav1.Condition{
+		Type:               cloudflarev1alpha1.ConditionReady,
+		Status:             metav1.ConditionUnknown,
+		Reason:             reasonPaused,
+		Message:            pausedMessage,
+		ObservedGeneration: obj.GetGeneration(),
+	}
+	if deleting {
+		paused.Message = pausedDeletionMessage
+	}
+	conditions := obj.GetConditions()
+	old := meta.FindStatusCondition(conditions, cloudflarev1alpha1.ConditionReady)
+	if old != nil {
+		paused.Status, paused.ObservedGeneration = old.Status, old.ObservedGeneration
+	}
+	changed := old == nil || old.Reason != reasonPaused
+	meta.SetStatusCondition(&conditions, paused)
+	obj.SetConditions(conditions)
+	if err := c.Status().Update(ctx, obj); err != nil {
+		return err
+	}
+	if changed {
+		recordReadyChange(obj, paused.Status, paused.Reason, paused.Message)
+	}
+	return nil
+}
+
 // statusWriteTimeout bounds the status write of a reconcile that ran out of
 // time (statusContext).
 const statusWriteTimeout = 10 * time.Second
@@ -150,15 +206,15 @@ const eventNoteLimit = 1024
 //+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // recordReadyChange records obj's new Ready condition as an Event: Normal
-// when Ready is True and Warning when it is False, with the condition's
-// reason, and its message as the note.
+// when Ready is True or the resource is paused, which someone asked for, and
+// Warning otherwise, with the condition's reason, and its message as the note.
 func recordReadyChange(obj conditionedObject, status metav1.ConditionStatus, reason, message string) {
 	recorder := readyEvents.Load()
 	if recorder == nil || *recorder == nil {
 		return
 	}
 	eventType := corev1.EventTypeWarning
-	if status == metav1.ConditionTrue {
+	if status == metav1.ConditionTrue || reason == reasonPaused {
 		eventType = corev1.EventTypeNormal
 	}
 	(*recorder).Eventf(obj, nil, eventType, reason, "Reconcile", "%s", eventNote(message))
