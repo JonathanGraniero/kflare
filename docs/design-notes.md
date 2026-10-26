@@ -439,7 +439,7 @@ names; deploy.md uses the dashboard's labels, so look those up when each branch 
 | `CacheRule` | Cache Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `fd8de2`); enough on its own (2026-10-17, see below) |
 | `ConfigurationRule` | Config Settings Write | ✅ added on `kflare.dev` 2026-10-15; written, updated and deleted by the e2e (run `e9994a`); enough on its own (2026-10-19, see below) |
 | `OriginRule` | Origin Write | ✅ added on `kflare.dev` 2026-10-15; dry runs and ten probe rules written and deleted (2026-10-18); written, updated and deleted by the e2e (run `2748f8`); enough on its own (2026-10-19, see below) |
-| `ManagedTransform` | Managed headers Write | ✅ added on `kflare.dev` to the dev and CI tokens on 2026-10-23, with the user's OK (not a Rulesets endpoint, so no dry run; an empty PATCH was refused on 2026-10-17 with Config Settings Write, which the OpenAPI spec lists for it); written, changed and reset by the e2e (run `3f5c86`, 23 of 27 with the dev token). Not yet checked on its own: Cloudflare's documentation also lists Account Rulesets Read for the PATCH, which deploy.md's permissions lack, and a CI run (the CI token holds deploy.md's) has not been made (the user's choice, 2026-10-23) |
+| `ManagedTransform` | Managed headers Write | ✅ added on `kflare.dev` to the dev and CI tokens on 2026-10-23, with the user's OK (not a Rulesets endpoint, so no dry run; an empty PATCH was refused on 2026-10-17 with Config Settings Write, which the OpenAPI spec lists for it); written, changed and reset by the e2e (run `3f5c86`, 23 of 27 with the dev token). Checked on its own before v0.2.0: the CI token, holding exactly deploy.md's permissions with Zone Read (read back 2026-10-26: 7 account, 10 zone; not Account Rulesets Read, which Cloudflare's documentation also lists for the PATCH), passed the whole live suite in GitHub Actions (run 40254222769, e2e run `5a099c`, 27 of 27) |
 | `IPList` | Account Rule Lists Write (account) | ✅ create, replace and delete verified 2026-10-13; enough on its own |
 | `D1Database` | D1 Write (account) | ✅ create, read, list and delete verified 2026-10-15; enough on its own (2026-10-15, see below) |
 | `AccessGroup`, `AccessPolicy`, `AccessApplication` | Access: Organizations, Identity Providers, and Groups Write; Access: Apps and Policies Write (account) | ✅, but Access is not enabled |
@@ -1024,8 +1024,8 @@ ID and disabled every other one.
   keyed lists and unconfigured values, the conversion of each list and field, the registration (the controller, the
   Zone's dependents), the API type's accessors, JSON names and scheme registration, and the CRD's refusals (empty or
   missing IDs, missing `enabled`, an ID listed twice), all caught; 24 of kflare-gen's new code, all caught
-- Not verified live: what Cloudflare does with an ID the zone does not have, and whether deploy.md's permissions are
-  enough on their own (no CI run, see Token permissions)
+- Not verified live: what Cloudflare does with an ID the zone does not have. deploy.md's permissions were checked on
+  their own before v0.2.0 (see Token permissions)
 
 
 #### Branches: Rules products (`TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule`)

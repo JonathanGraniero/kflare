@@ -17,12 +17,13 @@ since what people ask for decides the order.
 | Zone settings | `ManagedTransform` |
 
 Each is tested live against a real Cloudflare account on the Free plan, in GitHub Actions, with an API token holding
-only the permissions the [deploy guide](docs/deploy.md) lists; `ManagedTransform`, the newest, so far only with a
-broader token, outside GitHub Actions. Existing Cloudflare objects are only taken over when a resource asks for it
-(see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs the CRDs and the
-controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.1.1 it serves metrics over HTTPS
-to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an optional
-NetworkPolicy. A drift check interval (`driftCheckInterval`) corrects changes made outside kflare on a schedule.
+only the permissions the [deploy guide](docs/deploy.md) lists. Existing Cloudflare objects are only taken over when a
+resource asks for it (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs
+the CRDs and the controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.2.0 it serves
+metrics over HTTPS to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an
+optional NetworkPolicy. A drift check interval (`driftCheckInterval`) corrects changes made outside kflare on a
+schedule, each change of a resource's `Ready` condition is recorded as a Kubernetes Event, and `kubectl get kflare`
+lists every kflare resource.
 
 ## Next
 
@@ -36,11 +37,16 @@ Candidates that a Free account can use and test, roughly in the order the code g
 - **Bulk redirects**: account-level redirect lists and the rules that use them
 - **Managed ruleset exceptions**: skip rules for a managed ruleset kflare deploys
 
-For running kflare:
+For running kflare, the [production-readiness issues](https://github.com/JonathanGraniero/kflare/issues/91), among
+them:
 
-- **Kubernetes Events** when a resource's `Ready` condition changes
-  ([#56](https://github.com/JonathanGraniero/kflare/issues/56))
-- **`kubectl get kflare`**, listing every kflare resource ([#54](https://github.com/JonathanGraniero/kflare/issues/54))
+- **One Cloudflare client and rate limiter per API token**
+  ([#73](https://github.com/JonathanGraniero/kflare/issues/73))
+- **A token's expiry** on its `CloudflareAccount`, and the token checked again on a schedule
+  ([#74](https://github.com/JonathanGraniero/kflare/issues/74))
+- **kflare's own metrics**: Cloudflare API calls, rate limiting, readiness and drift
+  ([#75](https://github.com/JonathanGraniero/kflare/issues/75))
+- **A signed image and chart**, with SBOMs and provenance ([#84](https://github.com/JonathanGraniero/kflare/issues/84))
 
 ## Waiting on something
 

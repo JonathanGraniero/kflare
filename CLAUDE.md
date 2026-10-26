@@ -448,9 +448,9 @@ resolve to the versions their comments name.
 `--drift-check-interval`, off by default. The live e2e suite has run in GitHub Actions since 2026-10-21 (Release and
 CI below).
 
-#### Chart hardening for v0.1.1 (`feat/chart-hardening`)
+#### Chart hardening for v0.2.0 (`feat/chart-hardening`)
 **Status:** ✅ Merged 2026-10-22 for [#67](https://github.com/JonathanGraniero/kflare/issues/67) (#68), and the e2e suite
-installs the chart since #71; ships in v0.1.1 (CHANGELOG.md's Unreleased section says how to upgrade). Not in it: the
+installs the chart since #71; ships in v0.2.0 (CHANGELOG.md's v0.2.0 section says how to upgrade). Not in it: the
 issue's section 4 (no HorizontalPodAutoscaler; sizing guidance and `MaxConcurrentReconciles` are a later proposal, since
 rule kinds reconciling at once share a phase's ruleset)
 - [x] Metrics over HTTPS with authentication and authorization **on by default** (the user's choice), `metrics.secure`.
@@ -566,6 +566,14 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   must not overlap with a CI run
 - [x] Tag `v0.1.0`: L5 of [Launch readiness](#launch-readiness). The release workflow publishes the image and chart;
   its first run, on 2026-10-21, passed
+- [x] v0.2.0's pre-tag checks (#104), a minor release since upgrading changes how Prometheus scrapes kflare:
+  - The live suite on the release branch, the first live run in GitHub Actions since v0.1.0: run 40254222769, e2e run
+    `5a099c`, 27 of 27 with the CI token (exactly deploy.md's permissions), ManagedTransform included. Afterwards the
+    zone's managed transforms were all off, no IP list was left, and nine phases held empty entry points (#57)
+  - An upgrade from 0.1.0 on an envtest API server (1.34.1, no pods): `helm install` from GHCR, a resource, then
+    `helm upgrade` to the branch's chart: 20 CRDs, all in the `kflare` category, the resource kept, the review and
+    Events rules applied. The first `kubectl get kflare` after it hit the stale discovery cache, as deploy.md says
+  - The tag goes on #104's merge commit
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
@@ -609,8 +617,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on hold.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
-> deploy.md's permissions are verified on their own for every kind but ManagedTransform. Zero Trust still waits on
-> account setup. Items
+> deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero
+> Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
 > [Deferred](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup) in docs/design-notes.md.
 > Last updated: October 2026

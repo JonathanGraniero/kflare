@@ -55,8 +55,8 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 | `IPList` | Account · Account Rule Lists · Edit |
 
 These are enough on their own: in October 2026 a token holding only them (with Zone · Zone · Read, and without Billing)
-ran kflare's full live test suite against an existing zone. `ManagedTransform`'s row came later, and has been tested
-live with a broader token only.
+ran kflare's full live test suite against an existing zone, and again before v0.2.0 with `ManagedTransform`'s row,
+which came later.
 Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's overview page.
 
 ## 2. Install the chart
@@ -439,7 +439,9 @@ using the token's budget. `0s`, or leaving the value empty, turns the checks off
 ### Monitoring
 
 Every kflare resource reports a single `Ready` condition with a reason (see [Troubleshooting](#troubleshooting)), and
-the `READY` column of `kubectl get` shows it. kflare does not record Kubernetes Events yet.
+the `READY` column of `kubectl get` shows it. Each change of its status or reason is also recorded as an Event on the
+resource, `Normal` when it turns True and `Warning` when it turns False, so `kubectl describe` shows the resource's
+history.
 
 The controller serves controller-runtime's standard Prometheus metrics: `controller_runtime_reconcile_total`,
 `controller_runtime_reconcile_errors_total` and `controller_runtime_reconcile_timeouts_total` (reconciles that ran
