@@ -55,10 +55,27 @@ jobs:
       - name: Lint
         run: make lint
 
+      # Fails on a known vulnerability in the modules or the Go standard
+      # library that the code calls (govulncheck, with this job's Go).
+      - name: Check for vulnerabilities
+        run: make vulncheck
+
       # The image copies source directories explicitly, so a new top-level
       # package must be added to the Dockerfile; this catches it.
       - name: Build image
         run: make docker-build IMG=kflare:ci
+
+      # Fails on a vulnerability of high or critical severity that has a fix,
+      # in the image's base files or in the Go modules and standard library
+      # its binary was built with. The report is in the step's log.
+      - name: Scan image
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: kflare:ci
+          only-fixed: true
+          severity-cutoff: high
+          output-format: table
+          cache-db: true
 
   envtest-latest:
     name: Test (newest Kubernetes)

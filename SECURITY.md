@@ -7,3 +7,19 @@ kflare is an alpha, so only the latest release is supported: fixes go into the n
 
 For how kflare handles credentials and what its controller can access, see the deploy guide's
 [Security model](docs/deploy.md#security-model).
+
+## How kflare is checked
+
+- **On every pull request:** [govulncheck](https://go.dev/doc/security/vuln/) fails on a known vulnerability in the
+  modules or the Go standard library that kflare's code calls, and [Grype](https://github.com/anchore/grype) fails on
+  a fixable vulnerability of high or critical severity in the controller image CI builds. CodeQL analyzes the code,
+  and dependency review refuses a new dependency with a known vulnerability.
+- **Every week:** Grype scans the latest release's image, sending its report to code scanning, and govulncheck checks
+  the release's binary, so that a vulnerability published after a release shows up without a new commit. A fix goes
+  into the next release.
+- **Dependencies:** Dependabot proposes updates to the Go modules, the GitHub Actions and the Dockerfile's base images
+  every week, once a release is a week old, and security updates as soon as an advisory is published. Actions from
+  outside GitHub are pinned to a commit.
+- **The repository's practices:**
+  [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/JonathanGraniero/kflare) checks them every week
+  and on every push to `main`.
