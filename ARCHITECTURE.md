@@ -294,13 +294,31 @@ and kflare-gen generates them from cloudflare-go v7's service for the product: t
 | 401, 403, other 4xx | Terminal | `Ready=False` with reason `TerminalError`; no retry. A spec or credential change re-triggers the reconcile. |
 | 404 on a known resource ID | Handled first | The resource was deleted externally; kflare recreates it, or adopts another with its key, as the adoption policy allows. |
 | 404 elsewhere | Terminal | As above. |
-| 429, 5xx, network errors | Retryable | `Ready=False` with reason `APIError`; the error is returned so controller-runtime retries with exponential back-off (5 ms doubling up to about 16 minutes per resource). |
+| 429, 5xx, network errors, timeouts | Retryable | `Ready=False` with reason `APIError`; the error is returned so controller-runtime retries with exponential back-off (5 ms doubling up to about 16 minutes per resource). |
 
 cloudflare-go names its 401 error `AuthorizationError` and its 403 error `AuthenticationError`, the reverse of what the
 names suggest; `pkg/cloudflare/errors.go` documents the mapping. The generated SDK, cloudflare-go v7, returns one
 error type, `*cloudflare.Error`, for every status, and `errors.go` classifies it by status in the same way. A condition
 gives Cloudflare's messages and codes, such as `namespace not found (10013)`, for both SDKs (`cfpkg.ErrorMessage`); the
 returned error, which controller-runtime logs, also names the request.
+
+Every controller reconciles one resource at a time, so a call that never returns would stall its kind. Two
+timeouts prevent that:
+
+- **Each request.** Both SDKs send their requests through one HTTP client in `pkg/cloudflare` (shared, so that
+  connections are reused across reconciles), whose transport is a copy of Go's default: it keeps the standard proxy
+  variables and HTTP/2, and its 30-second dial timeout. On top, a TLS handshake may take 10 seconds, the response may
+  take a minute to start once the request is sent, and a whole request two minutes, so a stalled upload or response
+  body ends too. An HTTP/2 connection that goes 30 seconds without a frame from Cloudflare gets a ping, and is closed
+  if the ping gets no answer within 15 seconds: without the ping, a request that times out leaves a dead connection
+  in use for the next ones. cloudflare-go v7 retries a request that timed out twice, as it does a connection error;
+  v0 retries a connection error, such as a TLS handshake that timed out, but not a request that timed out.
+- **Each reconcile.** controller-runtime cancels a reconcile's context after the manager's `--reconcile-timeout` (5
+  minutes; the chart's `reconcileTimeout`), which both SDKs and the Kubernetes client honor. The Cloudflare call it
+  cuts short fails, and the resource reports `APIError`, with the context's cause, `reconciliation timeout`, in the
+  message: the status write gets a context of its own (`statusContext`), since the reconcile's has run out. The
+  error is returned, so the resource is retried with back-off, and the controller goes on to the next resource.
+  `controller_runtime_reconcile_timeouts_total` counts these reconciles per controller.
 
 The Rulesets API reports what the zone's plan does not allow (a regular expression, the Log action, a custom block
 response in a WAF custom rule, a rate limiting period other than 10 seconds, a paid managed ruleset, more rules than the

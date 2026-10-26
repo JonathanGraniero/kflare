@@ -57,6 +57,11 @@ leaderElection: true
 # kept unless the annotation says delete.
 defaultDeletionPolicy: delete
 
+# -- How long a reconcile may run, as a duration such as 5m or 90s; 0s turns
+# the timeout off. A reconcile that runs out of time, such as one waiting on a
+# call that gets no answer, ends with reason APIError and is retried with
+# back-off, and its controller goes on to the next resource.
+reconcileTimeout: 5m
 # -- How long after a successful reconcile each resource is checked against
 # Cloudflare again, as a duration such as 30m or 1h, so that a change made
 # outside kflare (in the dashboard, through the API, by Terraform) is
