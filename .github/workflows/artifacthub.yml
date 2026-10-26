@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   METADATA_REF: ghcr.io/jonathangraniero/charts/kflare:artifacthub.io
@@ -23,9 +22,13 @@ jobs:
   metadata:
     name: Publish repository metadata
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Pushes the metadata to the chart's repository on GHCR.
+      packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up ORAS
         uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2

@@ -610,7 +610,17 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   A dry run against a local `registry:2` ran the chart step under Helm 4.3.1, signed and verified the image and the
   chart with a key, and read the SBOMs (80 packages each) and the provenance back. Left for the next release: the
   keyless signatures, `cosign verify` from a machine not logged in to GHCR, and Artifact Hub's signed badge
-- [ ] Triage Scorecard's first published results, after the merge: fix each finding or file an issue
+- [x] Scorecard's first results (#85's last part, `ci/scorecard-triage`): 6.7 on `c6eccf0`, 2026-10-26. Fixed:
+  Token-Permissions (0: `artifacthub.yml`'s workflow-level `packages: write` moved to its job; `release.yml`'s job
+  keeps `contents: write`, which drafts the release, and Scorecard warns about it), Pinned-Dependencies (7: the 15
+  references to GitHub's own actions pinned to commits, `actions/checkout` v7.0.1, `actions/setup-go` v7.0.0 and
+  `actions/dependency-review-action` v5.0.0, whose `v5` is a branch) and Vulnerabilities (9: GO-2026-6094, fixed by
+  cel-go v0.30.0, which only the generator imports; tests and codegen unchanged). Left: the Dockerfile's base images
+  on tags, so that a release gets the newest Go patch without waiting on Dependabot's week; Fuzzing (0) is #108;
+  Code-Review (0) and Branch-Protection (3) come from one maintainer, whom required approvals would block (admins
+  can't bypass), and requiring CI's checks before a merge is the user's call, as is the optional CII-Best-Practices
+  badge (0); Signed-Releases (-1) is scored once a release has files (#84). The release scan's first run, by hand
+  (40387436013): v0.2.0's image, Grype 0 matches in 78 packages, its SARIF in code scanning, the binary clean
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
