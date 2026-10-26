@@ -102,6 +102,15 @@ lint: golangci-lint ## Run golangci-lint linter & yamllint
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
 
+# govulncheck reports the known vulnerabilities in the modules and the Go standard library that kflare's code calls.
+# The standard library's are those of the Go that runs it: CI runs it with the newest Go 1.26, which the Dockerfile's
+# golang:1.26 builder also uses. VULNCHECK_ARGS="-mode=binary <file>" checks a built binary instead, against the Go
+# and the modules it was built with.
+VULNCHECK_ARGS ?= ./...
+.PHONY: vulncheck
+vulncheck: govulncheck ## Check the code for known vulnerabilities in what it calls
+	$(GOVULNCHECK) $(VULNCHECK_ARGS)
+
 ##@ Build
 
 .PHONY: build
@@ -208,6 +217,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize-$(KUSTOMIZE_VERSION)
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+GOVULNCHECK ?= $(LOCALBIN)/govulncheck-$(GOVULNCHECK_VERSION)
 KIND ?= $(LOCALBIN)/kind-$(KIND_VERSION)
 
 ## Tool Versions
@@ -216,6 +226,7 @@ CONTROLLER_TOOLS_VERSION ?= v0.22.0
 # setup-envtest is released with controller-runtime; keep them on the same version.
 ENVTEST_VERSION ?= v0.25.2
 GOLANGCI_LINT_VERSION ?= v2.14.0
+GOVULNCHECK_VERSION ?= v1.9.0
 # kind v0.30+ is needed for Kubernetes 1.34 node images (see local/kind-config.yaml).
 KIND_VERSION ?= v0.33.0
 
@@ -238,6 +249,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,${GOLANGCI_LINT_VERSION})
+
+.PHONY: govulncheck
+govulncheck: $(GOVULNCHECK) ## Download govulncheck locally if necessary.
+$(GOVULNCHECK): $(LOCALBIN)
+	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,$(GOVULNCHECK_VERSION))
 
 .PHONY: kind-path
 kind-path: ## Print the path of the pinned kind binary (run `make kind` to download it).

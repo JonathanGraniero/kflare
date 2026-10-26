@@ -1,6 +1,7 @@
 # kflare
 
 [![CI](https://github.com/JonathanGraniero/kflare/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JonathanGraniero/kflare/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/JonathanGraniero/kflare/badge)](https://scorecard.dev/viewer/?uri=github.com/JonathanGraniero/kflare)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 kflare is a Kubernetes operator that manages Cloudflare through custom resources: zones, DNS records, tunnels, Workers
@@ -153,6 +154,8 @@ kflare is developed with AI assistance (Claude Code). What keeps it honest:
 - **Mutation testing** on the controllers: deliberate bugs, which the tests must catch.
 - **Cloudflare's behavior is checked live before code relies on it**: what the API accepts, refuses and stores.
   [ARCHITECTURE.md](ARCHITECTURE.md) records what was verified.
+- **Known vulnerabilities are checked for** in the code and the image on every pull request, and in the latest
+  release's image every week; [SECURITY.md](SECURITY.md) lists the checks.
 
 ## More
 
