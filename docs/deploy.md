@@ -440,8 +440,8 @@ using the token's budget. `0s`, or leaving the value empty, turns the checks off
 
 Every kflare resource reports a single `Ready` condition with a reason (see [Troubleshooting](#troubleshooting)), and
 the `READY` column of `kubectl get` shows it. Each change of its status or reason is also recorded as an Event on the
-resource, `Normal` when it turns True and `Warning` when it turns False, so `kubectl describe` shows the resource's
-history.
+resource, `Normal` when it turns True or the resource is paused and `Warning` when it turns False, so
+`kubectl describe` shows the resource's history.
 
 The controller serves controller-runtime's standard Prometheus metrics: `controller_runtime_reconcile_total`,
 `controller_runtime_reconcile_errors_total` and `controller_runtime_reconcile_timeouts_total` (reconciles that ran

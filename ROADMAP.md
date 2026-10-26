@@ -23,7 +23,8 @@ the CRDs and the controller; the deploy guide shows it installed with Helm, Argo
 metrics over HTTPS to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an
 optional NetworkPolicy. A drift check interval (`driftCheckInterval`) corrects changes made outside kflare on a
 schedule, each change of a resource's `Ready` condition is recorded as a Kubernetes Event, and `kubectl get kflare`
-lists every kflare resource.
+lists every kflare resource. A resource annotated `kflare.dev/paused: "true"` is left alone, its Cloudflare object
+included, until the annotation is removed.
 
 ## Next
 
