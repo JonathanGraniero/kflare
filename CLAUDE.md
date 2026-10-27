@@ -608,8 +608,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   empty, and `ClusterPolicy` `type: SigstoreBundle` then found nothing; it found github-mcp-server's, made by 3.1.3,
   which types it as a bundle (as did the dry run). Artifact Hub's code reads bundles through the referrers fallback tag.
   A dry run against a local `registry:2` ran the chart step under Helm 4.3.1, signed and verified the image and the
-  chart with a key, and read the SBOMs (80 packages each) and the provenance back. Left for the next release: the
-  keyless signatures, `cosign verify` from a machine not logged in to GHCR, and Artifact Hub's signed badge
+  chart with a key, and read the SBOMs (80 packages each) and the provenance back. The keyless signatures, `cosign
+  verify` without a GHCR login and Artifact Hub's signed badge were checked on v0.2.1 (below), and #84 closed
 - [x] Scorecard's first results (#85's last part, `ci/scorecard-triage`): 6.7 on `c6eccf0`, 2026-10-26. Fixed:
   Token-Permissions (0: `artifacthub.yml`'s workflow-level `packages: write` moved to its job; `release.yml`'s job
   keeps `contents: write`, which drafts the release, and Scorecard warns about it), Pinned-Dependencies (7: the 15
@@ -621,8 +621,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   can't bypass), and requiring CI's checks before a merge is the user's call, as is the optional CII-Best-Practices
   badge (0); Signed-Releases (-1) is scored once a release has files (#84). The release scan's first run, by hand
   (40387436013): v0.2.0's image, Grype 0 matches in 78 packages, its SARIF in code scanning, the binary clean
-- [ ] v0.2.1's pre-tag checks, the user's version (a pause annotation, a chart value and signing, so a minor by #87's
-  proposed rule), and the first release `release.yml` signs:
+- [x] v0.2.1, released 2026-10-26: its pre-tag checks, the user's version (a pause annotation, a chart value and
+  signing, so a minor by #87's proposed rule), and the first release `release.yml` signs:
   - An upgrade from 0.2.0 needs nothing: the chart pulled anonymously from GHCR and the branch's render the same 30
     objects with the default values, and 33 with two replicas, the NetworkPolicy, the ServiceMonitor, a drift check
     interval and `retain`, but for the version (no CRD, RBAC or template change since v0.2.0 but `kflare.image`)
@@ -632,7 +632,18 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     manager's 11 error lines were optimistic-concurrency conflicts, retried, and writes refused in the example's
     namespace while it was being deleted. Afterwards Cloudflare held no DNS record, tunnel, IP list, managed
     transform or e2e object, and the nine phases' entry points were empty (#57)
-  - The tag goes on the release PR's merge commit; after the run, the checks #84 left for a release
+  - The tag is on #110's merge commit `4f29936`, whose tree is the live-tested commit's. `Release` run 40401402321
+    passed; the workflow's draft got CHANGELOG.md's section as notes and was published as latest
+  - #84's checks, with cosign 3.1.3 from its image (no credentials): the image index (`sha256:b4dbae37…`) and the
+    chart (`sha256:4fb3a22e…`, `helm push`'s digest) verify against the workflow's identity for `refs/tags/v0.2.1`,
+    and the image is refused for `refs/tags/v0.2.0`. The SBOMs (SPDX 2.3, 80 packages per platform) and the SLSA
+    provenance (this run as builder, `4f29936`, `golang:1.26` by digest) read back; `mode=max` puts the push event's
+    payload in the provenance, which holds only noreply addresses, and the build has no build arguments or secrets.
+    The release's SBOM files pass `cosign verify-blob`, match the image's SBOMs, and a changed copy is refused.
+    Kyverno 1.19.2's CLI, with deploy.md's policy, admits a pod running `0.2.1@<digest>` and refuses v0.2.0's (the
+    CLI needs a digest: mutating a tag to its digest is the admission webhook's step, not run). Artifact Hub listed
+    0.2.1 with `signed: true`, `signatures: ["cosign"]` at 21:31 UTC, about 20 minutes after the run, so it reads
+    cosign's bundles. The release scan, by hand (40402475027): Grype 0 matches in 78 packages, the binary clean
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
