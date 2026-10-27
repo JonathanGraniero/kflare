@@ -11,7 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,13 +86,18 @@ type ruleKindSpecs[O rulesetRuleObject] struct {
 	// the specs convert without the API server, which may refuse them: they
 	// can hold several variants of a union at once.
 	full []ruleSpecCase
+	// conflicts are the entry's conflicts, the condition reason of each
+	// error code: the table's own copy, which the kind's must match.
+	conflicts map[int]string
 }
 
 // comparableStoredRule is a rule as fakeRulesetAPI stores it, without what
 // Cloudflare sets or kflare derives (its ID, version, update time and ref) and
-// without empty values, which Cloudflare treats as unset.
+// without empty values, which Cloudflare treats as unset; what Cloudflare
+// fills in for a rule that leaves it out counts as set.
 func comparableStoredRule(rule fakeRule) any {
 	out := rule.clone()
+	out.fillDefaults()
 	for _, key := range []string{"id", "version", "last_updated", "ref"} {
 		delete(out, key)
 	}
@@ -99,9 +107,9 @@ func comparableStoredRule(rule fakeRule) any {
 // comparableJSONRule is a rule a table holds as JSON, as comparableStoredRule
 // shows a stored one.
 func comparableJSONRule(rule string) any {
-	var out map[string]any
+	var out fakeRule
 	Expect(json.Unmarshal([]byte(rule), &out)).To(Succeed())
-	return withoutEmpty(out)
+	return comparableStoredRule(out)
 }
 
 func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
@@ -476,6 +484,38 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				By(full.what)
 				rule := specs.kind.definition(object(fmt.Sprintf("full-%d", i), full.spec))
 				Expect(comparableStoredRule(sent(rule))).To(Equal(comparableJSONRule(full.rule)))
+			}
+		})
+
+		It("reports each conflict Cloudflare refuses its rule with, and writes the rule once it is gone", func() {
+			Expect(specs.kind.conflicts).To(Equal(specs.conflicts), "the kind's conflicts are not its entry's")
+			sample := specs.samples[0]
+			for _, code := range slices.Sorted(maps.Keys(specs.conflicts)) {
+				reason := specs.conflicts[code]
+				By(reason)
+				name := fmt.Sprintf("conflict-%d", code)
+				refusal := v7APIError(http.MethodPost, "zones/"+rulesTestZone+"/rulesets", http.StatusBadRequest, code,
+					"refused by the fake")
+				fake.errs["Rulesets.New"], fake.errs["Rules.New"] = refusal, refusal
+				obj := object(name, sample.spec)
+				obj.SetFinalizers([]string{reconciler.Finalizer})
+				create(obj)
+				result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key(name)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+				ready := meta.FindStatusCondition(get(name).GetConditions(), cloudflarev1alpha1.ConditionReady)
+				Expect(ready).NotTo(BeNil())
+				Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				Expect(ready.Reason).To(Equal(reason))
+				Expect(ready.Message).To(Equal(fmt.Sprintf("Cloudflare refused the rule: refused by the fake (%d)", code)))
+				Expect(holdsRule(sample.phase, name)).To(BeFalse())
+
+				By("writing the rule once the conflict is gone")
+				delete(fake.errs, "Rulesets.New")
+				delete(fake.errs, "Rules.New")
+				_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key(name)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(holdsRule(sample.phase, name)).To(BeTrue())
 			}
 		})
 

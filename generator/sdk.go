@@ -489,7 +489,8 @@ type sdkRule struct {
 	fields []sdkField
 	// action is the one action the rule type allows, such as rewrite.
 	action string
-	// params is the struct of the rule's action parameters.
+	// params is the struct of the rule's action parameters; nil for an
+	// action that takes none, such as log.
 	params *types.Named
 }
 
@@ -499,12 +500,35 @@ func (s sdk) rule(name string) (*sdkRule, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := pkg.PkgPath
+	return ruleOf(newSDKReader(pkg), name, obj)
+}
+
+// sibling returns the rule type name, of r's package, from the package r was
+// loaded with, so that the two share their types: a kind's rule types must.
+func (r *sdkRule) sibling(name string) (*sdkRule, error) {
+	dot := strings.LastIndex(name, ".")
+	if dot <= 0 || dot == len(name)-1 {
+		return nil, fmt.Errorf("rule %q is not <package>.<type>", name)
+	}
+	pkg := r.r.pkg
+	if path := sdkModule + "/" + name[:dot]; path != pkg.PkgPath {
+		return nil, fmt.Errorf("%s is not in %s, the package of the kind's other rule types", name, pkg.PkgPath)
+	}
+	obj, ok := pkg.Types.Scope().Lookup(name[dot+1:]).(*types.TypeName)
+	if !ok {
+		return nil, fmt.Errorf("%s has no type %s", pkg.PkgPath, name[dot+1:])
+	}
+	return ruleOf(r.r, name, obj)
+}
+
+// ruleOf reads the rule type obj, which an entry names as name, with the
+// reader of its package.
+func ruleOf(r *sdkReader, name string, obj *types.TypeName) (*sdkRule, error) {
+	pkg, path := r.pkg, r.pkg.PkgPath
 	named, ok := obj.Type().(*types.Named)
 	if !ok {
 		return nil, fmt.Errorf("%s is not a named type", name)
 	}
-	r := newSDKReader(pkg)
 	fields, err := r.fields(named, true)
 	if err != nil {
 		return nil, err
@@ -519,6 +543,11 @@ func (s sdk) rule(name string) (*sdkRule, error) {
 			}
 			rule.action = f.enum[0]
 		case ruleActionParameters:
+			if isEmptyInterface(f.typ) {
+				// Untyped, as for log: the action takes none, which the
+				// rule's OpenAPI schema must confirm.
+				continue
+			}
 			params, ok := f.typ.(*types.Named)
 			if _, isStruct := f.typ.Underlying().(*types.Struct); !ok || !isStruct || params.Obj().Pkg() != pkg.Types {
 				return nil, fmt.Errorf("%s's action parameters are a %s, not a struct of %s", name, f.typ, path)
@@ -526,8 +555,8 @@ func (s sdk) rule(name string) (*sdkRule, error) {
 			rule.params = params
 		}
 	}
-	if rule.action == "" || rule.params == nil {
-		return nil, fmt.Errorf("%s has no action, or no action parameters", name)
+	if rule.action == "" {
+		return nil, fmt.Errorf("%s has no action", name)
 	}
 	return rule, nil
 }

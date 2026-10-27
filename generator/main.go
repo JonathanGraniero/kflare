@@ -130,11 +130,7 @@ func generate(cfg *config, s sdk, spec *apiSpec, header string) (*outputs, error
 	}
 	var ruleKinds []*ruleKind
 	for _, entry := range cfg.RuleKinds {
-		rule, err := s.rule(entry.Rule)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", entry.Kind, err)
-		}
-		k, err := buildRuleKind(entry, rule, spec)
+		k, err := buildRuleKind(entry, s.rule, spec)
 		if err != nil {
 			return nil, err
 		}

@@ -45,6 +45,9 @@ type field struct {
 	optional, immutable      bool
 	validation               validation
 	enum                     []string
+	// excluded are the values of the API description's enum that the entry's
+	// enum leaves out, which the CRD must refuse too.
+	excluded []string
 	// def is the field's default, as a marker value; "" when there is none.
 	def string
 }
@@ -442,7 +445,11 @@ func (b *kindBuilder) specValidation(out *field, f sdkField, fs fieldSpec, overr
 		if (override.Minimum != nil || override.Maximum != nil) && base != typeInt64 {
 			return fmt.Errorf("fields.%s.validation: a range needs an integer field", f.apiName)
 		}
-		out.validation = override.validation()
+		enum, excluded, err := override.enum(f.apiName, base == typeString, out.enum)
+		if err != nil {
+			return err
+		}
+		out.enum, out.excluded, out.validation = enum, excluded, override.validation()
 		return nil
 	}
 	// The spec's keywords that fit the field's type.

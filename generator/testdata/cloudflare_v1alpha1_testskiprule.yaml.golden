@@ -17,3 +17,5 @@ spec:
   products:
   - waf
   ruleset: current
+  logging:
+    enabled: false

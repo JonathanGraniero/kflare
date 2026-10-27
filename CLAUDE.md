@@ -162,7 +162,9 @@ why.
      service with `New`, `Get`, a `List` that pages with `V4PagePaginationArray`, `Delete`, and optionally `Update` or
      `Edit`, its objects identified by an ID. Closest examples: `D1Database`, `KVNamespace`
    - Rule kinds (`ruleKinds:`, run by `rulesetrule_controller.go`): one rule in a zone's Rulesets phase, typed by v7's
-     `rulesets.<Action>RuleParam`. Closest examples: `OriginRule` (small), `CacheRule` (CEL rules and `tests`)
+     `rulesets.<Action>RuleParam`, or one of several actions (`actions`), with the rule's own fields such as
+     `ratelimit` unless ignored, and `conflicts`. Closest examples: `OriginRule` (small), `CacheRule` (CEL rules and
+     `tests`); for several actions, `generator/testdata/generator.yaml`'s TestCustomRule and TestRateLimitRule
    - Settings kinds (`settingsKinds:`, run by `settings_controller.go`): a zone's settings of one product, a v7 service
      without `New` whose read (`Get`, or a `List` that returns the settings), `Update` or `Edit`, and `Delete` (the
      reset) take only the zone's ID. Closest example: `ManagedTransform` (keyed lists); for enums,

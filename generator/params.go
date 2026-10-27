@@ -75,6 +75,22 @@ type celRule struct {
 	variants []variant
 	// fromEntry marks an entry's rule, whose invalid spec the entry gives.
 	fromEntry bool
+	// action says what a rule on the spec of a rule kind of several actions
+	// checks, for the generated specs that break it.
+	action *actionCheck
+}
+
+// actionCheck is what a rule on the spec of a rule kind of several actions
+// checks: that field is set only with the action holder, that the action
+// requiredBy sets field, or that a spec with the action within keeps inner, a
+// rule of its parameters params.
+type actionCheck struct {
+	field      *paramField
+	holder     string
+	requiredBy string
+	within     string
+	inner      celRule
+	params     *paramStruct
 }
 
 // variant is a oneOf's variant as its rule tells it apart, by the JSON names
@@ -122,8 +138,11 @@ type paramScalar struct {
 	goType string
 	// sdk is the SDK's type, such as a named string of enum constants, which
 	// the conversion converts to.
-	sdk        types.Type
-	enum       []string
+	sdk  types.Type
+	enum []string
+	// excluded are the values of the API description's enum that the entry's
+	// enum leaves out, which the CRD must refuse too.
+	excluded   []string
 	validation validation
 	// example is the OpenAPI schema's example of a value, which specs that
 	// need a value no sample gives may take.
@@ -385,6 +404,9 @@ func (b *paramBuilder) scalar(path string, t types.Type, sch *schema, adjust rul
 		if (override.Minimum != nil || override.Maximum != nil) && out.goType != typeInt64 {
 			return nil, fmt.Errorf("fields.%s.validation: a range needs an integer field", path)
 		}
+		if out.enum, out.excluded, err = override.enum(path, out.goType == typeString, out.enum); err != nil {
+			return nil, err
+		}
 		out.validation = override.validation()
 	}
 	return out, nil
@@ -404,9 +426,20 @@ func (b *paramBuilder) list(path, prefix, goName string, elem types.Type, sch *s
 		items = resolved.Items
 		out.minItems, out.maxItems = resolved.MinItems, resolved.MaxItems
 	}
-	node, err := b.node(path+"[]", prefix, singular(goName), elem, items, ruleFieldConfig{})
+	// The items of a list of scalars take the validation the entry gives at
+	// the list's path with [], as phases[].
+	var itemAdjust ruleFieldConfig
+	if adjust, ok := b.adjust[path+"[]"]; ok && adjust.Validation != nil {
+		b.used[path+"[]"] = true
+		itemAdjust.Validation = adjust.Validation
+	}
+	node, err := b.node(path+"[]", prefix, singular(goName), elem, items, itemAdjust)
 	if err != nil {
 		return nil, err
+	}
+	if _, scalar := node.(*paramScalar); !scalar && itemAdjust.Validation != nil {
+		return nil, fmt.Errorf("fields.%s[].validation: only the items of a list of strings or integers are "+
+			"validated", path)
 	}
 	switch n := node.(type) {
 	case *paramScalar:

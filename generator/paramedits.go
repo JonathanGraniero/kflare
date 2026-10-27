@@ -271,6 +271,10 @@ func (k *paramKind) invalidValues() error {
 					setAt(spec, path, outside)
 				})
 			}
+			for _, value := range n.excluded {
+				invalid(relativePath(path)+" "+value+", which the entry's enum leaves out", at+": Unsupported value",
+					func(spec map[string]any) { setAt(spec, path, value) })
+			}
 		case v.minLength != nil && *v.minLength > 0:
 			short, what := strings.Repeat("a", int(*v.minLength-1)), relativePath(path)+" too short"
 			if short == "" {
@@ -462,8 +466,16 @@ func scalarValue(f *paramField, n *paramScalar, values map[*paramField]any) (any
 // the type typeName. The generated specs convert them without the API server,
 // which may refuse them: they can hold several variants of a union at once.
 func (k *paramKind) fullSpecs(values map[*paramField]any, base map[string]any, typeName string) error {
+	return k.fullSpecsOf(k.params, "", values, base, typeName)
+}
+
+// fullSpecsOf adds the specs fullSpecs does, that set every field of st,
+// whose fields are some of the params', each named with prefix.
+func (k *paramKind) fullSpecsOf(st *paramStruct, prefix string, values map[*paramField]any, base map[string]any,
+	typeName string) error {
+	var first map[string]any
 	for _, zero := range []bool{false, true} {
-		params, err := fullStruct(k.params, values, zero)
+		params, err := fullStruct(st, values, zero)
 		if err != nil {
 			return fmt.Errorf("a spec that sets every field: %w", err)
 		}
@@ -474,12 +486,15 @@ func (k *paramKind) fullSpecs(values map[*paramField]any, base map[string]any, t
 		if err != nil {
 			return fmt.Errorf("a spec that sets every field: %w", err)
 		}
-		what := "every field set"
+		what := prefix + "every field set"
 		if zero {
-			if reflect.DeepEqual(checked, k.full[0].spec) {
+			if reflect.DeepEqual(checked, first) {
 				break
 			}
-			what = "every field set, optional scalars to their zero values where allowed"
+			what = prefix + "every field set, optional scalars to their zero values where allowed"
+		}
+		if first == nil {
+			first = checked
 		}
 		k.full = append(k.full, ruleEdit{what: what, spec: checked, rule: k.body(checked)})
 	}
@@ -604,6 +619,11 @@ func (k *paramKind) ruleBreaches(values map[*paramField]any) error {
 			case len(rule.variants) > 0:
 				k.variantBreaches(st, rule, s.sample, s.path, values)
 				continue
+			case rule.action != nil:
+				if err := k.actionBreach(rule, values); err != nil {
+					return err
+				}
+				continue
 			}
 			spec := copySpec(specs[s.sample])
 			if err := breakRule(st, rule, objectAt(spec, s.path), values); err != nil {
@@ -668,6 +688,67 @@ func (k *paramKind) variantBreaches(st *paramStruct, rule celRule, sample int, p
 			breach("without "+name, func(object map[string]any) { delete(object, name) })
 		}
 	}
+}
+
+// actionBreach adds the invalid spec that breaks a rule on the spec of a rule
+// kind of several actions, from the first spec of an action it applies to: a
+// parameter set with an action that does not take it (the value a spec sets
+// it to, or one that sets everything), a parameter an action requires left
+// out, or an action's parameters breaking a rule of their own.
+func (k *paramKind) actionBreach(rule celRule, values map[*paramField]any) error {
+	c, specs := rule.action, k.specs()
+	first := func(match func(action any) bool) (map[string]any, error) {
+		for _, spec := range specs {
+			if match(spec[ruleAction]) {
+				return copySpec(spec), nil
+			}
+		}
+		return nil, fmt.Errorf("no sample or test breaks %q", rule.message)
+	}
+	var (
+		spec map[string]any
+		what string
+		err  error
+	)
+	switch {
+	case c.holder != "":
+		if spec, err = first(func(action any) bool { return action != c.holder }); err != nil {
+			return err
+		}
+		what = fmt.Sprintf("%s with action %s", c.field.jsonName, spec[ruleAction])
+		value, set := any(nil), false
+		for _, other := range specs {
+			if value, set = other[c.field.jsonName]; set {
+				break
+			}
+		}
+		if !set {
+			if value, err = fullNode(c.field, c.field.node, values, false); err != nil {
+				return err
+			}
+		}
+		// A copy, so that the spec shares nothing with the one it came from.
+		spec[c.field.jsonName] = copySpec(map[string]any{c.field.jsonName: value})[c.field.jsonName]
+	case c.requiredBy != "":
+		if spec, err = first(func(action any) bool { return action == c.requiredBy }); err != nil {
+			return err
+		}
+		what = fmt.Sprintf("action %s without %s", c.requiredBy, c.field.jsonName)
+		delete(spec, c.field.jsonName)
+	default:
+		if spec, err = first(func(action any) bool { return action == c.within }); err != nil {
+			return err
+		}
+		what = fmt.Sprintf("action %s breaking: %s", c.within, c.inner.message)
+		if err := breakRule(c.params, c.inner, spec, values); err != nil {
+			return fmt.Errorf("action %s: %w", c.within, err)
+		}
+	}
+	if err := k.breaks(spec, rule.message); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	k.invalid = append(k.invalid, ruleEdit{what: what, spec: spec, message: rule.message})
+	return nil
 }
 
 // describeObject names the object at path in messages.

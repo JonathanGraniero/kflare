@@ -140,6 +140,66 @@ const validRuleKind = `ruleKinds:
       logging: Not mapped.
 `
 
+// validActionsKind is a rule kind of several actions, with a conflict.
+const validActionsKind = `ruleKinds:
+  - kind: CustomRule
+    actions:
+      - {action: block, rule: rulesets.BlockRuleParam, doc: blocks}
+      - {action: challenge, doc: challenges}
+    actionDoc: Action is what Cloudflare does.
+    shortName: cfcustom
+    noun: custom rule
+    doc: CustomRule acts.
+    phase: http_request_firewall_custom
+    samples:
+      - {expression: 'true', action: block}
+    conflicts:
+      - {code: 20014, reason: RulesetConflict, why: Another rule holds it.}
+`
+
+func TestLoadConfigRefusesRuleKindActions(t *testing.T) {
+	if _, err := loadConfig(writeConfig(t, validActionsKind)); err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	replace := func(old, new string) string {
+		if !strings.Contains(validActionsKind, old) {
+			t.Fatalf("validActionsKind has no %q", old)
+		}
+		return strings.Replace(validActionsKind, old, new, 1)
+	}
+	tests := []struct{ name, config, want string }{
+		{"both a rule and actions", replace("    actions:\n", "    rule: rulesets.BlockRuleParam\n    actions:\n"),
+			"set exactly one of rule and actions"},
+		{"neither a rule nor actions", replace("      - {action: block, rule: rulesets.BlockRuleParam, doc: blocks}\n"+
+			"      - {action: challenge, doc: challenges}\n", ""), "set exactly one of rule and actions"},
+		{"one action", replace("      - {action: challenge, doc: challenges}\n", ""), "actions lists one action"},
+		{"actions without a doc", replace("    actionDoc: Action is what Cloudflare does.\n", ""),
+			"actionDoc is empty"},
+		{"an action doc without actions", strings.Replace(validRuleKind, "    typeDoc:", "    actionDoc: x\n    typeDoc:",
+			1), "actionDoc is set without actions"},
+		{"an action that is not an action's name", replace("{action: challenge,", "{action: Challenge,"),
+			"actions[1]: action \"Challenge\" is not an action's name"},
+		{"an action listed twice", replace("{action: challenge,", "{action: block,"), "actions[1]: block is listed twice"},
+		{"an action's rule without a type", replace("rule: rulesets.BlockRuleParam", "rule: rulesets"),
+			"actions[0]: rule \"rulesets\" is not <package>.<type>"},
+		{"an action without a doc", replace("doc: challenges}", `doc: ""}`), "actions[1]: doc is empty"},
+		{"no action naming its rule type", replace("{action: block, rule: rulesets.BlockRuleParam,",
+			"{action: block,"), "actions: none names its rule type"},
+		{"a conflict without a code", replace("{code: 20014,", "{code: 0,"), "conflicts[0]: code 0 is not"},
+		{"a conflict listed twice", replace("      - {code: 20014, reason: RulesetConflict, why: Another rule holds it.}\n",
+			"      - {code: 20014, reason: RulesetConflict, why: Another rule holds it.}\n"+
+				"      - {code: 20014, reason: Other, why: x}\n"), "conflicts[1]: code 20014 is listed twice"},
+		{"a conflict reason in lower case", replace("reason: RulesetConflict", "reason: rulesetConflict"),
+			"not an UpperCamel condition reason"},
+		{"a conflict without why", replace("why: Another rule holds it.", `why: " "`), "conflicts[0]: why is empty"},
+	}
+	for _, tc := range tests {
+		if _, err := loadConfig(writeConfig(t, tc.config)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want one containing %q", tc.name, err, tc.want)
+		}
+	}
+}
+
 func TestLoadConfigRefusesRuleKinds(t *testing.T) {
 	if _, err := loadConfig(writeConfig(t, validRuleKind)); err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -191,6 +251,14 @@ func TestLoadConfigRefusesRuleKinds(t *testing.T) {
 		{"a key without a doc", replace("{key: name, keyDoc: Name is the header's name.}", "{key: name}"),
 			"set key and keyDoc together"},
 		{"a key in capitals", replace("{key: name,", "{key: Name,"), "not a lowerCamel name"},
+		{"an enum with a length", replace("{key: name, keyDoc: Name is the header's name.}",
+			"{validation: {enum: [a], maxLength: 2, reason: r}}"), "an enum takes no lengths, pattern, range or integer"},
+		{"an enum with an empty value", replace("{key: name, keyDoc: Name is the header's name.}",
+			"{validation: {enum: [a, ''], reason: r}}"), "the enum holds an empty value"},
+		{"an enum listing a value twice", replace("{key: name, keyDoc: Name is the header's name.}",
+			"{validation: {enum: [a, a], reason: r}}"), `the enum lists "a" twice`},
+		{"an enum value with a semicolon", replace("{key: name, keyDoc: Name is the header's name.}",
+			"{validation: {enum: ['a;b'], reason: r}}"), "holds a semicolon or a quote"},
 		{"a validation without a reason", replace("{key: name, keyDoc: Name is the header's name.}",
 			"{validation: {minLength: 1}}"), "gives no reason"},
 		{"a field's rule without a message", replace("{key: name, keyDoc: Name is the header's name.}",

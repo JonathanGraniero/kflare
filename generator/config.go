@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -130,6 +131,10 @@ type validationConfig struct {
 	// Integer makes a number field that the spec does not say is an integer
 	// one: Cloudflare takes whole numbers only, which a CRD holds as an int64.
 	Integer bool `json:"integer,omitempty"`
+	// Enum is the values a string field may take, where Cloudflare takes
+	// fewer than its API description lists, or the description lists none.
+	// It narrows an enum the description has: each value must be one of it.
+	Enum []string `json:"enum,omitempty"`
 	// Reason says why the spec's validation does not do, such as what a live
 	// check found.
 	Reason string `json:"reason"`
@@ -147,6 +152,32 @@ func (v *validationConfig) validation() validation {
 		out.maximum = &maximum
 	}
 	return out
+}
+
+// enum returns the values a field may take once the entry's enum replaces
+// enum, the values it allows: the entry's, which must be among them when it
+// has any, or enum itself when the entry gives none. It also returns the
+// values of enum the entry leaves out, which the CRD must refuse too. Only a
+// string field (isString) takes an enum from an entry.
+func (v *validationConfig) enum(path string, isString bool, enum []string) (values, excluded []string, err error) {
+	if v.Enum == nil {
+		return enum, nil, nil
+	}
+	if !isString {
+		return nil, nil, fmt.Errorf("fields.%s.validation.enum: only a string field takes an enum", path)
+	}
+	for _, value := range v.Enum {
+		if len(enum) > 0 && !slices.Contains(enum, value) {
+			return nil, nil, fmt.Errorf("fields.%s.validation.enum: %q is none of the values the API description "+
+				"allows, %s", path, value, strings.Join(enum, ", "))
+		}
+	}
+	for _, value := range enum {
+		if !slices.Contains(v.Enum, value) {
+			excluded = append(excluded, value)
+		}
+	}
+	return slices.Clone(v.Enum), excluded, nil
 }
 
 var (
@@ -288,6 +319,21 @@ func (v *validationConfig) validate() error {
 		return fmt.Errorf("the pattern holds a backquote, which a kubebuilder marker cannot")
 	case v.Integer && (v.MinLength != nil || v.MaxLength != nil || v.Pattern != ""):
 		return fmt.Errorf("integer takes no lengths or pattern, which bound a string")
+	case v.Enum != nil && (v.MinLength != nil || v.MaxLength != nil || v.Pattern != "" || v.Minimum != nil ||
+		v.Maximum != nil || v.Integer):
+		return fmt.Errorf("an enum takes no lengths, pattern, range or integer: its values say it all")
+	}
+	seen := map[string]bool{}
+	for _, value := range v.Enum {
+		switch {
+		case value == "":
+			return fmt.Errorf("the enum holds an empty value")
+		case seen[value]:
+			return fmt.Errorf("the enum lists %q twice", value)
+		case strings.ContainsAny(value, ";\"`"):
+			return fmt.Errorf("the enum value %q holds a semicolon or a quote, which a kubebuilder marker cannot", value)
+		}
+		seen[value] = true
 	}
 	if _, err := regexp.Compile(v.Pattern); err != nil {
 		return fmt.Errorf("the pattern does not compile: %w", err)
@@ -308,7 +354,12 @@ type ruleKindConfig struct {
 	// Rule is cloudflare-go v7's type for a rule with the kind's action, as
 	// <package>.<type>: rulesets.RewriteRuleParam. The action it allows is
 	// the kind's, and its action parameters give the kind's fields.
-	Rule string `json:"rule"`
+	Rule string `json:"rule,omitempty"`
+	// Actions, for a kind whose rules take one of several actions in place of
+	// Rule, are the values of the spec field action, each with its rule type.
+	Actions []ruleActionConfig `json:"actions,omitempty"`
+	// ActionDoc documents the action field, before the list of its values.
+	ActionDoc string `json:"actionDoc,omitempty"`
 	// ShortName is the kind's short name for kubectl, such as cftransform.
 	ShortName string `json:"shortName"`
 	// Noun is what docs and messages call the rule, such as "transform rule".
@@ -340,6 +391,34 @@ type ruleKindConfig struct {
 	// Ignore leaves out fields of the rule type or of its action parameters,
 	// by path, each with the reason.
 	Ignore map[string]string `json:"ignore,omitempty"`
+	// Conflicts are the Cloudflare error codes that mean another rule holds
+	// what the kind's rule needs, each with the condition reason to report.
+	Conflicts []ruleConflictConfig `json:"conflicts,omitempty"`
+}
+
+// ruleActionConfig is one value of a rule kind's action field.
+type ruleActionConfig struct {
+	// Action is the action, as the Rulesets API names it, such as block.
+	Action string `json:"action"`
+	// Rule is cloudflare-go v7's type for a rule with the action, as
+	// <package>.<type>: rulesets.BlockRuleParam. An action v7 has no type for,
+	// such as challenge, leaves it out, and must take no action parameters.
+	Rule string `json:"rule,omitempty"`
+	// Doc says what a rule with the action does, for the action field's doc.
+	Doc string `json:"doc"`
+}
+
+// ruleConflictConfig is a Cloudflare error code that means another rule holds
+// what a rule kind's rule needs. A resource that gets it reports Reason and
+// checks again every minute, since the other rule may be about to go.
+type ruleConflictConfig struct {
+	// Code is Cloudflare's error code, such as 20014.
+	Code int `json:"code"`
+	// Reason is the Ready condition's reason, such as RulesetConflict.
+	Reason string `json:"reason"`
+	// Why says what Cloudflare refuses with the code, and when that was
+	// verified.
+	Why string `json:"why"`
 }
 
 // ruleTypeConfig is one value of a rule kind's type field.
@@ -435,12 +514,28 @@ type ruleConfig struct {
 // typeValue is a type field's value: a lowerCamel name.
 var typeValue = regexp.MustCompile(`^[a-z][A-Za-z0-9]*$`)
 
+// actionName is a Rulesets action's name, such as managed_challenge.
+var actionName = regexp.MustCompile(`^[a-z]+(_[a-z]+)*$`)
+
+// isTypeName reports whether s names a type as <package>.<type>.
+func isTypeName(s string) bool {
+	return strings.Count(s, ".") > 0 && !strings.HasPrefix(s, ".") && !strings.HasSuffix(s, ".")
+}
+
 func (k *ruleKindConfig) validate() error {
 	switch {
 	case !kindName.MatchString(k.Kind):
 		return fmt.Errorf("kind %q is not a Go type name", k.Kind)
-	case strings.Count(k.Rule, ".") == 0 || strings.HasPrefix(k.Rule, ".") || strings.HasSuffix(k.Rule, "."):
+	case (k.Rule == "") == (len(k.Actions) == 0):
+		return fmt.Errorf("set exactly one of rule and actions")
+	case k.Rule != "" && !isTypeName(k.Rule):
 		return fmt.Errorf("rule %q is not <package>.<type>", k.Rule)
+	case len(k.Actions) == 1:
+		return fmt.Errorf("actions lists one action: set rule instead")
+	case len(k.Actions) > 0 && strings.TrimSpace(k.ActionDoc) == "":
+		return fmt.Errorf("actionDoc is empty")
+	case len(k.Actions) == 0 && k.ActionDoc != "":
+		return fmt.Errorf("actionDoc is set without actions")
 	case !shortName.MatchString(k.ShortName):
 		return fmt.Errorf("shortName %q is not lower-case letters and digits", k.ShortName)
 	case strings.TrimSpace(k.Noun) == "":
@@ -461,10 +556,60 @@ func (k *ruleKindConfig) validate() error {
 	if err := k.validateTypes(); err != nil {
 		return err
 	}
+	if err := k.validateActions(); err != nil {
+		return err
+	}
+	if err := k.validateConflicts(); err != nil {
+		return err
+	}
 	if err := k.validateRules(); err != nil {
 		return err
 	}
 	return k.validateFields()
+}
+
+// validateActions checks a rule kind's actions. At least one names its rule
+// type, which gives the rule's own fields.
+func (k *ruleKindConfig) validateActions() error {
+	seen := map[string]bool{}
+	typed := false
+	for i, a := range k.Actions {
+		switch {
+		case !actionName.MatchString(a.Action):
+			return fmt.Errorf("actions[%d]: action %q is not an action's name", i, a.Action)
+		case seen[a.Action]:
+			return fmt.Errorf("actions[%d]: %s is listed twice", i, a.Action)
+		case a.Rule != "" && !isTypeName(a.Rule):
+			return fmt.Errorf("actions[%d]: rule %q is not <package>.<type>", i, a.Rule)
+		case strings.TrimSpace(a.Doc) == "":
+			return fmt.Errorf("actions[%d]: doc is empty", i)
+		}
+		seen[a.Action] = true
+		typed = typed || a.Rule != ""
+	}
+	if len(k.Actions) > 0 && !typed {
+		return fmt.Errorf("actions: none names its rule type")
+	}
+	return nil
+}
+
+// validateConflicts checks a rule kind's conflicts.
+func (k *ruleKindConfig) validateConflicts() error {
+	seen := map[int]bool{}
+	for i, c := range k.Conflicts {
+		switch {
+		case c.Code <= 0:
+			return fmt.Errorf("conflicts[%d]: code %d is not a Cloudflare error code", i, c.Code)
+		case seen[c.Code]:
+			return fmt.Errorf("conflicts[%d]: code %d is listed twice", i, c.Code)
+		case !kindName.MatchString(c.Reason):
+			return fmt.Errorf("conflicts[%d]: reason %q is not an UpperCamel condition reason", i, c.Reason)
+		case strings.TrimSpace(c.Why) == "":
+			return fmt.Errorf("conflicts[%d]: why is empty", i)
+		}
+		seen[c.Code] = true
+	}
+	return nil
 }
 
 // validateTypes checks a rule kind's types.
