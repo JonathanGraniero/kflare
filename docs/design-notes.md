@@ -987,7 +987,9 @@ CHANGELOG.md: `rulesetID` is `id`, which may change in place (the rule is update
 overrides go in the spec's order, which Cloudflare keeps, rather than sorted; and an empty list of overrides is
 refused. The envtest specs that only ManagedRuleset had (the entry point its deletion empties, kept while another
 resource is about to write to it, and the resources re-triggered) are now shared specs, run for every kind in a phase
-whose emptied entry point kflare deletes.
+whose emptied entry point kflare deletes. Verified live with the CI token (run 40543255707, e2e run `b64702`, 27 of
+27): the deployment written, its overrides changed in place, an idle reconcile, and the managed phase left with no
+entry point.
 
 
 #### Branch: `feat/managed-transform-controller`
