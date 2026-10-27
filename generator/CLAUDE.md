@@ -375,9 +375,9 @@ kinds:
   `kvNamespaceRef`, generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is
   not reliable: for managed transforms it lists a permission that is refused, see Token permissions)
-- **Stays hand-written:** `Zone`, `DNSRecord`, `Tunnel`, `TunnelConfiguration`, `WorkerScript` and `WorkerRoute`, which
-  are mostly behavior verified live. Moving a hand-written kind needs a reason: R2Bucket would gain jurisdictions and
-  storage class
+- **The hand-written kinds** move onto kflare-gen too (the user, 2026-10-27), each after the capability it needs:
+  [Generate every kind](../CLAUDE.md#generate-every-kind). The earlier line that six of them stay hand-written is
+  withdrawn
 - **Ruled out:** generating from v0.119 (no machine-readable model); OpenAPI alone with kflare's own wire types (it
   rebuilds the client v7 already generates from the same spec); Terraform provider schemas, Crossplane's upjet
   approach (it ties kflare to Terraform's resource model, and the spec already carries Stainless's Terraform hints)
