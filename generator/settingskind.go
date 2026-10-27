@@ -41,6 +41,20 @@ type settingsKind struct {
 	listKeys     map[string]string
 	sets         []string
 	printColumns []printColumn
+
+	// byID is set for a kind whose service reads and writes each setting by
+	// its ID (settingsbyid.go): its params are the settings, each a field
+	// named for its ID. picks holds, by setting ID, those Cloudflare picks
+	// the value of itself, and configuredSpecs, for each of
+	// configuredStates, the spec (of specs) whose resource reads the value it
+	// changes.
+	byID            bool
+	picks           map[string]*pickedByConfig
+	configuredSpecs []int
+	// pickedSpecs are specs that each set one setting Cloudflare picks, alone,
+	// at another value than an unconfigured zone's, with the settings they ask
+	// for: the generated specs check that writing it configures it.
+	pickedSpecs []ruleEdit
 }
 
 // settingsRoot is what messages call a settings kind's params.
@@ -81,20 +95,34 @@ func (b *settingsKindBuilder) build() (*settingsKind, error) {
 	if err := b.calls(); err != nil {
 		return nil, err
 	}
-	writeSchema, err := b.writeSchema()
-	if err != nil {
-		return nil, err
-	}
 
 	used := map[string]bool{}
 	pb := &paramBuilder{kind: e.Kind, r: svc.r, spec: b.spec, adjust: e.Fields, ignore: e.Ignore, used: used,
 		zoneParams: true, root: settingsRoot}
-	params, ok := svc.write.params.(*types.Named)
-	if !ok {
-		return nil, fmt.Errorf("%s's params are a %s, not a named struct", svc.write.name, svc.write.params)
-	}
-	if k.params, err = pb.object("", e.Kind+"Spec", e.Kind, params, writeSchema); err != nil {
-		return nil, err
+	var err error
+	if svc.byID {
+		k.byID = true
+		if k.params, err = b.paramsByID(pb, k); err != nil {
+			return nil, err
+		}
+	} else {
+		for _, path := range slices.Sorted(maps.Keys(e.Fields)) {
+			if e.Fields[path].PickedBy != nil {
+				return nil, fmt.Errorf("fields.%s.pickedBy: only a setting of a service whose settings go by their "+
+					"IDs is picked", path)
+			}
+		}
+		writeSchema, err := b.writeSchema()
+		if err != nil {
+			return nil, err
+		}
+		params, ok := svc.write.params.(*types.Named)
+		if !ok {
+			return nil, fmt.Errorf("%s's params are a %s, not a named struct", svc.write.name, svc.write.params)
+		}
+		if k.params, err = pb.object("", e.Kind+"Spec", e.Kind, params, writeSchema); err != nil {
+			return nil, err
+		}
 	}
 	k.structs = pb.structs
 	for _, section := range []map[string]bool{keySet(e.Fields), keySet(e.Ignore)} {
@@ -115,7 +143,12 @@ func (b *settingsKindBuilder) build() (*settingsKind, error) {
 	}
 	k.listKeys = map[string]string{}
 	k.shapeOf(k.params, "")
-	if err := b.unconfigured(k); err != nil {
+	if svc.byID {
+		err = b.unconfiguredByID(k)
+	} else {
+		err = b.unconfigured(k)
+	}
+	if err != nil {
 		return nil, err
 	}
 	k.printColumns = []printColumn{
@@ -139,6 +172,12 @@ func (b *settingsKindBuilder) build() (*settingsKind, error) {
 	}
 	if err := k.edits(entryRules(e.Rules, e.Fields)); err != nil {
 		return nil, err
+	}
+	if svc.byID {
+		if err := k.statesByID(); err != nil {
+			return nil, err
+		}
+		return k, nil
 	}
 	k.unconfiguredState = copySpec(k.bodies[0])
 	k.unlisted()
@@ -211,10 +250,16 @@ func unusedKey(example any, used map[any]bool) any {
 
 // calls checks that each of the service's calls takes the zone's ID, which
 // the shared settings reconciler sets, and requires nothing else it does not
-// set: the read and the reset nothing, the write only the settings.
+// set: the read and the reset nothing, the write only the settings. A service
+// whose settings go by their IDs has no reset, and its calls take a setting's
+// ID before their params.
 func (b *settingsKindBuilder) calls() error {
-	for _, call := range []*sdkCall{b.svc.read, b.svc.write, b.svc.reset} {
-		if err := checkShape(call, false); err != nil {
+	calls := []*sdkCall{b.svc.read, b.svc.write}
+	if !b.svc.byID {
+		calls = append(calls, b.svc.reset)
+	}
+	for _, call := range calls {
+		if err := checkShape(call, b.svc.byID); err != nil {
 			return err
 		}
 		i := slices.IndexFunc(call.paramFields, isZoneID)

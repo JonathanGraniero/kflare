@@ -343,6 +343,11 @@ func (b *paramBuilder) scalar(path string, t types.Type, sch *schema, adjust rul
 	if out.enum == nil {
 		out.enum = b.r.enumValues(t)
 	}
+	integer := adjust.Validation != nil && adjust.Validation.Integer
+	if integer && (basicClass(t) != types.IsNumeric || fs.typ == typeInteger) {
+		return nil, fmt.Errorf("fields.%s.validation.integer: only a number the OpenAPI spec does not say is an "+
+			"integer is made one", path)
+	}
 	switch basicClass(t) {
 	case types.IsString:
 		out.goType = typeString
@@ -356,9 +361,9 @@ func (b *paramBuilder) scalar(path string, t types.Type, sch *schema, adjust rul
 		}
 		out.goType = typeBool
 	case types.IsNumeric:
-		if fs.typ != typeInteger {
+		if fs.typ != typeInteger && !integer {
 			return nil, fmt.Errorf("%s is a number the OpenAPI spec does not say is an integer, which a CRD cannot "+
-				"hold well; ignore it with a reason", path)
+				"hold well; ignore it with a reason, or make it an integer (validation.integer) with one", path)
 		}
 		for _, value := range out.enum {
 			if _, err := strconv.ParseInt(value, 10, 64); err != nil {

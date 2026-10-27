@@ -8,6 +8,7 @@ package controller
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -99,6 +100,29 @@ func (s settingsShape) holds(want, got any, path string) bool {
 		return true
 	}
 	return reflect.DeepEqual(want, got)
+}
+
+// differing returns, for a kind whose settings go by their IDs, the IDs of the
+// settings that actual, as Cloudflare returned them, does not already hold as
+// desired asks for them, compared one by one as matches compares them, in
+// order: the settings a sync writes.
+func (s settingsShape) differing(desired, actual []byte) ([]string, error) {
+	var want any
+	if err := json.Unmarshal(desired, &want); err != nil {
+		return nil, err
+	}
+	var got map[string]any
+	if err := json.Unmarshal(actual, &got); err != nil {
+		return nil, err
+	}
+	settings, _ := withoutEmpty(want).(map[string]any)
+	var ids []string
+	for _, id := range slices.Sorted(maps.Keys(settings)) {
+		if !s.holds(settings[id], got[id], id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // settingsPath returns the path of the field name of the object at path.

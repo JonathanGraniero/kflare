@@ -387,7 +387,7 @@ func TestGenerateRegistersSettingsKinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := out.blocks[helmRBAC]; !slices.Equal(got, []string{"- testdnssecs", "- testmanagedtransforms",
-		"- testurlnormalizations"}) {
+		"- testurlnormalizations", "- testzonesettings"}) {
 		t.Errorf("the Helm role's block = %q", got)
 	}
 	kinds := string(out.files[kindsFile])
@@ -395,6 +395,7 @@ func TestGenerateRegistersSettingsKinds(t *testing.T) {
 		"(&TestManagedTransformReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr)",
 		`dependents("TestManagedTransform", func() client.ObjectList {`,
 		`dependents("TestURLNormalization",`,
+		`dependents("TestZoneSettings",`,
 	} {
 		if !strings.Contains(kinds, want) {
 			t.Errorf("%s does not hold %q:\n%s", kindsFile, want, kinds)

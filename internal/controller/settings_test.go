@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT
 package controller
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -74,6 +76,120 @@ var _ = Describe("settingsShape.matches", func() {
 		Expect(err).To(HaveOccurred())
 		_, err = shape.matches([]byte(`{}`), []byte(`nope`))
 		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("settingsShape.differing", func() {
+	shape := settingsShape{listKeys: map[string]string{"items": "id"}}
+
+	DescribeTable("names the settings, by their IDs, that Cloudflare does not hold as asked for",
+		func(desired, actual string, want []string) {
+			got, err := shape.differing([]byte(desired), []byte(actual))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(want))
+		},
+		Entry("none, with what Cloudflare adds", `{"a":"on","o":{"x":1}}`, `{"a":"on","o":{"x":1,"y":2},"b":"off"}`,
+			[]string(nil)),
+		Entry("the one that differs", `{"a":"on","b":"off"}`, `{"a":"on","b":"on"}`, []string{"b"}),
+		Entry("each, in the order of their IDs", `{"z":1,"a":1,"m":1}`, `{}`, []string{"a", "m", "z"}),
+		Entry("an object with a field that differs", `{"o":{"x":1,"y":2}}`, `{"o":{"x":1,"y":3}}`, []string{"o"}),
+		Entry("a keyed list by its keys", `{"items":[{"id":"b"},{"id":"a"}]}`, `{"items":[{"id":"a"},{"id":"b"}]}`,
+			[]string(nil)),
+		Entry("nulls and empty objects asked for, as left out", `{"a":null,"o":{}}`, `{}`, []string(nil)),
+		Entry("a null and an empty list asked for, as left out, whatever Cloudflare holds", `{"a":null,"l":[]}`,
+			`{"a":"x","l":["y"]}`, []string(nil)),
+	)
+
+	It("refuses what is not JSON", func() {
+		_, err := shape.differing([]byte(`{`), []byte(`{}`))
+		Expect(err).To(HaveOccurred())
+		_, err = shape.differing([]byte(`{}`), []byte(`[]`))
+		Expect(err).To(HaveOccurred())
+	})
+})
+
+// settingsTestBody is a body of a write of one setting, as the tests of the
+// settings by ID give one: data is its JSON, or err the error marshaling it
+// fails with.
+type settingsTestBody struct {
+	data string
+	err  error
+}
+
+func (b settingsTestBody) MarshalJSON() ([]byte, error) { return []byte(b.data), b.err }
+
+var _ = Describe("settings by ID", func() {
+	ctx := context.Background()
+	settings := []settingValue[string]{{id: "b", value: "2"}, {id: "a", value: "1"}, {id: "c", value: "3"}}
+
+	It("lists the settings' IDs once each, in order", func() {
+		Expect(settingIDs(settings, []settingValue[string]{{id: "a"}, {id: "d"}})).To(Equal([]string{"a", "b", "c", "d"}))
+		Expect(settingIDs[string]()).To(BeEmpty())
+	})
+
+	It("names the settings a sync writes, in the order of the settings", func() {
+		Expect(settingsNamed(settings, []string{"c", "b"})).To(Equal([]settingValue[string]{
+			{id: "b", value: "2"}, {id: "c", value: "3"}}))
+		Expect(settingsNamed(settings, nil)).To(BeEmpty())
+	})
+
+	It("reads each setting's value under its ID, a missing value as null", func() {
+		var read []string
+		got, err := readSettingsByID(ctx, []string{"a", "b"}, func(_ context.Context, id string) (string, error) {
+			read = append(read, id)
+			if id == "b" {
+				return `{"id":"b","editable":false}`, nil
+			}
+			return `{"id":"a","value":{"x":[1,2]},"editable":true}`, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(read).To(Equal([]string{"a", "b"}))
+		Expect(got).To(MatchJSON(`{"a":{"x":[1,2]},"b":null}`))
+	})
+
+	It("stops reading at the first error, and refuses a setting that is not JSON", func() {
+		var read []string
+		_, err := readSettingsByID(ctx, []string{"a", "b"}, func(_ context.Context, id string) (string, error) {
+			read = append(read, id)
+			return "", errors.New("refused")
+		})
+		Expect(err).To(MatchError("refused"))
+		Expect(read).To(Equal([]string{"a"}))
+
+		_, err = readSettingsByID(ctx, []string{"a"}, func(context.Context, string) (string, error) {
+			return `{"value":`, nil
+		})
+		Expect(err).To(MatchError(ContainSubstring("reading the setting a")))
+	})
+
+	It("writes each setting in order, stopping at the first error", func() {
+		var written []string
+		edit := func(_ context.Context, id, value string) error {
+			written = append(written, id+"="+value)
+			if id == "a" {
+				return errors.New("refused")
+			}
+			return nil
+		}
+		Expect(writeSettingsByID(ctx, settings[:1], edit)).To(Succeed())
+		Expect(writeSettingsByID(ctx, settings, edit)).To(MatchError("refused"))
+		Expect(written).To(Equal([]string{"b=2", "b=2", "a=1"}))
+	})
+
+	It("compares the values the writes' bodies send, under their IDs", func() {
+		body := func(value string) settingsTestBody { return settingsTestBody{data: `{"value":` + value + `}`} }
+		got, err := settingsByIDJSON([]settingValue[string]{{id: "a", value: `"on"`}, {id: "o", value: `{"x":1}`}}, body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(MatchJSON(`{"a":"on","o":{"x":1}}`))
+
+		_, err = settingsByIDJSON(settings[:1], func(string) settingsTestBody {
+			return settingsTestBody{err: errors.New("no JSON")}
+		})
+		Expect(err).To(MatchError("no JSON"))
+		_, err = settingsByIDJSON(settings[:1], func(string) settingsTestBody { return settingsTestBody{data: `[`} })
+		Expect(err).To(HaveOccurred())
+		_, err = settingsByIDJSON(settings[:1], func(string) settingsTestBody { return settingsTestBody{data: `{}`} })
+		Expect(err).To(MatchError("the body of the setting b holds no value"))
 	})
 })
 

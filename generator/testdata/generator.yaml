@@ -207,3 +207,118 @@ settingsKinds:
         status: disabled
       reason: >-
         DNSSEC is disabled on kflare.dev, which nobody has configured (read live 2026-10-22), and the reset deletes it.
+
+  # Settings read and written one by one by their IDs (zones.SettingService's Get and Edit), with no reset of their
+  # own: a string enum, an integer with a range, an object with a number made an integer, and a setting Cloudflare
+  # picks itself while another setting holds a value.
+  - kind: TestZoneSettings
+    service: zones.SettingService
+    shortName: testzonesettings
+    noun: zone settings
+    doc: TestZoneSettings configures a zone's settings, each by its ID.
+    sample:
+      ssl: strict
+      alwaysUseHTTPS: "on"
+      browserCacheTTL: 7200
+      securityHeader:
+        strictTransportSecurity:
+          enabled: true
+          maxAge: 31536000
+    tests:
+      - ssl: flexible
+        securityHeader:
+          strictTransportSecurity:
+            includeSubdomains: true
+            nosniff: true
+            preload: true
+    fields:
+      ssl:
+        pickedBy:
+          setting: ssl_automatic_mode
+          while: auto
+          written: custom
+          reason: >-
+            While ssl_automatic_mode is auto (Automatic SSL/TLS), Cloudflare picks the encryption mode itself; writing
+            ssl turned it custom a few seconds later, and writing it auto handed the mode back (kflare.dev, 2026-10-27).
+      security_header.strict_transport_security.max_age:
+        validation:
+          integer: true
+          minimum: 0
+          reason: >-
+            Cloudflare refuses a negative max_age, saying it must be an integer and at least zero (1048), and keeps the
+            whole part of 1.5 (kflare.dev, 2026-10-27).
+    unconfigured:
+      values:
+        always_use_https: "off"
+        browser_cache_ttl: 14400
+        security_header.strict_transport_security.enabled: false
+        security_header.strict_transport_security.include_subdomains: false
+        security_header.strict_transport_security.max_age: 0
+        security_header.strict_transport_security.nosniff: false
+        security_header.strict_transport_security.preload: false
+      reason: >-
+        kflare.dev's settings, which nobody has configured (every modified_on null, read live 2026-10-26).
+    ignore:
+      0rtt: Not in the test kind.
+      advanced_ddos: Not in the test kind.
+      aegis: Not in the test kind.
+      always_online: Not in the test kind.
+      automatic_https_rewrites: Not in the test kind.
+      automatic_platform_optimization: Not in the test kind.
+      brotli: Not in the test kind.
+      browser_check: Not in the test kind.
+      cache_level: Not in the test kind.
+      challenge_ttl: Not in the test kind.
+      china_network_enabled: Not in the test kind.
+      ciphers: Not in the test kind.
+      cname_flattening: Not in the test kind.
+      content_converter: Not in the test kind.
+      development_mode: Not in the test kind.
+      early_hints: Not in the test kind.
+      edge_cache_ttl: Not in the test kind.
+      email_obfuscation: Not in the test kind.
+      h2_prioritization: Not in the test kind.
+      hotlink_protection: Not in the test kind.
+      http2: Not in the test kind.
+      http3: Not in the test kind.
+      image_resizing: Not in the test kind.
+      ip_geolocation: Not in the test kind.
+      ipv6: Not in the test kind.
+      max_upload: Not in the test kind.
+      min_tls_version: Not in the test kind.
+      mirage: Not in the test kind.
+      nel: Not in the test kind.
+      opportunistic_encryption: Not in the test kind.
+      opportunistic_onion: Not in the test kind.
+      orange_to_orange: Not in the test kind.
+      origin_error_page_pass_thru: Not in the test kind.
+      origin_h2_max_streams: Not in the test kind.
+      origin_max_http_version: Not in the test kind.
+      polish: Not in the test kind.
+      pre_render: Not in the test kind.
+      prefetch_preload: Not in the test kind.
+      privacy_pass: Not in the test kind.
+      proxy_read_timeout: Not in the test kind.
+      pseudo_ipv4: Not in the test kind.
+      redirects_for_ai_training: Not in the test kind.
+      replace_insecure_js: Not in the test kind.
+      response_buffering: Not in the test kind.
+      rocket_loader: Not in the test kind.
+      search_for_agents: Not in the test kind.
+      security_level: Not in the test kind.
+      server_side_exclude: Not in the test kind.
+      sha1_support: Not in the test kind.
+      sort_query_string_for_cache: Not in the test kind.
+      ssl_recommender: Not in the test kind.
+      tls_1_2_only: Not in the test kind.
+      tls_1_3: Not in the test kind.
+      tls_client_auth: Not in the test kind.
+      transformations: Not in the test kind.
+      transformations_allowed_origins: Not in the test kind.
+      true_client_ip_header: Not in the test kind.
+      waf: Not in the test kind.
+      webmcp_enabled: Not in the test kind.
+      webmcp_mcp_url: Not in the test kind.
+      webmcp_packs: Not in the test kind.
+      webp: Not in the test kind.
+      websockets: Not in the test kind.

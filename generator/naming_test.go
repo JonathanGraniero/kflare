@@ -16,6 +16,8 @@ func TestLowerCamel(t *testing.T) {
 		"URLPattern":          "urlPattern",
 		"SupportsURLEncoding": "supportsURLEncoding",
 		"CreatedOn":           "createdOn",
+		"TLS13":               "tls13",
+		"IPV6":                "ipv6",
 		"title":               "title",
 		"":                    "",
 	} {
@@ -59,6 +61,7 @@ func TestPlural(t *testing.T) {
 		"Branch":       "branches",
 		"Mesh":         "meshes",
 		"Y":            "ys",
+		"ZoneSettings": "zonesettings",
 	} {
 		if got := plural(kind); got != want {
 			t.Errorf("plural(%q) = %q, want %q", kind, got, want)

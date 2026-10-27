@@ -127,6 +127,9 @@ type validationConfig struct {
 	// Minimum and Maximum bound an integer field.
 	Minimum *int64 `json:"minimum,omitempty"`
 	Maximum *int64 `json:"maximum,omitempty"`
+	// Integer makes a number field that the spec does not say is an integer
+	// one: Cloudflare takes whole numbers only, which a CRD holds as an int64.
+	Integer bool `json:"integer,omitempty"`
 	// Reason says why the spec's validation does not do, such as what a live
 	// check found.
 	Reason string `json:"reason"`
@@ -283,6 +286,8 @@ func (v *validationConfig) validate() error {
 		return fmt.Errorf("minimum is above maximum")
 	case strings.Contains(v.Pattern, "`"):
 		return fmt.Errorf("the pattern holds a backquote, which a kubebuilder marker cannot")
+	case v.Integer && (v.MinLength != nil || v.MaxLength != nil || v.Pattern != ""):
+		return fmt.Errorf("integer takes no lengths or pattern, which bound a string")
 	}
 	if _, err := regexp.Compile(v.Pattern); err != nil {
 		return fmt.Errorf("the pattern does not compile: %w", err)
@@ -370,6 +375,45 @@ type ruleFieldConfig struct {
 	// on an item of a list or map, such as vary.headers[]: what Cloudflare
 	// refuses that its API description does not say.
 	Rules []ruleConfig `json:"rules,omitempty"`
+	// PickedBy, for a setting of a settings kind whose settings go by their
+	// IDs, says that Cloudflare picks its value itself while another setting
+	// holds a value.
+	PickedBy *pickedByConfig `json:"pickedBy,omitempty"`
+}
+
+// pickedByConfig says that Cloudflare picks a setting's value itself while
+// another setting holds a value, as it picks a zone's SSL/TLS encryption mode
+// (ssl) while Automatic SSL/TLS is on (ssl_automatic_mode auto). A zone whose
+// other setting holds While has not configured the setting, whatever its
+// value, and a reset writes While to the other setting, handing the value back
+// to Cloudflare, rather than writing the setting.
+type pickedByConfig struct {
+	// Setting is the other setting's ID.
+	Setting string `json:"setting"`
+	// While is the other setting's value while Cloudflare picks the setting's,
+	// and Written its value once the setting is written.
+	While   string `json:"while"`
+	Written string `json:"written"`
+	// Reason says how that was verified.
+	Reason string `json:"reason"`
+}
+
+// settingID matches a zone setting's ID, such as ssl_automatic_mode.
+var settingID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// validate checks a pickedBy.
+func (p *pickedByConfig) validate() error {
+	switch {
+	case !settingID.MatchString(p.Setting):
+		return fmt.Errorf("setting %q is not a setting's ID", p.Setting)
+	case p.While == "" || p.Written == "":
+		return fmt.Errorf("give while and written, the other setting's values")
+	case p.While == p.Written:
+		return fmt.Errorf("while and written are both %q: writing the setting would not show", p.While)
+	case strings.TrimSpace(p.Reason) == "":
+		return fmt.Errorf("gives no reason")
+	}
+	return nil
 }
 
 // ruleConfig is a CEL rule on a rule kind's spec, or on an object in it.
@@ -474,6 +518,11 @@ func (r ruleConfig) validate() error {
 
 // validateFields checks a rule kind's ignored and adjusted fields.
 func (k *ruleKindConfig) validateFields() error {
+	for name, f := range k.Fields {
+		if f.PickedBy != nil {
+			return fmt.Errorf("fields.%s.pickedBy: only a setting a settings kind writes by its ID is picked", name)
+		}
+	}
 	return validateParamFields(k.Fields, k.Ignore)
 }
 
@@ -515,6 +564,11 @@ func validateParamFields(fields map[string]ruleFieldConfig, ignore map[string]st
 		}
 		if f.ListMapKey != "" && f.Key != "" {
 			return fmt.Errorf("fields.%s: set key for a map or listMapKey for a list, not both", name)
+		}
+		if f.PickedBy != nil {
+			if err := f.PickedBy.validate(); err != nil {
+				return fmt.Errorf("fields.%s.pickedBy: %w", name, err)
+			}
 		}
 	}
 	return nil

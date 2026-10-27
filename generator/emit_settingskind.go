@@ -83,6 +83,11 @@ func emitSettingsTypes(k *settingsKind, header string) ([]byte, error) {
 // conversions returns a settings kind's conversions, of the settings its
 // service's write sends.
 func (k *settingsKind) conversions() conversions {
+	if k.byID {
+		return conversions{kind: k.name, params: k.params, root: k.varName + "Writes",
+			rootWhat: fmt.Sprintf("the settings %s asks for, each by its ID, as cloudflare-go v7's %s writes them",
+				article(k.name), k.svc.write.name)}
+	}
 	return conversions{kind: k.name, params: k.params, root: k.varName + "Params",
 		rootWhat: fmt.Sprintf("the settings %s asks for, as cloudflare-go v7's %s sends them, but for the zone",
 			article(k.name), k.svc.write.name)}
@@ -94,19 +99,18 @@ func (k *settingsKind) conversions() conversions {
 // it with, and the conversion of its spec into the settings it asks for.
 func emitSettingsController(k *settingsKind, header string) ([]byte, error) {
 	f := newGoFile()
-	name, v, svc := k.name, k.varName, k.svc
+	name, svc := k.name, k.svc
 	api := name + "API"
 	svcPkg := f.use(svc.pkg.Path(), svc.pkg.Name())
 	service := svcPkg + "." + svc.typeName
 	ctx := f.use("context", "context")
 	client := f.use(clientPackage, "client")
 	ctrl := f.use("sigs.k8s.io/controller-runtime", "ctrl")
-	obj := "*" + f.api() + "." + name
 
 	comment(&f.Builder, "", wrap(fmt.Sprintf("%s is the part of cloudflare-go v7's %s that the %s reconciler calls. "+
 		"Tests inject a fake; in production it is a *%s.", api, service, name, service)))
 	f.printf("type %s interface {\n", api)
-	for _, call := range []*sdkCall{svc.read, svc.write, svc.reset} {
+	for _, call := range svc.calls() {
 		f.printf("\t%s\n", interfaceMethod(f, call))
 	}
 	f.printf("}\n\nvar _ %s = (*%s)(nil)\n\n", api, service)
@@ -130,43 +134,15 @@ func emitSettingsController(k *settingsKind, header string) ([]byte, error) {
 	}
 	f.printf("\n")
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sKind describes %s to the shared settings reconciler. %s "+
-		"configures the %s of its zone: it writes the settings its spec sets, and resets them when it is deleted. "+
-		"A zone nobody has configured holds %s.", v, pluralOf(name), upperCamel(article(name)), k.noun,
-		prose(unconfiguredWords(k.unconfigured)))))
-	f.printf("var %sKind = settingsKind[%s]{\n", v, api)
-	f.printf("name: %q,\nnoun: %q,\n", name, k.noun)
-	f.printf("newObject: func() settingsObject { return &%s.%s{} },\n", f.api(), name)
-	f.printf("newList: func() %s.ObjectList { return &%s.%sList{} },\n\n", client, f.api(), name)
-	f.printf("read: func(ctx %s.Context, api %s, zoneID string) (string, error) {\n", ctx, api)
-	if err := zoneParams(f, svc.read); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
-	}
-	f.printf("settings, err := api.%s(ctx, params)\nif err != nil {\nreturn \"\", err\n}\n", svc.read.name)
-	f.printf("return settings.JSON.RawJSON(), nil\n},\n")
-	f.printf("write: func(ctx %s.Context, api %s, zoneID string, obj settingsObject) error {\n", ctx, api)
-	f.printf("params := %s(obj.(%s).Spec)\n", k.conversions().name(k.params), obj)
-	if err := setZoneID(f, svc.write); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
-	}
-	f.printf("_, err := api.%s(ctx, params)\nreturn err\n},\n", svc.write.name)
-	f.printf("reset: func(ctx %s.Context, api %s, zoneID string) error {\n", ctx, api)
-	if err := zoneParams(f, svc.reset); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
-	}
-	if svc.reset.sig.Results().Len() == 1 {
-		f.printf("return api.%s(ctx, params)\n},\n", svc.reset.name)
+	var err error
+	if k.byID {
+		err = emitSettingsByIDDescriptor(f, k)
 	} else {
-		f.printf("_, err := api.%s(ctx, params)\nreturn err\n},\n", svc.reset.name)
+		err = emitSettingsDescriptor(f, k)
 	}
-	f.printf("desired: func(obj settingsObject) ([]byte, error) {\n")
-	f.printf("return %s(obj.(%s).Spec).MarshalJSON()\n},\n\n", k.conversions().name(k.params), obj)
-	f.printf("shape: %s,\n", settingsShapeLiteral(k))
-	f.printf("unconfigured: []settingsValue{\n")
-	for _, u := range k.unconfigured {
-		f.printf("{path: %q, value: %s},\n", u.path, jsonValueLiteral(u.value))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	f.printf("},\n}\n\n")
 
 	f.printf("func (r *%sReconciler) Reconcile(ctx %s.Context, req %s.Request) (%s.Result, error) {\n", name, ctx, ctrl,
 		ctrl)
@@ -181,7 +157,7 @@ func emitSettingsController(k *settingsKind, header string) ([]byte, error) {
 		"injected factory or the production one.", pluralOf(name))))
 	f.printf("func (r *%sReconciler) settings() *%s {\n", name, settings)
 	f.printf("newAPI := r.New%s\nif newAPI == nil {\nnewAPI = default%s\n}\n", api, api)
-	f.printf("return &%s{Client: r.Client, kind: %sKind, newAPI: newAPI}\n}\n\n", settings, v)
+	f.printf("return &%s{Client: r.Client, kind: %sKind, newAPI: newAPI}\n}\n\n", settings, k.varName)
 
 	comment(&f.Builder, "", wrap(fmt.Sprintf("default%s is the production factory: cloudflare-go v7's %s, built "+
 		"from cfpkg.New's options for the token.", api, service)))
@@ -189,12 +165,90 @@ func emitSettingsController(k *settingsKind, header string) ([]byte, error) {
 	f.printf("client, err := %s.New(token)\nif err != nil {\nreturn nil, err\n}\n", f.use(cfPackage, "cfpkg"))
 	f.printf("return %s.New%s(client.V7Options()...), nil\n}\n\n", svcPkg, svc.typeName)
 
-	for _, st := range append([]*paramStruct{k.params}, k.structs...) {
+	structs := k.structs
+	if k.byID {
+		if err := emitSettingsByIDConversions(f, k); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+	} else {
+		structs = append([]*paramStruct{k.params}, structs...)
+	}
+	for _, st := range structs {
 		if err := emitConversion(f, k.conversions(), st); err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 	}
 	return f.source(header)
+}
+
+// calls returns the calls a settings kind of the service makes: the read and
+// the write, and the reset of a service that has one.
+func (svc *settingsService) calls() []*sdkCall {
+	if svc.reset == nil {
+		return []*sdkCall{svc.read, svc.write}
+	}
+	return []*sdkCall{svc.read, svc.write, svc.reset}
+}
+
+// emitSettingsDescriptor writes the settingsKind of a kind whose service
+// reads, writes and resets all its settings at once.
+func emitSettingsDescriptor(f *goFile, k *settingsKind) error {
+	name, v, svc := k.name, k.varName, k.svc
+	api := name + "API"
+	ctx := f.use("context", "context")
+	obj := "*" + f.api() + "." + name
+	comment(&f.Builder, "", wrap(fmt.Sprintf("%sKind describes %s to the shared settings reconciler. %s "+
+		"configures the %s of its zone: it writes the settings its spec sets, and resets them when it is deleted. "+
+		"A zone nobody has configured holds %s.", v, pluralOf(name), upperCamel(article(name)), k.noun,
+		prose(unconfiguredWords(k.unconfigured)))))
+	emitSettingsKindHead(f, k)
+	f.printf("read: func(ctx %s.Context, api %s, zoneID string, _ settingsObject) (string, error) {\n", ctx, api)
+	if err := zoneParams(f, svc.read); err != nil {
+		return err
+	}
+	f.printf("settings, err := api.%s(ctx, params)\nif err != nil {\nreturn \"\", err\n}\n", svc.read.name)
+	f.printf("return settings.JSON.RawJSON(), nil\n},\n")
+	f.printf("write: func(ctx %s.Context, api %s, zoneID string, obj settingsObject, _ []string) error {\n", ctx,
+		api)
+	f.printf("params := %s(obj.(%s).Spec)\n", k.conversions().name(k.params), obj)
+	if err := setZoneID(f, svc.write); err != nil {
+		return err
+	}
+	f.printf("_, err := api.%s(ctx, params)\nreturn err\n},\n", svc.write.name)
+	f.printf("reset: func(ctx %s.Context, api %s, zoneID string, _ settingsObject) error {\n", ctx, api)
+	if err := zoneParams(f, svc.reset); err != nil {
+		return err
+	}
+	if svc.reset.sig.Results().Len() == 1 {
+		f.printf("return api.%s(ctx, params)\n},\n", svc.reset.name)
+	} else {
+		f.printf("_, err := api.%s(ctx, params)\nreturn err\n},\n", svc.reset.name)
+	}
+	f.printf("desired: func(obj settingsObject) ([]byte, error) {\n")
+	f.printf("return %s(obj.(%s).Spec).MarshalJSON()\n},\n\n", k.conversions().name(k.params), obj)
+	emitSettingsKindTail(f, k)
+	return nil
+}
+
+// emitSettingsKindHead writes the start of a settingsKind: its names and its
+// constructors.
+func emitSettingsKindHead(f *goFile, k *settingsKind) {
+	f.printf("var %sKind = settingsKind[%sAPI]{\n", k.varName, k.name)
+	f.printf("name: %q,\nnoun: %q,\n", k.name, k.noun)
+	f.printf("newObject: func() settingsObject { return &%s.%s{} },\n", f.api(), k.name)
+	f.printf("newList: func() %s.ObjectList { return &%s.%sList{} },\n\n", f.use(clientPackage, "client"), f.api(),
+		k.name)
+}
+
+// emitSettingsKindTail writes the end of a settingsKind: the shape of its
+// settings and the values of a zone nobody has configured.
+func emitSettingsKindTail(f *goFile, k *settingsKind) {
+	f.printf("shape: %s,\n", settingsShapeLiteral(k))
+	f.printf("unconfigured: []settingsValue{\n")
+	for _, u := range k.unconfigured {
+		f.printf("{path: %q, value: %s},\n", u.path, jsonValueLiteral(u.value))
+	}
+	f.printf("},\n}\n\n")
 }
 
 // zoneParams writes the params of a call that takes only the zone's ID, set
@@ -283,23 +337,50 @@ func emitSettingsKindTest(k *settingsKind, header string) ([]byte, error) {
 		return call.sig.Params().At(1).Name() + " " + f.typ(call.params)
 	}
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%s is an in-memory %s for %s's generated specs: it keeps each zone's "+
-		"%s in a fakeSettingsStore.", fake, svc.name, name, k.noun)))
+	if k.byID {
+		comment(&f.Builder, "", wrap(fmt.Sprintf("%s is an in-memory %s for %s's generated specs: it keeps each "+
+			"zone's %s in a fakeSettingsStore, by their IDs.", fake, svc.name, name, k.noun)))
+	} else {
+		comment(&f.Builder, "", wrap(fmt.Sprintf("%s is an in-memory %s for %s's generated specs: it keeps each "+
+			"zone's %s in a fakeSettingsStore.", fake, svc.name, name, k.noun)))
+	}
 	f.printf("type %s struct {\n*fakeSettingsStore\n}\n\nvar _ %s = %s{}\n\n", fake, api, fake)
 	read := svc.read.sig.Results().At(0).Type().(*types.Pointer).Elem()
-	f.printf("func (f %s) %s(_ %s.Context, %s, _ ...%s) (*%s, error) {\n", fake, svc.read.name, ctx, param(svc.read),
-		opts, f.typ(read))
-	f.printf("return fakeSettingsRead[%s](f.fakeSettingsStore, %s)\n}\n\n", f.typ(read), zoneOf(svc.read))
 	written := svc.write.sig.Results().At(0).Type().(*types.Pointer).Elem()
-	f.printf("func (f %s) %s(_ %s.Context, %s, _ ...%s) (*%s, error) {\n", fake, svc.write.name, ctx,
-		param(svc.write), opts, f.typ(written))
-	f.printf("return fakeSettingsWrite[%s](f.fakeSettingsStore, %s, %s)\n}\n\n", f.typ(written), zoneOf(svc.write),
-		svc.write.sig.Params().At(1).Name())
-	if svc.reset.sig.Results().Len() == 1 {
+	if k.byID {
+		// The calls take the setting's ID before their params.
+		id := func(call *sdkCall) string { return call.sig.Params().At(1).Name() }
+		param = func(call *sdkCall) string {
+			return id(call) + " string, " + call.sig.Params().At(2).Name() + " " + f.typ(call.params)
+		}
+		zoneOf = func(call *sdkCall) string {
+			return call.sig.Params().At(2).Name() + "." +
+				call.paramFields[slices.IndexFunc(call.paramFields, isZoneID)].goName + ".Value"
+		}
+		f.printf("func (f %s) %s(_ %s.Context, %s, _ ...%s) (*%s, error) {\n", fake, svc.read.name, ctx,
+			param(svc.read), opts, f.typ(read))
+		f.printf("return fakeSettingReadByID[%s](f.fakeSettingsStore, %s, %s)\n}\n\n", f.typ(read), zoneOf(svc.read),
+			id(svc.read))
+		f.printf("func (f %s) %s(_ %s.Context, %s, _ ...%s) (*%s, error) {\n", fake, svc.write.name, ctx,
+			param(svc.write), opts, f.typ(written))
+		f.printf("return fakeSettingWriteByID[%s](f.fakeSettingsStore, %s, %s, %s)\n}\n\n", f.typ(written),
+			zoneOf(svc.write), id(svc.write), svc.write.sig.Params().At(2).Name())
+	} else {
+		f.printf("func (f %s) %s(_ %s.Context, %s, _ ...%s) (*%s, error) {\n", fake, svc.read.name, ctx,
+			param(svc.read), opts, f.typ(read))
+		f.printf("return fakeSettingsRead[%s](f.fakeSettingsStore, %s)\n}\n\n", f.typ(read), zoneOf(svc.read))
+		f.printf("func (f %s) %s(_ %s.Context, %s, _ ...%s) (*%s, error) {\n", fake, svc.write.name, ctx,
+			param(svc.write), opts, f.typ(written))
+		f.printf("return fakeSettingsWrite[%s](f.fakeSettingsStore, %s, %s)\n}\n\n", f.typ(written),
+			zoneOf(svc.write), svc.write.sig.Params().At(1).Name())
+	}
+	switch {
+	case svc.reset == nil:
+	case svc.reset.sig.Results().Len() == 1:
 		f.printf("func (f %s) %s(_ %s.Context, %s, _ ...%s) error {\n", fake, svc.reset.name, ctx, param(svc.reset),
 			opts)
 		f.printf("return f.reset(%s)\n}\n\n", zoneOf(svc.reset))
-	} else {
+	default:
 		reset := f.typ(svc.reset.sig.Results().At(0).Type().(*types.Pointer).Elem())
 		f.printf("func (f %s) %s(_ %s.Context, %s, _ ...%s) (*%s, error) {\n", fake, svc.reset.name, ctx,
 			param(svc.reset), opts, reset)
@@ -328,6 +409,16 @@ func emitSettingsKindTest(k *settingsKind, header string) ([]byte, error) {
 		}
 		f.printf("},\n")
 	}
+	// The fake writes, with a setting Cloudflare picks, the value the setting
+	// it is picked by takes, as Cloudflare does.
+	if len(k.picks) > 0 {
+		f.printf("picks: map[string]settingsValue{\n")
+		for _, id := range slices.Sorted(maps.Keys(k.picks)) {
+			pick := k.picks[id]
+			f.printf("%q: {path: %q, value: %q},\n", id, pick.Setting, pick.Written)
+		}
+		f.printf("},\n")
+	}
 	unconfigured, err := specJSON(k.unconfiguredState)
 	if err != nil {
 		return nil, err
@@ -343,7 +434,11 @@ func emitSettingsKindTest(k *settingsKind, header string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		f.printf("{\nwhat: %q,\nsettings: %s,\n},\n", v.path+" "+string(other), settings)
+		f.printf("{\nwhat: %q,\n", v.path+" "+string(other))
+		if k.byID && k.configuredSpecs[i] > 0 {
+			f.printf("sample: %d,\n", k.configuredSpecs[i])
+		}
+		f.printf("settings: %s,\n},\n", settings)
 	}
 	f.printf("},\n")
 	cases := func(label string, edits []ruleEdit) error {
@@ -387,7 +482,8 @@ func emitSettingsKindTest(k *settingsKind, header string) ([]byte, error) {
 	for _, c := range []struct {
 		label string
 		edits []ruleEdit
-	}{{"samples", samples}, {"changes", k.changes}, {"invalid", k.invalid}, {"full", k.full}} {
+	}{{"samples", samples}, {"changes", k.changes}, {"invalid", k.invalid}, {"full", k.full},
+		{"picked", k.pickedSpecs}} {
 		if err := cases(c.label, c.edits); err != nil {
 			return nil, err
 		}

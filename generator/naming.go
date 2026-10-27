@@ -13,8 +13,8 @@ import (
 
 // lowerCamel returns the JSON name for a Go name: its first word in lower
 // case, an initialism counting as one word. Title is title, ID id, NamespaceID
-// namespaceID, URLPattern urlPattern and SupportsURLEncoding
-// supportsURLEncoding. cloudflare-go v7 already spells its Go names with Go's
+// namespaceID, URLPattern urlPattern, SupportsURLEncoding supportsURLEncoding
+// and TLS13 tls13. cloudflare-go v7 already spells its Go names with Go's
 // initialisms, so the JSON names follow them.
 func lowerCamel(goName string) string {
 	runes := []rune(goName)
@@ -25,7 +25,7 @@ func lowerCamel(goName string) string {
 	switch {
 	case upper == len(runes):
 		return strings.ToLower(goName)
-	case upper > 1:
+	case upper > 1 && unicode.IsLower(runes[upper]):
 		// An initialism followed by a word: its last capital starts the word.
 		upper--
 	}
@@ -66,12 +66,15 @@ func humanize(jsonName string) string {
 
 // plural returns a kind's resource name: the kind in lower case, made plural
 // as English makes a regular noun plural. KVNamespace is kvnamespaces,
-// AccessPolicy accesspolicies and AddressMap addressmaps. The types emitter
+// AccessPolicy accesspolicies and AddressMap addressmaps. A kind named for
+// settings is plural already: ZoneSettings is zonesettings. The types emitter
 // gives controller-gen the name, so that the CRD, the RBAC rules and the
 // files kflare-gen names agree.
 func plural(kind string) string {
 	lower := strings.ToLower(kind)
 	switch {
+	case strings.HasSuffix(kind, "Settings"):
+		return lower
 	case strings.HasSuffix(lower, "y") && len(lower) > 1 && !strings.ContainsRune("aeiou", rune(lower[len(lower)-2])):
 		return strings.TrimSuffix(lower, "y") + "ies"
 	case strings.HasSuffix(lower, "s"), strings.HasSuffix(lower, "x"), strings.HasSuffix(lower, "z"),

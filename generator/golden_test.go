@@ -179,9 +179,9 @@ func TestKindsPutAnBeforeAVowel(t *testing.T) {
 // golden files.
 func TestGolden(t *testing.T) {
 	files := goldenFiles(t)
-	if want := 4 + 3 + 2*4 + 3*4; len(files) != want {
+	if want := 4 + 3 + 2*4 + 4*4; len(files) != want {
 		t.Errorf("generated %d files, want %d: four types files, the controller, specs and sample of one kind, and "+
-			"the four files of each of two rule kinds and of three settings kinds", len(files), want)
+			"the four files of each of two rule kinds and of four settings kinds", len(files), want)
 	}
 	for name, got := range files {
 		golden := filepath.Join("testdata", name+".golden")
@@ -222,7 +222,7 @@ func TestGoldenControllerCompiles(t *testing.T) {
 	}
 	overlay := map[string][]byte{}
 	for _, kind := range []string{"TestKVNamespace", "TestExecuteRule", "TestSkipRule", "TestURLNormalization",
-		"TestManagedTransform", "TestDNSSEC"} {
+		"TestManagedTransform", "TestDNSSEC", "TestZoneSettings"} {
 		lower := strings.ToLower(kind)
 		overlay[filepath.Join(root, typesFile(lower))] = read(filepath.Base(typesFile(lower)))
 		overlay[filepath.Join(root, apiDir, lower+"_deepcopy.go")] = fmt.Appendf(nil, `package v1alpha1
@@ -255,7 +255,8 @@ func (in *%[1]sList) DeepCopyObject() runtime.Object { out := *in; return &out }
 		scope := pkg.Types.Scope()
 		if scope.Lookup("fakeTestKVNamespaceAPI") != nil && scope.Lookup("testExecuteRuleKind") != nil &&
 			scope.Lookup("testSkipRuleKind") != nil && scope.Lookup("fakeTestURLNormalizationAPI") != nil &&
-			scope.Lookup("fakeTestManagedTransformAPI") != nil && scope.Lookup("fakeTestDNSSECAPI") != nil {
+			scope.Lookup("fakeTestManagedTransformAPI") != nil && scope.Lookup("fakeTestDNSSECAPI") != nil &&
+			scope.Lookup("fakeTestZoneSettingsAPI") != nil {
 			checked++
 		}
 	}
