@@ -387,7 +387,12 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 		return field{}, nil, fmt.Errorf("%s is sensitive (x-sensitive), and kflare-gen cannot keep it in a Secret "+
 			"yet; ignore it with a reason", f.apiName)
 	}
-	goType, column, err := goTypeOf(f, fs.typ)
+	integer := adjust.Validation != nil && adjust.Validation.Integer
+	if integer && (basicClass(f.typ) != types.IsNumeric || fs.typ == typeInteger) {
+		return field{}, nil, fmt.Errorf("fields.%s.validation.integer: only a number the OpenAPI spec does not say "+
+			"is an integer is made one", f.apiName)
+	}
+	goType, column, err := goTypeOf(f, fs.typ, integer)
 	if err != nil {
 		return field{}, nil, err
 	}
@@ -473,9 +478,9 @@ func checkDefault(goType, def string) error {
 
 // goTypeOf maps an SDK field's type to a Go type for the CRD and the type of
 // its print column. specType is the field's type in the OpenAPI spec:
-// cloudflare-go v7 types every number as a float64, so only the spec can tell
-// an integer, which a CRD needs.
-func goTypeOf(f sdkField, specType string) (goType, column string, err error) {
+// cloudflare-go v7 types every number as a float64, so only the spec, or the
+// entry (integer), can tell an integer, which a CRD needs.
+func goTypeOf(f sdkField, specType string, integer bool) (goType, column string, err error) {
 	if basic, ok := f.typ.Underlying().(*types.Basic); ok {
 		switch basic.Kind() {
 		case types.String:
@@ -483,12 +488,12 @@ func goTypeOf(f sdkField, specType string) (goType, column string, err error) {
 		case types.Bool:
 			return typeBool, "boolean", nil
 		case types.Float64, types.Int64, types.Int:
-			switch specType {
-			case typeInteger:
+			switch {
+			case specType == typeInteger || integer:
 				return typeInt64, typeInteger, nil
-			case "number":
+			case specType == "number":
 				return "", "", fmt.Errorf("%s is a number that need not be whole, which a CRD cannot hold well; "+
-					"ignore it with a reason", f.apiName)
+					"ignore it with a reason, or make it an integer (validation.integer) with one", f.apiName)
 			}
 			return "", "", fmt.Errorf("%s is a %s, and the OpenAPI spec does not say it is an integer; ignore it "+
 				"with a reason", f.apiName, f.typ)

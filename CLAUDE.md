@@ -165,16 +165,18 @@ what was decided and verified live, and why.
    - Settings kinds (`settingsKinds:`, run by `settings_controller.go`): a zone's settings of one product, a v7 service
      without `New` whose read (`Get`, or a `List` that returns the settings), `Update` or `Edit`, and `Delete` (the
      reset) take only the zone's ID. Closest example: `ManagedTransform` (keyed lists); for enums,
-     `generator/testdata/generator.yaml`'s TestURLNormalization
+     `generator/testdata/generator.yaml`'s TestURLNormalization. Or a service whose `Get` and `Edit` take a setting's
+     ID, without a reset, as `zones.SettingService` does: a field per setting, reset by writing back its `unconfigured`
+     value (`settings_byid.go`). Closest example: the test data's TestZoneSettings (`pickedBy`, `validation.integer`)
 
    Anything else needs a kflare-gen capability first ([Next wave](#next-wave-proposed-2026-10-17) lists them). A
    draft entry is the quickest check: `make codegen` refuses what it cannot generate, and says why.
 2. **A new capability is its own PR, merged before the kind's.** Build it on a test kind in
    `generator/testdata/generator.yaml`, with golden tests. A new runtime, with no generated kind to run its shared
-   specs yet, also gets a kind only the tests know, so that they run in CI (`SettingsFixture`, whose CRD controller-gen
-   wrote into `internal/controller/testdata/crd`); generate the test kinds into a copy of the tree once to run their
-   own tables too. The kind's PR is then its entry, the generated output, its live e2e spec and docs. A kflare-gen fix
-   the kind turns up can go in it; new mapping or runtime code cannot.
+   specs yet, also gets a kind only the tests know, so that they run in CI (`SettingsFixture` and `SettingsByIDFixture`,
+   whose CRDs controller-gen wrote into `internal/controller/testdata/crd`); generate the test kinds into a copy of the
+   tree once to run their own tables too. The kind's PR is then its entry, the generated output, its live e2e spec and
+   docs. A kflare-gen fix the kind turns up can go in it; new mapping or runtime code cannot.
 3. **Check the token permission first.** The OpenAPI operation's `x-api-token-group` names it, but is not always right
    (for managed transforms it names one that is refused). Try it with `CF_API_TOKEN`: a `?dry_run=true` write for a
    rule kind, a throwaway `kflare-probe-*` object otherwise. Adding a permission to the token needs the user's OK.
@@ -516,7 +518,10 @@ rule kinds reconciling at once share a phase's ruleset)
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first
 (`feat/generator-singletons`, #92), then the kind (`feat/managed-transform-controller`, #96), verified live on
-2026-10-23. The rest is still proposed, not decided
+2026-10-23. On 2026-10-26 they picked zone settings next, as one `ZoneSettings` kind with a field per setting (not a
+kind per group of settings, nor a generic kind per setting), and OK'd Zone Settings Write on the dev and CI tokens
+(added that day): capability 1 for settings that go by their IDs first (`feat/generator-zone-settings`), then the
+kind. The rest is still proposed, not decided
 
 Phase 3's table ([docs/design-notes.md](docs/design-notes.md#phase-3--expanded-api-surface)) ends with the Rules
 kinds. Below is what else this account can build and live-test, checked on
@@ -526,7 +531,7 @@ row also says what kflare-gen needs before it can generate the kind.
 | Candidate | What it manages | Free, on this account | Dev token | What kflare-gen needs first |
 |---|---|---|---|---|
 | `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ✔ Managed headers Write, added 2026-10-23 | ✅ the settings kinds (capability 1); generated in `feat/managed-transform-controller` |
-| Zone settings (one kind, or one per group of settings) | SSL mode, Always Use HTTPS, minimum TLS version, HSTS, and the other settings a zone has | most settings (to check one by one) | ❌ needs Zone Settings Write (ask) | the singleton runtime |
+| `ZoneSettings` (one kind, the user's choice on 2026-10-26) | SSL mode, Always Use HTTPS, minimum TLS version, HSTS, and the other settings a zone has | 37 of v7's 67 editable on kflare.dev (read 2026-10-26), each to probe | ✔ Zone Settings Write, added 2026-10-26 | ✅ settings by ID (capability 1, `feat/generator-zone-settings`) |
 | `Queue` | a Workers queue (consumers later) | ✔ probe queue created and deleted | ✔ Queues Write | `SinglePage` lists: the shared CRUD reconciler pages only `V4PagePaginationArray` |
 | `VectorizeIndex` | a Vectorize index | ✔ probe index (dimensions 32 to 1,536) | ✔ Vectorize Write | objects identified by name (no ID, like R2 buckets), `SinglePage` lists |
 | `TurnstileWidget` | a Turnstile widget | ✔ probe widget | ✔ Turnstile Sites Write | lists of strings in CRUD kinds (domains); the widget's secret written to a Kubernetes Secret; adoption without unique names |
@@ -544,7 +549,8 @@ kflare-gen capabilities, in the order the candidates above need them:
    others report `AlreadyConfigured`; deletion resets the settings unless retain. ManagedTransform, zone settings, URL
    normalization and DNSSEC have this shape (DNSSEC only on a zone that is not the e2e zone). ✅ Built for services
    whose `Delete` resets the settings (`feat/generator-singletons`, see
-   [generator/CLAUDE.md](generator/CLAUDE.md)); zone settings, named by an ID and without a reset, need more
+   [generator/CLAUDE.md](generator/CLAUDE.md)), and for zone settings, named by an ID and without a reset
+   (`feat/generator-zone-settings`)
 2. **`SinglePage` lists and objects identified by name** in the shared CRUD reconciler: queues, Vectorize indexes,
    Workers custom domains
 3. **Secrets:** an `x-sensitive` field written to a Kubernetes Secret (the Turnstile secret), or read from one (the

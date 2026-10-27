@@ -9,7 +9,8 @@ CLAUDE.md's [Adding a kind](../CLAUDE.md#adding-a-kind). What each kind's entry 
 **Status:** ✅ Complete: PRs 1 to 8 (`feat/cloudflare-go-v7`, `feat/crud-reconciler`, `feat/generator-types`,
 `feat/generator-openapi`, `feat/generator-controllers`, `feat/d1-database-controller`, `feat/rulesets-v7`,
 `feat/generator-rule-kinds`). Planned and decided 2026-10-13. Since then, a third shape: settings kinds
-(`feat/generator-singletons`, notes below the table)
+(`feat/generator-singletons`, notes below the table), and settings that go by their IDs
+(`feat/generator-zone-settings`)
 
 Most of a new kind is the same wiring every time. IPList (#26) changed 27 files (+2,596 lines). Besides its types and
 its bulk-operation logic, it repeated `Get/SetConditions`, registration in `cmd/main.go`, the CRD kustomization, the
@@ -278,7 +279,7 @@ kinds:
   for a zone's settings of one product, which always exist: the first of the Next wave's capabilities. An entry names a
   v7 service without `New` whose read (`Get`, or `List` where it returns the settings rather than a page), write
   (`Update` or `Edit`) and reset (`Delete`) each take only the zone's ID; kflare-gen refuses a service without one of
-  them, or one that names its settings by an ID (zone settings, which need the reset to write defaults). The spec is
+  them (a service that names its settings by an ID came later: the next notes but one). The spec is
   `zoneRef` (`SettingsSpec`, shared and hand-written like `RulesetRuleSpec`) and the write's body params, walked by the
   rule kinds' param builder (objects, lists, maps and unions), its root's `zone_id` skipped; status is `SettingsStatus`,
   the zone's ID. The entry's `sample` is one spec, `tests` more, `fields` and `ignore` go by path as for rule kinds,
@@ -326,9 +327,51 @@ kinds:
 
   It also turned up a spec that predates settings kinds: `SetupGeneratedReconcilers`' expected the rule kinds and the
   account's dependents, and now expects every account and Zone dependent
+- **Settings by ID as built** (`feat/generator-zone-settings`, 2026-10-27), for zone settings: the user picked one
+  `ZoneSettings` kind on 2026-10-26, a field per setting, over per-group kinds and a generic kind per setting.
+  `zones.SettingService` reads and writes each of a zone's settings by its ID (`Get` and `Edit` take the setting's ID
+  before their params), has no reset, and types the value `Edit` takes as a union (`shared.UnionString`,
+  `shared.UnionFloat`, a struct per object). kflare-gen takes a service whose `Get` takes such an ID for one whose
+  settings go by their IDs (`settingsService.byID`): the variants of the union `Get` returns (`AsUnion`) are the
+  settings it knows, 67 in v7.13.0, each named by its ID constant (`always_use_https` is `AlwaysUseHTTPS`, as the
+  constant `SettingGetResponseZonesAlwaysUseHTTPS2IDAlwaysUseHTTPS` spells it, and so the field `alwaysUseHTTPS`); a
+  setting's value has the type of its variant's value, the constraints of the OpenAPI schema the spec names
+  `zones_<id>_value` (a variant of the value the write's body takes), and converts into the type of the union of values
+  that carries it (a string, a number, or the struct whose fields have the object's names). Fields are opt-out as
+  always: a setting no name, value, schema or variant fits is refused, saying so, until the entry ignores it (`0rtt`,
+  whose constant spells it `0rtt`; `ssl_recommender`, written as `enabled`; `ciphers`, a list). The runtime keeps such a
+  kind's settings as one JSON object whose fields are the settings' IDs, so the comparison and the adoption check of
+  `settings.go` stay as they are (`settings_byid.go`): the read gets only the settings the resource sets, a sync writes
+  only those that differ (`settingsShape.differing`), and the reset writes back each setting the resource sets at its
+  `unconfigured` value, so the entry gives one for every field of every setting. A setting Cloudflare picks the value of
+  itself (`fields.<id>.pickedBy`) has none of its own: while `ssl_automatic_mode` is `auto` (Automatic SSL/TLS)
+  Cloudflare picks the encryption mode, `ssl`, so `ssl_automatic_mode` tells whether someone configured it, the read
+  gets it with `ssl`, and the reset writes it back to `auto` rather than writing an `ssl`. Probes on kflare.dev with
+  Zone Settings Write (2026-10-27, every setting restored) decided the rest: an object setting is written field by field
+  (`security_header` keeps the fields a write leaves out), so a write sends only what the spec sets and the reset the
+  whole object; writing `ssl` turns `ssl_automatic_mode` `custom` a few seconds later, and writing it `auto` hands the
+  mode back; `modified_on` cannot tell a configured zone (writing a default clears it for some settings, and
+  `min_tls_version` never reports it); and `security_header`'s `max_age`, a `number` in the spec, takes whole numbers
+  only (1048 for a negative one), which the new `validation.integer` says, for every shape's entries. On the way:
+  `lowerCamel` keeps an initialism followed by a digit whole (`TLS13` is `tls13`, not `tlS13`), `plural` leaves a kind
+  named for settings as it is (`ZoneSettings` is `zonesettings`, singular and plural alike, which the API server
+  accepts), and the settings kinds' calls take the resource (`read`, `reset`) and the IDs to write (`write`), which the
+  committed ManagedTransform's generated code leaves aside. Golden tests add TestZoneSettings (an enum, an integer with
+  a range, an object with an integer made one, and `ssl` picked by `ssl_automatic_mode`); generated into a copy of the
+  tree, its table passed the shared specs on envtest, 34 of 34, as did the committed kinds'. A test-only kind,
+  `SettingsByIDFixture` (`settings_byid_fixture_test.go`, its CRD in `internal/controller/testdata/crd`), is
+  TestZoneSettings by another name and runs them in CI. The shared specs learned the shape: the fake keeps a zone's
+  settings by ID, writes a picked setting's other setting too (`picks`), and counts the writes a deletion's reconcile
+  makes as its reset; a sync's writes are checked against the settings that differed, and a configured case's resource
+  is the spec that sets the value it changes; and a new spec writes each picked setting alone, which another resource
+  must then take for configured until the resource that wrote it resets it. Mutations: 37 of the runtime, the comparison
+  and the fixture's generated code, and 52 of kflare-gen's new code, all caught. The first runs left 2 and 1 alive: an
+  empty value the spec asks for, now in `differing`'s table; a guard that turned a missing value into null, dead since a
+  nil `json.RawMessage` marshals as null, now gone; and a `Get` that takes two IDs, now checked on
+  `firewall.WAFPackageGroupService`
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
-  zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without `New`, secrets, and
-  settings identified by an ID with a reset that writes defaults (zone settings). Also cross-kind references such as
+  zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without `New`, and secrets. Also
+  cross-kind references such as
   `kvNamespaceRef`, generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is
   not reliable: for managed transforms it lists a permission that is refused, see Token permissions)

@@ -62,7 +62,7 @@ var testURLNormalizationKind = settingsKind[TestURLNormalizationAPI]{
 	newObject: func() settingsObject { return &cloudflarev1alpha1.TestURLNormalization{} },
 	newList:   func() client.ObjectList { return &cloudflarev1alpha1.TestURLNormalizationList{} },
 
-	read: func(ctx context.Context, api TestURLNormalizationAPI, zoneID string) (string, error) {
+	read: func(ctx context.Context, api TestURLNormalizationAPI, zoneID string, _ settingsObject) (string, error) {
 		var params url_normalization.URLNormalizationGetParams
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		settings, err := api.Get(ctx, params)
@@ -71,13 +71,13 @@ var testURLNormalizationKind = settingsKind[TestURLNormalizationAPI]{
 		}
 		return settings.JSON.RawJSON(), nil
 	},
-	write: func(ctx context.Context, api TestURLNormalizationAPI, zoneID string, obj settingsObject) error {
+	write: func(ctx context.Context, api TestURLNormalizationAPI, zoneID string, obj settingsObject, _ []string) error {
 		params := testURLNormalizationParams(obj.(*cloudflarev1alpha1.TestURLNormalization).Spec)
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		_, err := api.Update(ctx, params)
 		return err
 	},
-	reset: func(ctx context.Context, api TestURLNormalizationAPI, zoneID string) error {
+	reset: func(ctx context.Context, api TestURLNormalizationAPI, zoneID string, _ settingsObject) error {
 		var params url_normalization.URLNormalizationDeleteParams
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		return api.Delete(ctx, params)

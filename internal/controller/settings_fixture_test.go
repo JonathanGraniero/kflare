@@ -141,7 +141,7 @@ var settingsFixtureKind = settingsKind[SettingsFixtureAPI]{
 	newObject: func() settingsObject { return &SettingsFixture{} },
 	newList:   func() client.ObjectList { return &SettingsFixtureList{} },
 
-	read: func(ctx context.Context, api SettingsFixtureAPI, zoneID string) (string, error) {
+	read: func(ctx context.Context, api SettingsFixtureAPI, zoneID string, _ settingsObject) (string, error) {
 		var params url_normalization.URLNormalizationGetParams
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		settings, err := api.Get(ctx, params)
@@ -150,13 +150,13 @@ var settingsFixtureKind = settingsKind[SettingsFixtureAPI]{
 		}
 		return settings.JSON.RawJSON(), nil
 	},
-	write: func(ctx context.Context, api SettingsFixtureAPI, zoneID string, obj settingsObject) error {
+	write: func(ctx context.Context, api SettingsFixtureAPI, zoneID string, obj settingsObject, _ []string) error {
 		params := settingsFixtureParams(obj.(*SettingsFixture).Spec)
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		_, err := api.Update(ctx, params)
 		return err
 	},
-	reset: func(ctx context.Context, api SettingsFixtureAPI, zoneID string) error {
+	reset: func(ctx context.Context, api SettingsFixtureAPI, zoneID string, _ settingsObject) error {
 		var params url_normalization.URLNormalizationDeleteParams
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		return api.Delete(ctx, params)

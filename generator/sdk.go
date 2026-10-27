@@ -13,10 +13,12 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -177,7 +179,7 @@ func (s sdk) service(name string) (*service, error) {
 	if svc.getRoute, err = routeOf("Get"); err != nil {
 		return nil, err
 	}
-	for _, method := range []string{"Update", "Edit"} {
+	for _, method := range writeMethods {
 		c, _, err := r.call(methods, method)
 		if errors.Is(err, errNoMethod) {
 			continue
@@ -271,6 +273,10 @@ func parseRoutes(apiMD, pkgPath string) map[string]route {
 // service of settings, may read them.
 const listMethod = "List"
 
+// writeMethods are the names a service's method that changes an object, or
+// writes settings, may have, in the order kflare-gen looks for them.
+var writeMethods = []string{"Update", "Edit"}
+
 // errNoMethod is the error for a service without the method asked for.
 var errNoMethod = errors.New("no such method")
 
@@ -341,47 +347,75 @@ func (r *sdkReader) call(methods *types.MethodSet, name string) (*sdkCall, []sdk
 // fields reads the fields of a struct type declared in the package, or of a
 // pointer to one: for params, the fields inside their param.Field.
 func (r *sdkReader) fields(t types.Type, params bool) ([]sdkField, error) {
+	named, st, err := r.structType(t)
+	if err != nil {
+		return nil, err
+	}
+	docs := r.fieldDocs(named.Obj().Name())
+	var out []sdkField
+	for i := range st.NumFields() {
+		f, ok, err := r.field(named, st.Field(i), reflect.StructTag(st.Tag(i)), docs, params)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// structType returns the struct type t, declared in the package, or the
+// struct a pointer t points to.
+func (r *sdkReader) structType(t types.Type) (*types.Named, *types.Struct, error) {
 	if ptr, ok := t.(*types.Pointer); ok {
 		t = ptr.Elem()
 	}
 	named, ok := t.(*types.Named)
 	if !ok || named.Obj().Pkg() != r.pkg.Types {
-		return nil, fmt.Errorf("%s is not a type of %s", t, r.pkg.PkgPath)
+		return nil, nil, fmt.Errorf("%s is not a type of %s", t, r.pkg.PkgPath)
 	}
 	st, ok := named.Underlying().(*types.Struct)
 	if !ok {
-		return nil, fmt.Errorf("%s is not a struct", named.Obj().Name())
+		return nil, nil, fmt.Errorf("%s is not a struct", named.Obj().Name())
 	}
-	docs := r.fieldDocs(named.Obj().Name())
+	return named, st, nil
+}
 
-	var out []sdkField
-	for i := range st.NumFields() {
-		v, tag := st.Field(i), reflect.StructTag(st.Tag(i))
-		f := sdkField{goName: v.Name(), typ: v.Type(), required: tag.Get("api") == "required", doc: docs[v.Name()]}
-		for _, in := range []string{inPath, inQuery, inHeader} {
-			if name := tag.Get(in); name != "" {
-				f.in, f.apiName = in, name
-			}
+// field reads the field v of the struct named, tagged tag, as fields does:
+// false for a field the API does not name, such as the JSON metadata of an
+// object.
+func (r *sdkReader) field(named *types.Named, v *types.Var, tag reflect.StructTag, docs map[string]string,
+	params bool) (sdkField, bool, error) {
+	f := sdkField{goName: v.Name(), typ: v.Type(), required: tag.Get("api") == "required", doc: docs[v.Name()]}
+	for _, in := range []string{inPath, inQuery, inHeader} {
+		if name := tag.Get(in); name != "" {
+			f.in, f.apiName = in, name
 		}
-		if f.in == "" {
-			name, _, _ := strings.Cut(tag.Get("json"), ",")
-			if name == "" || name == "-" {
-				continue
-			}
-			f.in, f.apiName = inBody, name
-		}
-		if params {
-			inner, ok := paramFieldType(f.typ)
-			if !ok {
-				return nil, fmt.Errorf("%s.%s is a %s, not a param.Field: kflare-gen cannot map unions yet",
-					named.Obj().Name(), f.goName, types.TypeString(f.typ, types.RelativeTo(r.pkg.Types)))
-			}
-			f.typ = inner
-		}
-		f.enum = r.enumValues(f.typ)
-		out = append(out, f)
 	}
-	return out, nil
+	if f.in == "" {
+		name := jsonName(tag)
+		if name == "" || name == "-" {
+			return sdkField{}, false, nil
+		}
+		f.in, f.apiName = inBody, name
+	}
+	if params {
+		inner, ok := paramFieldType(f.typ)
+		if !ok {
+			return sdkField{}, false, fmt.Errorf("%s.%s is a %s, not a param.Field: kflare-gen cannot map unions yet",
+				named.Obj().Name(), f.goName, types.TypeString(f.typ, types.RelativeTo(r.pkg.Types)))
+		}
+		f.typ = inner
+	}
+	f.enum = r.enumValues(f.typ)
+	return f, true, nil
+}
+
+// jsonName returns the name a struct tag gives a field in JSON.
+func jsonName(tag reflect.StructTag) string {
+	name, _, _ := strings.Cut(tag.Get("json"), ",")
+	return name
 }
 
 // paramFieldType returns T for param.Field[T].
@@ -573,6 +607,39 @@ type settingsService struct {
 	// readRoute, writeRoute and resetRoute are their routes, which find their
 	// operations in the OpenAPI spec.
 	readRoute, writeRoute, resetRoute route
+
+	// byID is set for a service that reads and writes each of a zone's
+	// settings by its ID, as zones.SettingService does: read is its Get and
+	// write its Update or Edit, each taking the setting's ID before its
+	// params, and it has no reset. Its settings are those it knows, in the
+	// order of their IDs: the variants of what read returns.
+	byID          bool
+	settingsByID  []*sdkSetting
+	writeByIDBody byIDBody
+}
+
+// sdkSetting is one setting a service whose settings go by their IDs knows:
+// the variant of what its read returns for that setting.
+type sdkSetting struct {
+	// id is the setting's ID, such as always_use_https, and goName the name
+	// cloudflare-go v7's constant for the ID gives it, such as AlwaysUseHTTPS.
+	id, goName string
+	// doc is the variant's documentation.
+	doc string
+	// value is the type of the variant's value; nil for a variant that holds
+	// none.
+	value types.Type
+}
+
+// byIDBody is how the write of a service whose settings go by their IDs
+// takes a setting's value, as zones.SettingService's Edit does: in a body, a
+// union its params hold (field), whose variant body carries the value (value),
+// a union of every type a value may have (variants).
+type byIDBody struct {
+	field    sdkField
+	body     *types.Named
+	value    sdkField
+	variants []*types.Named
 }
 
 // settings loads the service of settings an entry names.
@@ -591,6 +658,13 @@ func (s sdk) settings(name string) (*settingsService, error) {
 		return nil, fmt.Errorf("%s has a New: it creates objects, which a settings kind does not", name)
 	}
 	svc := &settingsService{name: name, pkg: pkg.Types, typeName: typ.Name(), r: r}
+	// A Get that takes a setting's ID reads one of the zone's settings.
+	if get := methods.Lookup(pkg.Types, "Get"); get != nil && takesSettingID(get.Type().(*types.Signature)) {
+		if err := svc.loadByID(methods, routes); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		return svc, nil
+	}
 
 	for _, method := range []string{"Get", listMethod} {
 		c, err := r.method(methods, method)
@@ -612,7 +686,7 @@ func (s sdk) settings(name string) (*settingsService, error) {
 	if svc.read == nil {
 		return nil, fmt.Errorf("%s has no Get or List to read the settings with", name)
 	}
-	for _, method := range []string{"Update", "Edit"} {
+	for _, method := range writeMethods {
 		c, err := r.method(methods, method)
 		if errors.Is(err, errNoMethod) {
 			continue
@@ -685,4 +759,256 @@ func (r *sdkReader) resetMethod(methods *types.MethodSet, name string) (*sdkCall
 		return nil, fmt.Errorf("%s's params: %w", name, err)
 	}
 	return c, nil
+}
+
+// takesSettingID reports whether a service method is shaped (ctx, id string,
+// params, opts...): it names one setting by its ID.
+func takesSettingID(sig *types.Signature) bool {
+	params := sig.Params()
+	return params.Len() == 4 && types.Identical(params.At(1).Type(), types.Typ[types.String])
+}
+
+// loadByID reads a service whose Get and Update (or Edit) take a setting's
+// ID: the settings it knows, from the variants of what Get returns, and how
+// its write takes a setting's value.
+func (svc *settingsService) loadByID(methods *types.MethodSet, routes map[string]route) error {
+	r := svc.r
+	read, err := r.method(methods, "Get")
+	if err != nil {
+		return err
+	}
+	svc.read = read
+	if methods.Lookup(r.pkg.Types, "Delete") != nil {
+		return fmt.Errorf("its settings go by their IDs, and it has a Delete, which kflare-gen cannot call yet")
+	}
+	for _, method := range writeMethods {
+		sel := methods.Lookup(r.pkg.Types, method)
+		if sel == nil {
+			continue
+		}
+		if !takesSettingID(sel.Type().(*types.Signature)) {
+			return fmt.Errorf("its Get takes a setting's ID, and its %s does not", method)
+		}
+		c, body, err := r.bodyMethod(sel, method)
+		if err != nil {
+			return err
+		}
+		svc.write, svc.writeByIDBody.field = c, body
+		break
+	}
+	if svc.write == nil {
+		return fmt.Errorf("it has no Update or Edit to write the settings with")
+	}
+	svc.byID = true
+	if err := svc.readSettingsByID(); err != nil {
+		return err
+	}
+	if err := svc.readValueBody(); err != nil {
+		return err
+	}
+	for _, c := range []struct {
+		call *sdkCall
+		into *route
+	}{{svc.read, &svc.readRoute}, {svc.write, &svc.writeRoute}} {
+		route, ok := routes[svc.typeName+"."+c.call.name]
+		if !ok {
+			return fmt.Errorf("%s's api.md has no route for %s.%s", svc.pkg.Path(), svc.typeName, c.call.name)
+		}
+		*c.into = route
+	}
+	return nil
+}
+
+// bodyMethod reads the method sel, named name, as method does, but for params
+// that hold, besides their param.Fields, a body that is a union, as
+// zones.SettingEditParams does: a field named body in JSON, whose type is a
+// union of the package. It returns the body's field too, its type the union.
+func (r *sdkReader) bodyMethod(sel *types.Selection, name string) (*sdkCall, sdkField, error) {
+	sig := sel.Type().(*types.Signature)
+	if !sig.Variadic() || sig.Params().Len() < 3 || sig.Results().Len() != 2 {
+		return nil, sdkField{}, fmt.Errorf("%s is not shaped (ctx, [id,] params, opts...) (*result, error)", name)
+	}
+	c := &sdkCall{name: name, sig: sig, params: sig.Params().At(sig.Params().Len() - 2).Type()}
+	named, st, err := r.structType(c.params)
+	if err != nil {
+		return nil, sdkField{}, fmt.Errorf("%s's params: %w", name, err)
+	}
+	docs := r.fieldDocs(named.Obj().Name())
+	var body sdkField
+	for i := range st.NumFields() {
+		v, tag := st.Field(i), reflect.StructTag(st.Tag(i))
+		if _, union := r.isUnion(v.Type()); union && jsonName(tag) == "body" {
+			body = sdkField{goName: v.Name(), apiName: "body", in: inBody, typ: v.Type(), required: true}
+			continue
+		}
+		f, ok, err := r.field(named, v, tag, docs, true)
+		if err != nil {
+			return nil, sdkField{}, fmt.Errorf("%s's params: %w", name, err)
+		}
+		if ok {
+			c.paramFields = append(c.paramFields, f)
+		}
+	}
+	if body.typ == nil {
+		return nil, sdkField{}, fmt.Errorf("%s's params hold no body that is a union of settings' values", name)
+	}
+	return c, body, nil
+}
+
+// readSettingsByID reads the settings a service whose settings go by their
+// IDs knows: the variants of the union what its Get returns holds
+// (AsUnion), each with an ID field whose type has one constant, the
+// setting's ID.
+func (svc *settingsService) readSettingsByID() error {
+	r := svc.r
+	result := svc.read.sig.Results().At(0).Type()
+	asUnion := types.NewMethodSet(result).Lookup(r.pkg.Types, "AsUnion")
+	if asUnion == nil {
+		return fmt.Errorf("%s returns %s, which holds no union of settings (AsUnion)", svc.read.name,
+			typeName(result))
+	}
+	union, ok := r.isUnion(asUnion.Type().(*types.Signature).Results().At(0).Type())
+	if !ok {
+		return fmt.Errorf("the AsUnion of what Get returns returns no union of the package")
+	}
+	byID := map[string]*sdkSetting{}
+	for _, variant := range r.variants(union) {
+		fields, err := r.fields(variant, false)
+		if err != nil {
+			return err
+		}
+		name := variant.Obj().Name()
+		s := &sdkSetting{doc: r.typeDocs[name]}
+		for _, f := range fields {
+			switch f.apiName {
+			case "id":
+				if len(f.enum) != 1 {
+					return fmt.Errorf("%s's id is a %s, not a type of one constant: the setting's ID", name,
+						typeName(f.typ))
+				}
+				s.id = f.enum[0]
+				idType := f.typ.(*types.Named).Obj().Name()
+				constant, err := r.constantNamed(idType, s.id)
+				if err != nil {
+					return err
+				}
+				s.goName = strings.ReplaceAll(strings.TrimPrefix(constant, idType), "_", "")
+			case "value":
+				s.value = f.typ
+			}
+		}
+		if s.id == "" {
+			return fmt.Errorf("%s has no id, which names its setting", name)
+		}
+		if other, ok := byID[s.id]; ok {
+			return fmt.Errorf("two variants of what Get returns are the setting %s: %s's ID is %s's", s.id, name,
+				other.goName)
+		}
+		byID[s.id] = s
+	}
+	for _, id := range slices.Sorted(maps.Keys(byID)) {
+		svc.settingsByID = append(svc.settingsByID, byID[id])
+	}
+	return nil
+}
+
+// readValueBody reads how the write of a service whose settings go by their
+// IDs takes a setting's value: the variant of its body's union that holds
+// one field, value, a union, and the types of that union, in the package or
+// in those it imports, such as cloudflare-go v7's shared.UnionString.
+func (svc *settingsService) readValueBody() error {
+	r, b := svc.r, &svc.writeByIDBody
+	b.body, b.value, b.variants = nil, sdkField{}, nil
+	union := b.field.typ.(*types.Named)
+	for _, variant := range r.variants(union) {
+		fields, err := r.fields(variant, true)
+		if err != nil || len(fields) != 1 || fields[0].apiName != "value" {
+			continue
+		}
+		if _, ok := r.isUnion(fields[0].typ); ok {
+			b.body, b.value = variant, fields[0]
+			break
+		}
+	}
+	if b.body == nil {
+		return fmt.Errorf("%s's body has no variant that holds only a value: the setting's", svc.write.name)
+	}
+	values := b.value.typ.(*types.Named)
+	iface := values.Underlying().(*types.Interface)
+	for _, pkg := range append([]*types.Package{r.pkg.Types}, r.pkg.Types.Imports()...) {
+		scope := pkg.Scope()
+		for _, name := range scope.Names() {
+			obj, ok := scope.Lookup(name).(*types.TypeName)
+			if !ok || !obj.Exported() {
+				continue
+			}
+			named, ok := obj.Type().(*types.Named)
+			if ok && !types.IsInterface(named) && types.Implements(named, iface) {
+				b.variants = append(b.variants, named)
+			}
+		}
+	}
+	return nil
+}
+
+// valueVariant returns the type of the union of values that carries a
+// setting's value of type value: a string type of the union for a string, a
+// number type for a number, and, for an object, the struct of the union whose
+// fields have the object's names in JSON.
+func (svc *settingsService) valueVariant(value types.Type) (*types.Named, error) {
+	r := svc.r
+	var matches []*types.Named
+	switch class := basicClass(value); {
+	case class == types.IsString || class == types.IsNumeric:
+		for _, v := range svc.writeByIDBody.variants {
+			if _, isStruct := v.Underlying().(*types.Struct); !isStruct && basicClass(v) == class {
+				matches = append(matches, v)
+			}
+		}
+	case class == 0 && isStructType(value):
+		names, err := jsonNames(r, value, false)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range svc.writeByIDBody.variants {
+			if !isStructType(v) || v.Obj().Pkg() != r.pkg.Types {
+				continue
+			}
+			if variant, err := jsonNames(r, v, true); err == nil && slices.Equal(variant, names) {
+				matches = append(matches, v)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("its value is a %s, which kflare-gen cannot write by the setting's ID yet",
+			typeName(value))
+	}
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("its value is a %s, and no type of %s takes one", typeName(value),
+			typeName(svc.writeByIDBody.value.typ))
+	case 1:
+		return matches[0], nil
+	}
+	return nil, fmt.Errorf("its value is a %s, which %d types of %s take", typeName(value), len(matches),
+		typeName(svc.writeByIDBody.value.typ))
+}
+
+// isStructType reports whether t is a struct type.
+func isStructType(t types.Type) bool {
+	_, ok := t.Underlying().(*types.Struct)
+	return ok
+}
+
+// jsonNames returns the JSON names of a struct's fields, sorted.
+func jsonNames(r *sdkReader, t types.Type, params bool) ([]string, error) {
+	fields, err := r.fields(t, params)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.apiName
+	}
+	slices.Sort(names)
+	return names, nil
 }

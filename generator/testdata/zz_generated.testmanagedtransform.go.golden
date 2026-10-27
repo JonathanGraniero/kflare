@@ -62,7 +62,7 @@ var testManagedTransformKind = settingsKind[TestManagedTransformAPI]{
 	newObject: func() settingsObject { return &cloudflarev1alpha1.TestManagedTransform{} },
 	newList:   func() client.ObjectList { return &cloudflarev1alpha1.TestManagedTransformList{} },
 
-	read: func(ctx context.Context, api TestManagedTransformAPI, zoneID string) (string, error) {
+	read: func(ctx context.Context, api TestManagedTransformAPI, zoneID string, _ settingsObject) (string, error) {
 		var params managed_transforms.ManagedTransformListParams
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		settings, err := api.List(ctx, params)
@@ -71,13 +71,13 @@ var testManagedTransformKind = settingsKind[TestManagedTransformAPI]{
 		}
 		return settings.JSON.RawJSON(), nil
 	},
-	write: func(ctx context.Context, api TestManagedTransformAPI, zoneID string, obj settingsObject) error {
+	write: func(ctx context.Context, api TestManagedTransformAPI, zoneID string, obj settingsObject, _ []string) error {
 		params := testManagedTransformParams(obj.(*cloudflarev1alpha1.TestManagedTransform).Spec)
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		_, err := api.Edit(ctx, params)
 		return err
 	},
-	reset: func(ctx context.Context, api TestManagedTransformAPI, zoneID string) error {
+	reset: func(ctx context.Context, api TestManagedTransformAPI, zoneID string, _ settingsObject) error {
 		var params managed_transforms.ManagedTransformDeleteParams
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		return api.Delete(ctx, params)

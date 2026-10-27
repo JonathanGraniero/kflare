@@ -51,6 +51,12 @@ import (
 // policy allows, one resource per zone, the reset on deletion and what keeps
 // the settings, Cloudflare's errors, the Zone waiting, setup, and the CRD:
 // the immutable zoneRef and the specs it refuses.
+//
+// A kind whose settings go by their IDs reads and writes each setting on its
+// own (settings_byid.go), and resets those its resource sets by writing them:
+// its fake keeps a zone's settings as one JSON object whose fields are their
+// IDs, and the writes it makes while the specs reconcile a resource's
+// deletion are that resource's reset.
 
 // settingsKindReconciler is a settings kind's reconciler.
 type settingsKindReconciler[A any] interface {
@@ -84,17 +90,24 @@ type settingsKindSpecs[O settingsObject, A any] struct {
 	// key given, keeping the items a write leaves out. The fake writes them
 	// so, whatever the kind compares.
 	keyedLists map[string]string
+	// picks are, for a kind whose settings go by their IDs, the settings
+	// Cloudflare picks the value of itself, each with the value the setting it
+	// is picked by takes once the setting is written: the fake writes it so.
+	picks map[string]settingsValue
 	// unconfigured are the settings of a zone nobody has configured, as JSON,
 	// which every zone of the fake starts with: with an item no spec lists in
 	// each keyed list, as Cloudflare's hold items a spec leaves out.
 	// configured are such settings with one of the values of the kind's
-	// unconfigured changed each, which count as configured outside kflare.
+	// unconfigured changed each, which count as configured outside kflare,
+	// each read by the resource of the spec of samples sample names.
 	unconfigured string
 	configured   []settingsSpecCase
 	// samples are valid specs: the entry's sample, then its tests; changes
 	// edit them; invalid are specs the CRD refuses; full are specs that set
-	// every field, which the specs convert without the API server.
-	samples, changes, invalid, full []settingsSpecCase
+	// every field, which the specs convert without the API server; picked are,
+	// for a kind whose settings go by their IDs, specs that each set one
+	// setting of picks alone, at another value than an unconfigured zone's.
+	samples, changes, invalid, full, picked []settingsSpecCase
 }
 
 // fakeSettingsStore is an in-memory Cloudflare's settings of one product, in
@@ -107,14 +120,23 @@ type fakeSettingsStore struct {
 	shape        settingsShape
 	unconfigured any
 	zones        map[string]any
+	// picks are the settings Cloudflare picks the value of itself, of a kind
+	// whose settings go by their IDs: a write of one writes, too, the value
+	// the setting it is picked by takes.
+	picks map[string]settingsValue
 
 	readErr, writeErr, resetErr error
 
 	zoneIDs []string
 	// writes holds the body of each write, as cloudflare-go v7 sent it, and
-	// resets counts the resets.
+	// resets counts the resets. A kind whose settings go by their IDs writes
+	// one setting each time, recorded as an object of its ID and value.
 	writes [][]byte
 	resets int
+	// deleting is set while the specs reconcile the deletion of a resource:
+	// the writes of a kind whose settings go by their IDs are then its reset,
+	// counted once (resetting), and resetErr refuses them.
+	deleting, resetting bool
 }
 
 func newFakeSettingsStore(shape settingsShape, unconfigured string) *fakeSettingsStore {
@@ -146,12 +168,6 @@ func (s *fakeSettingsStore) seed(id, settings string) {
 	var value any
 	Expect(json.Unmarshal([]byte(settings), &value)).To(Succeed())
 	s.zones[id] = value
-}
-
-// lastWrite returns the body of the last write.
-func (s *fakeSettingsStore) lastWrite() string {
-	Expect(s.writes).NotTo(BeEmpty(), "nothing was written")
-	return string(s.writes[len(s.writes)-1])
 }
 
 func (s *fakeSettingsStore) reset(zoneID string) error {
@@ -198,6 +214,78 @@ func fakeSettingsWrite[T any](s *fakeSettingsStore, zoneID string, params json.M
 	}
 	s.zones[zoneID] = s.shape.written(s.settings(zoneID), written, "")
 	return decodeSettings[T](s.zones[zoneID])
+}
+
+// fakeSettingReadByID returns the setting id of the zone zoneID, as
+// cloudflare-go v7 decodes it into T: its ID and value, as Cloudflare returns
+// one of a zone's settings. Like Cloudflare, it refuses a setting it does not
+// know.
+func fakeSettingReadByID[T any](s *fakeSettingsStore, zoneID, id string) (*T, error) {
+	if err := s.zone(zoneID); err != nil {
+		return nil, err
+	}
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
+	settings, _ := s.settings(zoneID).(map[string]any)
+	value, ok := settings[id]
+	if !ok {
+		return nil, v7APIError(http.MethodGet, "zones/"+zoneID+"/settings/"+id, http.StatusBadRequest, 1003,
+			"Undefined zone setting: "+id)
+	}
+	return decodeSettings[T](map[string]any{"id": id, "value": value, "editable": true})
+}
+
+// fakeSettingWriteByID writes the value params carry to the setting id of the
+// zone zoneID, as Cloudflare writes one of a zone's settings: an object field
+// by field, any other value replaced; a setting Cloudflare picks the value of
+// itself writes the value of the setting it is picked by too. It returns the
+// setting as cloudflare-go v7 decodes it into T. Like Cloudflare, it refuses a
+// setting it does not know.
+func fakeSettingWriteByID[T any](s *fakeSettingsStore, zoneID, id string, params json.Marshaler) (*T, error) {
+	if err := s.zone(zoneID); err != nil {
+		return nil, err
+	}
+	body, err := params.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	var sent struct {
+		Value any `json:"value"`
+	}
+	if err := json.Unmarshal(body, &sent); err != nil {
+		return nil, err
+	}
+	written := map[string]any{id: sent.Value}
+	if s.deleting {
+		if !s.resetting {
+			s.resets++
+			s.resetting = true
+		}
+		if s.resetErr != nil {
+			return nil, s.resetErr
+		}
+	} else {
+		data, err := json.Marshal(written)
+		if err != nil {
+			return nil, err
+		}
+		s.writes = append(s.writes, data)
+		if s.writeErr != nil {
+			return nil, s.writeErr
+		}
+	}
+	settings, _ := s.settings(zoneID).(map[string]any)
+	if _, ok := settings[id]; !ok {
+		return nil, v7APIError(http.MethodPatch, "zones/"+zoneID+"/settings/"+id, http.StatusBadRequest, 1006,
+			"Unrecognized zone setting name: "+id)
+	}
+	if pick, ok := s.picks[id]; ok {
+		written[pick.path] = pick.value
+	}
+	updated := s.shape.written(settings, written, "").(map[string]any)
+	s.zones[zoneID] = updated
+	return decodeSettings[T](map[string]any{"id": id, "value": updated[id], "editable": true})
 }
 
 // decodeSettings decodes settings into T as cloudflare-go v7 decodes a
@@ -259,6 +347,62 @@ func comparableSettings(settings string) any {
 	return withoutEmpty(out)
 }
 
+// snapshot returns a copy of the settings of the zone id.
+func (s *fakeSettingsStore) snapshot(id string) any {
+	data, err := json.Marshal(s.settings(id))
+	Expect(err).NotTo(HaveOccurred())
+	var out any
+	Expect(json.Unmarshal(data, &out)).To(Succeed())
+	return out
+}
+
+// expectWritten checks what the writes after the first n wrote: settings, as
+// a table holds them, at once; or, for a kind whose settings go by their IDs
+// (byID), each of them that before, the zone's settings before the writes,
+// did not hold, on its own.
+func (s *fakeSettingsStore) expectWritten(byID bool, n int, before any, settings string) {
+	GinkgoHelper()
+	if !byID {
+		Expect(s.writes).To(HaveLen(n+1), "one write of the settings")
+		Expect(comparableSettings(string(s.writes[n]))).To(Equal(comparableSettings(settings)))
+		return
+	}
+	asked, _ := comparableSettings(settings).(map[string]any)
+	held, _ := before.(map[string]any)
+	want := map[string]any{}
+	for id, value := range asked {
+		if !s.shape.holds(value, held[id], id) {
+			want[id] = value
+		}
+	}
+	got := map[string]any{}
+	for _, write := range s.writes[n:] {
+		var setting map[string]any
+		Expect(json.Unmarshal(write, &setting)).To(Succeed())
+		Expect(setting).To(HaveLen(1), "a write of one setting")
+		for id, value := range setting {
+			Expect(got).NotTo(HaveKey(id), "%s was written twice", id)
+			got[id] = value
+		}
+	}
+	Expect(withoutEmpty(got)).To(Equal(withoutEmpty(want)))
+}
+
+// expectUnconfigured checks that the zone id holds the settings of a zone
+// nobody has configured, unconfigured as JSON, but for those Cloudflare picks
+// the value of, which a reset hands back to Cloudflare without writing them.
+func (s *fakeSettingsStore) expectUnconfigured(id, unconfigured string) {
+	GinkgoHelper()
+	got, _ := s.snapshot(id).(map[string]any)
+	var want map[string]any
+	Expect(json.Unmarshal([]byte(unconfigured), &want)).To(Succeed())
+	for picked := range s.picks {
+		delete(got, picked)
+		delete(want, picked)
+	}
+	Expect(got).To(Equal(want))
+}
+
 // settingsTestError builds the error cloudflare-go v7 returns when
 // Cloudflare refuses a call on a zone's settings with an HTTP status and a
 // Cloudflare error code.
@@ -305,6 +449,7 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 
 		BeforeEach(func() {
 			fake = newFakeSettingsStore(settingsShape{listKeys: specs.keyedLists}, specs.unconfigured)
+			fake.picks = specs.picks
 			r = specs.newReconciler(k8sClient, func(string) (A, error) { return specs.newFake(fake), nil })
 
 			create(&corev1.Secret{
@@ -359,7 +504,13 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(k8sClient.Get(ctx, key(name), obj)).To(Succeed())
 			return obj
 		}
+		// reconcileOnce reconciles the resource name, telling the fake whether
+		// the resource is being deleted.
 		reconcileOnce := func(name string) (ctrl.Result, error) {
+			obj := specs.newObject()
+			deleting := k8sClient.Get(ctx, key(name), obj) == nil && !obj.GetDeletionTimestamp().IsZero()
+			fake.deleting, fake.resetting = deleting, false
+			defer func() { fake.deleting = false }()
 			return r.Reconcile(ctx, reconcile.Request{NamespacedName: key(name)})
 		}
 		// ready returns the Ready condition of the resource name.
@@ -425,17 +576,31 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 		// configuredOutside returns settings configured outside kflare: those of a
 		// change written over an unconfigured zone, when they count as configured
 		// and do not already hold the sample's settings, else the sample's own.
+		// A kind whose settings go by their IDs reads only those the resource
+		// sets, so only the sample's changes count, as the sample's resource
+		// reads them.
 		configuredOutside := func() string {
 			var unconfigured any
 			Expect(json.Unmarshal([]byte(specs.unconfigured), &unconfigured)).To(Succeed())
 			for _, c := range append(slices.Clone(specs.changes), specs.samples[0]) {
+				if specs.kind.byID && c.sample != 0 {
+					continue
+				}
 				var body any
 				Expect(json.Unmarshal([]byte(c.settings), &body)).To(Succeed())
 				data, err := json.Marshal(fake.shape.written(unconfigured, body, ""))
 				Expect(err).NotTo(HaveOccurred())
-				configured, err := settingsConfigured(data, specs.kind.unconfigured)
+				read := data
+				if specs.kind.byID {
+					zone := newFakeSettingsStore(fake.shape, string(data))
+					got, err := specs.kind.read(ctx, specs.newFake(zone), zoneID,
+						object("configured-outside", specs.samples[0].spec))
+					Expect(err).NotTo(HaveOccurred())
+					read = []byte(got)
+				}
+				configured, err := settingsConfigured(read, specs.kind.unconfigured)
 				Expect(err).NotTo(HaveOccurred())
-				matches, err := fake.shape.matches([]byte(specs.samples[0].settings), data)
+				matches, err := fake.shape.matches([]byte(specs.samples[0].settings), read)
 				Expect(err).NotTo(HaveOccurred())
 				if configured && (!matches || c == specs.samples[0]) {
 					return string(data)
@@ -468,8 +633,9 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			for i, sample := range specs.samples {
 				By(sample.what)
 				name := fmt.Sprintf("sample-%d", i)
+				writes, before := len(fake.writes), fake.snapshot(zoneID)
 				obj := createSynced(name, sample.spec)
-				Expect(comparableSettings(fake.lastWrite())).To(Equal(comparableSettings(sample.settings)))
+				fake.expectWritten(specs.kind.byID, writes, before, sample.settings)
 				Expect(holds(sample.settings)).To(BeTrue())
 				Expect(obj.GetSettingsStatus().CloudflareMetadata.ZoneID).To(Equal(zoneID))
 				Expect(obj.GetAnnotations()).To(HaveKeyWithValue(reconciler.CreatingAnnotation, zoneID))
@@ -482,7 +648,7 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 
 				By("resetting the settings with the resource, for the next one")
 				deleteAndReconcile(name)
-				Expect(fake.settings(zoneID)).To(Equal(fake.unconfigured))
+				fake.expectUnconfigured(zoneID, specs.unconfigured)
 			}
 		})
 
@@ -514,9 +680,10 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 		It("writes its settings again when they change outside kflare", func() {
 			createSynced("drift", specs.samples[0].spec)
 			fake.seed(zoneID, specs.unconfigured)
+			writes, before := len(fake.writes), fake.snapshot(zoneID)
 			_, err := reconcileOnce("drift")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.writes).To(HaveLen(2))
+			fake.expectWritten(specs.kind.byID, writes, before, specs.samples[0].settings)
 			Expect(holds(specs.samples[0].settings)).To(BeTrue())
 		})
 
@@ -526,9 +693,10 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 				name := fmt.Sprintf("change-%d", i)
 				createSynced(name, specs.samples[change.sample].spec)
 				Expect(replaceSpec(name, change.spec)).To(Succeed())
+				writes, before := len(fake.writes), fake.snapshot(zoneID)
 				_, err := reconcileOnce(name)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(comparableSettings(fake.lastWrite())).To(Equal(comparableSettings(change.settings)))
+				fake.expectWritten(specs.kind.byID, writes, before, change.settings)
 				Expect(holds(change.settings)).To(BeTrue())
 				deleteAndReconcile(name)
 			}
@@ -570,7 +738,7 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(get("adopting-deleted").GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 			deleteAndReconcile("adopting-deleted")
 			Expect(fake.resets).To(Equal(1))
-			Expect(fake.settings(zoneID)).To(Equal(fake.unconfigured))
+			fake.expectUnconfigured(zoneID, specs.unconfigured)
 		})
 
 		It("takes settings that differ from an unconfigured zone's in any one value for configured outside kflare", func() {
@@ -579,7 +747,7 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 				By(c.what)
 				name := fmt.Sprintf("configured-%d", i)
 				fake.seed(zoneID, c.settings)
-				withFinalizer(name, specs.samples[0].spec, nil)
+				withFinalizer(name, specs.samples[c.sample].spec, nil)
 				_, err := reconcileOnce(name)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready(name).Reason).To(Equal(reasonAlreadyExists))
@@ -587,6 +755,31 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			}
 			Expect(fake.writes).To(BeEmpty())
 			Expect(fake.resets).To(BeZero())
+		})
+
+		It("takes a setting Cloudflare picks for configured once written, until its resource resets it", func() {
+			for i, c := range specs.picked {
+				By(c.what)
+				name := fmt.Sprintf("picked-%d", i)
+				createSynced(name, c.spec)
+				Expect(holds(c.settings)).To(BeTrue())
+				annotate(name, map[string]string{reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyRetain})
+				deleteAndReconcile(name)
+
+				By("refusing it to another resource, once its resource kept it")
+				withFinalizer(name+"-kept", c.spec, nil)
+				_, err := reconcileOnce(name + "-kept")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready(name + "-kept").Reason).To(Equal(reasonAlreadyExists))
+				deleteAndReconcile(name + "-kept")
+
+				By("handing it back to Cloudflare with the reset of the resource that wrote it")
+				fake.seed(zoneID, specs.unconfigured)
+				createSynced(name+"-reset", c.spec)
+				deleteAndReconcile(name + "-reset")
+				createSynced(name+"-after", c.spec)
+				deleteAndReconcile(name + "-after")
+			}
 		})
 
 		It("takes settings it wrote and did not record for its own", func() {

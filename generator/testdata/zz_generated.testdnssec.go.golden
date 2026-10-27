@@ -56,7 +56,7 @@ var testDNSSECKind = settingsKind[TestDNSSECAPI]{
 	newObject: func() settingsObject { return &cloudflarev1alpha1.TestDNSSEC{} },
 	newList:   func() client.ObjectList { return &cloudflarev1alpha1.TestDNSSECList{} },
 
-	read: func(ctx context.Context, api TestDNSSECAPI, zoneID string) (string, error) {
+	read: func(ctx context.Context, api TestDNSSECAPI, zoneID string, _ settingsObject) (string, error) {
 		var params dns.DNSSECGetParams
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		settings, err := api.Get(ctx, params)
@@ -65,13 +65,13 @@ var testDNSSECKind = settingsKind[TestDNSSECAPI]{
 		}
 		return settings.JSON.RawJSON(), nil
 	},
-	write: func(ctx context.Context, api TestDNSSECAPI, zoneID string, obj settingsObject) error {
+	write: func(ctx context.Context, api TestDNSSECAPI, zoneID string, obj settingsObject, _ []string) error {
 		params := testDNSSECParams(obj.(*cloudflarev1alpha1.TestDNSSEC).Spec)
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		_, err := api.Edit(ctx, params)
 		return err
 	},
-	reset: func(ctx context.Context, api TestDNSSECAPI, zoneID string) error {
+	reset: func(ctx context.Context, api TestDNSSECAPI, zoneID string, _ settingsObject) error {
 		var params dns.DNSSECDeleteParams
 		params.ZoneID.Value, params.ZoneID.Present = zoneID, true
 		_, err := api.Delete(ctx, params)

@@ -51,6 +51,11 @@ import (
 //     fights Cloudflare over a value it does not manage.
 //   - Deleting the resource that configures the settings resets them, unless
 //     its deletion policy is retain or it adopted them.
+//
+// A kind whose service reads and writes each setting by its ID, as
+// zones.SettingService does a zone's settings, reads only those its resource
+// sets, writes only those that differ, and resets those it set by writing the
+// values a zone nobody has configured holds (settings_byid.go).
 
 // settingsConflictRetryInterval is how long a resource that does not
 // configure its zone's settings waits before checking whether it can.
@@ -75,12 +80,19 @@ type settingsKind[A any] struct {
 
 	// The kind's calls to Cloudflare, in the zone zoneID: read returns the
 	// zone's settings as JSON, as Cloudflare returned them; write writes
-	// those obj asks for; reset restores Cloudflare's defaults.
-	read  func(ctx context.Context, api A, zoneID string) (string, error)
-	write func(ctx context.Context, api A, zoneID string, obj settingsObject) error
-	reset func(ctx context.Context, api A, zoneID string) error
+	// those obj asks for; reset restores Cloudflare's defaults. A kind whose
+	// settings go by their IDs (byID) reads those obj sets, with any that
+	// tell whether they were configured, writes those ids names, and resets
+	// those obj sets; another kind's calls leave obj and ids aside.
+	read  func(ctx context.Context, api A, zoneID string, obj settingsObject) (string, error)
+	write func(ctx context.Context, api A, zoneID string, obj settingsObject, ids []string) error
+	reset func(ctx context.Context, api A, zoneID string, obj settingsObject) error
 	// desired returns the settings obj asks for, as the JSON write sends.
 	desired func(obj settingsObject) ([]byte, error)
+	// byID is set for a kind whose service reads and writes each setting by
+	// its ID: its settings are a JSON object whose fields are the settings'
+	// IDs, and a sync writes only those that differ.
+	byID bool
 
 	// shape is what comparing the settings needs to know of them, and
 	// unconfigured the values they hold in a zone nobody has configured: a
@@ -179,7 +191,7 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, zo
 	logger := log.FromContext(ctx)
 	k := r.kind
 
-	current, err := k.read(ctx, api, zoneID)
+	current, err := k.read(ctx, api, zoneID, obj)
 	if err != nil {
 		return handleCloudflareError(ctx, r.Client, obj, err)
 	}
@@ -237,10 +249,20 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, zo
 		return ctrl.Result{}, fmt.Errorf("comparing the %s of zone %s: %w", k.noun, zoneID, err)
 	}
 	if !matches {
-		if err := k.write(ctx, api, zoneID, obj); err != nil {
+		// A kind whose settings go by their IDs writes only those that
+		// differ.
+		var ids []string
+		keys := []any{"zoneID", zoneID}
+		if k.byID {
+			if ids, err = k.shape.differing(desired, []byte(current)); err != nil {
+				return ctrl.Result{}, fmt.Errorf("comparing the %s of zone %s: %w", k.noun, zoneID, err)
+			}
+			keys = append(keys, "settings", ids)
+		}
+		if err := k.write(ctx, api, zoneID, obj, ids); err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
 		}
-		logger.Info("Wrote the "+k.noun, "zoneID", zoneID)
+		logger.Info("Wrote the "+k.noun, keys...)
 	}
 
 	obj.GetSettingsStatus().CloudflareMetadata = cloudflarev1alpha1.SettingsCloudflareMetadata{ZoneID: zoneID}
@@ -384,7 +406,7 @@ func (r *settingsReconciler[A]) resetSettings(ctx context.Context, obj settingsO
 	if err != nil {
 		return err
 	}
-	if err := r.kind.reset(ctx, api, zoneID); err != nil && !cfpkg.IsNotFound(err) {
+	if err := r.kind.reset(ctx, api, zoneID, obj); err != nil && !cfpkg.IsNotFound(err) {
 		return err
 	}
 	logger.Info("Reset the "+r.kind.noun, "zoneID", zoneID)

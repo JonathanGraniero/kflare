@@ -279,6 +279,38 @@ func TestBuildKindMapsBooleans(t *testing.T) {
 	}
 }
 
+func TestBuildKindMakesANumberAnIntegerTheEntrySays(t *testing.T) {
+	float := types.Typ[types.Float64]
+	svc := thingService([]sdkField{{goName: "MaxAge", apiName: "max_age", in: inBody, typ: float}}, nil, nil)
+	entry := kvEntry()
+	minimum := int64(0)
+	entry.Fields = map[string]fieldConfig{"max_age": {Validation: &validationConfig{Integer: true, Minimum: &minimum,
+		Reason: "Cloudflare takes whole numbers only."}}}
+	k, err := buildKind(entry, svc, thingSpec(t, `{"max_age": {"type": "number"}}`, `{}`))
+	if err != nil {
+		t.Fatalf("buildKind: %v", err)
+	}
+	if maxAge := fieldNamed(t, k.spec, "MaxAge"); maxAge.goType != "*int64" || maxAge.validation.minimum == nil {
+		t.Errorf("a number made an integer is an int64, with the entry's minimum: %+v", maxAge)
+	}
+
+	str := types.Typ[types.String]
+	for name, tc := range map[string]struct {
+		field sdkField
+		spec  string
+	}{
+		"a string": {sdkField{goName: "Title", apiName: "max_age", in: inBody, typ: str}, `{}`},
+		"an integer in the OpenAPI": {sdkField{goName: "MaxAge", apiName: "max_age", in: inBody, typ: float},
+			`{"max_age": {"type": "integer"}}`},
+	} {
+		_, err := buildKind(entry, thingService([]sdkField{tc.field}, nil, nil), thingSpec(t, tc.spec, `{}`))
+		if err == nil || !strings.Contains(err.Error(), "fields.max_age.validation.integer: only a number the "+
+			"OpenAPI spec does not say is an integer is made one") {
+			t.Errorf("%s made an integer: err = %v", name, err)
+		}
+	}
+}
+
 func TestBuildKindLeavesEnumsOffStatus(t *testing.T) {
 	svc := thingService(nil, nil, []sdkField{
 		{goName: "Status", apiName: "status", in: inBody, typ: types.Typ[types.String], enum: []string{"active", "pending"}},
