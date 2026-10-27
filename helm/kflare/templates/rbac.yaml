@@ -128,12 +128,12 @@ rules:
       - wafcustomrules
       - ratelimitrules
       - iplists
-      - managedrulesets
       # +kflare-gen:begin The kinds in generator/generator.yaml: make codegen keeps this block.
       - cacherules
       - configurationrules
       - d1databases
       - kvnamespaces
+      - managedrulesets
       - managedtransforms
       - originrules
       - redirectrules

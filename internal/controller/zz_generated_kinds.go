@@ -32,6 +32,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&KVNamespaceReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the KVNamespace controller: %w", err)
 	}
+	if err := (&ManagedRulesetReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the ManagedRuleset controller: %w", err)
+	}
 	if err := (&ManagedTransformReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the ManagedTransform controller: %w", err)
 	}
@@ -59,7 +62,7 @@ var generatedAccountDependents = []dependentKind{
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule
 // controller drives.
-var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, originRuleKind, redirectRuleKind, transformRuleKind}
+var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, managedRulesetKind, originRuleKind, redirectRuleKind, transformRuleKind}
 
 // generatedZoneDependents are the generated rule and settings kinds, whose
 // resources reference a Zone in their namespace.
@@ -68,6 +71,8 @@ var generatedZoneDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.CacheRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ConfigurationRule", func() client.ObjectList { return &cloudflarev1alpha1.ConfigurationRuleList{} },
 		func(obj *cloudflarev1alpha1.ConfigurationRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
+	dependents("ManagedRuleset", func() client.ObjectList { return &cloudflarev1alpha1.ManagedRulesetList{} },
+		func(obj *cloudflarev1alpha1.ManagedRuleset) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ManagedTransform", func() client.ObjectList { return &cloudflarev1alpha1.ManagedTransformList{} },
 		func(obj *cloudflarev1alpha1.ManagedTransform) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("OriginRule", func() client.ObjectList { return &cloudflarev1alpha1.OriginRuleList{} },

@@ -211,6 +211,9 @@ func (b *ruleKindBuilder) build() (*ruleKind, error) {
 	for _, r := range e.Rules {
 		k.specRules = append(k.specRules, celRule{rule: r.Rule, message: r.Message})
 	}
+	if k.printColumns, err = k.fieldColumns(e.Fields); err != nil {
+		return nil, err
+	}
 	if k.typeDoc != nil {
 		k.printColumns = append(k.printColumns, printColumn{name: "Type", typ: typeString, jsonPath: ".spec.type"})
 	}
@@ -451,6 +454,39 @@ func (k *ruleKind) root() error {
 	}
 	k.params.rules = k.actionRules(holders)
 	return nil
+}
+
+// fieldColumns returns the columns the entry's fields ask for (printColumn), in
+// the order the spec holds the fields: a column shows a string, an integer or
+// a boolean of the spec, or of an object in it, but not of a list's items or a
+// map's values.
+func (k *ruleKind) fieldColumns(fields map[string]ruleFieldConfig) ([]printColumn, error) {
+	columnTypes := map[string]string{typeString: typeString, typeInt64: typeInteger, typeBool: "boolean"}
+	var columns []printColumn
+	shown := map[string]bool{}
+	var walk func(st *paramStruct, path, jsonPath string)
+	walk = func(st *paramStruct, path, jsonPath string) {
+		for _, f := range st.fields {
+			fieldPath, fieldJSONPath := joinPath(path, f.apiName), jsonPath+"."+f.jsonName
+			switch n := f.node.(type) {
+			case *paramScalar:
+				if name := fields[fieldPath].PrintColumn; name != "" {
+					columns = append(columns, printColumn{name: name, typ: columnTypes[n.goType], jsonPath: fieldJSONPath})
+					shown[fieldPath] = true
+				}
+			case *paramStruct:
+				walk(n, fieldPath, fieldJSONPath)
+			}
+		}
+	}
+	walk(k.params, "", ".spec")
+	for _, path := range slices.Sorted(maps.Keys(fields)) {
+		if fields[path].PrintColumn != "" && !shown[path] {
+			return nil, fmt.Errorf("fields.%s.printColumn: %s is not a string, an integer or a boolean outside a "+
+				"list or a map, which a column can show", path, path)
+		}
+	}
+	return columns, nil
 }
 
 // checkRootNames checks that no field of the params takes the name of a field

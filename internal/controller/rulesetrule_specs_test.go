@@ -45,7 +45,9 @@ import (
 // describeRuleKind runs them against fakeRulesetAPI: each sample's rule is
 // written to its phase, as the generated conversion builds it; an idle
 // reconcile writes nothing; each change updates the rule in place; deletion
-// and the retain policy; the Zone waiting for the kind's resources; every
+// and the retain policy, and in a phase whose emptied entry point kflare
+// deletes, the entry point and the peers; the Zone waiting for the kind's
+// resources; every
 // field converted; and the CRD: the immutable zoneRef and type, and the specs
 // it refuses. The shared rule controller's other paths (waiting for the Zone,
 // credentials, errors, ordering) are the WAFCustomRule specs'.
@@ -341,6 +343,94 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				}
 			}
 		})
+
+		// In a phase whose emptied entry point changes what the zone runs
+		// (emptiedEntrypointPhases), a deletion that empties the entry point
+		// deletes it, unless another resource is about to write to it, and
+		// re-triggers the resources that may have lost their rule with it.
+		var emptiedSamples []ruleSpecCase
+		for _, sample := range specs.samples {
+			if emptiedEntrypointPhases[sample.phase] {
+				emptiedSamples = append(emptiedSamples, sample)
+			}
+		}
+		if len(emptiedSamples) > 0 {
+			reconcileDeleted := func(obj O) {
+				GinkgoHelper()
+				Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(obj)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			hasEntrypoint := func(phase rulesets.Phase) bool {
+				_, ok := fake.entrypoints[phase]
+				return ok
+			}
+
+			It("deletes the entry point its deletion empties, but not while another resource is to write to it", func() {
+				for i, sample := range emptiedSamples {
+					By(sample.what)
+					reconcileDeleted(createSynced(fmt.Sprintf("emptying-%d", i), sample.spec))
+					Expect(hasEntrypoint(sample.phase)).To(BeFalse())
+
+					By("keeping the entry point for a resource not synced yet")
+					first, pendingName := createSynced(fmt.Sprintf("first-%d", i), sample.spec), fmt.Sprintf("pending-%d", i)
+					pending := object(pendingName, sample.spec)
+					pending.SetFinalizers([]string{reconciler.Finalizer})
+					create(pending)
+					reconcileDeleted(first)
+					Expect(hasEntrypoint(sample.phase)).To(BeTrue())
+					Expect(fake.entrypointIn(sample.phase).rules).To(BeEmpty())
+					_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key(pendingName)})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(holdsRule(sample.phase, pendingName)).To(BeTrue())
+					reconcileDeleted(get(pendingName))
+				}
+			})
+
+			It("re-triggers the resources that may have lost their rule when one is deleted", func() {
+				sample := emptiedSamples[0]
+				createSynced("synced", sample.spec)
+				for _, name := range []string{"pending", "elsewhere"} {
+					create(object(name, sample.spec))
+				}
+				elsewhere := get("elsewhere")
+				elsewhere.GetRulesetRuleStatus().CloudflareMetadata.ZoneID = "zone-elsewhere"
+				Expect(k8sClient.Status().Update(ctx, elsewhere)).To(Succeed())
+
+				deleted := specs.newObject()
+				deleted.SetName("gone")
+				deleted.SetNamespace(ns)
+				deleted.GetRulesetRuleStatus().CloudflareMetadata.ZoneID = rulesTestZone
+				Expect(r.rules().rulesInZoneOfDeleted(ctx, deleted)).To(ConsistOf(
+					reconcile.Request{NamespacedName: key("synced")},
+					reconcile.Request{NamespacedName: key("pending")},
+				))
+
+				By("re-triggering every resource when the deleted one never synced")
+				deleted.GetRulesetRuleStatus().CloudflareMetadata.ZoneID = ""
+				Expect(r.rules().rulesInZoneOfDeleted(ctx, deleted)).To(HaveLen(3))
+				Expect(r.rules().rulesInZoneOfDeleted(ctx, &cloudflarev1alpha1.Zone{})).To(BeEmpty())
+
+				By("watching the deletions of every kind in the phase, each once")
+				kinds := specs.kind.deletionsWatched()
+				watched := make([]string, 0, len(kinds))
+				for _, k := range kinds {
+					watched = append(watched, k.name)
+				}
+				var inPhase []string
+				for _, k := range rulesetRuleKinds {
+					if slices.Contains(k.phases, sample.phase) {
+						inPhase = append(inPhase, k.name)
+					}
+				}
+				Expect(watched).To(ConsistOf(inPhase))
+				Expect(watched).To(ContainElement(kind))
+			})
+		} else {
+			It("watches the deletions of no kind, outside a phase whose emptied entry point kflare deletes", func() {
+				Expect(specs.kind.deletionsWatched()).To(BeEmpty())
+			})
+		}
 
 		// reconcilePaused reconciles the resource name, and checks that it made
 		// no Cloudflare call and scheduled nothing.

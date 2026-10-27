@@ -390,7 +390,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/rate-limit-rule-controller` | `RateLimitRule` (was `RateLimit`) | rulesets-foundation | ✅ Free: 1 rule, 10 s period and timeout, counts by IP, block only |
 | `feat/ip-list-controller` | `IPList` | shared-client | ✅ Free: 1 IP list, 10,000 items |
 | `feat/zero-trust-controllers` | `AccessGroup`, `AccessPolicy`, `AccessApplication` | shared-client | Blocked: Zero Trust is not enabled on the account (a free plan exists) |
-| `feat/managed-ruleset-controller` | `ManagedRuleset` (was `WAFPackage`) | rulesets-foundation | ✅ By hand (decided 2026-10-13). Free: only the Cloudflare Free Managed Ruleset, with overrides |
+| `feat/managed-ruleset-controller` | `ManagedRuleset` (was `WAFPackage`) | rulesets-foundation | ✅ By hand (decided 2026-10-13), generated since `feat/generate-managed-ruleset`. Free: only the Cloudflare Free Managed Ruleset, with overrides |
 | Code generator: `feat/cloudflare-go-v7` … `feat/generator-rule-kinds` (8 PRs) | none: `kflare-gen` and the shared CRUD reconciler; KVNamespace moves onto them; the first new generated kind and the first generated rule kind (see [Code generator](../generator/CLAUDE.md#code-generator-kflare-gen)) | — | ✅ 8 of 8 (`feat/cloudflare-go-v7` … `feat/generator-rule-kinds`); decided 2026-10-13 |
 | `feat/d1-database-controller` | `D1Database` | code generator (PR 6) | ✅ Generated end to end. Free: 10 databases, 500 MB each, 5 GB in total |
 | `feat/managed-transform-controller` | `ManagedTransform` | code generator (settings kinds) | ✅ Generated, the first settings kind. Free: all six transforms, none conflicting |
@@ -908,7 +908,7 @@ An account-level custom IP list, for expressions such as `ip.src in $office_ips`
 
 #### Branch: `feat/managed-ruleset-controller`
 **Depends on:** `feat/rulesets-foundation`
-**Status:** ✅ Complete
+**Status:** ✅ Complete; generated since `feat/generate-managed-ruleset` (below)
 
 Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `execute` rule in the
 `http_request_firewall_managed` phase. Built by hand on the v0.119 foundation (decided 2026-10-13), not generated;
@@ -974,6 +974,20 @@ Deploys a Cloudflare managed ruleset to a zone, with overrides, through an `exec
   ruleset the zone already deploys (20014, "more than one rule is trying to execute the same managed ruleset")
 - Exceptions: Free accepts skip rules here with `rulesets`, `rules`, `ruleset: current` and `phases`
 - deploy.md documents Zone · Zone WAF · Edit, which is enough on its own (verified 2026-10-14, see Token permissions)
+
+**Generated** (`feat/generate-managed-ruleset`, 2026-10-27; [Generate every kind](../CLAUDE.md#generate-every-kind),
+PR 2). Its entry in `generator/generator.yaml` replaces the hand-written types and controller, and keeps what the
+notes above verified: the five override actions (`validation.enum`; `skip` refused, 20067), the category and rule
+overrides keyed by category and ID (`listMapKey`; 20236, 20234), each override setting `enabled` or `action` (the
+API description's own rules; 20063), conflict 20014 as `RulesetConflict`, and the Ruleset column (`printColumn`, which
+rule kinds now take). Ignored, with these notes' codes as reasons: `matched_data` (not entitled), `sensitivity_level`
+at every level (20069; DDoS phases only), `score_threshold` (only the OWASP ruleset scores), `logging` (20018), and
+`ratelimit` and `exposed_credential_check` (never sent, not verified in this phase). What changes, listed in
+CHANGELOG.md: `rulesetID` is `id`, which may change in place (the rule is updated to run the other ruleset); the
+overrides go in the spec's order, which Cloudflare keeps, rather than sorted; and an empty list of overrides is
+refused. The envtest specs that only ManagedRuleset had (the entry point its deletion empties, kept while another
+resource is about to write to it, and the resources re-triggered) are now shared specs, run for every kind in a phase
+whose emptied entry point kflare deletes.
 
 
 #### Branch: `feat/managed-transform-controller`

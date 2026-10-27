@@ -182,6 +182,26 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestManagedRule]{
 			message: "spec.ruleset: Unsupported value",
 		},
 		{
+			what:    "overrides.action not matching its pattern",
+			spec:    `{"action":"execute","expression":"true","id":"77454fe2d30c4220b5701f6fdfb893ba","overrides":{"action":"kflare-not-matching","rules":[{"enabled":false,"id":"9f7e454e4cad45abbcc40696037f70df"}]}}`,
+			message: "spec.overrides.action",
+		},
+		{
+			what:    "overrides.sensitivityLevel outside its enum",
+			spec:    `{"action":"execute","expression":"true","id":"77454fe2d30c4220b5701f6fdfb893ba","overrides":{"rules":[{"enabled":false,"id":"9f7e454e4cad45abbcc40696037f70df"}],"sensitivityLevel":"kflare-not-in-enum"}}`,
+			message: "spec.overrides.sensitivityLevel: Unsupported value",
+		},
+		{
+			what:    "overrides.rules[0].action not matching its pattern",
+			spec:    `{"action":"execute","expression":"true","id":"77454fe2d30c4220b5701f6fdfb893ba","overrides":{"rules":[{"action":"kflare-not-matching","enabled":false,"id":"9f7e454e4cad45abbcc40696037f70df"}]}}`,
+			message: "spec.overrides.rules[0].action",
+		},
+		{
+			what:    "overrides.rules[0].sensitivityLevel outside its enum",
+			spec:    `{"action":"execute","expression":"true","id":"77454fe2d30c4220b5701f6fdfb893ba","overrides":{"rules":[{"enabled":false,"id":"9f7e454e4cad45abbcc40696037f70df","sensitivityLevel":"kflare-not-in-enum"}]}}`,
+			message: "spec.overrides.rules[0].sensitivityLevel: Unsupported value",
+		},
+		{
 			what:    "id with action skip",
 			spec:    `{"action":"skip","expression":"http.request.uri.path eq \"/health\"","id":"77454fe2d30c4220b5701f6fdfb893ba","rulesets":["77454fe2d30c4220b5701f6fdfb893ba"]}`,
 			message: "id is allowed only with action execute",

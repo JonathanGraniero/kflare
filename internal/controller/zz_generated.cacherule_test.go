@@ -376,6 +376,16 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.CacheRule]{
 			message: "spec.vary.headers[0].languages[0]",
 		},
 		{
+			what:    "edgeTTL.statusCodeTTL[1].statusCodeRange.to below its minimum",
+			spec:    `{"browserTTL":{"default":3600,"mode":"override_origin"},"cache":true,"cacheKey":{"customKey":{"queryString":{"exclude":{"all":true}}}},"description":"Cache static assets, whose names carry their version, for a day","edgeTTL":{"default":86400,"mode":"override_origin","statusCodeTTL":[{"statusCode":404,"value":60},{"statusCodeRange":{"from":500,"to":99},"value":0}]},"expression":"http.request.uri.path.extension in {\"css\" \"js\" \"png\" \"jpg\" \"svg\" \"woff2\"}","vary":{"default":{"action":"passthrough"},"headers":[{"action":"normalize","mediaTypes":["image/avif","image/webp"],"name":"accept"}]}}`,
+			message: "spec.edgeTTL.statusCodeTTL[1].statusCodeRange.to",
+		},
+		{
+			what:    "edgeTTL.statusCodeTTL[1].statusCodeRange.to above its maximum",
+			spec:    `{"browserTTL":{"default":3600,"mode":"override_origin"},"cache":true,"cacheKey":{"customKey":{"queryString":{"exclude":{"all":true}}}},"description":"Cache static assets, whose names carry their version, for a day","edgeTTL":{"default":86400,"mode":"override_origin","statusCodeTTL":[{"statusCode":404,"value":60},{"statusCodeRange":{"from":500,"to":1000},"value":0}]},"expression":"http.request.uri.path.extension in {\"css\" \"js\" \"png\" \"jpg\" \"svg\" \"woff2\"}","vary":{"default":{"action":"passthrough"},"headers":[{"action":"normalize","mediaTypes":["image/avif","image/webp"],"name":"accept"}]}}`,
+			message: "spec.edgeTTL.statusCodeTTL[1].statusCodeRange.to",
+		},
+		{
 			what:    "the action parameters breaking: must set at least one of additionalCacheablePorts, browserTTL, cache, cacheKey, cacheReserve, edgeTTL, originCacheControl, originErrorPagePassthru, originRangeRequests, respectStrongEtags, serveStale and vary",
 			spec:    `{"description":"Cache static assets, whose names carry their version, for a day","expression":"http.request.uri.path.extension in {\"css\" \"js\" \"png\" \"jpg\" \"svg\" \"woff2\"}"}`,
 			message: "must set at least one of additionalCacheablePorts, browserTTL, cache, cacheKey, cacheReserve, edgeTTL, originCacheControl, originErrorPagePassthru, originRangeRequests, respectStrongEtags, serveStale and vary",

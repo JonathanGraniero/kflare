@@ -242,13 +242,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "RateLimitRule")
 		os.Exit(1)
 	}
-	if err = (&controller.ManagedRulesetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ManagedRuleset")
-		os.Exit(1)
-	}
 	if err = (&controller.IPListReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

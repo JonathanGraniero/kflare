@@ -25,7 +25,8 @@ part from Cloudflare's own description of its API. What Cloudflare does not desc
    machine-readable list of its resources and operations to generate from
 2. Fields are **opt-out**: a generated kind has every field v7 exposes for it, minus those its entry ignores. The
    output is committed, so each field an SDK bump adds shows up in review
-3. `ManagedRuleset` is built by hand first, as planned (✅); `feat/rulesets-v7` moved its conversion to v7 (✅)
+3. `ManagedRuleset` is built by hand first, as planned (✅); `feat/rulesets-v7` moved its conversion to v7 (✅), and
+   `feat/generate-managed-ruleset` generates it ([Generate every kind](../CLAUDE.md#generate-every-kind), ✅)
 4. The first new kind generated end to end is a free, account-level resource: a D1 database or a Turnstile widget,
    picked when that PR starts, after checking the Free-plan limits and the token permission. Picked 2026-10-15:
    `D1Database` (see [its section](../docs/design-notes.md#branch-featd1-database-controller))
@@ -406,6 +407,17 @@ kinds:
   do), nothing checked that a narrowed enum refuses a value the API description allows (the generated specs now
   refuse each value an entry's enum leaves out, for every shape), and a check of struct names only a compile error
   could reach, now gone
+- **ManagedRuleset generated** (`feat/generate-managed-ruleset`, 2026-10-27), PR 2 of Generate every kind. Two fixes
+  the kind turned up. A rule kind's field takes `printColumn`, as a CRUD kind's does, for a string, an integer or a
+  boolean outside a list or a map (`fieldColumns`); its columns come before Type, Action and Priority, and a settings
+  kind's field refuses one. ManagedRuleset keeps its Ruleset column. And the generated specs broke a field's
+  validation only in a spec that set it, so the enum of `overrides.rules[].action`, which no sample set, went
+  untested: a scalar no spec holds is now broken in the first spec that holds its object (`invalidValues`, with
+  `scalarBreaches` split out of it), 14 more invalid specs across CacheRule and the test kinds. The hand-written
+  tests' specs for the managed phase (the emptied entry point deleted, kept while another resource is about to write
+  to it, the resources re-triggered) are shared specs now, for every kind with a sample in a phase of
+  `emptiedEntrypointPhases`; every other kind checks that it watches no deletions. Mutations: 20 of kflare-gen's
+  changes, and 43 of ManagedRuleset's generated code, its CRD and the runtime those specs cover, all caught
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without `New`, and secrets. Also
   cross-kind references such as

@@ -313,7 +313,7 @@ func (f fakeRulesetsService) New(
 			return nil, rulesetsError(http.StatusBadRequest, 20023)
 		}
 		if executesTwice(rs.rules, rule, "") {
-			return nil, rulesetsError(http.StatusBadRequest, managedRulesetConflictCode)
+			return nil, rulesetsError(http.StatusBadRequest, executeConflictCode)
 		}
 		rs.rules = append(rs.rules, f.stored(rule, f.newID(), 1))
 	}
@@ -363,7 +363,7 @@ func (f fakeRulesetRules) New(
 		return nil, rulesetsError(http.StatusBadRequest, 50001)
 	}
 	if executesTwice(rs.rules, rule, "") {
-		return nil, rulesetsError(http.StatusBadRequest, managedRulesetConflictCode)
+		return nil, rulesetsError(http.StatusBadRequest, executeConflictCode)
 	}
 	index, err := insertionIndex(rs.rules, position)
 	if err != nil {
@@ -416,7 +416,7 @@ func (f fakeRulesetRules) Edit(
 			return nil, rulesetsError(http.StatusBadRequest, 20023)
 		}
 		if executesTwice(rs.rules, body, ruleID) {
-			return nil, rulesetsError(http.StatusBadRequest, managedRulesetConflictCode)
+			return nil, rulesetsError(http.StatusBadRequest, executeConflictCode)
 		}
 		body["ref"] = old.ref()
 		version, err := strconv.Atoi(old.version())
@@ -490,6 +490,10 @@ func forbidden() error {
 
 // managedPhase is the phase whose emptied entry point kflare deletes.
 const managedPhase = rulesets.PhaseHTTPRequestFirewallManaged
+
+// executeConflictCode is the error code Cloudflare refuses a second execute
+// rule for a managed ruleset the phase already runs with, as the fake does.
+const executeConflictCode = 20014
 
 // freeManagedRulesetID is the Cloudflare Free Managed Ruleset.
 const freeManagedRulesetID = "77454fe2d30c4220b5701f6fdfb893ba"

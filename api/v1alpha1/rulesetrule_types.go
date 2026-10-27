@@ -12,8 +12,8 @@ import (
 )
 
 // The types here are shared by every kind that manages one rule in a zone's
-// Rulesets API phase: WAFCustomRule, RateLimitRule, ManagedRuleset, and the
-// Rules (transform, redirect, cache, configuration, origin) kinds to come.
+// Rulesets API phase: WAFCustomRule, RateLimitRule, and the rule kinds
+// kflare-gen generates, such as ManagedRuleset and CacheRule.
 
 // RulesetRuleSpec holds the spec fields every rule kind shares. Each kind
 // embeds it inline, next to the fields of its action.
@@ -92,10 +92,3 @@ func (in *RateLimitRule) GetRulesetRuleSpec() *RulesetRuleSpec { return &in.Spec
 
 // GetRulesetRuleStatus returns the rate limiting rule's status.
 func (in *RateLimitRule) GetRulesetRuleStatus() *RulesetRuleStatus { return &in.Status }
-
-// GetRulesetRuleSpec returns the spec fields the managed ruleset deployment
-// shares with every rule kind.
-func (in *ManagedRuleset) GetRulesetRuleSpec() *RulesetRuleSpec { return &in.Spec.RulesetRuleSpec }
-
-// GetRulesetRuleStatus returns the managed ruleset deployment's status.
-func (in *ManagedRuleset) GetRulesetRuleStatus() *RulesetRuleStatus { return &in.Status }

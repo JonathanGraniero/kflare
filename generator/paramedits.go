@@ -208,9 +208,10 @@ func takesOne(st *paramStruct) bool {
 }
 
 // invalidValues adds the values the CRD refuses, each in the first spec that
-// holds the field, a sample or a change of one: an enum value or key it does
-// not allow, a value out of bounds or not matching its pattern, an empty or
-// repeating list, and a required field left out.
+// holds the field, a sample or a change of one, or for a scalar no spec holds,
+// the first that holds its object: an enum value or key it does not allow, a
+// value out of bounds or not matching its pattern, an empty or repeating list,
+// and a required field left out.
 func (k *paramKind) invalidValues() error {
 	var sample map[string]any
 	invalid := func(what, message string, edit func(spec map[string]any)) {
@@ -255,57 +256,18 @@ func (k *paramKind) invalidValues() error {
 			}
 		}
 	}
-	scalars := func(path []step, f *paramField, n *paramScalar, value any) {
+	scalars := func(path []step, f *paramField, n *paramScalar, _ any) {
 		if seen[f] || failed != nil {
 			return
 		}
 		seen[f] = true
-		at := pathString(path)
-		v := n.validation
-		switch {
-		case f.key:
-			invalid("an empty "+relativePath(path), at, func(spec map[string]any) { setAt(spec, path, "") })
-		case len(n.enum) > 0:
-			if outside, ok := outsideEnum(n); ok {
-				invalid(relativePath(path)+" outside its enum", at+": Unsupported value", func(spec map[string]any) {
-					setAt(spec, path, outside)
-				})
-			}
-			for _, value := range n.excluded {
-				invalid(relativePath(path)+" "+value+", which the entry's enum leaves out", at+": Unsupported value",
-					func(spec map[string]any) { setAt(spec, path, value) })
-			}
-		case v.minLength != nil && *v.minLength > 0:
-			short, what := strings.Repeat("a", int(*v.minLength-1)), relativePath(path)+" too short"
-			if short == "" {
-				what = "an empty " + relativePath(path)
-			}
-			invalid(what, at, func(spec map[string]any) { setAt(spec, path, short) })
+		breaches, err := scalarBreaches(path, f, n)
+		if err != nil {
+			failed = err
+			return
 		}
-		if v.maxLength != nil {
-			invalid(relativePath(path)+" too long", at, func(spec map[string]any) {
-				setAt(spec, path, strings.Repeat("a", int(*v.maxLength+1)))
-			})
-		}
-		if v.pattern != "" && len(n.enum) == 0 {
-			refused, ok := mismatch(n)
-			if !ok {
-				failed = fmt.Errorf("%s: kflare-gen finds no value its pattern %s refuses", at, v.pattern)
-				return
-			}
-			invalid(relativePath(path)+" not matching its pattern", at, func(spec map[string]any) {
-				setAt(spec, path, refused)
-			})
-		}
-		if v.minimum != nil {
-			invalid(relativePath(path)+" below its minimum", at, func(spec map[string]any) {
-				setAt(spec, path, int64(*v.minimum)-1)
-			})
-		}
-		if v.maximum != nil {
-			invalid(relativePath(path)+" above its maximum", at, func(spec map[string]any) {
-				setAt(spec, path, int64(*v.maximum)+1)
-			})
+		for _, b := range breaches {
+			invalid(b.what, b.message, func(spec map[string]any) { setAt(spec, path, b.value) })
 		}
 	}
 	specs := k.specs()
@@ -315,7 +277,72 @@ func (k *paramKind) invalidValues() error {
 	for _, sample = range specs {
 		visitor{object: fields, scalar: scalars}.visitStruct(nil, k.params, sample)
 	}
+	// A scalar no spec holds is broken in the first spec that holds the object
+	// it is a field of, set there.
+	unheld := func(path []step, st *paramStruct, value map[string]any) {
+		for _, f := range st.fields {
+			n, isScalar := f.node.(*paramScalar)
+			if _, held := value[f.jsonName]; held || !isScalar {
+				continue
+			}
+			scalars(appendStep(path, step{field: f.jsonName}), f, n, nil)
+		}
+	}
+	for _, sample = range specs {
+		visitor{object: unheld}.visitStruct(nil, k.params, sample)
+	}
 	return failed
+}
+
+// scalarBreach is a value the CRD refuses for a scalar, and the message it is
+// refused with.
+type scalarBreach struct {
+	what, message string
+	value         any
+}
+
+// scalarBreaches returns the values the CRD refuses for the scalar f at path:
+// an empty key, a value outside its enum or one the entry's enum leaves out, a
+// value too short or too long, not matching its pattern, or out of bounds.
+func scalarBreaches(path []step, f *paramField, n *paramScalar) ([]scalarBreach, error) {
+	at, rel := pathString(path), relativePath(path)
+	v := n.validation
+	var out []scalarBreach
+	switch {
+	case f.key:
+		out = append(out, scalarBreach{"an empty " + rel, at, ""})
+	case len(n.enum) > 0:
+		if outside, ok := outsideEnum(n); ok {
+			out = append(out, scalarBreach{rel + " outside its enum", at + ": Unsupported value", outside})
+		}
+		for _, value := range n.excluded {
+			out = append(out, scalarBreach{rel + " " + value + ", which the entry's enum leaves out",
+				at + ": Unsupported value", value})
+		}
+	case v.minLength != nil && *v.minLength > 0:
+		short, what := strings.Repeat("a", int(*v.minLength-1)), rel+" too short"
+		if short == "" {
+			what = "an empty " + rel
+		}
+		out = append(out, scalarBreach{what, at, short})
+	}
+	if v.maxLength != nil {
+		out = append(out, scalarBreach{rel + " too long", at, strings.Repeat("a", int(*v.maxLength+1))})
+	}
+	if v.pattern != "" && len(n.enum) == 0 {
+		refused, ok := mismatch(n)
+		if !ok {
+			return nil, fmt.Errorf("%s: kflare-gen finds no value its pattern %s refuses", at, v.pattern)
+		}
+		out = append(out, scalarBreach{rel + " not matching its pattern", at, refused})
+	}
+	if v.minimum != nil {
+		out = append(out, scalarBreach{rel + " below its minimum", at, int64(*v.minimum) - 1})
+	}
+	if v.maximum != nil {
+		out = append(out, scalarBreach{rel + " above its maximum", at, int64(*v.maximum) + 1})
+	}
+	return out, nil
 }
 
 // outsideEnum returns a value of a scalar's type that its enum does not hold:

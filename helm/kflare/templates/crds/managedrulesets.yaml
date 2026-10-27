@@ -25,7 +25,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.rulesetID
+    - jsonPath: .spec.id
       name: Ruleset
       type: string
     - jsonPath: .spec.priority
@@ -45,11 +45,13 @@ spec:
       openAPIV3Schema:
         description: |-
           ManagedRuleset is the Schema for the managedrulesets API.
-          It deploys a Cloudflare managed ruleset to a zone. Cloudflare deploys its
-          Free Managed Ruleset to Free zones by default, but only while the zone has
-          no rules of its own in the http_request_firewall_managed phase: as soon as
-          any rule is there, only what the rules deploy runs. To turn a managed
-          ruleset off, keep its ManagedRuleset and set enabled to false.
+          It deploys a Cloudflare managed ruleset to a zone, as an execute rule in
+          its http_request_firewall_managed phase; the expression selects the
+          requests the ruleset inspects, and "true" selects every request.
+          Cloudflare deploys its Free Managed Ruleset to Free zones by default, but
+          only while the zone has no rules of its own in the phase: as soon as any
+          rule is there, only what the rules deploy runs. To turn a managed ruleset
+          off, keep its ManagedRuleset and set enabled to false.
         properties:
           apiVersion:
             description: |-
@@ -70,10 +72,8 @@ spec:
             type: object
           spec:
             description: |-
-              ManagedRulesetSpec defines the desired state of ManagedRuleset: the
-              deployment of one Cloudflare managed ruleset to the zone, as an execute rule
-              in its http_request_firewall_managed phase. The rule's expression selects
-              the requests the managed ruleset inspects; "true" selects every request.
+              ManagedRulesetSpec defines the desired state of ManagedRuleset: the fields
+              every rule kind shares, and the parameters of its execute action.
             properties:
               description:
                 description: Description is shown with the rule in the Cloudflare
@@ -93,11 +93,20 @@ spec:
                 maxLength: 4096
                 minLength: 1
                 type: string
+              id:
+                description: |-
+                  ID is the managed ruleset to deploy. Free plans can deploy the Cloudflare
+                  Free Managed Ruleset, 77454fe2d30c4220b5701f6fdfb893ba; higher plans also
+                  the Cloudflare Managed Ruleset, efb7b8c949ac4650a09736fc376e9aee, and the
+                  OWASP Core Ruleset, 4814384a9e5d4991b9815dcfc25d2f1f. Cloudflare always
+                  runs the ruleset's latest version. A zone can deploy a ruleset only once.
+                pattern: ^[0-9a-f]{32}$
+                type: string
               overrides:
                 description: |-
-                  Overrides change what the ruleset's rules do. An override for a rule
-                  takes precedence over one for a category the rule is tagged with, which
-                  takes precedence over the overrides for the whole ruleset.
+                  Overrides change what the ruleset's rules do. An override for a rule takes
+                  precedence over one for a category the rule is tagged with, which takes
+                  precedence over the overrides for the whole ruleset.
                 properties:
                   action:
                     description: Action replaces the action of every rule of the ruleset.
@@ -110,12 +119,13 @@ spec:
                     type: string
                   categories:
                     description: |-
-                      Categories override the rules tagged with a category, such as
-                      wordpress or log4j. Cloudflare refuses a category none of the ruleset's
-                      rules has.
+                      Categories override the rules tagged with a category, such as wordpress
+                      or log4j, each listed once. Cloudflare refuses a category none of the
+                      ruleset's rules has (20235).
                     items:
-                      description: ManagedRulesetCategoryOverride overrides the rules
-                        tagged with a category.
+                      description: |-
+                        ManagedRulesetOverridesCategory is overrides.categories[] in a
+                        ManagedRuleset.
                       properties:
                         action:
                           description: Action replaces the action of the category's
@@ -128,30 +138,36 @@ spec:
                           - log
                           type: string
                         category:
-                          description: Category is the tag the overridden rules have.
+                          description: The name of the category to override.
                           minLength: 1
                           type: string
                         enabled:
-                          description: Enabled turns the category's rules on or off.
+                          description: Whether to enable execution of rules in the
+                            category.
                           type: boolean
                       required:
                       - category
                       type: object
                       x-kubernetes-validations:
-                      - message: a category override needs enabled or action
-                        rule: has(self.enabled) || has(self.action)
+                      - message: must set at least 2 of category, action and enabled
+                        rule: '(has(self.category) ? 1 : 0) + (has(self.action) ?
+                          1 : 0) + (has(self.enabled) ? 1 : 0) >= 2'
+                    minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
                     - category
                     x-kubernetes-list-type: map
                   enabled:
-                    description: Enabled turns every rule of the ruleset on or off.
+                    description: |-
+                      Whether to enable execution of all rules. This option has lower precedence than
+                      rule and category overrides.
                     type: boolean
                   rules:
-                    description: Rules override single rules of the ruleset, by ID.
+                    description: Rules override single rules of the ruleset, by ID,
+                      each listed once.
                     items:
-                      description: ManagedRulesetRuleOverride overrides one rule of
-                        a managed ruleset.
+                      description: ManagedRulesetOverridesRule is overrides.rules[]
+                        in a ManagedRuleset.
                       properties:
                         action:
                           description: Action replaces the rule's action.
@@ -163,28 +179,30 @@ spec:
                           - log
                           type: string
                         enabled:
-                          description: Enabled turns the rule on or off.
+                          description: Whether to enable execution of the rule.
                           type: boolean
                         id:
-                          description: ID is the rule's ID in the managed ruleset.
+                          description: The ID of the rule to override.
                           pattern: ^[0-9a-f]{32}$
                           type: string
                       required:
                       - id
                       type: object
                       x-kubernetes-validations:
-                      - message: a rule override needs enabled or action
-                        rule: has(self.enabled) || has(self.action)
+                      - message: must set at least 2 of id, action and enabled
+                        rule: '(has(self.id) ? 1 : 0) + (has(self.action) ? 1 : 0)
+                          + (has(self.enabled) ? 1 : 0) >= 2'
+                    minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
                     - id
                     x-kubernetes-list-type: map
                 type: object
                 x-kubernetes-validations:
-                - message: overrides must override something
-                  rule: has(self.enabled) || has(self.action) || (has(self.categories)
-                    && size(self.categories) > 0) || (has(self.rules) && size(self.rules)
-                    > 0)
+                - message: must set at least one of action, categories, enabled and
+                    rules
+                  rule: has(self.action) || has(self.categories) || has(self.enabled)
+                    || has(self.rules)
               priority:
                 description: |-
                   Priority orders the rules kflare manages in a zone and phase: lower runs
@@ -192,20 +210,6 @@ spec:
                   name. Rules created outside kflare keep their place.
                 format: int32
                 type: integer
-              rulesetID:
-                description: |-
-                  RulesetID is the managed ruleset to deploy. Free plans can deploy the
-                  Cloudflare Free Managed Ruleset, 77454fe2d30c4220b5701f6fdfb893ba; higher
-                  plans also the Cloudflare Managed Ruleset,
-                  efb7b8c949ac4650a09736fc376e9aee, and the OWASP Core Ruleset,
-                  4814384a9e5d4991b9815dcfc25d2f1f. Cloudflare always runs the ruleset's
-                  latest version. A zone can deploy a ruleset only once. Immutable after
-                  creation.
-                pattern: ^[0-9a-f]{32}$
-                type: string
-                x-kubernetes-validations:
-                - message: rulesetID is immutable
-                  rule: self == oldSelf
               zoneRef:
                 description: |-
                   ZoneRef references the Zone, in the same namespace, the rule belongs to.
@@ -227,7 +231,7 @@ spec:
                   rule: self == oldSelf
             required:
             - expression
-            - rulesetID
+            - id
             - zoneRef
             type: object
           status:
