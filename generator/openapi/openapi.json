@@ -1531,6 +1531,29 @@
         "title": "Sensitivity Level",
         "type": "string"
       },
+      "rulesets_JsChallengeRule": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/rulesets_Rule"
+          },
+          {
+            "properties": {
+              "action": {
+                "enum": [
+                  "js_challenge"
+                ],
+                "type": "string"
+              },
+              "description": {
+                "example": "Issue a non-interactive JavaScript Challenge if the visitor has not solved an Interactive Challenge, Managed Challenge, or JavaScript Challenge prior to the request.",
+                "type": "string"
+              }
+            },
+            "title": "JavaScript Challenge Rule",
+            "type": "object"
+          }
+        ]
+      },
       "rulesets_LogRule": {
         "allOf": [
           {

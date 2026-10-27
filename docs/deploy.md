@@ -291,8 +291,8 @@ Things to know before pointing kflare at existing infrastructure:
   zones allow 5 custom rules, without regular expressions.
 - **Rate limiting rules.** Each `RateLimitRule` manages one rate limiting rule in its zone, marked and ordered
   like WAF custom rules. Free zones allow one, which counts per IP address over 10 seconds and can only block.
-  Cloudflare also counts per data center, and requires rules to say so: kflare adds `cf.colo.id` to
-  `spec.characteristics` itself.
+  Cloudflare also counts per data center, and requires rules to say so: list `cf.colo.id` in
+  `spec.ratelimit.characteristics`, next to `ip.src` (the API server refuses a rule without it).
 - **IP lists.** An `IPList` manages a custom list in its account, created or adopted by its name, and
   replaces the list's items whenever they differ from `spec.items`. Rule expressions use it as
   `$<spec.name>`. Cloudflare refuses a rule that uses a list the account does not have yet, and refuses to

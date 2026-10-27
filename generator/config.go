@@ -438,6 +438,12 @@ type ruleFieldConfig struct {
 	// PrintColumn adds a column for the field, with this name: a rule kind's
 	// string, integer or boolean field outside a list or a map.
 	PrintColumn string `json:"printColumn,omitempty"`
+	// OmitZero, for a rule kind's optional boolean or integer, says how it was
+	// verified that Cloudflare stores the field's zero value (false, 0) as
+	// absent and reads an absent field as that value: the conversion sends
+	// the field only when it is not zero, which is the rule Cloudflare
+	// returns.
+	OmitZero string `json:"omitZero,omitempty"`
 	// Key, for a map, names the field that holds an entry's key: the spec
 	// lists the map's values, each with its key in this field, keyed by it.
 	Key string `json:"key,omitempty"`
@@ -713,6 +719,9 @@ func validateParamFields(fields map[string]ruleFieldConfig, ignore map[string]st
 		if f.ListMapKey != "" && f.Key != "" {
 			return fmt.Errorf("fields.%s: set key for a map or listMapKey for a list, not both", name)
 		}
+		if f.OmitZero != "" && strings.TrimSpace(f.OmitZero) == "" {
+			return fmt.Errorf("fields.%s.omitZero gives no reason", name)
+		}
 		if f.PickedBy != nil {
 			if err := f.PickedBy.validate(); err != nil {
 				return fmt.Errorf("fields.%s.pickedBy: %w", name, err)
@@ -808,6 +817,9 @@ func (k *settingsKindConfig) validate() error {
 	for name, f := range k.Fields {
 		if f.PrintColumn != "" {
 			return fmt.Errorf("fields.%s.printColumn: only a rule kind's fields have columns", name)
+		}
+		if f.OmitZero != "" {
+			return fmt.Errorf("fields.%s.omitZero: only a rule kind's fields leave out a zero value", name)
 		}
 	}
 	return validateParamFields(k.Fields, k.Ignore)

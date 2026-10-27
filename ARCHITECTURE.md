@@ -66,9 +66,9 @@ kflare's. And a proxied record's TTL is always automatic: Cloudflare stores 1 wh
 another `ttl` on any proxied record, which would otherwise be written again on every reconcile.
 
 The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace and D1Database through the shared
-CRUD reconciler (`internal/controller/crudresource_controller.go`), ManagedRuleset, TransformRule, RedirectRule,
-CacheRule, ConfigurationRule and OriginRule through the shared rule controller (see [Rules](#rules)), and ManagedTransform through
-the shared settings controller (see [Settings](#settings)). A generated kind only describes its Cloudflare calls, its
+CRUD reconciler (`internal/controller/crudresource_controller.go`), ManagedRuleset, RateLimitRule, TransformRule,
+RedirectRule, CacheRule, ConfigurationRule and OriginRule through the shared rule controller (see [Rules](#rules)), and
+ManagedTransform through the shared settings controller (see [Settings](#settings)). A generated kind only describes its Cloudflare calls, its
 adoption key, what it compares and what depends on it. A CRUD kind's adoption finds the object in the account's list by
 its key, then reads it by its ID: a list may show less than a read, as D1's does. kflare-gen writes that description
 from the kind's entry in `generator/generator.yaml`, cloudflare-go v7 and Cloudflare's OpenAPI spec: its API types
@@ -240,9 +240,9 @@ rules, `ManagedRuleset` in `http_request_firewall_managed`, where an `execute` r
 `RedirectRule` in `http_request_dynamic_redirect`, the zone's single redirects, `CacheRule` in
 `http_request_cache_settings`, `ConfigurationRule` in `http_config_settings`, and `OriginRule` in `http_request_origin`.
 They share one controller (`internal/controller/rulesetrule.go`, `rulesetrule_controller.go`). kflare-gen generates
-ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule from cloudflare-go v7's rule
-type for the kind's action: its action parameters become the spec's fields, its unions a struct whose CEL rules say which
-combinations Cloudflare takes. A zone has one entry point per phase, shared by every rule in that phase, kflare's or
+ManagedRuleset, RateLimitRule, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule from
+cloudflare-go v7's rule type for the kind's action: its action parameters become the spec's fields, its unions a struct
+whose CEL rules say which combinations Cloudflare takes. A zone has one entry point per phase, shared by every rule in that phase, kflare's or
 not, so kflare:
 
 - Marks each rule it manages with a ref, `kflare-` and the first 32 hex characters of the SHA-256 of
@@ -255,6 +255,9 @@ not, so kflare:
 - Compares the rule as Cloudflare returns it, as JSON, with the rule it would send: the fields Cloudflare sets (ID,
   version, last update) aside, and Cloudflare's defaults counted as set (a rule is enabled, a skip rule logs its
   matches, an execute rule runs the managed ruleset's latest version). A field set outside kflare is a difference too.
+  A rate limiting rule's `requestsToOrigin` is sent only when true: Cloudflare stores false as absent (verified live),
+  so a rule that sent it would differ on every reconcile. Its `mitigationTimeout` is sent only when not 0, which
+  Cloudflare reads a missing one as.
 - Keeps its own rules in a zone and phase in order of `spec.priority`, lower first, with ties broken by namespace and
   name, across namespaces (two Zones in different namespaces can point at the same Cloudflare zone). Each phase is
   its own list: a WAF custom rule's priority does not order rate limiting rules. Rules created outside kflare keep
@@ -423,9 +426,9 @@ resource that still needs its parent for its own cleanup. Parents therefore keep
 
 - A `CloudflareAccount` waits for the Zones, Tunnels, WorkerScripts, R2Buckets and IPLists that reference it, and for
   the resources of every generated kind, KVNamespaces among them.
-- A `Zone` waits for its DNSRecords, WorkerRoutes, WAFCustomRules, RateLimitRules, ManagedRulesets and the resources of
-  every generated rule and settings kind, TransformRules, RedirectRules, CacheRules, ConfigurationRules, OriginRules
-  and ManagedTransforms among them: a ManagedTransform needs its Zone to reset the zone's managed transforms.
+- A `Zone` waits for its DNSRecords, WorkerRoutes, WAFCustomRules and the resources of every generated rule and
+  settings kind, RateLimitRules, ManagedRulesets, TransformRules, RedirectRules, CacheRules, ConfigurationRules,
+  OriginRules and ManagedTransforms among them: a ManagedTransform needs its Zone to reset the zone's managed transforms.
 - A `Tunnel` waits for its TunnelConfigurations, and for the DNSRecords that point at it through `tunnelRef`: deleting
   the tunnel first would leave their hostnames routing to nothing.
 - A `KVNamespace` waits for the WorkerScripts bound to it through `kvNamespaceRef`. Cloudflare deletes a namespace a

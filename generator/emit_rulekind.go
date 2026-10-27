@@ -493,7 +493,8 @@ func emitConversion(f *goFile, c conversions, st *paramStruct) error {
 }
 
 // emitAssignment writes the statements that set the SDK struct's field for a
-// param field, when the spec sets it.
+// param field, when the spec sets it, and to a value other than zero for a
+// field Cloudflare stores as absent when zero.
 func emitAssignment(f *goFile, c conversions, pf *paramField) error {
 	value := "in." + pf.goName
 	set := func(expr string) {
@@ -511,6 +512,10 @@ func emitAssignment(f *goFile, c conversions, pf *paramField) error {
 			return err
 		}
 		switch {
+		case pf.omitZero && n.goType == typeBool:
+			open("in." + pf.goName + " != nil && " + value)
+		case pf.omitZero:
+			open("in." + pf.goName + " != nil && " + value + " != " + zeroOf(n.goType))
 		case pf.pointer():
 			open("in." + pf.goName + " != nil")
 		case !pf.required:

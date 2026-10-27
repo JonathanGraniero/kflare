@@ -255,7 +255,8 @@ ruleKinds:
       exposed_credential_check: Not mapped by this test kind.
 
   # Several actions sharing one of the rule's own fields, an object (ratelimit), which the rule types of the two
-  # actions type differently and alike. Columns of an integer and a boolean in it.
+  # actions type differently and alike. Columns of an integer and a boolean in it, and an integer and a boolean sent
+  # only when not zero.
   - kind: TestRateLimitRule
     actions:
       - action: block
@@ -294,8 +295,11 @@ ruleKinds:
     fields:
       ratelimit.requests_per_period:
         printColumn: Requests
+      ratelimit.mitigation_timeout:
+        omitZero: Cloudflare reads a missing timeout as 0.
       ratelimit.requests_to_origin:
         printColumn: To Origin
+        omitZero: Cloudflare stores false as absent.
     ignore:
       logging: Not mapped by this test kind.
       exposed_credential_check: Not mapped by this test kind.

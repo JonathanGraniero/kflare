@@ -19,11 +19,11 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.requestsPerPeriod
-      name: Requests
-      type: integer
-    - jsonPath: .spec.period
+    - jsonPath: .spec.ratelimit.period
       name: Period
+      type: integer
+    - jsonPath: .spec.ratelimit.requestsPerPeriod
+      name: Requests
       type: integer
     - jsonPath: .spec.action
       name: Action
@@ -45,7 +45,12 @@ spec:
       openAPIV3Schema:
         description: |-
           RateLimitRule is the Schema for the ratelimitrules API.
-          It manages one rate limiting rule in a zone.
+          It manages one rate limiting rule in a zone, in its http_ratelimit phase:
+          the rule counts the requests its expression matches, and once a client
+          sends more than requestsPerPeriod of them in a period, the action applies
+          to the client's matching requests for the mitigation timeout. A Free plan
+          allows one rate limiting rule, counted per IP address over 10 seconds,
+          with the block action.
         properties:
           apiVersion:
             description: |-
@@ -66,80 +71,26 @@ spec:
             type: object
           spec:
             description: |-
-              RateLimitRuleSpec defines the desired state of RateLimitRule: one rule in
-              the zone's rate limiting rules, Cloudflare's http_ratelimit phase. The rule
-              counts the requests its expression matches; once a client sends more than
-              requestsPerPeriod of them in a period, the action applies to the client's
-              matching requests for the mitigation timeout.
+              RateLimitRuleSpec defines the desired state of RateLimitRule: the fields
+              every rule kind shares, its action, the parameters of its actions, and the
+              rule's own fields it sets.
             properties:
               action:
-                default: block
                 description: |-
-                  Action is what Cloudflare does with a client's requests once it is over
-                  the rate: block them, challenge the visitor (challenge, js_challenge or
-                  managed_challenge), or only log them (log, on Enterprise plans). Free
-                  plans can only block.
+                  Action is what Cloudflare does with a client's matching requests once it
+                  is over the rate. Free plans can only block.
+
+                    - block: blocks them, with Cloudflare's response or the rule's.
+                    - challenge: issues an interactive challenge.
+                    - js_challenge: issues a JavaScript challenge.
+                    - managed_challenge: issues the challenge Cloudflare picks for the visitor.
+                    - log: only logs them (Enterprise plans).
                 enum:
                 - block
                 - challenge
                 - js_challenge
                 - managed_challenge
                 - log
-                type: string
-              blockResponse:
-                description: |-
-                  BlockResponse replaces Cloudflare's response to the requests a block
-                  rule blocks.
-                properties:
-                  content:
-                    description: Content is the response body. Cloudflare allows at
-                      most 30,720 bytes.
-                    maxLength: 30720
-                    minLength: 1
-                    type: string
-                  contentType:
-                    description: ContentType is the response's content type.
-                    enum:
-                    - text/html
-                    - text/plain
-                    - application/json
-                    - text/xml
-                    type: string
-                  statusCode:
-                    default: 429
-                    description: StatusCode is the response's HTTP status code.
-                    format: int32
-                    maximum: 499
-                    minimum: 400
-                    type: integer
-                required:
-                - content
-                - contentType
-                type: object
-              characteristics:
-                default:
-                - ip.src
-                description: |-
-                  Characteristics are what requests are counted by: requests that share
-                  all of them share a counter. The default, ip.src, counts per client IP
-                  address, the only choice on Free plans; higher plans can count by other
-                  fields, such as http.request.headers["x-api-key"]. Cloudflare also
-                  counts per data center, cf.colo.id, which kflare adds.
-                items:
-                  description: |-
-                    RateLimitRuleCharacteristic is a field requests are counted by, such as
-                    ip.src.
-                  minLength: 1
-                  type: string
-                minItems: 1
-                type: array
-                x-kubernetes-list-type: set
-              countingExpression:
-                description: |-
-                  CountingExpression counts other requests than those the rule matches,
-                  for example only the failed logins among the login requests. It
-                  defaults to the rule's expression. Free plans cannot set it.
-                maxLength: 4096
                 type: string
               description:
                 description: Description is shown with the rule in the Cloudflare
@@ -159,24 +110,6 @@ spec:
                 maxLength: 4096
                 minLength: 1
                 type: string
-              mitigationTimeout:
-                description: |-
-                  MitigationTimeout is how long, in seconds, the action applies once a
-                  client is over the rate. It defaults to the period, and must be at least
-                  the period, or 0 to throttle instead: apply the action only to the
-                  requests over the rate (Enterprise plans). Free plans can only use 10.
-                format: int32
-                minimum: 0
-                type: integer
-              period:
-                default: 10
-                description: |-
-                  Period is how long, in seconds, requests are counted for. Cloudflare
-                  accepts set periods between 10 seconds and an hour, and the zone's plan
-                  narrows them: Free plans can only count for 10 seconds.
-                format: int32
-                minimum: 1
-                type: integer
               priority:
                 description: |-
                   Priority orders the rules kflare manages in a zone and phase: lower runs
@@ -184,19 +117,105 @@ spec:
                   name. Rules created outside kflare keep their place.
                 format: int32
                 type: integer
-              requestsPerPeriod:
+              ratelimit:
                 description: |-
-                  RequestsPerPeriod is how many matching requests a client can send in a
-                  period before the action applies.
-                format: int32
-                maximum: 1000000
-                minimum: 1
-                type: integer
-              requestsToOrigin:
-                description: |-
-                  RequestsToOrigin counts only the requests that reach the origin,
-                  leaving out those served from Cloudflare's cache.
-                type: boolean
+                  Ratelimit is the rule's rate limit: what requests are counted by, over
+                  what period, how many a client may send, and for how long the action
+                  applies once the client sends more.
+                properties:
+                  characteristics:
+                    description: |-
+                      Characteristics are what requests are counted by: requests that share
+                      all of them share a counter. Cloudflare counts per data center, so they
+                      list cf.colo.id, and at least one other field: ip.src counts per client
+                      IP address, the only choice on Free plans; higher plans can count by
+                      other fields, such as http.request.headers["x-api-key"].
+                    items:
+                      minLength: 1
+                      type: string
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                  countingExpression:
+                    description: |-
+                      CountingExpression counts other requests than those the rule matches,
+                      for example only the failed logins among the login requests. It
+                      defaults to the rule's expression. Free plans cannot set it.
+                    minLength: 1
+                    type: string
+                  mitigationTimeout:
+                    description: |-
+                      MitigationTimeout is how long, in seconds, the action applies once a
+                      client is over the rate. It must be at least the period, or 0 to
+                      throttle instead: apply the action only to the requests over the rate
+                      (Enterprise plans). Free plans can only use 10.
+                    format: int64
+                    type: integer
+                  period:
+                    description: |-
+                      Period is how long, in seconds, requests are counted for. Cloudflare
+                      accepts set periods between 10 seconds and an hour, and the zone's plan
+                      narrows them: Free plans can only count for 10 seconds.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  requestsPerPeriod:
+                    description: |-
+                      RequestsPerPeriod is how many matching requests a client can send in a
+                      period before the action applies.
+                    format: int64
+                    maximum: 1000000
+                    minimum: 1
+                    type: integer
+                  requestsToOrigin:
+                    description: |-
+                      RequestsToOrigin counts only the requests that reach the origin,
+                      leaving out those served from Cloudflare's cache.
+                    type: boolean
+                required:
+                - characteristics
+                - period
+                type: object
+                x-kubernetes-validations:
+                - message: requestsPerPeriod is required
+                  rule: has(self.requestsPerPeriod)
+                - message: mitigationTimeout is required
+                  rule: has(self.mitigationTimeout)
+                - message: mitigationTimeout must be 0 or at least the period
+                  rule: '!has(self.mitigationTimeout) || self.mitigationTimeout ==
+                    0 || self.mitigationTimeout >= self.period'
+                - message: characteristics must list cf.colo.id
+                  rule: '''cf.colo.id'' in self.characteristics'
+                - message: characteristics must list a field besides cf.colo.id
+                  rule: self.characteristics.exists(c, c != 'cf.colo.id')
+              response:
+                description: Response replaces Cloudflare's response to the requests
+                  a block rule blocks.
+                properties:
+                  content:
+                    description: Content is the response body.
+                    maxLength: 30720
+                    minLength: 1
+                    type: string
+                  contentType:
+                    description: ContentType is the response's content type.
+                    enum:
+                    - text/html
+                    - text/plain
+                    - application/json
+                    - text/xml
+                    type: string
+                  statusCode:
+                    description: StatusCode is the response's HTTP status code.
+                    format: int64
+                    maximum: 499
+                    minimum: 400
+                    type: integer
+                required:
+                - content
+                - contentType
+                - statusCode
+                type: object
               zoneRef:
                 description: |-
                   ZoneRef references the Zone, in the same namespace, the rule belongs to.
@@ -217,16 +236,15 @@ spec:
                 - message: zoneRef is immutable
                   rule: self == oldSelf
             required:
+            - action
             - expression
-            - requestsPerPeriod
             - zoneRef
             type: object
             x-kubernetes-validations:
-            - message: mitigationTimeout must be 0 or at least the period
-              rule: '!has(self.mitigationTimeout) || self.mitigationTimeout == 0 ||
-                self.mitigationTimeout >= self.period'
-            - message: blockResponse is allowed only with action block
-              rule: '!has(self.blockResponse) || self.action == ''block'''
+            - message: response is allowed only with action block
+              rule: '!has(self.response) || self.action == ''block'''
+            - message: ratelimit is required
+              rule: has(self.ratelimit)
           status:
             description: RulesetRuleStatus is the observed state of a rule.
             properties:

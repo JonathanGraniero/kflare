@@ -60,6 +60,10 @@ type paramField struct {
 	// key marks the field a map's entry keeps its key in, which has no SDK
 	// field.
 	key bool
+	// omitZero marks an optional boolean or integer that the conversion sends
+	// only when it is not zero, as Cloudflare stores it (the entry's
+	// omitZero).
+	omitZero bool
 	// sdkGoName is the SDK struct's field the conversion sets, and sdkType the
 	// type inside its param.Field: an empty interface when a union's variant
 	// that holds every field leaves the type to the other variants.
@@ -318,6 +322,14 @@ func (b *paramBuilder) field(path, prefix string, f sdkField, t types.Type, sch 
 	}
 	if _, isScalar := node.(*paramScalar); !isScalar && adjust.Validation != nil {
 		return nil, fmt.Errorf("fields.%s.validation: only a string or an integer is validated", path)
+	}
+	if adjust.OmitZero != "" {
+		n, isScalar := node.(*paramScalar)
+		if !isScalar || (n.goType != typeBool && n.goType != typeInt64) || !pf.pointer() {
+			return nil, fmt.Errorf("fields.%s.omitZero: %s is not an optional boolean or integer, whose zero value "+
+				"a spec holds apart from unset", path, path)
+		}
+		pf.omitZero = true
 	}
 	return pf, nil
 }

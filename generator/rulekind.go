@@ -1032,11 +1032,15 @@ func (k *ruleKind) apiRule(spec map[string]any) map[string]any {
 	return rule
 }
 
-// apiStruct returns an object's value as the API takes it.
+// apiStruct returns an object's value as the API takes it, without the zero
+// values of the fields Cloudflare stores as absent.
 func apiStruct(st *paramStruct, value map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, f := range st.fields {
 		v, ok := value[f.jsonName]
+		if f.omitZero && v == zeroValue(f.node.(*paramScalar)) {
+			continue
+		}
 		if ok && !f.key {
 			out[f.apiName] = apiNode(f.node, v)
 		}

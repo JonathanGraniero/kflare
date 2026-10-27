@@ -95,7 +95,11 @@ var _ = Describe("Deletion protection for parents", func() {
 					RulesetRuleSpec: cloudflarev1alpha1.RulesetRuleSpec{
 						ZoneRef: corev1.LocalObjectReference{Name: zoneName}, Expression: "true",
 					},
-					RequestsPerPeriod: 5,
+					Action: "block",
+					Ratelimit: &cloudflarev1alpha1.RateLimitRuleRatelimit{
+						Characteristics: []string{"cf.colo.id", "ip.src"}, Period: 10,
+						RequestsPerPeriod: new(int64(5)), MitigationTimeout: new(int64(10)),
+					},
 				},
 			})
 			create(&cloudflarev1alpha1.ManagedRuleset{
