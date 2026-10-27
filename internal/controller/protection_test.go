@@ -104,7 +104,7 @@ var _ = Describe("Deletion protection for parents", func() {
 					RulesetRuleSpec: cloudflarev1alpha1.RulesetRuleSpec{
 						ZoneRef: corev1.LocalObjectReference{Name: zoneName}, Expression: "true",
 					},
-					RulesetID: freeManagedRulesetID,
+					ID: freeManagedRulesetID,
 				},
 			})
 			Expect(k8sClient.Delete(ctx, &cloudflarev1alpha1.Zone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns}})).To(Succeed())

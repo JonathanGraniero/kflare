@@ -196,6 +196,12 @@ func TestBuildRuleKindRefuses(t *testing.T) {
 			e.Fields["uri.query.expression"] = ruleFieldConfig{Validation: &validationConfig{Pattern: "^/",
 				Reason: "x"}}
 		}, "kflare-gen cannot make up a value of expression, which the OpenAPI spec gives no valid example of"},
+		{"a column of an object", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Fields["uri"] = ruleFieldConfig{PrintColumn: "URI"}
+		}, "fields.uri.printColumn: uri is not a string, an integer or a boolean outside a list or a map"},
+		{"a column of a map's values", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Fields["headers[].value"] = ruleFieldConfig{PrintColumn: "Value"}
+		}, "fields.headers[].value.printColumn: headers[].value is not a string, an integer or a boolean outside"},
 		{"validation of an object", func(e *ruleKindConfig, _ *apiSpec) {
 			e.Fields["uri"] = ruleFieldConfig{Validation: &validationConfig{MinLength: new(int64(1)), Reason: "x"}}
 		}, "only a string or an integer is validated"},

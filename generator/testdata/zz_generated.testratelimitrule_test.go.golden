@@ -192,6 +192,16 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestRateLimitRule]{
 			message: "spec.response.statusCode",
 		},
 		{
+			what:    "an empty ratelimit.countingExpression",
+			spec:    `{"action":"block","expression":"starts_with(http.request.uri.path, \"/api/\")","ratelimit":{"characteristics":["cf.colo.id","ip.src"],"countingExpression":"","mitigationTimeout":10,"period":10,"requestsPerPeriod":100}}`,
+			message: "spec.ratelimit.countingExpression",
+		},
+		{
+			what:    "an empty ratelimit.scoreResponseHeaderName",
+			spec:    `{"action":"block","expression":"starts_with(http.request.uri.path, \"/api/\")","ratelimit":{"characteristics":["cf.colo.id","ip.src"],"mitigationTimeout":10,"period":10,"requestsPerPeriod":100,"scoreResponseHeaderName":""}}`,
+			message: "spec.ratelimit.scoreResponseHeaderName",
+		},
+		{
 			what:    "response with action managed_challenge",
 			spec:    `{"action":"managed_challenge","expression":"true","ratelimit":{"characteristics":["cf.colo.id","ip.src"],"period":60,"requestsPerPeriod":50},"response":{"content":"{\n  \"success\": false,\n  \"error\": \"you have been blocked\"\n}","contentType":"application/json","statusCode":401}}`,
 			message: "response is allowed only with action block",

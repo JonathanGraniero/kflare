@@ -66,8 +66,8 @@ kflare's. And a proxied record's TTL is always automatic: Cloudflare stores 1 wh
 another `ttl` on any proxied record, which would otherwise be written again on every reconcile.
 
 The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace and D1Database through the shared
-CRUD reconciler (`internal/controller/crudresource_controller.go`), TransformRule, RedirectRule, CacheRule,
-ConfigurationRule and OriginRule through the shared rule controller (see [Rules](#rules)), and ManagedTransform through
+CRUD reconciler (`internal/controller/crudresource_controller.go`), ManagedRuleset, TransformRule, RedirectRule,
+CacheRule, ConfigurationRule and OriginRule through the shared rule controller (see [Rules](#rules)), and ManagedTransform through
 the shared settings controller (see [Settings](#settings)). A generated kind only describes its Cloudflare calls, its
 adoption key, what it compares and what depends on it. A CRUD kind's adoption finds the object in the account's list by
 its key, then reads it by its ID: a list may show less than a read, as D1's does. kflare-gen writes that description
@@ -240,8 +240,8 @@ rules, `ManagedRuleset` in `http_request_firewall_managed`, where an `execute` r
 `RedirectRule` in `http_request_dynamic_redirect`, the zone's single redirects, `CacheRule` in
 `http_request_cache_settings`, `ConfigurationRule` in `http_config_settings`, and `OriginRule` in `http_request_origin`.
 They share one controller (`internal/controller/rulesetrule.go`, `rulesetrule_controller.go`). kflare-gen generates
-TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule from cloudflare-go v7's rule type for the
-kind's action: its action parameters become the spec's fields, its unions a struct whose CEL rules say which
+ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule from cloudflare-go v7's rule
+type for the kind's action: its action parameters become the spec's fields, its unions a struct whose CEL rules say which
 combinations Cloudflare takes. A zone has one entry point per phase, shared by every rule in that phase, kflare's or
 not, so kflare:
 
@@ -288,7 +288,8 @@ seconds once the entry point is deleted (verified live on `kflare.dev`, with a r
   deploys reports `RulesetConflict` and checks again every minute, or as soon as another ManagedRuleset goes, so that a
   ManagedRuleset replaced by one with another name hands over within seconds.
 - Cloudflare runs the ruleset's latest version and refuses any other (code 20055). It keeps overrides in the order
-  sent, so kflare sorts categories and rules: reordering them in the spec writes nothing.
+  sent, which is the spec's: reordering categories or rules in the spec writes the rule again, in the new order. Each
+  category and rule is listed once: the API server refuses a second.
 
 ### Settings
 

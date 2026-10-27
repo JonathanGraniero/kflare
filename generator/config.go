@@ -435,6 +435,9 @@ type ruleTypeConfig struct {
 type ruleFieldConfig struct {
 	// Doc replaces the SDK's documentation of the field.
 	Doc string `json:"doc,omitempty"`
+	// PrintColumn adds a column for the field, with this name: a rule kind's
+	// string, integer or boolean field outside a list or a map.
+	PrintColumn string `json:"printColumn,omitempty"`
 	// Key, for a map, names the field that holds an entry's key: the spec
 	// lists the map's values, each with its key in this field, keyed by it.
 	Key string `json:"key,omitempty"`
@@ -801,6 +804,11 @@ func (k *settingsKindConfig) validate() error {
 	}
 	if err := validateRules(k.Rules); err != nil {
 		return err
+	}
+	for name, f := range k.Fields {
+		if f.PrintColumn != "" {
+			return fmt.Errorf("fields.%s.printColumn: only a rule kind's fields have columns", name)
+		}
 	}
 	return validateParamFields(k.Fields, k.Ignore)
 }

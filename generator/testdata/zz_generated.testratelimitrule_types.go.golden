@@ -97,6 +97,8 @@ type TestRateLimitRuleRatelimit struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=testratelimitrules,scope=Namespaced,shortName=testratelimit,categories=kflare
+// +kubebuilder:printcolumn:name="Requests",type=integer,JSONPath=`.spec.ratelimit.requestsPerPeriod`
+// +kubebuilder:printcolumn:name="To Origin",type=boolean,JSONPath=`.spec.ratelimit.requestsToOrigin`
 // +kubebuilder:printcolumn:name="Action",type=string,JSONPath=`.spec.action`
 // +kubebuilder:printcolumn:name="Priority",type=integer,JSONPath=`.spec.priority`
 // +kubebuilder:printcolumn:name="Rule ID",type=string,JSONPath=`.status.cloudflareMetadata.ruleID`

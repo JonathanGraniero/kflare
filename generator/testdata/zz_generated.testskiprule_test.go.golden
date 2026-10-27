@@ -86,6 +86,11 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestSkipRule]{
 			message: "spec.logging.enabled: Required value",
 		},
 		{
+			what:    "phase outside its enum",
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phase":"kflare-not-in-enum","phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
+			message: "spec.phase: Unsupported value",
+		},
+		{
 			what:    "the action parameters breaking: must set at least one of phase, phases, products, ruleset and rulesets",
 			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\""}`,
 			message: "must set at least one of phase, phases, products, ruleset and rulesets",

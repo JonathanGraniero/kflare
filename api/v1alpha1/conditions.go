@@ -77,9 +77,3 @@ func (in *IPList) GetConditions() []metav1.Condition { return in.Status.Conditio
 
 // SetConditions replaces the IP list's status conditions.
 func (in *IPList) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
-// GetConditions returns the managed ruleset deployment's status conditions.
-func (in *ManagedRuleset) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the managed ruleset deployment's status conditions.
-func (in *ManagedRuleset) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }

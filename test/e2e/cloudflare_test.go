@@ -1196,9 +1196,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 					Expression:  "true",
 					Description: "kflare e2e " + run,
 				},
-				RulesetID: freeManagedRulesetID,
+				ID: freeManagedRulesetID,
 				Overrides: &cloudflarev1alpha1.ManagedRulesetOverrides{
-					Categories: []cloudflarev1alpha1.ManagedRulesetCategoryOverride{
+					Categories: []cloudflarev1alpha1.ManagedRulesetOverridesCategory{
 						{Category: "wordpress", Action: "log"},
 						{Category: "log4j", Action: "managed_challenge"},
 					},
@@ -1219,16 +1219,18 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(cfRule.ActionParameters).NotTo(BeNil())
 		Expect(cfRule.ActionParameters.ID).To(Equal(freeManagedRulesetID))
 		Expect(cfRule.ActionParameters.Version).To(Equal(new("latest")))
+		// Cloudflare keeps the overrides in the order they are sent, the
+		// spec's.
 		Expect(cfRule.ActionParameters.Overrides).To(Equal(&cf.RulesetRuleActionParametersOverrides{
 			Categories: []cf.RulesetRuleActionParametersCategories{
-				{Category: "log4j", Action: "managed_challenge"},
 				{Category: "wordpress", Action: "log"},
+				{Category: "log4j", Action: "managed_challenge"},
 			},
 		}))
 
 		By("turning a rule off, which updates the deployment in place")
 		patch := client.MergeFrom(deployment.DeepCopy())
-		deployment.Spec.Overrides.Rules = []cloudflarev1alpha1.ManagedRulesetRuleOverride{
+		deployment.Spec.Overrides.Rules = []cloudflarev1alpha1.ManagedRulesetOverridesRule{
 			{ID: "9f7e454e4cad45abbcc40696037f70df", Enabled: new(false)}, // Shellshock
 		}
 		Expect(k8s.Patch(ctx, deployment, patch)).To(Succeed())

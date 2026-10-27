@@ -31,8 +31,8 @@ import (
 //     R2Buckets and IPLists that use its credentials, and for the resources
 //     of every kind kflare-gen generates, such as KVNamespaces;
 //   - a Zone waits for its DNSRecords, WorkerRoutes and rules
-//     (WAFCustomRules, RateLimitRules, ManagedRulesets), which need its zone
-//     ID and account;
+//     (WAFCustomRules, RateLimitRules, and the generated rule kinds, such as
+//     ManagedRulesets), which need its zone ID and account;
 //   - a Tunnel waits for its TunnelConfigurations, which reset its ingress
 //     rules through its account, and for the DNSRecords that point at it
 //     through tunnelRef, whose hostnames would otherwise route to nothing;
@@ -102,8 +102,6 @@ var (
 			func(w *cloudflarev1alpha1.WAFCustomRule) []string { return []string{w.Spec.ZoneRef.Name} }),
 		dependents("RateLimitRule", func() client.ObjectList { return &cloudflarev1alpha1.RateLimitRuleList{} },
 			func(rl *cloudflarev1alpha1.RateLimitRule) []string { return []string{rl.Spec.ZoneRef.Name} }),
-		dependents("ManagedRuleset", func() client.ObjectList { return &cloudflarev1alpha1.ManagedRulesetList{} },
-			func(m *cloudflarev1alpha1.ManagedRuleset) []string { return []string{m.Spec.ZoneRef.Name} }),
 	}, generatedZoneDependents...)
 
 	// r2BucketDependents live in an R2Bucket's namespace and bind it through

@@ -3,6 +3,52 @@
 kflare follows [semantic versioning](https://semver.org). While its API is `v1alpha1`, any release can change it:
 read the notes before upgrading. The chart and the controller image share one version.
 
+## Unreleased
+
+Every kind written before kflare's code generator is moving onto it, to be released together as v0.3.0. A generated
+kind's field names are Cloudflare's API's, as the generated kinds' already are, so manifests written for v0.2 change.
+Each kind's changes are below.
+
+### `ManagedRuleset`
+
+- **`rulesetID` is now `id`**, the API's name for the ruleset an execute rule runs. A ManagedRuleset stored with
+  `rulesetID` has no `id` after the upgrade, and cannot be updated until it gets one: apply your ManagedRuleset
+  manifests with `id` right after upgrading
+- `id` can change in place, which updates the deployment's rule to run the other ruleset; it was immutable
+- The category and rule overrides are sent in the spec's order rather than sorted. Cloudflare keeps that order, so
+  reordering them in the spec writes the rule again
+- An empty `overrides.categories` or `overrides.rules` is refused: leave it out
+- For Go clients: `ManagedRulesetCategoryOverride` and `ManagedRulesetRuleOverride` are now
+  `ManagedRulesetOverridesCategory` and `ManagedRulesetOverridesRule`, and an override's `action` is a `string`
+
+Before:
+
+```yaml
+spec:
+  zoneRef:
+    name: example-zone
+  rulesetID: 77454fe2d30c4220b5701f6fdfb893ba
+  expression: "true"
+  overrides:
+    categories:
+      - category: wordpress
+        action: log
+```
+
+After:
+
+```yaml
+spec:
+  zoneRef:
+    name: example-zone
+  id: 77454fe2d30c4220b5701f6fdfb893ba
+  expression: "true"
+  overrides:
+    categories:
+      - category: wordpress
+        action: log
+```
+
 ## v0.2.1 (alpha)
 
 The third alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It is the first
