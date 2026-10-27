@@ -58,12 +58,13 @@ func parseEntry(t *testing.T, entry string) ruleKindConfig {
 }
 
 func TestBuildRuleKindMapsTheRewriteRule(t *testing.T) {
-	k, err := buildRuleKind(parseEntry(t, rewriteEntry), loadTestRule(t, "rulesets.RewriteRuleParam"), loadTestSpec(t))
+	k, err := buildRuleKind(parseEntry(t, rewriteEntry), testRuleLoader(t), loadTestSpec(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k.rule.action != "rewrite" || k.actionConst != "RulesetNewParamsRulesActionRewrite" {
-		t.Errorf("action = %s (%s)", k.rule.action, k.actionConst)
+	if a := k.actions[0]; len(k.actions) != 1 || a.name != "rewrite" ||
+		a.constant != "RulesetNewParamsRulesActionRewrite" || a.params != k.params || k.severalActions() {
+		t.Errorf("actions = %+v", k.actions)
 	}
 	if got := []string{k.phases[0].constant, k.phases[1].constant}; !slices.Equal(got,
 		[]string{"PhaseHTTPRequestTransform", "PhaseHTTPResponseHeadersTransform"}) {
@@ -145,8 +146,6 @@ func TestBuildRuleKindRefuses(t *testing.T) {
 		edit func(e *ruleKindConfig, spec *apiSpec)
 		want string
 	}{
-		{"a field of the rule type left unmapped", func(e *ruleKindConfig, _ *apiSpec) { delete(e.Ignore, "logging") },
-			"has a field logging, which rule kinds do not map"},
 		{"an ignored field the rule type lacks", func(e *ruleKindConfig, _ *apiSpec) { e.Ignore["nope"] = "x" },
 			"nope: the rule type has no such field"},
 		{"an adjusted field the rule type lacks", func(e *ruleKindConfig, _ *apiSpec) {
@@ -213,7 +212,7 @@ func TestBuildRuleKindRefuses(t *testing.T) {
 		}, "has no schema rulesets_RewriteRule"},
 		{"a schema for another action", func(_ *ruleKindConfig, spec *apiSpec) {
 			rewriteSchema(spec).Properties["action"] = &schema{Type: "string", Enum: []any{"redirect"}}
-		}, "actions are [redirect], not the rule type's rewrite"},
+		}, "actions are [redirect], not rewrite"},
 		{"a schema without action parameters", func(_ *ruleKindConfig, spec *apiSpec) {
 			delete(rewriteSchema(spec).Properties, "action_parameters")
 			delete(spec.Components.Schemas["rulesets_Rule"].Properties, "action_parameters")
@@ -273,7 +272,7 @@ func TestBuildRuleKindRefuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			entry, spec := parseEntry(t, rewriteEntry), loadTestSpec(t)
 			tc.edit(&entry, spec)
-			_, err := buildRuleKind(entry, loadTestRule(t, "rulesets.RewriteRuleParam"), spec)
+			_, err := buildRuleKind(entry, testRuleLoader(t), spec)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("err = %v, want one containing %q", err, tc.want)
 			}
@@ -322,7 +321,7 @@ func TestBuildRuleKindRefusesTheTestKindsUnmapped(t *testing.T) {
 			entry, spec := entries[tc.kind], loadTestSpec(t)
 			entry.Ignore = cloneMap(entry.Ignore)
 			tc.edit(&entry, spec)
-			_, err := buildRuleKind(entry, loadTestRule(t, entry.Rule), spec)
+			_, err := buildRuleKind(entry, testRuleLoader(t), spec)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("err = %v, want one containing %q", err, tc.want)
 			}
@@ -342,7 +341,7 @@ func TestRuleRefuses(t *testing.T) {
 		{"a name without a type", "rulesets", "not <package>.<type>"},
 		{"a type the package lacks", "rulesets.NopeRuleParam", "has no type NopeRuleParam"},
 		{"a rule type for every action", "rulesets.RulesetNewParamsRule", "allows 21 actions, not one"},
-		{"a type that is not a rule", "rulesets.LoggingParam", "has no action, or no action parameters"},
+		{"a type that is not a rule", "rulesets.LoggingParam", "has no action"},
 	}
 	for _, tc := range tests {
 		if _, err := (sdk{dir: "."}).rule(tc.rule); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -790,7 +789,7 @@ func TestBuildRuleKindTestsRulesAndKeys(t *testing.T) {
 	e.Rules = []ruleConfig{{Rule: "!has(self.description) || self.description != 'changed by kflare-gen'",
 		Message: "kept description", Reason: "r", Invalid: map[string]any{"type": "url", "expression": "true",
 			"description": "changed by kflare-gen", "uri": map[string]any{"path": map[string]any{"value": "/x"}}}}}
-	k, err := buildRuleKind(e, loadTestRule(t, "rulesets.RewriteRuleParam"), loadTestSpec(t))
+	k, err := buildRuleKind(e, testRuleLoader(t), loadTestSpec(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -932,7 +931,7 @@ func TestRuleKindRulesParse(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, entry := range cfg.RuleKinds {
-			k, err := buildRuleKind(entry, loadTestRule(t, entry.Rule), spec)
+			k, err := buildRuleKind(entry, testRuleLoader(t), spec)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -950,5 +949,224 @@ func TestRuleKindRulesParse(t *testing.T) {
 	}
 	if parsed == 0 {
 		t.Error("parsed no rule")
+	}
+}
+
+func TestBuildRuleKindRefusesActions(t *testing.T) {
+	cfg, err := loadConfig("testdata/generator.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string]ruleKindConfig{}
+	for _, e := range cfg.RuleKinds {
+		entries[e.Kind] = e
+	}
+	tests := []struct {
+		name, kind string
+		edit       func(e *ruleKindConfig)
+		want       string
+	}{
+		{"an action's rule type for another action", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Actions[0].Rule = "rulesets.SkipRuleParam"
+		}, "actions[0] (block): rulesets.SkipRuleParam is the rule type for skip"},
+		{"a rule type of another package", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Actions[2].Rule = "kv.NamespaceNewParams"
+		}, "actions[2] (skip): kv.NamespaceNewParams is not in github.com/cloudflare/cloudflare-go/v7/rulesets"},
+		{"a rule type the package lacks", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Actions[2].Rule = "rulesets.NopeRuleParam"
+		}, "actions[2] (skip): github.com/cloudflare/cloudflare-go/v7/rulesets has no type NopeRuleParam"},
+		{"an action v7 has no constant for", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Actions[1].Action = "nope"
+		}, `actions[1] (nope): github.com/cloudflare/cloudflare-go/v7/rulesets has no RulesetNewParamsRulesAction ` +
+			`constant "nope"`},
+		{"an action whose schema the subset lacks", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Actions[1].Action = "compress_response"
+		}, "the OpenAPI subset has no schema rulesets_CompressResponseRule"},
+		{"an action without a rule type that takes parameters", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Actions[2].Rule = ""
+		}, "actions[2] (skip): rulesets_SkipRule takes action parameters, which cloudflare-go v7 has no type for"},
+		{"an action no sample or test has", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Tests = slices.DeleteFunc(slices.Clone(e.Tests), func(s map[string]any) bool { return s["action"] == "log" })
+		}, "actions[3]: no sample or test has action log; add a test of it"},
+		{"a kind of one action whose rule type takes no parameters", "TestSkipRule", func(e *ruleKindConfig) {
+			e.Rule = "rulesets.LogRuleParam"
+			e.Ignore = map[string]string{"logging": "x", "ratelimit": "x", "exposed_credential_check": "x"}
+		}, "the rule type takes no action parameters, which a kind of one action maps"},
+		{"the rule's own field set with an action that does not allow it", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Tests = slices.Clone(e.Tests)
+			e.Tests[2] = map[string]any{"expression": "true", "action": "log", "logging": map[string]any{"enabled": true}}
+		}, "tests[2]: breaks the rule \"logging is allowed only with action skip\""},
+		{"an enum value the API description does not allow", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Fields = map[string]ruleFieldConfig{"phases[]": {Validation: &validationConfig{
+				Enum: []string{"http_ratelimit", "nope"}, Reason: "r"}}}
+		}, `fields.phases[].validation.enum: "nope" is none of the values the API description allows, ddos_l4`},
+		{"an enum on an integer", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Fields = map[string]ruleFieldConfig{"response.status_code": {Validation: &validationConfig{
+				Enum: []string{"403"}, Reason: "r"}}}
+		}, "fields.response.status_code.validation.enum: only a string field takes an enum"},
+		{"a validation of a list of objects' items", "TestManagedRule", func(e *ruleKindConfig) {
+			e.Fields = map[string]ruleFieldConfig{"overrides.rules[]": {Validation: &validationConfig{
+				MinLength: new(int64(1)), Reason: "r"}}}
+		}, "fields.overrides.rules[].validation: only the items of a list of strings or integers are validated"},
+		{"a sample outside an entry's enum", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Samples = slices.Clone(e.Samples)
+			e.Samples[0] = map[string]any{"expression": "true", "action": "block", "response": map[string]any{
+				"statusCode": 403, "contentType": "text/csv", "content": "x"}}
+		}, `samples[0]: spec.response.contentType is "text/csv", not one of text/html`},
+		{"a parameter set with an action that does not take it", "TestCustomRule", func(e *ruleKindConfig) {
+			e.Tests = slices.Clone(e.Tests)
+			e.Tests[0] = map[string]any{"expression": "true", "action": "challenge", "products": []any{"waf"}}
+		}, "tests[0]: breaks the rule \"products is allowed only with action skip\""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := entries[tc.kind]
+			entry.Actions = slices.Clone(entry.Actions)
+			entry.Ignore = cloneMap(entry.Ignore)
+			tc.edit(&entry)
+			_, err := buildRuleKind(entry, testRuleLoader(t), loadTestSpec(t))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRuleKindRootRefusesFieldsTakenTwice(t *testing.T) {
+	field := func(name string) *paramField {
+		return &paramField{jsonName: name, node: &paramScalar{goType: typeString}}
+	}
+	tests := []struct {
+		name string
+		k    *ruleKind
+		want string
+	}{
+		{"two actions taking a parameter by one name", &ruleKind{actionDoc: []string{"x"}, actions: []ruleKindAction{
+			{name: "a", params: &paramStruct{fields: []*paramField{field("p")}}},
+			{name: "b", params: &paramStruct{fields: []*paramField{field("p")}}},
+		}}, "action b takes a parameter p, which the spec already holds"},
+		{"a parameter named action", &ruleKind{actionDoc: []string{"x"}, actions: []ruleKindAction{
+			{name: "a", params: &paramStruct{fields: []*paramField{field("action")}}}, {name: "b"},
+		}}, "action a takes a parameter action, which the spec already holds"},
+		{"the rule's field named as a parameter", &ruleKind{actions: []ruleKindAction{
+			{name: "a", params: &paramStruct{fields: []*paramField{field("logging")}}},
+		}, ruleFields: []*paramField{field("logging")}}, "the rule's field logging is also a parameter of an action"},
+		{"a parameter named as a shared field", &ruleKind{actions: []ruleKindAction{
+			{name: "a", params: &paramStruct{fields: []*paramField{field("priority")}}},
+		}, ruleFields: []*paramField{field("logging")}}, "a field priority, which the spec already holds"},
+		{"a parameter named zoneRef, without rule fields", &ruleKind{actions: []ruleKindAction{
+			{name: "a", params: &paramStruct{fields: []*paramField{field("zoneRef")}}},
+		}}, "a field zoneRef, which the spec already holds"},
+	}
+	for _, tc := range tests {
+		if err := tc.k.root(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want one containing %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestFitsGenericRule(t *testing.T) {
+	rule := loadTestRule(t, "rulesets.BlockRuleParam")
+	generic, err := (&ruleKindBuilder{r: rule.r}).genericRuleFields()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]sdkField{}
+	for _, f := range rule.fields {
+		fields[f.apiName] = f
+	}
+	for _, name := range []string{"logging", "ratelimit", "exposed_credential_check"} {
+		if err := fitsGenericRule(generic, fields[name]); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	tests := []struct {
+		name string
+		f    sdkField
+		want string
+	}{
+		{"a field the generic rule lacks", sdkField{apiName: "nope", typ: types.Typ[types.String]},
+			"the rule's field nope is a string, which cloudflare-go v7's rule does not take as its nope"},
+		{"a field of another type", sdkField{apiName: "logging", typ: types.Typ[types.String]},
+			"the rule's field logging is a string"},
+	}
+	for _, tc := range tests {
+		if err := fitsGenericRule(generic, tc.f); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want one containing %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestActionSchemaName(t *testing.T) {
+	for action, want := range map[string]string{
+		"challenge":    "rulesets_ChallengeRule",
+		"js_challenge": "rulesets_JsChallengeRule",
+		"log":          "rulesets_LogRule",
+	} {
+		if got := actionSchemaName(action); got != want {
+			t.Errorf("actionSchemaName(%q) = %q, want %q", action, got, want)
+		}
+	}
+}
+
+func TestRuleFieldsRefusesAFieldTheGenericRuleDoesNotTake(t *testing.T) {
+	rule := loadTestRule(t, "rulesets.SkipRuleParam")
+	b := &ruleKindBuilder{r: rule.r, spec: loadTestSpec(t)}
+	generic, err := b.genericRuleFields()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ignore := map[string]string{"ratelimit": "x", "exposed_credential_check": "x"}
+	newBuilder := func() *paramBuilder {
+		return &paramBuilder{kind: "K", r: rule.r, spec: b.spec, ignore: ignore, used: map[string]bool{}}
+	}
+	fields, err := b.ruleFields(newBuilder(), []*sdkRule{nil, rule}, generic)
+	if err != nil || len(fields) != 1 || fields[0].jsonName != "logging" {
+		t.Fatalf("fields = %v, err = %v; want logging alone", fields, err)
+	}
+	generic["logging"] = types.Typ[types.String]
+	_, err = b.ruleFields(newBuilder(), []*sdkRule{rule}, generic)
+	if want := "the rule's field logging is a"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want one containing %q", err, want)
+	}
+}
+
+func TestSetCondition(t *testing.T) {
+	fields := []*paramField{
+		{goName: "Phases", node: &paramList{items: &paramScalar{goType: typeString}}},
+		{goName: "Ruleset", node: &paramScalar{goType: typeString, enum: []string{"current"}}},
+		{goName: "Count", node: &paramScalar{goType: typeInt64}},
+		{goName: "Response", node: &paramStruct{goName: "R"}},
+	}
+	want := `len(in.Phases) > 0 || in.Ruleset != "" || in.Count != nil || in.Response != nil`
+	if got := setCondition("in.", fields); got != want {
+		t.Errorf("setCondition = %s, want %s", got, want)
+	}
+}
+
+func TestSpecValidationTakesAnEntryEnum(t *testing.T) {
+	b := &kindBuilder{}
+	out := &field{goType: typeString}
+	f := sdkField{apiName: "location_hint", enum: []string{"wnam", "enam", "weur"}}
+	err := b.specValidation(out, f, fieldSpec{}, &validationConfig{Enum: []string{"wnam", "weur"}, Reason: "r"})
+	if err != nil || !slices.Equal(out.enum, []string{"wnam", "weur"}) || !slices.Equal(out.excluded, []string{"enam"}) {
+		t.Errorf("enum = %v, excluded = %v, err = %v; want wnam and weur, enam excluded", out.enum, out.excluded, err)
+	}
+	out.jsonName = "locationHint"
+	if !slices.ContainsFunc(invalidValues(*out), func(e specEdit) bool {
+		return e.value == "enam" && e.what == "locationHint enam, which the entry's enum leaves out"
+	}) {
+		t.Errorf("invalidValues = %+v, want enam refused", invalidValues(*out))
+	}
+	err = b.specValidation(out, f, fieldSpec{}, &validationConfig{Enum: []string{"oc"}, Reason: "r"})
+	if want := `fields.location_hint.validation.enum: "oc" is none of the values`; err == nil ||
+		!strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want one containing %q", err, want)
+	}
+	err = b.specValidation(&field{goType: "*" + typeInt64}, sdkField{apiName: "size"}, fieldSpec{},
+		&validationConfig{Enum: []string{"1"}, Reason: "r"})
+	if want := "fields.size.validation.enum: only a string field takes an enum"; err == nil ||
+		!strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want one containing %q", err, want)
 	}
 }

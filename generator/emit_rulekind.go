@@ -139,8 +139,15 @@ func emitRuleTypes(k *ruleKind, header string) ([]byte, error) {
 	write("%s\n\n%s\n\npackage v1alpha1\n\n", strings.TrimRight(header, "\n"), generatedMarker)
 	write("import (\n\tmetav1 %q\n)\n\n", "k8s.io/apimachinery/pkg/apis/meta/v1")
 
-	comment(&b, "", wrap(fmt.Sprintf("%sSpec defines the desired state of %s: the fields every rule kind shares, "+
-		"and the parameters of its %s action.", k.name, k.name, k.rule.action)))
+	holds := fmt.Sprintf("and the parameters of its %s action", k.actions[0].name)
+	if k.severalActions() {
+		holds = "its action, and the parameters of its actions"
+	}
+	if len(k.ruleFields) > 0 {
+		holds = strings.Replace(holds, "and the", "the", 1) + ", and the rule's own fields it sets"
+	}
+	comment(&b, "", wrap(fmt.Sprintf("%sSpec defines the desired state of %s: the fields every rule kind shares, %s.",
+		k.name, k.name, holds)))
 	comment(&b, "", ruleMarkers(k.specRules))
 	write("type %sSpec struct {\n\tRulesetRuleSpec `json:\",inline\"`\n\n", k.name)
 	if k.typeDoc != nil {
@@ -219,6 +226,16 @@ type conversions struct {
 	// root names the conversion of params, and rootWhat says what it
 	// returns.
 	root, rootWhat string
+	// views are more structs whose fields the spec holds, such as the
+	// parameters of each action of a rule kind of several actions, each with
+	// the name of its conversion and what it returns.
+	views map[*paramStruct]view
+}
+
+// view is a struct of fields the spec holds besides params, and its
+// conversion's name and what it returns.
+type view struct {
+	name, what string
 }
 
 // name returns the name of the function that converts st into its SDK
@@ -227,13 +244,34 @@ func (c conversions) name(st *paramStruct) string {
 	if st == c.params {
 		return c.root
 	}
+	if v, ok := c.views[st]; ok {
+		return v.name
+	}
 	return lowerCamel(st.goName) + "Param"
 }
 
-// conversions returns a rule kind's conversions, of its action parameters.
+// conversions returns a rule kind's conversions: of its action's parameters,
+// or of each action's, as cloudflare-go v7's struct for them.
 func (k *ruleKind) conversions() conversions {
-	return conversions{kind: k.name, params: k.params, root: k.varName + "ActionParameters",
-		rootWhat: fmt.Sprintf("the action parameters of %s as cloudflare-go v7 sends them", article(k.name))}
+	if !k.severalActions() {
+		return conversions{kind: k.name, params: k.actions[0].params, root: k.varName + "ActionParameters",
+			rootWhat: fmt.Sprintf("the action parameters of %s as cloudflare-go v7 sends them", article(k.name))}
+	}
+	c := conversions{kind: k.name, views: map[*paramStruct]view{}}
+	for _, a := range k.actions {
+		if a.params != nil {
+			c.views[a.params] = view{name: k.varName + a.goName + "ActionParameters",
+				what: fmt.Sprintf("the parameters of %s's %s action as cloudflare-go v7 sends them", article(k.name),
+					a.name)}
+		}
+	}
+	return c
+}
+
+// ruleFieldsName names the function that sets a rule kind's rule fields on
+// the rule it asks for.
+func (k *ruleKind) ruleFieldsName() string {
+	return k.varName + "RuleFields"
 }
 
 // emitRuleController returns the Go source of a rule kind's controller: its
@@ -290,7 +328,16 @@ func emitRuleController(k *ruleKind, header string) ([]byte, error) {
 	f.printf("newObject: func() rulesetRuleObject { return &%s.%s{} },\n", api, k.name)
 	f.printf("newList: func() %s.ObjectList { return &%s.%sList{} },\n", client, api, k.name)
 	f.printf("definition: func(obj rulesetRuleObject) %s.RulesetNewParamsRule {\n", rs)
-	f.printf("return %sDefinition(obj.(*%s.%s))\n},\n}\n\n", k.varName, api, k.name)
+	f.printf("return %sDefinition(obj.(*%s.%s))\n},\n", k.varName, api, k.name)
+	if len(k.conflicts) > 0 {
+		f.printf("conflicts: map[int]string{\n")
+		for _, c := range k.conflicts {
+			comment(&f.Builder, "", wrap(c.Why))
+			f.printf("%d: %q,\n", c.Code, c.Reason)
+		}
+		f.printf("},\n")
+	}
+	f.printf("}\n\n")
 
 	f.printf("func (r *%sReconciler) Reconcile(ctx %s.Context, req %s.Request) (%s.Result, error) {\n", k.name, ctx,
 		ctrl, ctrl)
@@ -304,20 +351,103 @@ func emitRuleController(k *ruleKind, header string) ([]byte, error) {
 	f.printf("if newAPI == nil {\nnewAPI = defaultRulesetRuleAPI\n}\n")
 	f.printf("return &rulesetRuleReconciler{Client: r.Client, kind: %sKind, newAPI: newAPI}\n}\n\n", k.varName)
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sDefinition is the Cloudflare rule %s asks for: a rule with the "+
-		"%s action and the action parameters its spec holds.", k.varName, article(k.name), k.rule.action)))
-	f.printf("func %sDefinition(rule *%s.%s) %s.RulesetNewParamsRule {\n", k.varName, api, k.name, rs)
-	f.printf("definition := rulesetRuleDefinition(%s.%s, rule.Spec.RulesetRuleSpec)\n", rs, k.actionConst)
-	f.printf("params := %s(rule.Spec)\n", k.conversions().name(k.params))
-	f.printf("definition.ActionParameters.Value, definition.ActionParameters.Present = params, true\n")
+	c := k.conversions()
+	if !k.severalActions() {
+		a := k.actions[0]
+		comment(&f.Builder, "", wrap(fmt.Sprintf("%sDefinition is the Cloudflare rule %s asks for: a rule with the "+
+			"%s action and the action parameters its spec holds%s.", k.varName, article(k.name), a.name,
+			k.withRuleFields())))
+		f.printf("func %sDefinition(rule *%s.%s) %s.RulesetNewParamsRule {\n", k.varName, api, k.name, rs)
+		f.printf("definition := rulesetRuleDefinition(%s.%s, rule.Spec.RulesetRuleSpec)\n", rs, a.constant)
+		f.printf("params := %s(rule.Spec)\n", c.name(a.params))
+		f.printf("definition.ActionParameters.Value, definition.ActionParameters.Present = params, true\n")
+	} else {
+		comment(&f.Builder, "", wrap(fmt.Sprintf("%sDefinition is the Cloudflare rule %s asks for: a rule with its "+
+			"spec's action and the parameters its spec holds for that action, when it sets any%s.", k.varName,
+			article(k.name), k.withRuleFields())))
+		f.printf("func %sDefinition(rule *%s.%s) %s.RulesetNewParamsRule {\n", k.varName, api, k.name, rs)
+		f.printf("definition := rulesetRuleDefinition(%s.RulesetNewParamsRulesAction(rule.Spec.Action), "+
+			"rule.Spec.RulesetRuleSpec)\n", rs)
+		f.printf("switch rule.Spec.Action {\n")
+		for _, a := range k.actions {
+			if a.params == nil {
+				continue
+			}
+			f.printf("case %q:\nif %s {\n", a.name, setCondition("rule.Spec.", a.params.fields))
+			f.printf("params := %s(rule.Spec)\n", c.name(a.params))
+			f.printf("definition.ActionParameters.Value, definition.ActionParameters.Present = params, true\n}\n")
+		}
+		f.printf("}\n")
+	}
+	if len(k.ruleFields) > 0 {
+		f.printf("%s(rule.Spec, &definition)\n", k.ruleFieldsName())
+	}
 	f.printf("return definition\n}\n\n")
 
-	for _, st := range append([]*paramStruct{k.params}, k.structs...) {
-		if err := emitConversion(f, k.conversions(), st); err != nil {
+	if len(k.ruleFields) > 0 {
+		comment(&f.Builder, "", wrap(fmt.Sprintf("%s sets the rule's own fields %s sets on the rule it asks for, as "+
+			"cloudflare-go v7 sends them.", k.ruleFieldsName(), article(k.name))))
+		f.printf("func %s(in %s.%sSpec, out *%s.RulesetNewParamsRule) {\n", k.ruleFieldsName(), api, k.name, rs)
+		for _, pf := range k.ruleFields {
+			if err := emitAssignment(f, c, pf); err != nil {
+				return nil, fmt.Errorf("%s: %s: %w", k.name, pf.jsonName, err)
+			}
+		}
+		f.printf("}\n\n")
+	}
+	var roots []*paramStruct
+	for _, a := range k.actions {
+		if a.params != nil {
+			roots = append(roots, a.params)
+		}
+	}
+	for _, st := range append(roots, k.structs...) {
+		if err := emitConversion(f, c, st); err != nil {
 			return nil, fmt.Errorf("%s: %w", k.name, err)
 		}
 	}
 	return f.source(header)
+}
+
+// withRuleFields ends the documentation of a rule kind's definition with the
+// rule's own fields it maps, if any.
+func (k *ruleKind) withRuleFields() string {
+	if len(k.ruleFields) == 0 {
+		return ""
+	}
+	names := make([]string, len(k.ruleFields))
+	for i, f := range k.ruleFields {
+		names[i] = f.jsonName
+	}
+	pronoun := "them"
+	if len(names) == 1 {
+		pronoun = "it"
+	}
+	return ", and the rule's " + prose(names) + " when it sets " + pronoun
+}
+
+// setCondition returns the condition that a struct holding fields, reached
+// through prefix, sets at least one of them. The fields are an action's
+// parameters on the spec of a kind of several actions, so none is required:
+// an object is a pointer.
+func setCondition(prefix string, fields []*paramField) string {
+	var conditions []string
+	for _, f := range fields {
+		value := prefix + f.goName
+		switch n := f.node.(type) {
+		case *paramList, *paramMap:
+			conditions = append(conditions, "len("+value+") > 0")
+		case *paramScalar:
+			if !f.pointer() {
+				conditions = append(conditions, value+" != "+zeroOf(n.goType))
+				continue
+			}
+			conditions = append(conditions, value+" != nil")
+		default:
+			conditions = append(conditions, value+" != nil")
+		}
+	}
+	return strings.Join(conditions, " || ")
 }
 
 // phrasePhases says which phase a kind's rules are in, for its reconciler's
@@ -334,10 +464,14 @@ func phrasePhases(k *ruleKind) string {
 func emitConversion(f *goFile, c conversions, st *paramStruct) error {
 	in := f.api() + "." + st.goName
 	what := fmt.Sprintf("%s of %s as cloudflare-go v7 sends it", st.path, article(c.kind))
+	v, isView := c.views[st]
 	switch {
 	case st == c.params:
 		in = f.api() + "." + c.kind + "Spec"
 		what = c.rootWhat
+	case isView:
+		// A view's struct is the spec's, whose name it has.
+		what = v.what
 	case strings.HasSuffix(st.path, "[]"):
 		what = fmt.Sprintf("an item of %s in %s as cloudflare-go v7 sends it", strings.TrimSuffix(st.path, "[]"),
 			article(c.kind))
@@ -514,6 +648,13 @@ func emitRuleKindTest(k *ruleKind, header string) ([]byte, error) {
 	f.printf("newReconciler: func(c %s.Client, newAPI func(string) (RulesetRuleAPI, error)) ruleKindReconciler {\n",
 		client)
 	f.printf("return &%sReconciler{Client: c, Scheme: c.Scheme(), NewRulesetRuleAPI: newAPI}\n},\n", k.name)
+	if len(k.conflicts) > 0 {
+		f.printf("conflicts: map[int]string{\n")
+		for _, c := range k.conflicts {
+			f.printf("%d: %q,\n", c.Code, c.Reason)
+		}
+		f.printf("},\n")
+	}
 	specs := k.specs()
 	samples := make([]ruleEdit, len(specs))
 	for i, spec := range specs {

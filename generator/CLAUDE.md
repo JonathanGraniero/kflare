@@ -369,15 +369,52 @@ kinds:
   empty value the spec asks for, now in `differing`'s table; a guard that turned a missing value into null, dead since a
   nil `json.RawMessage` marshals as null, now gone; and a `Get` that takes two IDs, now checked on
   `firewall.WAFPackageGroupService`
+- **Rule kinds of several actions as built** (`feat/generator-rule-actions`, 2026-10-27), the first capability of
+  [Generate every kind](../CLAUDE.md#generate-every-kind): WAFCustomRule takes one of six actions, RateLimitRule one
+  of five with a rate limit, and ManagedRuleset reports a conflict, none of which an entry could say. An entry lists
+  `actions` in place of `rule`, each with its rule type, or none where cloudflare-go v7 has none (`challenge`,
+  `js_challenge`), and a doc, with `actionDoc` for the spec's `action` field: required, an enum of the actions, and
+  mutable (a rule changes its action in place). v7 types the parameters of `log` and `managed_challenge` as
+  `interface{}`, which kflare-gen takes for none; an action whose rule schema gives its `action_parameters` no
+  properties takes none (every rule schema combines `rulesets_Rule`'s empty object), and `sync-spec` copies the schema
+  of an action without a rule type by the action's name (`rulesets_JsChallengeRule`). A kind's rule types load from
+  one package load (`sdkRule.sibling`), so that their types are identical. Each action's parameters sit at the spec's
+  root, as a kind of one action's do; two actions taking a parameter by the same name are refused. The spec's rules
+  say which action takes each parameter (`response is allowed only with action block`), what an action requires
+  (`action execute requires id`) and its parameters' own rules (`action skip must set at least one of ...`); the
+  conversion switches on the action and sends its parameters when the spec sets any. The rule's own fields
+  (`logging`, `ratelimit`, `exposed_credential_check`) are mapped unless the entry ignores them, for one action or
+  several, from the first rule type with each, when they fit the field of v7's rule for every action
+  (`RulesetNewParamsRule`); an entry rule limits them to the actions Cloudflare allows them with. `conflicts` lists
+  the error codes that mean another rule holds what the kind's rule needs, each with its reason and why
+  (`rulesetRuleKind.conflicts`). For every shape, `validation.enum` gives a string field the values Cloudflare takes,
+  narrowing the API description's when it has some (the WAF's four block content types), and a list of scalars takes
+  its items' validation at its path with `[]` (`phases[]`). Rule kinds still take no defaults: a value the
+  hand-written kinds defaulted is required. The generated specs write a rule of each action, so every action needs a
+  sample or test; they change each spec's action in place where its parameters allow, set each parameter of each
+  action alone (a conversion that ignored one of them went unseen otherwise), break each rule above from a spec of an
+  action it applies to, and convert a spec that sets every field of each action. A new shared spec provokes each
+  conflict (the table carries its own copy) and checks the reason and the retry. The shared specs now count what
+  Cloudflare fills in (an execute rule's `version`, a skip rule's `logging`) on both sides of a comparison, as the
+  fake stores it: TestExecuteRule had never run on envtest, and its stored rule held a `version` the table's did not.
+  Golden tests add TestCustomRule (block, challenge, skip and log, `logging` on skip, both enums), TestManagedRule
+  (execute, which requires `id`, and skip) and TestRateLimitRule (`ratelimit`); TestSkipRule maps `logging` and
+  TestExecuteRule has a conflict. Generated into a copy of the tree, the five test rule kinds passed the shared specs
+  on envtest, 75 of 75. Mutations: 82 of kflare-gen's new code and 46 of the test kinds' generated code, CRDs and the
+  conflict handling, all caught. The first runs left 8, 2 and 1 alive: no test kind took a required parameter with
+  several actions (TestManagedRule now does), nothing set skip's `phase` or `products` alone (the changes above now
+  do), nothing checked that a narrowed enum refuses a value the API description allows (the generated specs now
+  refuse each value an entry's enum leaves out, for every shape), and a check of struct names only a compile error
+  could reach, now gone
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without `New`, and secrets. Also
   cross-kind references such as
   `kvNamespaceRef`, generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is
   not reliable: for managed transforms it lists a permission that is refused, see Token permissions)
-- **Stays hand-written:** `Zone`, `DNSRecord`, `Tunnel`, `TunnelConfiguration`, `WorkerScript` and `WorkerRoute`, which
-  are mostly behavior verified live. Moving a hand-written kind needs a reason: R2Bucket would gain jurisdictions and
-  storage class
+- **The hand-written kinds** move onto kflare-gen too (the user, 2026-10-27), each after the capability it needs:
+  [Generate every kind](../CLAUDE.md#generate-every-kind). The earlier line that six of them stay hand-written is
+  withdrawn
 - **Ruled out:** generating from v0.119 (no machine-readable model); OpenAPI alone with kflare's own wire types (it
   rebuilds the client v7 already generates from the same spec); Terraform provider schemas, Crossplane's upjet
   approach (it ties kflare to Terraform's resource model, and the spec already carries Stainless's Terraform hints)

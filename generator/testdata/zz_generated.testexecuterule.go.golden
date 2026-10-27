@@ -43,6 +43,11 @@ var testExecuteRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return testExecuteRuleDefinition(obj.(*cloudflarev1alpha1.TestExecuteRule))
 	},
+	conflicts: map[int]string{
+		// Cloudflare refuses a second execute rule for a managed ruleset the phase
+		// already runs.
+		20014: "RulesetConflict",
+	},
 }
 
 func (r *TestExecuteRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -501,6 +501,10 @@ func invalidValues(f field) []specEdit {
 	if len(f.enum) > 0 {
 		out = append(out, specEdit{f: f, value: "kflare-not-in-enum", what: a + " outside its enum"})
 	}
+	for _, value := range f.excluded {
+		out = append(out, specEdit{f: f, value: value, what: f.jsonName + " " + value + ", which the entry's enum " +
+			"leaves out"})
+	}
 	switch {
 	case v.minLength == nil || *v.minLength == 0:
 	case *v.minLength == 1 && f.optional:

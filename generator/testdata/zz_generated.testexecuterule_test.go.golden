@@ -19,6 +19,9 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestExecuteRule]{
 	newReconciler: func(c client.Client, newAPI func(string) (RulesetRuleAPI, error)) ruleKindReconciler {
 		return &TestExecuteRuleReconciler{Client: c, Scheme: c.Scheme(), NewRulesetRuleAPI: newAPI}
 	},
+	conflicts: map[int]string{
+		20014: "RulesetConflict",
+	},
 	samples: []ruleSpecCase{
 		{
 			what:  "the sample",

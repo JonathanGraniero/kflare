@@ -152,22 +152,29 @@ func (f *fakeRulesetAPI) stored(rule fakeRule, id string, version int) fakeRule 
 	if out.ref() == "" {
 		out["ref"] = id
 	}
-	if _, set := out["enabled"]; !set {
-		out["enabled"] = true
+	out.fillDefaults()
+	return out
+}
+
+// fillDefaults fills in what Cloudflare stores for a rule that leaves it out:
+// a rule is enabled, a skip rule logs its matches, and an execute rule runs
+// the managed ruleset's latest version.
+func (r fakeRule) fillDefaults() {
+	if _, set := r["enabled"]; !set {
+		r["enabled"] = true
 	}
-	switch out["action"] {
+	switch r["action"] {
 	case "skip":
-		if _, set := out["logging"]; !set {
-			out["logging"] = map[string]any{"enabled": true}
+		if _, set := r["logging"]; !set {
+			r["logging"] = map[string]any{"enabled": true}
 		}
 	case "execute":
-		if params, ok := out["action_parameters"].(map[string]any); ok {
+		if params, ok := r["action_parameters"].(map[string]any); ok {
 			if _, set := params["version"]; !set {
 				params["version"] = managedRulesetLatestVersion
 			}
 		}
 	}
-	return out
 }
 
 // executes returns the managed ruleset rule executes, or "" if it is not an

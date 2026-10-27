@@ -124,12 +124,17 @@ ruleKinds:
             - id: 9f7e454e4cad45abbcc40696037f70df
               action: log
               scoreThreshold: 40
+    conflicts:
+      - code: 20014
+        reason: RulesetConflict
+        why: Cloudflare refuses a second execute rule for a managed ruleset the phase already runs.
     ignore:
-      logging: Not mapped by rule kinds yet.
-      ratelimit: Not mapped by rule kinds yet.
-      exposed_credential_check: Not mapped by rule kinds yet.
+      logging: Not mapped by this test kind.
+      ratelimit: Not mapped by this test kind.
+      exposed_credential_check: Not mapped by this test kind.
 
-  # Lists of scalars: sets of enum values and of strings with a pattern. A map of lists is ignored.
+  # Lists of scalars: sets of enum values and of strings with a pattern, and one of the rule's own fields (logging)
+  # next to the action parameters of one action. A map of lists is ignored.
   - kind: TestSkipRule
     rule: rulesets.SkipRuleParam
     shortName: testskip
@@ -142,11 +147,150 @@ ruleKinds:
         phases: [http_request_sbfm, http_ratelimit]
         products: [waf]
         ruleset: current
+        logging:
+          enabled: false
     ignore:
       rules: A map of lists, which kflare-gen cannot map yet.
-      logging: Not mapped by rule kinds yet.
-      ratelimit: Not mapped by rule kinds yet.
-      exposed_credential_check: Not mapped by rule kinds yet.
+      ratelimit: Not mapped by this test kind.
+      exposed_credential_check: Not mapped by this test kind.
+
+  # Several actions: one with parameters (block), one whose parameters must set at least one field (skip), one
+  # cloudflare-go v7 has no rule type for (challenge), and one whose rule type takes no parameters (log). The rule's
+  # own logging field is mapped, and an entry rule allows it only with skip.
+  - kind: TestCustomRule
+    actions:
+      - action: block
+        rule: rulesets.BlockRuleParam
+        doc: blocks the request.
+      - action: challenge
+        doc: issues an interactive challenge.
+      - action: skip
+        rule: rulesets.SkipRuleParam
+        doc: skips the rules, phases or products its parameters name.
+      - action: log
+        rule: rulesets.LogRuleParam
+        doc: only logs the request.
+    actionDoc: Action is what Cloudflare does with the requests the rule matches.
+    shortName: testcustom
+    noun: custom rule
+    doc: TestCustomRule takes one of several actions, each with its own parameters.
+    phase: http_request_firewall_custom
+    samples:
+      - expression: 'http.request.uri.path eq "/admin"'
+        action: block
+        response:
+          statusCode: 403
+          contentType: text/plain
+          content: Blocked
+    tests:
+      - expression: 'true'
+        action: challenge
+      - expression: 'http.request.uri.path eq "/health"'
+        action: skip
+        phases: [http_ratelimit]
+        ruleset: current
+        logging:
+          enabled: false
+      - expression: 'true'
+        action: log
+    rules:
+      - rule: "!has(self.logging) || self.action == 'skip'"
+        message: logging is allowed only with action skip
+        reason: Cloudflare refuses logging on a rule of another action (20018).
+        invalid:
+          expression: 'true'
+          action: block
+          logging:
+            enabled: true
+    # An enum where the API description has none, and one narrowed on the items of a list.
+    fields:
+      response.content_type:
+        validation:
+          enum: [text/html, text/plain, application/json, text/xml]
+          reason: Cloudflare takes these four content types only (20050).
+      phases[]:
+        validation:
+          enum: [http_ratelimit, http_request_firewall_managed, http_request_sbfm]
+          reason: A custom rule skips only the phases after it.
+    ignore:
+      rules: A map of lists, which kflare-gen cannot map yet.
+      ratelimit: Not mapped by this test kind.
+      exposed_credential_check: Not mapped by this test kind.
+
+  # Several actions in the managed phase: one whose parameters the action requires one of (execute's id) and that
+  # nest objects, and one whose parameters must set at least one field (skip).
+  - kind: TestManagedRule
+    actions:
+      - action: execute
+        rule: rulesets.ExecuteRuleParam
+        doc: runs a managed ruleset.
+      - action: skip
+        rule: rulesets.SkipRuleParam
+        doc: skips the managed rules or rulesets its parameters name.
+    actionDoc: Action is what the rule does in the zone's managed rules.
+    shortName: testmanaged
+    noun: managed rule
+    doc: TestManagedRule runs a managed ruleset, or skips managed rules.
+    phase: http_request_firewall_managed
+    samples:
+      - expression: 'true'
+        action: execute
+        id: 77454fe2d30c4220b5701f6fdfb893ba
+        overrides:
+          rules:
+            - id: 9f7e454e4cad45abbcc40696037f70df
+              enabled: false
+    tests:
+      - expression: 'http.request.uri.path eq "/health"'
+        action: skip
+        rulesets: [77454fe2d30c4220b5701f6fdfb893ba]
+    ignore:
+      matched_data: An Enterprise feature, not mapped by this test kind.
+      rules: A map of lists, which kflare-gen cannot map yet.
+      logging: Not mapped by this test kind.
+      ratelimit: Not mapped by this test kind.
+      exposed_credential_check: Not mapped by this test kind.
+
+  # Several actions sharing one of the rule's own fields, an object (ratelimit), which the rule types of the two
+  # actions type differently and alike.
+  - kind: TestRateLimitRule
+    actions:
+      - action: block
+        rule: rulesets.BlockRuleParam
+        doc: blocks the requests over the limit.
+      - action: managed_challenge
+        rule: rulesets.ManagedChallengeRuleParam
+        doc: challenges the clients over the limit.
+    actionDoc: Action is what Cloudflare does with the requests over the rate limit.
+    shortName: testratelimit
+    noun: rate limiting rule
+    doc: TestRateLimitRule limits the rate of the requests it matches.
+    phase: http_ratelimit
+    samples:
+      - expression: 'starts_with(http.request.uri.path, "/api/")'
+        action: block
+        ratelimit:
+          characteristics: [cf.colo.id, ip.src]
+          period: 10
+          requestsPerPeriod: 100
+          mitigationTimeout: 10
+    tests:
+      - expression: 'true'
+        action: managed_challenge
+        ratelimit:
+          characteristics: [cf.colo.id, ip.src]
+          period: 60
+          requestsPerPeriod: 50
+    rules:
+      - rule: has(self.ratelimit)
+        message: ratelimit is required
+        reason: Cloudflare refuses a rule without a rate limit in the http_ratelimit phase.
+        invalid:
+          expression: 'true'
+          action: block
+    ignore:
+      logging: Not mapped by this test kind.
+      exposed_credential_check: Not mapped by this test kind.
 
 # Settings kinds, each from a real cloudflare-go v7 service that keeps a zone's settings.
 settingsKinds:

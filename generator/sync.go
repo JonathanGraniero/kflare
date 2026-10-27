@@ -41,7 +41,16 @@ func syncSpec(configPaths []string, s sdk, from, source, out string) error {
 			}
 		}
 		for _, entry := range cfg.RuleKinds {
-			schemas = append(schemas, ruleSchemaName(entry.Rule))
+			if entry.Rule != "" {
+				schemas = append(schemas, ruleSchemaName(entry.Rule))
+			}
+			for _, a := range entry.Actions {
+				if a.Rule != "" {
+					schemas = append(schemas, ruleSchemaName(a.Rule))
+				} else {
+					schemas = append(schemas, actionSchemaName(a.Action))
+				}
+			}
 		}
 		for _, entry := range cfg.SettingsKinds {
 			svc, err := s.settings(entry.Service)

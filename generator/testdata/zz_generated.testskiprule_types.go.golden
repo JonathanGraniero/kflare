@@ -9,7 +9,8 @@ import (
 )
 
 // TestSkipRuleSpec defines the desired state of TestSkipRule: the fields every
-// rule kind shares, and the parameters of its skip action.
+// rule kind shares, the parameters of its skip action, and the rule's own
+// fields it sets.
 // +kubebuilder:validation:XValidation:rule="has(self.phase) || has(self.phases) || has(self.products) || has(self.ruleset) || has(self.rulesets)",message="must set at least one of phase, phases, products, ruleset and rulesets"
 type TestSkipRuleSpec struct {
 	RulesetRuleSpec `json:",inline"`
@@ -48,6 +49,16 @@ type TestSkipRuleSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:items:Pattern=`^[0-9a-f]{32}$`
 	Rulesets []string `json:"rulesets,omitempty"`
+
+	// An object configuring the rule's logging behavior.
+	// +optional
+	Logging *TestSkipRuleLogging `json:"logging,omitempty"`
+}
+
+// TestSkipRuleLogging is logging in a TestSkipRule.
+type TestSkipRuleLogging struct {
+	// Whether to generate a log when the rule matches.
+	Enabled bool `json:"enabled"`
 }
 
 // +kubebuilder:object:root=true

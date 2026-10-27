@@ -63,6 +63,13 @@ func loadTestRule(t *testing.T, name string) *sdkRule {
 	return rule
 }
 
+// testRuleLoader returns a loader of rule types for buildRuleKind, through
+// loadTestRule.
+func testRuleLoader(t *testing.T) func(name string) (*sdkRule, error) {
+	t.Helper()
+	return func(name string) (*sdkRule, error) { return loadTestRule(t, name), nil }
+}
+
 var (
 	testSettingsMu sync.Mutex
 	testSettings   = map[string]*settingsService{}

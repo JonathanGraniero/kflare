@@ -22,58 +22,68 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestSkipRule]{
 	samples: []ruleSpecCase{
 		{
 			what:  "the sample",
-			spec:  `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
+			spec:  `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
 			phase: rulesets.PhaseHTTPRequestFirewallCustom,
-			rule:  `{"action":"skip","action_parameters":{"phases":["http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"},"description":"Skip the health check","enabled":true,"expression":"http.request.uri.path eq \"/health\""}`,
+			rule:  `{"action":"skip","action_parameters":{"phases":["http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"},"description":"Skip the health check","enabled":true,"expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false}}`,
 		},
 	},
 	changes: []ruleSpecCase{
 		{
 			what: "a new description",
-			spec: `{"description":"changed by kflare-gen","expression":"http.request.uri.path eq \"/health\"","phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
-			rule: `{"action":"skip","action_parameters":{"phases":["http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"},"description":"changed by kflare-gen","enabled":true,"expression":"http.request.uri.path eq \"/health\""}`,
+			spec: `{"description":"changed by kflare-gen","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
+			rule: `{"action":"skip","action_parameters":{"phases":["http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"},"description":"changed by kflare-gen","enabled":true,"expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false}}`,
 		},
 		{
 			what: "the rule disabled",
-			spec: `{"description":"Skip the health check","enabled":false,"expression":"http.request.uri.path eq \"/health\"","phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
-			rule: `{"action":"skip","action_parameters":{"phases":["http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"},"description":"Skip the health check","enabled":false,"expression":"http.request.uri.path eq \"/health\""}`,
+			spec: `{"description":"Skip the health check","enabled":false,"expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
+			rule: `{"action":"skip","action_parameters":{"phases":["http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"},"description":"Skip the health check","enabled":false,"expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false}}`,
+		},
+		{
+			what: "a new logging.enabled",
+			spec: `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":true},"phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
+			rule: `{"action":"skip","action_parameters":{"phases":["http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"},"description":"Skip the health check","enabled":true,"expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":true}}`,
 		},
 	},
 	invalid: []ruleSpecCase{
 		{
 			what:    "an empty phases",
-			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phases":[],"products":["waf"],"ruleset":"current"}`,
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":[],"products":["waf"],"ruleset":"current"}`,
 			message: "spec.phases",
 		},
 		{
 			what:    "phases listing an item twice",
-			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phases":["http_request_sbfm","http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"}`,
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["http_request_sbfm","http_ratelimit","http_request_sbfm"],"products":["waf"],"ruleset":"current"}`,
 			message: "spec.phases[2]: Duplicate value",
 		},
 		{
 			what:    "an empty products",
-			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phases":["http_request_sbfm","http_ratelimit"],"products":[],"ruleset":"current"}`,
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["http_request_sbfm","http_ratelimit"],"products":[],"ruleset":"current"}`,
 			message: "spec.products",
 		},
 		{
 			what:    "products listing an item twice",
-			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phases":["http_request_sbfm","http_ratelimit"],"products":["waf","waf"],"ruleset":"current"}`,
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["http_request_sbfm","http_ratelimit"],"products":["waf","waf"],"ruleset":"current"}`,
 			message: "spec.products[1]: Duplicate value",
 		},
 		{
 			what:    "phases[0] outside its enum",
-			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phases":["kflare-not-in-enum","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["kflare-not-in-enum","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
 			message: "spec.phases[0]: Unsupported value",
 		},
 		{
 			what:    "products[0] outside its enum",
-			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phases":["http_request_sbfm","http_ratelimit"],"products":["kflare-not-in-enum"],"ruleset":"current"}`,
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["http_request_sbfm","http_ratelimit"],"products":["kflare-not-in-enum"],"ruleset":"current"}`,
 			message: "spec.products[0]: Unsupported value",
 		},
 		{
 			what:    "ruleset outside its enum",
-			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"kflare-not-in-enum"}`,
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"kflare-not-in-enum"}`,
 			message: "spec.ruleset: Unsupported value",
+		},
+		{
+			what:    "logging.enabled left out",
+			spec:    `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{},"phases":["http_request_sbfm","http_ratelimit"],"products":["waf"],"ruleset":"current"}`,
+			message: "spec.logging.enabled: Required value",
 		},
 		{
 			what:    "the action parameters breaking: must set at least one of phase, phases, products, ruleset and rulesets",
@@ -84,8 +94,8 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestSkipRule]{
 	full: []ruleSpecCase{
 		{
 			what: "every field set",
-			spec: `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","phase":"current","phases":["ddos_l4"],"products":["bic"],"ruleset":"current","rulesets":["2f2feab2026849078ba485f918791bdc"]}`,
-			rule: `{"action":"skip","action_parameters":{"phase":"current","phases":["ddos_l4"],"products":["bic"],"ruleset":"current","rulesets":["2f2feab2026849078ba485f918791bdc"]},"description":"Skip the health check","enabled":true,"expression":"http.request.uri.path eq \"/health\""}`,
+			spec: `{"description":"Skip the health check","expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false},"phase":"current","phases":["ddos_l4"],"products":["bic"],"ruleset":"current","rulesets":["2f2feab2026849078ba485f918791bdc"]}`,
+			rule: `{"action":"skip","action_parameters":{"phase":"current","phases":["ddos_l4"],"products":["bic"],"ruleset":"current","rulesets":["2f2feab2026849078ba485f918791bdc"]},"description":"Skip the health check","enabled":true,"expression":"http.request.uri.path eq \"/health\"","logging":{"enabled":false}}`,
 		},
 	},
 })

@@ -618,13 +618,13 @@ func TestListMapKeyRefusesAnOptionalField(t *testing.T) {
 	}
 	for _, field := range []string{"action", "score_threshold"} {
 		entry.Fields = map[string]ruleFieldConfig{"overrides.rules": {ListMapKey: field}}
-		_, err := buildRuleKind(entry, loadTestRule(t, entry.Rule), loadTestSpec(t))
+		_, err := buildRuleKind(entry, testRuleLoader(t), loadTestSpec(t))
 		if want := field + " is not a required string or integer"; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("listMapKey %s, an optional field: err = %v, want one containing %q", field, err, want)
 		}
 	}
 	entry.Fields = map[string]ruleFieldConfig{"overrides.rules": {ListMapKey: "id"}}
-	k, err := buildRuleKind(entry, loadTestRule(t, entry.Rule), loadTestSpec(t))
+	k, err := buildRuleKind(entry, testRuleLoader(t), loadTestSpec(t))
 	if err != nil {
 		t.Fatalf("listMapKey id: %v", err)
 	}

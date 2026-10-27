@@ -67,12 +67,22 @@ func (r *TestSkipRuleReconciler) rules() *rulesetRuleReconciler {
 }
 
 // testSkipRuleDefinition is the Cloudflare rule a TestSkipRule asks for: a rule
-// with the skip action and the action parameters its spec holds.
+// with the skip action and the action parameters its spec holds, and the rule's
+// logging when it sets it.
 func testSkipRuleDefinition(rule *cloudflarev1alpha1.TestSkipRule) rulesets.RulesetNewParamsRule {
 	definition := rulesetRuleDefinition(rulesets.RulesetNewParamsRulesActionSkip, rule.Spec.RulesetRuleSpec)
 	params := testSkipRuleActionParameters(rule.Spec)
 	definition.ActionParameters.Value, definition.ActionParameters.Present = params, true
+	testSkipRuleRuleFields(rule.Spec, &definition)
 	return definition
+}
+
+// testSkipRuleRuleFields sets the rule's own fields a TestSkipRule sets on the
+// rule it asks for, as cloudflare-go v7 sends them.
+func testSkipRuleRuleFields(in cloudflarev1alpha1.TestSkipRuleSpec, out *rulesets.RulesetNewParamsRule) {
+	if in.Logging != nil {
+		out.Logging.Value, out.Logging.Present = testSkipRuleLoggingParam(*in.Logging), true
+	}
 }
 
 // testSkipRuleActionParameters returns the action parameters of a TestSkipRule
@@ -106,5 +116,13 @@ func testSkipRuleActionParameters(in cloudflarev1alpha1.TestSkipRuleSpec) rulese
 		slices.Sort(items)
 		out.Rulesets.Value, out.Rulesets.Present = items, true
 	}
+	return out
+}
+
+// testSkipRuleLoggingParam returns logging of a TestSkipRule as cloudflare-go
+// v7 sends it.
+func testSkipRuleLoggingParam(in cloudflarev1alpha1.TestSkipRuleLogging) rulesets.LoggingParam {
+	var out rulesets.LoggingParam
+	out.Enabled.Value, out.Enabled.Present = in.Enabled, true
 	return out
 }

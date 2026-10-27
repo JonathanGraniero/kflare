@@ -7,9 +7,12 @@ SPDX-License-Identifier: MIT
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"go/types"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,18 +21,25 @@ import (
 
 // ruleKind is the model of a generated rule kind: what its types file, its
 // controller, its envtest table and its sample hold. Its paramKind's params
-// are the action parameters, and the bodies, the changes and the full specs
-// ask for a rule, as Cloudflare stores it, its ref aside.
+// are the spec's fields but those every rule kind shares: the action, for a
+// kind of several actions, the parameters of its actions, and the rule's own
+// fields it maps. The bodies, the changes and the full specs ask for a rule,
+// as Cloudflare stores it, its ref aside.
 type ruleKind struct {
 	paramKind
 	shortName, noun, plural string
 	doc                     []string
 	// varName starts the kind's unexported names, as in transformRuleKind.
 	varName string
-	rule    *sdkRule
-	// actionConst names the RulesetNewParamsRulesAction constant of the
-	// kind's action.
-	actionConst string
+	// actions are the kind's actions: its one action, or the values of its
+	// spec's action field, in the entry's order.
+	actions []ruleKindAction
+	// actionDoc documents the action field; nil for a kind of one action.
+	actionDoc []string
+	// ruleFields are the spec fields that are the rule's own fields, such as
+	// logging, rather than parameters of its action.
+	ruleFields []*paramField
+	conflicts  []ruleConflictConfig
 	// phases are the kind's phases: one per type, in the order of the types,
 	// or one.
 	phases []rulePhase
@@ -38,6 +48,41 @@ type ruleKind struct {
 	// retypes are specs a resource of the first sample may not change to.
 	retypes      []ruleEdit
 	printColumns []printColumn
+}
+
+// ruleKindAction is one of a rule kind's actions.
+type ruleKindAction struct {
+	// name is the action, such as block, and doc what a rule with it does,
+	// from the entry: none for a kind of one action.
+	name, doc string
+	// constant names the RulesetNewParamsRulesAction constant of the action,
+	// and goName is the constant's last part, such as ManagedChallenge.
+	constant, goName string
+	// params is the struct of the action's parameters, whose fields the spec
+	// holds, built as cloudflare-go v7's struct for them; nil for an action
+	// that takes none. For a kind of one action that maps none of the rule's
+	// own fields, it is the paramKind's params.
+	params *paramStruct
+	// required are the JSON names of the parameters a kind of several actions
+	// requires with the action, which its spec cannot require.
+	required []string
+}
+
+// severalActions reports whether the kind's spec picks one of several
+// actions.
+func (k *ruleKind) severalActions() bool {
+	return k.actionDoc != nil
+}
+
+// actionOf returns the action of a checked spec: the one its action field
+// names, or the kind's only one.
+func (k *ruleKind) actionOf(spec map[string]any) ruleKindAction {
+	for _, a := range k.actions {
+		if k.severalActions() && a.name == spec[ruleAction] {
+			return a
+		}
+	}
+	return k.actions[0]
 }
 
 // rulePhase is a phase of a rule kind, and the type that picks it.
@@ -87,70 +132,79 @@ var sharedSpecFields = []string{fieldType, fieldExpression, fieldDescription, fi
 // through RulesetRuleSpec and the shared rule controller.
 var sharedRuleFields = []string{"id", "ref", ruleAction, fieldExpression, fieldDescription, fieldEnabled}
 
-// buildRuleKind builds the model of entry's kind from its rule type and the
-// OpenAPI spec.
-func buildRuleKind(entry ruleKindConfig, rule *sdkRule, spec *apiSpec) (*ruleKind, error) {
-	k, err := (&ruleKindBuilder{entry: entry, rule: rule, spec: spec}).build()
+// buildRuleKind builds the model of entry's kind from its rule types, which
+// load loads by name, and the OpenAPI spec.
+func buildRuleKind(entry ruleKindConfig, load func(name string) (*sdkRule, error), spec *apiSpec) (*ruleKind, error) {
+	k, err := (&ruleKindBuilder{entry: entry, load: load, spec: spec}).build()
 	if err != nil {
-		return nil, fmt.Errorf("%s (%s): %w", entry.Kind, entry.Rule, err)
+		if entry.Rule != "" {
+			return nil, fmt.Errorf("%s (%s): %w", entry.Kind, entry.Rule, err)
+		}
+		return nil, fmt.Errorf("%s: %w", entry.Kind, err)
 	}
 	return k, nil
 }
 
 type ruleKindBuilder struct {
 	entry ruleKindConfig
-	rule  *sdkRule
+	load  func(name string) (*sdkRule, error)
 	spec  *apiSpec
+	// r reads the package of the entry's rule types.
+	r *sdkReader
 }
 
 func (b *ruleKindBuilder) build() (*ruleKind, error) {
-	e, rule := b.entry, b.rule
+	e := b.entry
 	k := &ruleKind{
 		paramKind: paramKind{name: e.Kind, root: actionParametersRoot},
 		shortName: e.ShortName, noun: e.Noun, plural: plural(e.Kind), doc: lines(e.Doc),
-		varName: lowerCamel(e.Kind), rule: rule,
+		varName: lowerCamel(e.Kind), conflicts: e.Conflicts,
 	}
 	k.check, k.body = k.checkSpec, k.apiRule
-	var err error
-	if k.actionConst, err = rule.r.constantNamed("RulesetNewParamsRulesAction", rule.action); err != nil {
+	configs := e.Actions
+	if e.Rule != "" {
+		configs = []ruleActionConfig{{Rule: e.Rule}}
+	} else {
+		k.actionDoc = lines(e.ActionDoc)
+	}
+	rules, err := b.rules(configs)
+	if err != nil {
 		return nil, err
 	}
 	if err := b.phases(k); err != nil {
 		return nil, err
 	}
-	paramsSchema, err := b.paramsSchema()
+
+	pb := &paramBuilder{kind: e.Kind, r: b.r, spec: b.spec, adjust: e.Fields, ignore: e.Ignore, used: map[string]bool{},
+		root: actionParametersRoot}
+	for i, c := range configs {
+		where := fmt.Sprintf("actions[%d] (%s): ", i, c.Action)
+		if !k.severalActions() {
+			where = ""
+		}
+		a, err := b.action(pb, c, rules[i])
+		if err != nil {
+			return nil, fmt.Errorf("%s%w", where, err)
+		}
+		k.actions = append(k.actions, a)
+	}
+	generic, err := b.genericRuleFields()
 	if err != nil {
 		return nil, err
 	}
-
-	used := map[string]bool{}
-	for _, f := range rule.fields {
-		if slices.Contains(sharedRuleFields, f.apiName) || f.apiName == ruleActionParameters {
-			continue
-		}
-		if _, ok := e.Ignore[f.apiName]; !ok {
-			return nil, fmt.Errorf("the rule type has a field %s, which rule kinds do not map; ignore it with a reason",
-				f.apiName)
-		}
-		used[f.apiName] = true
-	}
-	pb := &paramBuilder{kind: e.Kind, r: rule.r, spec: b.spec, adjust: e.Fields, ignore: e.Ignore, used: used,
-		root: actionParametersRoot}
-	if k.params, err = pb.object("", e.Kind+"Spec", e.Kind, rule.params, paramsSchema); err != nil {
+	if k.ruleFields, err = b.ruleFields(pb, rules, generic); err != nil {
 		return nil, err
 	}
 	k.structs = pb.structs
 	for _, section := range []map[string]bool{keySet(e.Fields), keySet(e.Ignore)} {
 		for _, path := range slices.Sorted(maps.Keys(section)) {
-			if !used[path] {
+			if !pb.used[path] {
 				return nil, fmt.Errorf("%s: the rule type has no such field", path)
 			}
 		}
 	}
-	for _, f := range k.params.fields {
-		if f.jsonName == "zoneRef" || slices.Contains(sharedSpecFields, f.jsonName) {
-			return nil, fmt.Errorf("the action parameters have a field %s, which the spec already holds", f.jsonName)
-		}
+	if err := k.root(); err != nil {
+		return nil, err
 	}
 
 	k.specRules = append(k.specRules, k.params.rules...)
@@ -159,6 +213,9 @@ func (b *ruleKindBuilder) build() (*ruleKind, error) {
 	}
 	if k.typeDoc != nil {
 		k.printColumns = append(k.printColumns, printColumn{name: "Type", typ: typeString, jsonPath: ".spec.type"})
+	}
+	if k.severalActions() {
+		k.printColumns = append(k.printColumns, printColumn{name: "Action", typ: typeString, jsonPath: ".spec.action"})
 	}
 	k.printColumns = append(k.printColumns,
 		printColumn{name: "Priority", typ: typeInteger, jsonPath: ".spec.priority"},
@@ -183,10 +240,278 @@ func (b *ruleKindBuilder) build() (*ruleKind, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The generated specs write a rule of each action, and break the rules
+	// of its parameters from a spec of it.
+	for i, a := range k.actions {
+		if k.severalActions() && !slices.ContainsFunc(k.specs(), func(s map[string]any) bool {
+			return s[ruleAction] == a.name
+		}) {
+			return nil, fmt.Errorf("actions[%d]: no sample or test has action %s; add a test of it", i, a.name)
+		}
+	}
 	if err := k.edits(entryRules(e.Rules, e.Fields)); err != nil {
 		return nil, err
 	}
 	return k, nil
+}
+
+// rules loads the rule type each action names, nil for an action without
+// one: the first with the entry's loader, the others from its package, which
+// b.r then reads.
+func (b *ruleKindBuilder) rules(configs []ruleActionConfig) ([]*sdkRule, error) {
+	rules := make([]*sdkRule, len(configs))
+	var first *sdkRule
+	for i, c := range configs {
+		if c.Rule == "" {
+			continue
+		}
+		var rule *sdkRule
+		var err error
+		if first == nil {
+			rule, err = b.load(c.Rule)
+			first = rule
+		} else {
+			rule, err = first.sibling(c.Rule)
+		}
+		switch {
+		case err != nil && c.Action == "":
+			return nil, err
+		case err != nil:
+			return nil, fmt.Errorf("actions[%d] (%s): %w", i, c.Action, err)
+		case c.Action != "" && rule.action != c.Action:
+			return nil, fmt.Errorf("actions[%d] (%s): %s is the rule type for %s", i, c.Action, c.Rule, rule.action)
+		}
+		rules[i] = rule
+	}
+	b.r = first.r
+	return rules, nil
+}
+
+// action builds one of the kind's actions from its entry and its rule type,
+// nil when cloudflare-go v7 has none for it, and its OpenAPI schema: the
+// parameters of the action are the struct the spec holds them in.
+func (b *ruleKindBuilder) action(pb *paramBuilder, c ruleActionConfig, rule *sdkRule) (ruleKindAction, error) {
+	a := ruleKindAction{name: c.Action, doc: c.Doc}
+	schemaName := actionSchemaName(c.Action)
+	if rule != nil {
+		a.name, schemaName = rule.action, ruleSchemaName(rule.name)
+	}
+	var err error
+	if a.constant, err = b.r.constantNamed("RulesetNewParamsRulesAction", a.name); err != nil {
+		return a, err
+	}
+	a.goName = strings.TrimPrefix(a.constant, "RulesetNewParamsRulesAction")
+	paramsSchema, err := b.paramsSchema(schemaName, a.name)
+	if err != nil {
+		return a, err
+	}
+	switch {
+	case (rule == nil || rule.params == nil) && paramsSchema != nil:
+		return a, fmt.Errorf("%s takes action parameters, which cloudflare-go v7 has no type for", schemaName)
+	case rule != nil && rule.params != nil && paramsSchema == nil:
+		return a, fmt.Errorf("%s has no action_parameters", schemaName)
+	case paramsSchema == nil && b.entry.Rule != "":
+		return a, fmt.Errorf("the rule type takes no action parameters, which a kind of one action maps")
+	case paramsSchema == nil:
+		return a, nil
+	}
+	if a.params, err = pb.object("", b.entry.Kind+"Spec", b.entry.Kind, rule.params, paramsSchema); err != nil {
+		return a, err
+	}
+	if b.entry.Rule == "" {
+		// With several actions, each requires its own parameters, which the
+		// spec cannot require of every resource.
+		for _, f := range a.params.fields {
+			if f.required {
+				a.required = append(a.required, f.jsonName)
+				f.required = false
+			}
+		}
+	}
+	return a, nil
+}
+
+// ruleFields builds the spec fields of the rule's own fields that the entry
+// does not ignore, such as logging, from the first rule type that has each.
+// The conversion sets them on cloudflare-go v7's rule for every action, so
+// each must fit the field of that rule: generic holds their types.
+func (b *ruleKindBuilder) ruleFields(pb *paramBuilder, rules []*sdkRule,
+	generic map[string]types.Type) ([]*paramField, error) {
+	var out []*paramField
+	seen := map[string]bool{}
+	for _, rule := range rules {
+		if rule == nil {
+			continue
+		}
+		component, err := b.spec.resolve(b.spec.Components.Schemas[ruleSchemaName(rule.name)])
+		if err != nil {
+			return nil, err
+		}
+		props, err := b.spec.properties(component)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range rule.fields {
+			if slices.Contains(sharedRuleFields, f.apiName) || f.apiName == ruleActionParameters || seen[f.apiName] {
+				continue
+			}
+			seen[f.apiName] = true
+			if pb.ignored(f.apiName) {
+				continue
+			}
+			if err := fitsGenericRule(generic, f); err != nil {
+				return nil, err
+			}
+			pf, err := pb.field(f.apiName, b.entry.Kind, f, f.typ, props[f.apiName], false)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, pf)
+		}
+	}
+	return out, nil
+}
+
+// fitsGenericRule checks that the rule's own field f fits the field of
+// cloudflare-go v7's rule for every action that the conversion sets it on:
+// generic holds their types by API name.
+func fitsGenericRule(generic map[string]types.Type, f sdkField) error {
+	if target, ok := generic[f.apiName]; !ok || !types.AssignableTo(f.typ, target) {
+		return fmt.Errorf("the rule's field %s is a %s, which cloudflare-go v7's rule does not take as its %s; "+
+			"ignore it with a reason", f.apiName, f.typ, f.apiName)
+	}
+	return nil
+}
+
+// genericRuleFields returns the types of the fields of cloudflare-go v7's
+// rule for every action, RulesetNewParamsRule, which the conversion fills
+// in, by API name.
+func (b *ruleKindBuilder) genericRuleFields() (map[string]types.Type, error) {
+	obj, ok := b.r.pkg.Types.Scope().Lookup("RulesetNewParamsRule").(*types.TypeName)
+	if !ok {
+		return nil, fmt.Errorf("%s has no type RulesetNewParamsRule", b.r.pkg.PkgPath)
+	}
+	fields, err := b.r.fields(obj.Type().(*types.Named), true)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]types.Type{}
+	for _, f := range fields {
+		out[f.apiName] = f.typ
+	}
+	return out, nil
+}
+
+// root builds the struct whose fields the spec holds besides the shared ones:
+// the action, for a kind of several actions, the parameters of the actions
+// and the rule's own fields. A kind of one action without the rule's own
+// fields holds its parameters' struct itself, its rules on the spec.
+func (k *ruleKind) root() error {
+	if !k.severalActions() && len(k.ruleFields) == 0 {
+		k.params = k.actions[0].params
+		return k.checkRootNames()
+	}
+	k.params = &paramStruct{goName: k.name + "Spec"}
+	if k.severalActions() {
+		names := make([]string, len(k.actions))
+		for i, a := range k.actions {
+			names[i] = a.name
+		}
+		k.params.fields = append(k.params.fields, &paramField{
+			apiName: ruleAction, goName: "Action", jsonName: ruleAction, required: true, doc: k.actionFieldDoc(),
+			node: &paramScalar{goType: typeString, enum: names},
+		})
+	}
+	holders := map[*paramField]string{}
+	for _, a := range k.actions {
+		if a.params == nil {
+			continue
+		}
+		for _, f := range a.params.fields {
+			if slices.ContainsFunc(k.params.fields, func(g *paramField) bool { return g.jsonName == f.jsonName }) {
+				return fmt.Errorf("action %s takes a parameter %s, which the spec already holds: another action "+
+					"takes one by that name, or it is the action field", a.name, f.jsonName)
+			}
+			k.params.fields = append(k.params.fields, f)
+			holders[f] = a.name
+		}
+	}
+	for _, f := range k.ruleFields {
+		if slices.ContainsFunc(k.params.fields, func(g *paramField) bool { return g.jsonName == f.jsonName }) {
+			return fmt.Errorf("the rule's field %s is also a parameter of an action", f.jsonName)
+		}
+		k.params.fields = append(k.params.fields, f)
+	}
+	if err := k.checkRootNames(); err != nil {
+		return err
+	}
+	if !k.severalActions() {
+		k.params.rules = k.actions[0].params.rules
+		return nil
+	}
+	k.params.rules = k.actionRules(holders)
+	return nil
+}
+
+// checkRootNames checks that no field of the params takes the name of a field
+// the spec already holds.
+func (k *ruleKind) checkRootNames() error {
+	for _, f := range k.params.fields {
+		if f.jsonName == "zoneRef" || slices.Contains(sharedSpecFields, f.jsonName) {
+			return fmt.Errorf("the action parameters have a field %s, which the spec already holds", f.jsonName)
+		}
+	}
+	return nil
+}
+
+// actionRules returns the rules on the spec of a kind of several actions: a
+// parameter is set only with the action that takes it (holders; no two take
+// one by the same name), an action sets the parameters it requires, and its
+// parameters' own rules hold with it. They are the rules of the actions'
+// structs, now on the spec.
+func (k *ruleKind) actionRules(holders map[*paramField]string) []celRule {
+	var out []celRule
+	for _, f := range k.params.fields {
+		if action, ok := holders[f]; ok {
+			out = append(out, celRule{rule: "!has(self." + f.jsonName + ") || self.action == '" + action + "'",
+				message: f.jsonName + " is allowed only with action " + action,
+				action:  &actionCheck{field: f, holder: action}})
+		}
+	}
+	for _, a := range k.actions {
+		for _, name := range a.required {
+			f := k.params.fields[slices.IndexFunc(k.params.fields, func(g *paramField) bool { return g.jsonName == name })]
+			out = append(out, celRule{rule: "self.action != '" + a.name + "' || has(self." + name + ")",
+				message: "action " + a.name + " requires " + name, action: &actionCheck{field: f, requiredBy: a.name}})
+		}
+	}
+	for _, a := range k.actions {
+		if a.params == nil {
+			continue
+		}
+		for _, r := range a.params.rules {
+			out = append(out, celRule{rule: "self.action != '" + a.name + "' || (" + r.rule + ")",
+				message: "action " + a.name + " " + r.message, action: &actionCheck{within: a.name, inner: r,
+					params: a.params}})
+		}
+	}
+	return out
+}
+
+// actionFieldDoc documents the action field: the entry's actionDoc, then what
+// each action does.
+func (k *ruleKind) actionFieldDoc() []string {
+	out := append(slices.Clone(k.actionDoc), "")
+	for _, a := range k.actions {
+		for j, line := range wrapIndented(fmt.Sprintf("%s: %s", a.name, a.doc)) {
+			if j == 0 {
+				out = append(out, "  - "+line)
+			} else {
+				out = append(out, "    "+line)
+			}
+		}
+	}
+	return out
 }
 
 // edits builds the generated specs' edits of the samples: a rule kind's own,
@@ -201,6 +526,16 @@ func (k *ruleKind) edits(rules []entryRule) error {
 		e.change(0, "the rule disabled", func(spec map[string]any) { spec[fieldEnabled] = false })
 	}
 	k.scalarChanges(e, false)
+	// Each spec with each other action its parameters allow: a rule changes
+	// its action in place.
+	for i, spec := range e.specs {
+		for _, a := range k.actions {
+			if k.severalActions() && a.name != spec[ruleAction] {
+				e.change(i, "action "+a.name, func(spec map[string]any) { spec[ruleAction] = a.name })
+			}
+		}
+	}
+	k.parametersAlone(e)
 	if e.failed != nil {
 		return e.failed
 	}
@@ -236,7 +571,64 @@ func (k *ruleKind) edits(rules []entryRule) error {
 			shared[name] = value
 		}
 	}
-	return k.fullSpecs(values, shared, k.phases[0].typeName)
+	if !k.severalActions() {
+		return k.fullSpecs(values, shared, k.phases[0].typeName)
+	}
+	// One for each action, which the conversion sends only the parameters of.
+	for _, a := range k.actions {
+		st := &paramStruct{goName: k.params.goName}
+		if a.params != nil {
+			st.fields = slices.Clone(a.params.fields)
+		}
+		st.fields = append(st.fields, k.ruleFields...)
+		base := maps.Clone(shared)
+		base[ruleAction] = a.name
+		if err := k.fullSpecsOf(st, "action "+a.name+", ", values, base, k.phases[0].typeName); err != nil {
+			return fmt.Errorf("action %s: %w", a.name, err)
+		}
+	}
+	return nil
+}
+
+// parametersAlone adds, for a kind of several actions, a change that sets
+// each parameter of each action alone, from the first spec of the action, to
+// the value a spec gives it or one that sets everything: the conversion sends
+// an action's parameters whenever the spec sets any of them. A change the CEL
+// rules refuse (an action requires another parameter) or that asks for the
+// rule the spec already does is left out.
+func (k *ruleKind) parametersAlone(e *editor) {
+	if !k.severalActions() {
+		return
+	}
+	values := k.sampleValues()
+	for _, a := range k.actions {
+		i := slices.IndexFunc(e.specs, func(s map[string]any) bool { return s[ruleAction] == a.name })
+		if a.params == nil || i < 0 {
+			continue
+		}
+		for _, f := range a.params.fields {
+			value, set := e.specs[i][f.jsonName]
+			if !set {
+				var err error
+				if value, err = fullNode(f, f.node, values, false); err != nil {
+					e.failed = cmp.Or(e.failed, fmt.Errorf("action %s, %s alone: %w", a.name, f.jsonName, err))
+					return
+				}
+			}
+			alone := copySpec(e.specs[i])
+			for _, g := range a.params.fields {
+				delete(alone, g.jsonName)
+			}
+			alone[f.jsonName] = copySpec(map[string]any{f.jsonName: value})[f.jsonName]
+			if reflect.DeepEqual(k.body(alone), k.body(e.specs[i])) {
+				continue
+			}
+			e.change(i, fmt.Sprintf("action %s with %s alone", a.name, f.jsonName), func(spec map[string]any) {
+				clear(spec)
+				maps.Copy(spec, alone)
+			})
+		}
+	}
 }
 
 // phaseOf returns the phase of a checked spec's rule: its type's, or the
@@ -284,7 +676,7 @@ func keySet[V any](m map[string]V) map[string]bool {
 func (b *ruleKindBuilder) phases(k *ruleKind) error {
 	e := b.entry
 	if e.Phase != "" {
-		constant, err := b.rule.r.constantNamed("Phase", e.Phase)
+		constant, err := b.r.constantNamed("Phase", e.Phase)
 		if err != nil {
 			return err
 		}
@@ -292,7 +684,7 @@ func (b *ruleKindBuilder) phases(k *ruleKind) error {
 		return nil
 	}
 	for _, t := range e.Types {
-		constant, err := b.rule.r.constantNamed("Phase", t.Phase)
+		constant, err := b.r.constantNamed("Phase", t.Phase)
 		if err != nil {
 			return fmt.Errorf("types: %w", err)
 		}
@@ -309,10 +701,25 @@ func ruleSchemaName(rule string) string {
 	return "rulesets_" + strings.TrimSuffix(rule[strings.LastIndex(rule, ".")+1:], "Param")
 }
 
-// paramsSchema returns the OpenAPI schema of the rule's action parameters. The
-// schema's action must be the rule type's.
-func (b *ruleKindBuilder) paramsSchema() (*schema, error) {
-	name := ruleSchemaName(b.rule.name)
+// actionSchemaName returns the name of the OpenAPI schema of a rule with an
+// action cloudflare-go v7 has no rule type for, such as rulesets_JsChallengeRule
+// for js_challenge: each word of the action capitalized.
+func actionSchemaName(action string) string {
+	var b strings.Builder
+	b.WriteString("rulesets_")
+	for word := range strings.SplitSeq(action, "_") {
+		b.WriteString(upperCamel(word))
+	}
+	b.WriteString("Rule")
+	return b.String()
+}
+
+// paramsSchema returns the OpenAPI schema of the action parameters of the rule
+// schema name, nil when it takes none: every rule schema combines
+// rulesets_Rule's, an object without properties, so an action that takes
+// parameters is one whose schema gives them properties. The schema's action
+// must be action.
+func (b *ruleKindBuilder) paramsSchema(name, action string) (*schema, error) {
 	component, ok := b.spec.Components.Schemas[name]
 	if !ok {
 		return nil, fmt.Errorf("the OpenAPI subset has no schema %s: run make sync-spec", name)
@@ -321,8 +728,8 @@ func (b *ruleKindBuilder) paramsSchema() (*schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !slices.Equal(actions, []string{b.rule.action}) {
-		return nil, fmt.Errorf("%s's actions are %v, not the rule type's %s", name, actions, b.rule.action)
+	if !slices.Equal(actions, []string{action}) {
+		return nil, fmt.Errorf("%s's actions are %v, not %s", name, actions, action)
 	}
 	props, err := b.spec.properties(component)
 	if err != nil {
@@ -330,7 +737,18 @@ func (b *ruleKindBuilder) paramsSchema() (*schema, error) {
 	}
 	params, ok := props[ruleActionParameters]
 	if !ok {
-		return nil, fmt.Errorf("%s has no action_parameters", name)
+		return nil, nil
+	}
+	resolved, err := b.spec.resolve(params)
+	if err != nil {
+		return nil, err
+	}
+	paramProps, err := b.spec.properties(params)
+	if err != nil {
+		return nil, err
+	}
+	if len(paramProps) == 0 && len(resolved.OneOf) == 0 && len(resolved.AnyOf) == 0 {
+		return nil, nil
 	}
 	return params, nil
 }
@@ -560,12 +978,20 @@ func (k *ruleKind) apiRule(spec map[string]any) map[string]any {
 	if !ok {
 		enabled = true
 	}
-	rule := map[string]any{ruleAction: k.rule.action, fieldExpression: spec[fieldExpression], fieldEnabled: enabled}
+	action := k.actionOf(spec)
+	rule := map[string]any{ruleAction: action.name, fieldExpression: spec[fieldExpression], fieldEnabled: enabled}
 	if description, _ := spec[fieldDescription].(string); description != "" {
 		rule[fieldDescription] = description
 	}
-	if params := apiStruct(k.params, spec); len(params) > 0 {
-		rule[ruleActionParameters] = params
+	if action.params != nil {
+		if params := apiStruct(action.params, spec); len(params) > 0 {
+			rule[ruleActionParameters] = params
+		}
+	}
+	for _, f := range k.ruleFields {
+		if value, ok := spec[f.jsonName]; ok {
+			rule[f.apiName] = apiNode(f.node, value)
+		}
 	}
 	return rule
 }
