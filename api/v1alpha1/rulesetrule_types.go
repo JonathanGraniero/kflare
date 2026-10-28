@@ -12,8 +12,8 @@ import (
 )
 
 // The types here are shared by every kind that manages one rule in a zone's
-// Rulesets API phase: RateLimitRule, and the rule kinds kflare-gen generates,
-// such as WAFCustomRule and CacheRule.
+// Rulesets API phase: the rule kinds, all of which kflare-gen generates, such
+// as WAFCustomRule and CacheRule.
 
 // RulesetRuleSpec holds the spec fields every rule kind shares. Each kind
 // embeds it inline, next to the fields of its action.
@@ -78,10 +78,3 @@ type RulesetRuleStatus struct {
 	// CloudflareMetadata identifies the rule in Cloudflare.
 	CloudflareMetadata RulesetRuleCloudflareMetadata `json:"cloudflareMetadata,omitempty"`
 }
-
-// GetRulesetRuleSpec returns the spec fields the rate limiting rule shares
-// with every rule kind.
-func (in *RateLimitRule) GetRulesetRuleSpec() *RulesetRuleSpec { return &in.Spec.RulesetRuleSpec }
-
-// GetRulesetRuleStatus returns the rate limiting rule's status.
-func (in *RateLimitRule) GetRulesetRuleStatus() *RulesetRuleStatus { return &in.Status }

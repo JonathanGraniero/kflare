@@ -512,6 +512,18 @@ func blockRule(ref, path string) rulesets.RulesetNewParamsRule {
 	return rule
 }
 
+// blockResponseParameters are the action parameters of a block rule that
+// answers with its own response: a 403 with a plain-text body.
+func blockResponseParameters() rulesets.BlockRuleActionParametersParam {
+	var response rulesets.BlockRuleActionParametersResponseParam
+	response.StatusCode.Value, response.StatusCode.Present = 403, true
+	response.ContentType.Value, response.ContentType.Present = "text/plain", true
+	response.Content.Value, response.Content.Present = "no", true
+	var params rulesets.BlockRuleActionParametersParam
+	params.Response.Value, params.Response.Present = response, true
+	return params
+}
+
 // executeRule deploys the managed ruleset rulesetID to every request.
 func executeRule(ref, rulesetID string) rulesets.RulesetNewParamsRule {
 	var params rulesets.ExecuteRuleActionParametersParam
@@ -641,7 +653,7 @@ var _ = Describe("Ruleset rules", func() {
 			rule.Logging.Value.Enabled.Value, rule.Logging.Value.Enabled.Present = false, true
 			rule.Logging.Present = true
 			rule.Ratelimit.Value, rule.Ratelimit.Present = map[string]any{"period": 10}, true
-			rule.ActionParameters.Value, rule.ActionParameters.Present = blockResponseParameters(403, "text/plain", "no"), true
+			rule.ActionParameters.Value, rule.ActionParameters.Present = blockResponseParameters(), true
 			want, err := rule.MarshalJSON()
 			Expect(err).NotTo(HaveOccurred())
 

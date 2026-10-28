@@ -157,8 +157,8 @@ var errPausedSpecClient = errors.New("this spec calls no Cloudflare API")
 
 // pausedKind is a hand-written controller's part in the specs every one of
 // them runs for a paused resource. The kinds that run on a shared reconciler
-// (the generated kinds, and RateLimitRule) have specs of their own in the
-// shared reconcilers' spec files.
+// (the generated kinds, every rule kind among them) have specs of their own
+// in the shared reconcilers' spec files.
 type pausedKind struct {
 	name string
 	// newObject returns a valid resource of the kind named name, whose

@@ -387,7 +387,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/cloudflare-go-v0.119` | none: SDK bump (see [SDK decision](#sdk-decision)) | — | ✅ |
 | `feat/rulesets-foundation` | none: Rulesets client calls and the shared rule sync | zone-controller | ✅ |
 | `feat/waf-custom-rule-controller` | `WAFCustomRule` (was `FirewallRule`) | rulesets-foundation | ✅ Generated since `feat/generate-waf-custom-rule`. Free: 5 rules, no regex, no Log action, no custom block response |
-| `feat/rate-limit-rule-controller` | `RateLimitRule` (was `RateLimit`) | rulesets-foundation | ✅ Free: 1 rule, 10 s period and timeout, counts by IP, block only |
+| `feat/rate-limit-rule-controller` | `RateLimitRule` (was `RateLimit`) | rulesets-foundation | ✅ Generated since `feat/generate-rate-limit-rule`. Free: 1 rule, 10 s period and timeout, counts by IP, block only |
 | `feat/ip-list-controller` | `IPList` | shared-client | ✅ Free: 1 IP list, 10,000 items |
 | `feat/zero-trust-controllers` | `AccessGroup`, `AccessPolicy`, `AccessApplication` | shared-client | Blocked: Zero Trust is not enabled on the account (a free plan exists) |
 | `feat/managed-ruleset-controller` | `ManagedRuleset` (was `WAFPackage`) | rulesets-foundation | ✅ By hand (decided 2026-10-13), generated since `feat/generate-managed-ruleset`. Free: only the Cloudflare Free Managed Ruleset, with overrides |
@@ -828,7 +828,7 @@ so a skip rule that leaves it out is idle. The live e2e spec updates its skip ru
 
 #### Branch: `feat/rate-limit-rule-controller`
 **Depends on:** `feat/rulesets-foundation`
-**Status:** ✅ Complete
+**Status:** ✅ Complete; generated since `feat/generate-rate-limit-rule` (below)
 
 - [x] `api/v1alpha1/ratelimitrule_types.go`: the shared fields plus `action` (default `block`; `challenge`,
   `js_challenge`, `managed_challenge`, `log`), `characteristics` (a set, default `[ip.src]`; kflare adds `cf.colo.id`),
@@ -862,6 +862,30 @@ so a skip rule that leaves it out is idle. The live e2e spec updates its skip ru
 - Stored as sent: characteristics keep the order sent; `requests_to_origin: false` and an empty counting expression
   come back absent, as cloudflare-go sends them
 - deploy.md documents Zone · Zone WAF · Edit, which is enough on its own (verified 2026-10-13, see Token permissions)
+
+**Generated** (`feat/generate-rate-limit-rule`, 2026-10-27; [Generate every kind](../CLAUDE.md#generate-every-kind),
+PR 4, taken before PR 3). Its entry in `generator/generator.yaml` replaces the hand-written types and controller. The
+rate limit is the rule's own `ratelimit` object, and the block response is `response`, as the API names them; nothing
+defaults any more, so `action`, the characteristics, the period, the mitigation timeout and the response's status code
+are set in the spec (CHANGELOG.md lists the changes). The entry keeps what the notes above verified, as CEL rules on
+`ratelimit` and validations: `requestsPerPeriod` required and at most 1,000,000 (20158), the mitigation timeout
+required and 0 or at least the period (20156), `cf.colo.id` and another field among the characteristics (20155),
+which kflare no longer adds, the response's four content types (20050) and its 30,720-byte body (20052). New, verified
+on `kflare.dev` on 2026-10-27:
+
+- Dry runs (`?dry_run=true`, which returns no rule): `requests_to_origin: false` and `cf.colo.id` listed second are
+  accepted; `mitigation_timeout: 0` is refused on Free ("not entitled to use throttle behaviour"). A rule without
+  `requests_per_period` is refused as 0 (20158). Score counting is not entitled on Free ("not entitled to use score
+  fields in ratelimiting"); it replaces `requests_per_period` (20159, 20131) and needs `score_response_header_name`
+  (20161). `logging` is refused (20018), and so is `exposed_credential_check` (20189, "not allowed in phase
+  http_ratelimit with kind zone"). `challenge`, `js_challenge` and a counting expression are not entitled on Free.
+  The score fields, `logging` and `exposed_credential_check` are ignored with these as reasons
+- A stored probe, a `kflare-probe-requests-to-origin-false` rule added with `requests_to_origin: false` (the rules
+  endpoint, as kflare writes), read back and deleted: Cloudflare stores false as absent, both in the write's answer and
+  in a separate read. The generated conversion sent every optional field a spec sets, so the rule would have differed
+  from the stored one on every reconcile. kflare-gen's `omitZero` (a rule kind's optional boolean or integer, with
+  its reason) sends the field only when it is not zero; `requests_to_origin` and `mitigation_timeout` take it, as the
+  hand-written conversion did. The CRD keeps the pointer, so a spec can still say 0 or false
 
 
 #### Branch: `feat/ip-list-controller`

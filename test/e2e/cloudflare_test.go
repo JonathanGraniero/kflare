@@ -819,9 +819,15 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 					Expression:  `starts_with(http.request.uri.path, "/` + resourceName() + `")`,
 					Description: "kflare e2e " + run,
 				},
-				RequestsPerPeriod: 50,
-				BlockResponse: &cloudflarev1alpha1.RateLimitRuleBlockResponse{
-					ContentType: "application/json", Content: `{"error":"rate limited"}`,
+				Action: "block",
+				// Listed out of order: the conversion sorts them, as Cloudflare
+				// keeps the order it is sent.
+				Ratelimit: &cloudflarev1alpha1.RateLimitRuleRatelimit{
+					Characteristics: []string{"ip.src", "cf.colo.id"}, Period: 10, RequestsPerPeriod: new(int64(50)),
+					MitigationTimeout: new(int64(10)), RequestsToOrigin: new(true),
+				},
+				Response: &cloudflarev1alpha1.RateLimitRuleResponse{
+					StatusCode: 429, ContentType: "application/json", Content: `{"error":"rate limited"}`,
 				},
 			},
 		}
@@ -838,23 +844,30 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(cfRule.Description).To(Equal(rule.Spec.Description))
 		Expect(cfRule.RateLimit).To(Equal(&cf.RulesetRuleRateLimit{
 			Characteristics: []string{"cf.colo.id", "ip.src"}, Period: 10, RequestsPerPeriod: 50, MitigationTimeout: 10,
+			RequestsToOrigin: true,
 		}))
 		Expect(cfRule.ActionParameters).NotTo(BeNil())
 		Expect(cfRule.ActionParameters.Response).To(Equal(&cf.RulesetRuleActionParametersBlockResponse{
 			StatusCode: 429, ContentType: "application/json", Content: `{"error":"rate limited"}`,
 		}))
 
-		By("raising the limit, which updates the rule in place")
+		By("raising the limit and counting cached requests too, which updates the rule in place")
 		patch := client.MergeFrom(rule.DeepCopy())
-		rule.Spec.RequestsPerPeriod = 100
+		rule.Spec.Ratelimit.RequestsPerPeriod = new(int64(100))
+		rule.Spec.Ratelimit.RequestsToOrigin = new(false)
 		Expect(k8s.Patch(ctx, rule, patch)).To(Succeed())
 		Eventually(func(g Gomega) {
 			updated, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, rateLimitPhase), ref)
 			g.Expect(ok).To(BeTrue(), "Cloudflare has no rule with ref %s", ref)
 			g.Expect(updated.ID).To(Equal(cfRule.ID))
-			g.Expect(updated.RateLimit.RequestsPerPeriod).To(Equal(100))
+			g.Expect(updated.RateLimit).To(Equal(&cf.RulesetRuleRateLimit{
+				Characteristics: []string{"cf.colo.id", "ip.src"}, Period: 10, RequestsPerPeriod: 100,
+				MitigationTimeout: 10,
+			}))
 		}, e2eTimeout, e2ePoll).Should(Succeed())
 
+		// Cloudflare stores requests_to_origin false as absent: a rule that
+		// sent it would differ from the stored one on every reconcile.
 		expectIdle(ctx, k8s, cfAPI, zoneID, rateLimitPhase, rule)
 	})
 

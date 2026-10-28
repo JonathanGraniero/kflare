@@ -10,7 +10,6 @@ resources:
 - bases/kflare.dev_workerscripts.yaml
 - bases/kflare.dev_workerroutes.yaml
 - bases/kflare.dev_r2buckets.yaml
-- bases/kflare.dev_ratelimitrules.yaml
 - bases/kflare.dev_iplists.yaml
 # +kflare-gen:begin The CRDs of the kinds in generator/generator.yaml: make codegen keeps this block.
 - bases/kflare.dev_cacherules.yaml
@@ -20,6 +19,7 @@ resources:
 - bases/kflare.dev_managedrulesets.yaml
 - bases/kflare.dev_managedtransforms.yaml
 - bases/kflare.dev_originrules.yaml
+- bases/kflare.dev_ratelimitrules.yaml
 - bases/kflare.dev_redirectrules.yaml
 - bases/kflare.dev_transformrules.yaml
 - bases/kflare.dev_wafcustomrules.yaml

@@ -389,6 +389,8 @@ func TestLoadConfigRefusesPickedByAndInteger(t *testing.T) {
 		{"no reason", pickedBy("setting: mode, while: auto, written: custom"), "pickedBy: gives no reason"},
 		{"a column", replace("scope: {doc: The scope.}", "scope: {doc: The scope., printColumn: Scope}"),
 			"fields.scope.printColumn: only a rule kind's fields have columns"},
+		{"a zero left out", replace("scope: {doc: The scope.}", "scope: {doc: The scope., omitZero: r}"),
+			"fields.scope.omitZero: only a rule kind's fields leave out a zero value"},
 		{"an integer with a pattern", replace("scope: {doc: The scope.}",
 			"scope: {validation: {integer: true, pattern: '^a$', reason: r}}"),
 			"fields.scope.validation: integer takes no lengths or pattern"},

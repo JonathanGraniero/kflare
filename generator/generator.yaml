@@ -581,6 +581,213 @@ ruleKinds:
       exposed_credential_check: >-
         Exposed credentials checks belong to custom rules on paid plans; not verified live in this phase, so not
         sent.
+  - kind: RateLimitRule
+    actions:
+      - action: block
+        rule: rulesets.BlockRuleParam
+        doc: blocks them, with Cloudflare's response or the rule's.
+      - action: challenge
+        doc: issues an interactive challenge.
+      - action: js_challenge
+        doc: issues a JavaScript challenge.
+      - action: managed_challenge
+        rule: rulesets.ManagedChallengeRuleParam
+        doc: issues the challenge Cloudflare picks for the visitor.
+      - action: log
+        rule: rulesets.LogRuleParam
+        doc: only logs them (Enterprise plans).
+    actionDoc: |
+      Action is what Cloudflare does with a client's matching requests once it
+      is over the rate. Free plans can only block.
+    shortName: cfratelimit
+    noun: rate limiting rule
+    doc: |
+      RateLimitRule is the Schema for the ratelimitrules API.
+      It manages one rate limiting rule in a zone, in its http_ratelimit phase:
+      the rule counts the requests its expression matches, and once a client
+      sends more than requestsPerPeriod of them in a period, the action applies
+      to the client's matching requests for the mitigation timeout. A Free plan
+      allows one rate limiting rule, counted per IP address over 10 seconds,
+      with the block action.
+    phase: http_ratelimit
+    samples:
+      - expression: 'starts_with(http.request.uri.path, "/api/")'
+        description: Limit each client to 100 API requests every 10 seconds
+        action: block
+        ratelimit:
+          characteristics: [cf.colo.id, ip.src]
+          period: 10
+          requestsPerPeriod: 100
+          mitigationTimeout: 10
+        response:
+          statusCode: 429
+          contentType: application/json
+          content: '{"error":"rate limited, try again in 10 seconds"}'
+    tests:
+      # Fields Free plans are not entitled to, which the generated specs write to the fake: counting by another field,
+      # a counting expression, counting only what reaches the origin, and throttling. Characteristics listed out of
+      # order, which the conversion sorts.
+      - expression: 'starts_with(http.request.uri.path, "/login")'
+        action: managed_challenge
+        ratelimit:
+          characteristics: ['http.request.headers["x-api-key"]', cf.colo.id]
+          period: 60
+          requestsPerPeriod: 5
+          mitigationTimeout: 0
+          countingExpression: 'http.response.code eq 401'
+          requestsToOrigin: true
+      - expression: 'true'
+        action: js_challenge
+        ratelimit:
+          characteristics: [ip.src, cf.colo.id]
+          period: 10
+          requestsPerPeriod: 1000000
+          mitigationTimeout: 3600
+      - expression: 'http.request.uri.path eq "/search"'
+        action: challenge
+        ratelimit:
+          characteristics: [cf.colo.id, ip.src]
+          period: 30
+          requestsPerPeriod: 20
+          mitigationTimeout: 30
+      - expression: 'http.request.method eq "POST"'
+        action: log
+        ratelimit:
+          characteristics: [cf.colo.id, ip.src]
+          period: 120
+          requestsPerPeriod: 300
+          mitigationTimeout: 0
+    rules:
+      - rule: has(self.ratelimit)
+        message: ratelimit is required
+        reason: Cloudflare refuses a rule without a rate limit in the http_ratelimit phase (20132), verified live on 2026-10-13.
+        invalid:
+          expression: 'true'
+          action: block
+    fields:
+      ratelimit:
+        doc: |
+          Ratelimit is the rule's rate limit: what requests are counted by, over
+          what period, how many a client may send, and for how long the action
+          applies once the client sends more.
+        rules:
+          - rule: has(self.requestsPerPeriod)
+            message: requestsPerPeriod is required
+            reason: >-
+              Cloudflare reads a missing threshold as 0 and refuses it (20158), verified live on 2026-10-27; score
+              counting, which replaces it, is not mapped (see ignore).
+            invalid:
+              expression: 'true'
+              action: block
+              ratelimit: {characteristics: [cf.colo.id, ip.src], period: 10, mitigationTimeout: 10}
+          - rule: has(self.mitigationTimeout)
+            message: mitigationTimeout is required
+            reason: >-
+              Cloudflare reads a missing timeout as 0, which throttles, and only Enterprise plans may throttle ("not
+              entitled to use throttle behaviour"), verified live on 2026-10-13 and 2026-10-27: a spec that throttles
+              says so with 0.
+            invalid:
+              expression: 'true'
+              action: block
+              ratelimit: {characteristics: [cf.colo.id, ip.src], period: 10, requestsPerPeriod: 100}
+          - rule: '!has(self.mitigationTimeout) || self.mitigationTimeout == 0 || self.mitigationTimeout >= self.period'
+            message: mitigationTimeout must be 0 or at least the period
+            reason: Cloudflare refuses a timeout below the period but 0 (20156), verified live on 2026-10-13.
+            invalid:
+              expression: 'true'
+              action: block
+              ratelimit: {characteristics: [cf.colo.id, ip.src], period: 60, requestsPerPeriod: 100,
+                mitigationTimeout: 10}
+          - rule: '''cf.colo.id'' in self.characteristics'
+            message: characteristics must list cf.colo.id
+            reason: >-
+              Cloudflare counts every rate limiting rule per data center and refuses a rule whose characteristics do
+              not say so (20155), verified live on 2026-10-13.
+            invalid:
+              expression: 'true'
+              action: block
+              ratelimit: {characteristics: [ip.src], period: 10, requestsPerPeriod: 100, mitigationTimeout: 10}
+          - rule: self.characteristics.exists(c, c != 'cf.colo.id')
+            message: characteristics must list a field besides cf.colo.id
+            reason: Cloudflare refuses cf.colo.id alone (20155), verified live on 2026-10-13.
+            invalid:
+              expression: 'true'
+              action: block
+              ratelimit: {characteristics: [cf.colo.id], period: 10, requestsPerPeriod: 100, mitigationTimeout: 10}
+      ratelimit.characteristics:
+        doc: |
+          Characteristics are what requests are counted by: requests that share
+          all of them share a counter. Cloudflare counts per data center, so they
+          list cf.colo.id, and at least one other field: ip.src counts per client
+          IP address, the only choice on Free plans; higher plans can count by
+          other fields, such as http.request.headers["x-api-key"].
+      ratelimit.period:
+        doc: |
+          Period is how long, in seconds, requests are counted for. Cloudflare
+          accepts set periods between 10 seconds and an hour, and the zone's plan
+          narrows them: Free plans can only count for 10 seconds.
+        printColumn: Period
+      ratelimit.requests_per_period:
+        doc: |
+          RequestsPerPeriod is how many matching requests a client can send in a
+          period before the action applies.
+        printColumn: Requests
+        validation:
+          minimum: 1
+          maximum: 1000000
+          reason: >-
+            Cloudflare refuses a threshold above 1,000,000 (20158), verified live on 2026-10-13; the API description
+            gives no maximum.
+      ratelimit.mitigation_timeout:
+        doc: |
+          MitigationTimeout is how long, in seconds, the action applies once a
+          client is over the rate. It must be at least the period, or 0 to
+          throttle instead: apply the action only to the requests over the rate
+          (Enterprise plans). Free plans can only use 10.
+        omitZero: >-
+          Cloudflare reads a missing timeout as 0: Free plans are refused either alike ("not entitled to use throttle
+          behaviour"), verified live on 2026-10-13 and 2026-10-27. Leaving 0 out sends what kflare's earlier
+          RateLimitRule sent; what Cloudflare returns for an explicit 0 is not verified, since only Enterprise plans
+          may throttle.
+      ratelimit.counting_expression:
+        doc: |
+          CountingExpression counts other requests than those the rule matches,
+          for example only the failed logins among the login requests. It
+          defaults to the rule's expression. Free plans cannot set it.
+      ratelimit.requests_to_origin:
+        doc: |
+          RequestsToOrigin counts only the requests that reach the origin,
+          leaving out those served from Cloudflare's cache.
+        omitZero: >-
+          Cloudflare stores false as absent: a rule written with requests_to_origin false comes back without it
+          (a stored rule, verified live on 2026-10-27), and the API description gives false as the default.
+      response:
+        doc: Response replaces Cloudflare's response to the requests a block rule blocks.
+      response.content:
+        doc: Content is the response body.
+        validation:
+          minLength: 1
+          maxLength: 30720
+          reason: >-
+            Cloudflare refuses a body over 30,720 bytes in a rate limiting rule (20052), verified live on 2026-10-13;
+            the API description gives no maximum.
+      response.content_type:
+        doc: ContentType is the response's content type.
+        validation:
+          enum: [text/html, text/plain, application/json, text/xml]
+          reason: >-
+            Cloudflare takes these four content types only (20050), verified live on 2026-10-13; the API description
+            takes any.
+      response.status_code:
+        doc: StatusCode is the response's HTTP status code.
+    ignore:
+      logging: Only skip rules log (20018 on a block rule, verified live on 2026-10-27).
+      exposed_credential_check: Refused in http_ratelimit (20189, verified live on 2026-10-27).
+      ratelimit.score_per_period: &score >-
+        Score counting replaces requests_per_period (20159) and needs score_response_header_name (20161); Free plans
+        are not entitled to it ("not entitled to use score fields in ratelimiting"), verified live on 2026-10-27. Add
+        it once a plan that is can check it.
+      ratelimit.score_response_header_name: *score
   - kind: OriginRule
     rule: rulesets.RouteRuleParam
     shortName: cforigin

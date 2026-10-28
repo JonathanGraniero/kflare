@@ -264,6 +264,8 @@ func TestLoadConfigRefusesRuleKinds(t *testing.T) {
 		{"a field's rule without a message", replace("{key: name, keyDoc: Name is the header's name.}",
 			"{key: name, keyDoc: Name is the header's name., rules: [{rule: 'true', message: '', reason: r, "+
 				"invalid: {expression: 'true'}}]}"), "fields.headers.rules[0]: needs a rule and a message"},
+		{"a zero left out without a reason", replace("{key: name, keyDoc: Name is the header's name.}",
+			"{key: name, keyDoc: Name is the header's name., omitZero: ' '}"), "fields.headers.omitZero gives no reason"},
 		{"a key validation without a key", replace("{key: name, keyDoc: Name is the header's name.}",
 			"{keyValidation: {minLength: 1, reason: r}}"), "fields.headers: keyValidation without a key"},
 		{"a key validation without a reason", replace("{key: name, keyDoc: Name is the header's name.}",

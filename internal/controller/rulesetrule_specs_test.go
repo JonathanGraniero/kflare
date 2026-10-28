@@ -50,7 +50,7 @@ import (
 // resources; every
 // field converted; and the CRD: the immutable zoneRef and type, and the specs
 // it refuses. The shared rule controller's other paths (waiting for the Zone,
-// credentials, errors, ordering) are the WAFCustomRule specs'.
+// credentials, errors, ordering) are rulesetrule_controller_test.go's.
 
 // ruleKindReconciler is a generated rule kind's reconciler.
 type ruleKindReconciler interface {
