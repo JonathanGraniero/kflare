@@ -158,8 +158,9 @@ HELM ?= helm
 HELM_KUBE_VERSIONS ?= 1.34.0 1.37.0
 
 .PHONY: helm
-helm: manifests ## Regenerate the chart's CRDs and RBAC rules from config/.
+helm: manifests ## Regenerate the chart's CRDs and RBAC rules from config/, and its Artifact Hub annotations.
 	./hack/sync-helm-chart.sh
+	go run ./hack/chartannotations
 
 .PHONY: helm-lint
 helm-lint: helm ## Lint the chart and render it with default and non-default values.

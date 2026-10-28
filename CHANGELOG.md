@@ -3,6 +3,15 @@
 kflare follows [semantic versioning](https://semver.org). While its API is `v1alpha1`, any release can change it:
 read the notes before upgrading. The chart and the controller image share one version.
 
+## Unreleased
+
+### The Helm chart
+
+- **The chart's Artifact Hub page** lists its license, its CRDs with an example of each, each release's changes, and
+  the controller image, which Artifact Hub now scans for its security report. It found no image before: it renders a
+  chart for Kubernetes 1.29 to find them, which the chart refuses
+  ([#90](https://github.com/JonathanGraniero/kflare/issues/90))
+
 ## v0.3.0 (alpha)
 
 The fourth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. The three
