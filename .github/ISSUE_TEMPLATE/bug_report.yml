@@ -12,7 +12,7 @@ body:
     attributes:
       label: kflare version
       description: The chart or image version, or the commit if you built it.
-      placeholder: "0.2.1"
+      placeholder: "0.3.0"
     validations:
       required: true
   - type: input
