@@ -39,7 +39,10 @@ spec:
       openAPIV3Schema:
         description: |-
           WAFCustomRule is the Schema for the wafcustomrules API.
-          It manages one WAF custom rule in a zone.
+          It manages one WAF custom rule in a zone, in its
+          http_request_firewall_custom phase: the rule blocks or challenges the
+          requests its expression matches, or lets them skip other security
+          features. A Free plan allows five custom rules.
         properties:
           apiVersion:
             description: |-
@@ -60,16 +63,21 @@ spec:
             type: object
           spec:
             description: |-
-              WAFCustomRuleSpec defines the desired state of WAFCustomRule: one rule in
-              the zone's WAF custom rules, Cloudflare's http_request_firewall_custom
-              phase.
+              WAFCustomRuleSpec defines the desired state of WAFCustomRule: the fields
+              every rule kind shares, its action, the parameters of its actions, and the
+              rule's own fields it sets.
             properties:
               action:
                 description: |-
-                  Action is what Cloudflare does with a matching request: block it,
-                  challenge the visitor (challenge, js_challenge or managed_challenge),
-                  let it skip other security features (skip), or only log it (log, on
-                  Enterprise plans).
+                  Action is what Cloudflare does with the requests the rule matches. Free
+                  plans can take every action but log.
+
+                    - block: blocks them, with Cloudflare's block page or the rule's response.
+                    - challenge: issues an interactive challenge.
+                    - js_challenge: issues a JavaScript challenge.
+                    - managed_challenge: issues the challenge Cloudflare picks for the visitor.
+                    - skip: lets them skip the security features its parameters name.
+                    - log: only logs them (Enterprise plans).
                 enum:
                 - block
                 - challenge
@@ -78,36 +86,6 @@ spec:
                 - skip
                 - log
                 type: string
-              blockResponse:
-                description: |-
-                  BlockResponse replaces Cloudflare's block page for a block rule. It
-                  needs a Pro plan or higher.
-                properties:
-                  content:
-                    description: Content is the response body. Cloudflare allows at
-                      most 2 KB.
-                    maxLength: 2048
-                    minLength: 1
-                    type: string
-                  contentType:
-                    description: ContentType is the response's content type.
-                    enum:
-                    - text/html
-                    - text/plain
-                    - application/json
-                    - text/xml
-                    type: string
-                  statusCode:
-                    default: 403
-                    description: StatusCode is the response's HTTP status code.
-                    format: int32
-                    maximum: 499
-                    minimum: 400
-                    type: integer
-                required:
-                - content
-                - contentType
-                type: object
               description:
                 description: Description is shown with the rule in the Cloudflare
                   dashboard.
@@ -126,6 +104,40 @@ spec:
                 maxLength: 4096
                 minLength: 1
                 type: string
+              logging:
+                description: |-
+                  Logging says whether a skip rule records the requests it matches in
+                  Security Events. Cloudflare logs them unless enabled is false.
+                properties:
+                  enabled:
+                    description: Enabled logs the requests the skip rule matches.
+                    type: boolean
+                required:
+                - enabled
+                type: object
+              phase:
+                description: |-
+                  Phase, set to current, skips the rest of the phase: the zone's custom
+                  rules after this one, and the custom rulesets the phase runs after
+                  them. It can be combined with products, but not with phases or
+                  ruleset.
+                enum:
+                - current
+                type: string
+              phases:
+                description: |-
+                  Phases skips later security phases: rate limiting rules
+                  (http_ratelimit), managed rules (http_request_firewall_managed) and
+                  Super Bot Fight Mode (http_request_sbfm).
+                items:
+                  enum:
+                  - http_ratelimit
+                  - http_request_firewall_managed
+                  - http_request_sbfm
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
               priority:
                 description: |-
                   Priority orders the rules kflare manages in a zone and phase: lower runs
@@ -133,63 +145,63 @@ spec:
                   name. Rules created outside kflare keep their place.
                 format: int32
                 type: integer
-              skip:
-                description: Skip says what a skip rule skips. Required with action
-                  skip.
+              products:
+                description: |-
+                  Products skips security features of the previous generation: zone
+                  lockdown (zoneLockdown), user agent blocking (uaBlock), browser
+                  integrity check (bic), hotlink protection (hot), security level
+                  (securityLevel), the previous rate limiting (rateLimit) and the
+                  previous managed rules (waf).
+                items:
+                  enum:
+                  - bic
+                  - hot
+                  - rateLimit
+                  - securityLevel
+                  - uaBlock
+                  - waf
+                  - zoneLockdown
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              response:
+                description: |-
+                  Response replaces Cloudflare's block page for a block rule. It needs a
+                  Pro plan or higher: Free zones are not entitled to a custom response.
                 properties:
-                  log:
-                    default: true
-                    description: |-
-                      Log records the requests the rule skips for in Security Events. As in
-                      Cloudflare, it defaults to true.
-                    type: boolean
-                  phases:
-                    description: |-
-                      Phases skips later security phases: rate limiting rules
-                      (http_ratelimit), managed rules (http_request_firewall_managed) and
-                      Super Bot Fight Mode (http_request_sbfm).
-                    items:
-                      description: WAFCustomRuleSkipPhase is a phase a skip rule can
-                        skip.
-                      enum:
-                      - http_ratelimit
-                      - http_request_firewall_managed
-                      - http_request_sbfm
-                      type: string
-                    type: array
-                    x-kubernetes-list-type: set
-                  products:
-                    description: |-
-                      Products skips security features of the previous generation: zone
-                      lockdown (zoneLockdown), user agent blocking (uaBlock), browser
-                      integrity check (bic), hotlink protection (hot), security level
-                      (securityLevel), the previous rate limiting (rateLimit) and the
-                      previous managed rules (waf).
-                    items:
-                      description: |-
-                        WAFCustomRuleSkipProduct is a previous-generation security feature a skip
-                        rule can skip.
-                      enum:
-                      - zoneLockdown
-                      - uaBlock
-                      - bic
-                      - hot
-                      - securityLevel
-                      - rateLimit
-                      - waf
-                      type: string
-                    type: array
-                    x-kubernetes-list-type: set
-                  remainingRules:
-                    description: RemainingRules skips the zone's custom rules that
-                      run after this one.
-                    type: boolean
+                  content:
+                    description: Content is the response body, of at most 2,048 bytes.
+                    maxLength: 2048
+                    minLength: 1
+                    type: string
+                  contentType:
+                    description: ContentType is the response's content type.
+                    enum:
+                    - text/html
+                    - text/plain
+                    - application/json
+                    - text/xml
+                    type: string
+                  statusCode:
+                    description: StatusCode is the response's HTTP status code, from
+                      400 to 499.
+                    format: int64
+                    maximum: 499
+                    minimum: 400
+                    type: integer
+                required:
+                - content
+                - contentType
+                - statusCode
                 type: object
-                x-kubernetes-validations:
-                - message: skip needs remainingRules, phases or products
-                  rule: (has(self.remainingRules) && self.remainingRules) || (has(self.phases)
-                    && size(self.phases) > 0) || (has(self.products) && size(self.products)
-                    > 0)
+              ruleset:
+                description: |-
+                  Ruleset, set to current, skips the zone's custom rules that run after
+                  this one.
+                enum:
+                - current
+                type: string
               zoneRef:
                 description: |-
                   ZoneRef references the Zone, in the same namespace, the rule belongs to.
@@ -215,10 +227,26 @@ spec:
             - zoneRef
             type: object
             x-kubernetes-validations:
-            - message: skip is required with action skip and allowed only with it
-              rule: (self.action == 'skip') == has(self.skip)
-            - message: blockResponse is allowed only with action block
-              rule: '!has(self.blockResponse) || self.action == ''block'''
+            - message: response is allowed only with action block
+              rule: '!has(self.response) || self.action == ''block'''
+            - message: phase is allowed only with action skip
+              rule: '!has(self.phase) || self.action == ''skip'''
+            - message: phases is allowed only with action skip
+              rule: '!has(self.phases) || self.action == ''skip'''
+            - message: products is allowed only with action skip
+              rule: '!has(self.products) || self.action == ''skip'''
+            - message: ruleset is allowed only with action skip
+              rule: '!has(self.ruleset) || self.action == ''skip'''
+            - message: action skip must set at least one of phase, phases, products
+                and ruleset
+              rule: self.action != 'skip' || (has(self.phase) || has(self.phases)
+                || has(self.products) || has(self.ruleset))
+            - message: logging is allowed only with action skip
+              rule: '!has(self.logging) || self.action == ''skip'''
+            - message: phase cannot be used with phases
+              rule: '!has(self.phase) || !has(self.phases)'
+            - message: phase cannot be used with ruleset
+              rule: '!has(self.phase) || !has(self.ruleset)'
           status:
             description: RulesetRuleStatus is the observed state of a rule.
             properties:

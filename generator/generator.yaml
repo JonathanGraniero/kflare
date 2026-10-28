@@ -793,6 +793,161 @@ ruleKinds:
       logging: Only skip rules log (20018 on a transform rule, verified live on 2026-10-15).
       ratelimit: Rate limits are refused in the transform phases (20131, verified live on 2026-10-15).
       exposed_credential_check: Refused in the transform phases (20189, verified live on 2026-10-15).
+  - kind: WAFCustomRule
+    actions:
+      - action: block
+        rule: rulesets.BlockRuleParam
+        doc: blocks them, with Cloudflare's block page or the rule's response.
+      - action: challenge
+        doc: issues an interactive challenge.
+      - action: js_challenge
+        doc: issues a JavaScript challenge.
+      - action: managed_challenge
+        rule: rulesets.ManagedChallengeRuleParam
+        doc: issues the challenge Cloudflare picks for the visitor.
+      - action: skip
+        rule: rulesets.SkipRuleParam
+        doc: lets them skip the security features its parameters name.
+      - action: log
+        rule: rulesets.LogRuleParam
+        doc: only logs them (Enterprise plans).
+    actionDoc: |
+      Action is what Cloudflare does with the requests the rule matches. Free
+      plans can take every action but log.
+    shortName: cfwaf
+    noun: WAF custom rule
+    doc: |
+      WAFCustomRule is the Schema for the wafcustomrules API.
+      It manages one WAF custom rule in a zone, in its
+      http_request_firewall_custom phase: the rule blocks or challenges the
+      requests its expression matches, or lets them skip other security
+      features. A Free plan allows five custom rules.
+    phase: http_request_firewall_custom
+    samples:
+      - expression: 'http.request.uri.path wildcard "/admin*" and not ip.src in {192.0.2.0/24}'
+        description: Block the admin pages from outside the office
+        priority: 10
+        action: block
+    tests:
+      # A skip rule placed before the sample by its priority, as the hand-written sample's was: phases and products
+      # listed out of order, which the conversion sorts, as Cloudflare keeps the order it is sent.
+      - expression: 'http.request.uri.path eq "/healthz"'
+        priority: 0
+        action: skip
+        ruleset: current
+        phases: [http_request_sbfm, http_ratelimit]
+        products: [waf, bic]
+        logging:
+          enabled: false
+      - expression: 'http.request.uri.path eq "/status"'
+        action: skip
+        phase: current
+        products: [securityLevel]
+      - expression: 'starts_with(http.request.uri.path, "/login")'
+        action: managed_challenge
+      - expression: 'http.request.uri.path eq "/search"'
+        action: challenge
+      - expression: 'http.request.uri.path eq "/download"'
+        action: js_challenge
+      - expression: 'http.request.method eq "PUT"'
+        action: log
+      - expression: 'http.request.uri.path eq "/private"'
+        action: block
+        response:
+          statusCode: 403
+          contentType: text/html
+          content: '<h1>Forbidden</h1>'
+    rules:
+      - rule: "!has(self.logging) || self.action == 'skip'"
+        message: logging is allowed only with action skip
+        reason: Cloudflare refuses logging on a rule of another action (20018), verified live on 2026-10-27.
+        invalid:
+          expression: 'true'
+          action: block
+          logging:
+            enabled: true
+      - rule: '!has(self.phase) || !has(self.phases)'
+        message: phase cannot be used with phases
+        reason: Cloudflare refuses a skip of both (20247), verified live on 2026-10-27.
+        invalid:
+          expression: 'true'
+          action: skip
+          phase: current
+          phases: [http_ratelimit]
+      - rule: '!has(self.phase) || !has(self.ruleset)'
+        message: phase cannot be used with ruleset
+        reason: Cloudflare refuses a skip of both (20116), verified live on 2026-10-27.
+        invalid:
+          expression: 'true'
+          action: skip
+          phase: current
+          ruleset: current
+    fields:
+      response:
+        doc: |
+          Response replaces Cloudflare's block page for a block rule. It needs a
+          Pro plan or higher: Free zones are not entitled to a custom response.
+      response.content:
+        doc: Content is the response body, of at most 2,048 bytes.
+        validation:
+          minLength: 1
+          maxLength: 2048
+          reason: >-
+            Cloudflare refuses an empty body (20051) and one over 2,048 bytes (20052) in a WAF custom rule, verified
+            live on 2026-10-27 (it checks the response before the plan); the API description gives no maximum.
+      response.content_type:
+        doc: ContentType is the response's content type.
+        validation:
+          enum: [text/html, text/plain, application/json, text/xml]
+          reason: >-
+            Cloudflare takes these four content types only (20050), verified live on 2026-10-27; the API description
+            takes any.
+      response.status_code:
+        doc: StatusCode is the response's HTTP status code, from 400 to 499.
+      phase:
+        doc: |
+          Phase, set to current, skips the rest of the phase: the zone's custom
+          rules after this one, and the custom rulesets the phase runs after
+          them. It can be combined with products, but not with phases or
+          ruleset.
+      phases:
+        doc: |
+          Phases skips later security phases: rate limiting rules
+          (http_ratelimit), managed rules (http_request_firewall_managed) and
+          Super Bot Fight Mode (http_request_sbfm).
+      phases[]:
+        validation:
+          enum: [http_ratelimit, http_request_firewall_managed, http_request_sbfm]
+          reason: >-
+            A custom rule skips only the phases after it: Cloudflare refuses its own phase (20120), and takes these
+            three, verified live on 2026-10-12 and 2026-10-27.
+      products:
+        doc: |
+          Products skips security features of the previous generation: zone
+          lockdown (zoneLockdown), user agent blocking (uaBlock), browser
+          integrity check (bic), hotlink protection (hot), security level
+          (securityLevel), the previous rate limiting (rateLimit) and the
+          previous managed rules (waf).
+      ruleset:
+        doc: |
+          Ruleset, set to current, skips the zone's custom rules that run after
+          this one.
+      logging:
+        doc: |
+          Logging says whether a skip rule records the requests it matches in
+          Security Events. Cloudflare logs them unless enabled is false.
+      logging.enabled:
+        doc: Enabled logs the requests the skip rule matches.
+    ignore:
+      rules: >-
+        Skipping single rules of rulesets belongs to the managed phase; refused in http_request_firewall_custom
+        (20118, verified live on 2026-10-27).
+      rulesets: >-
+        Skipping rulesets belongs to the managed phase; refused in http_request_firewall_custom (20117, verified live
+        on 2026-10-27).
+      ratelimit: Rate limits belong to the http_ratelimit phase (20131 here, verified live on 2026-10-27).
+      exposed_credential_check: >-
+        Refused in a zone's http_request_firewall_custom phase (20189, verified live on 2026-10-27).
 
 # The settings kinds kflare-gen generates: each resource configures one product's settings in a zone, which always
 # exist, through the shared settings controller (internal/controller/settings_controller.go). One resource configures

@@ -47,6 +47,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&TransformRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the TransformRule controller: %w", err)
 	}
+	if err := (&WAFCustomRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the WAFCustomRule controller: %w", err)
+	}
 	return nil
 }
 
@@ -62,7 +65,7 @@ var generatedAccountDependents = []dependentKind{
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule
 // controller drives.
-var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, managedRulesetKind, originRuleKind, redirectRuleKind, transformRuleKind}
+var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, managedRulesetKind, originRuleKind, redirectRuleKind, transformRuleKind, wafCustomRuleKind}
 
 // generatedZoneDependents are the generated rule and settings kinds, whose
 // resources reference a Zone in their namespace.
@@ -81,4 +84,6 @@ var generatedZoneDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.RedirectRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("TransformRule", func() client.ObjectList { return &cloudflarev1alpha1.TransformRuleList{} },
 		func(obj *cloudflarev1alpha1.TransformRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
+	dependents("WAFCustomRule", func() client.ObjectList { return &cloudflarev1alpha1.WAFCustomRuleList{} },
+		func(obj *cloudflarev1alpha1.WAFCustomRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 }

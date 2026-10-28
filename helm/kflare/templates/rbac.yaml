@@ -125,7 +125,6 @@ rules:
       - workerscripts
       - workerroutes
       - r2buckets
-      - wafcustomrules
       - ratelimitrules
       - iplists
       # +kflare-gen:begin The kinds in generator/generator.yaml: make codegen keeps this block.
@@ -138,6 +137,7 @@ rules:
       - originrules
       - redirectrules
       - transformrules
+      - wafcustomrules
       # +kflare-gen:end
     verbs: ["create", "update", "patch", "delete", "deletecollection"]
 {{- end }}
