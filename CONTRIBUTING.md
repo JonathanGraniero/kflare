@@ -101,6 +101,15 @@ Artifact Hub lists the chart from its OCI repository. `helm/artifacthub-repo.yml
 repository, which makes kflare a verified publisher there; the `Artifact Hub` workflow pushes it to the chart's
 `artifacthub.io` tag whenever it changes on `main`.
 
+What the chart's Artifact Hub page shows comes from the annotations in `helm/kflare/Chart.yaml`. The license, category,
+operator level and links are written by hand, above the marker line. `make helm` writes the rest with
+`hack/chartannotations`: the controller image at the chart's version, which Artifact Hub scans for its security report;
+each CRD, described by the first sentence of its type's comment after the "is the Schema for" line; one example per
+kind, the first resource in the kind's sample in `config/samples/`; and the release's changes, from its CHANGELOG.md
+section. So run `make helm` after changing a sample too. Artifact Hub drops a whole chart version over one annotation
+it cannot read: `make helm` fails rather than write one, and the command's tests check the committed annotations, the
+hand-written ones too, as Artifact Hub does.
+
 ## The live end-to-end suite
 
 `make test-e2e` installs the manager with the Helm chart on the kind cluster in your current context, with the
@@ -153,9 +162,11 @@ A change to how a controller behaves comes with:
 
 ## Releasing
 
-Maintainers release by bumping `version` and `appVersion` in `helm/kflare/Chart.yaml` and adding the release's
-section to [CHANGELOG.md](CHANGELOG.md) through a pull request, then pushing a `vX.Y.Z` tag that matches them. The
-GitHub release's notes are that section. The `Release` workflow refuses a tag that does not match, and otherwise
+Maintainers release by bumping `version` and `appVersion` in `helm/kflare/Chart.yaml`, adding the release's section to
+[CHANGELOG.md](CHANGELOG.md) and running `make helm`, through a pull request, then pushing a `vX.Y.Z` tag that matches
+them. The GitHub release's notes are that section. Artifact Hub's changelog shows its bullets as plain text, but for
+those under "Upgrading ..." and "Known limitations": write each change as one bullet (a list nested in it joins its
+text), whose links Artifact Hub lists below it. The `Release` workflow refuses a tag that does not match, and otherwise
 publishes the image (`linux/amd64` and `linux/arm64`, with an SBOM and provenance for each) and the chart to `ghcr.io`,
 signs both with cosign, keyless, and drafts the GitHub release with the SBOMs. A maintainer then replaces the draft's
 notes with the CHANGELOG.md section and publishes it.

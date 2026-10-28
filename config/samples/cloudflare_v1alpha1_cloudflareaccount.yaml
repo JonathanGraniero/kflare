@@ -1,12 +1,15 @@
+# The credentials the other kinds use, through their accountRef (or their
+# zone's). It is cluster-scoped, and its Secret holds an API token with the
+# permissions of the kinds you use (docs/deploy.md):
+#
+#   kubectl -n kflare-system create secret generic cloudflare-token \
+#     --from-literal=CF_API_TOKEN=<your API token>
 apiVersion: kflare.dev/v1alpha1
 kind: CloudflareAccount
 metadata:
-  labels:
-    app.kubernetes.io/name: cloudflareaccount
-    app.kubernetes.io/instance: cloudflareaccount-sample
-    app.kubernetes.io/part-of: cloudflare-operator
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/created-by: cloudflare-operator
-  name: cloudflareaccount-sample
+  name: my-account
 spec:
-  # TODO(user): Add fields here
+  accountID: <your account ID>
+  tokenSecretRef:
+    name: cloudflare-token
+    namespace: kflare-system

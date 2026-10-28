@@ -163,6 +163,13 @@ spec:
     content: Blocked
 ```
 
+### The Helm chart
+
+- **The chart's Artifact Hub page** lists its license, its CRDs with an example of each, each release's changes, and
+  the controller image, which Artifact Hub now scans for its security report. It found no image before: it renders a
+  chart for Kubernetes 1.29 to find them, which the chart refuses
+  ([#90](https://github.com/JonathanGraniero/kflare/issues/90))
+
 ### The controller
 
 - A Ready condition no longer ends in a blank message when Cloudflare's error holds only spaces: it names the HTTP

@@ -91,7 +91,8 @@ With:
 ├── helm/artifacthub-repo.yml  # Artifact Hub metadata; the Artifact Hub workflow pushes it (verified publisher)
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);
 │                          #   its CLAUDE.md holds the generator's design
-├── hack/                  # sync-helm-chart.sh, mutate.sh (mutations), e2e-live.sh (live e2e), license header
+├── hack/                  # sync-helm-chart.sh, chartannotations (Artifact Hub annotations), mutate.sh
+│                          #   (mutations), e2e-live.sh (live e2e), license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
@@ -272,7 +273,7 @@ make test-e2e
 # The same suite with the manager on this machine, against the current kind cluster (see the script's header)
 hack/e2e-live.sh
 
-# Regenerate the Helm chart's CRDs/RBAC from config/, and lint + render it
+# Regenerate the Helm chart's CRDs/RBAC from config/ and its Artifact Hub annotations, and lint + render it
 make helm
 make helm-lint
 
@@ -497,7 +498,7 @@ resolve to the versions their comments name.
   time it processes the repository. After #65 merged, the workflow's first run (39660384701) pushed it, the tag read
   back anonymously with that ID, and ArtifactHub's first pass (19:45 UTC) listed kflare 0.1.0 with
   `verified_publisher` true. Its record shows no license, CRDs or image security report: Chart.yaml has none of
-  ArtifactHub's annotations yet
+  ArtifactHub's annotations yet (#90 adds them, below)
 
 #### L7. Announcement
 **Status:** ⏸️ On hold: the user is holding off on the announcement (2026-10-21).
@@ -721,6 +722,16 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   (`hack/mutate.sh` with `run`) left 4 alive in the first version: the access review's verb and path and a refused
   token went unchecked, so those properties were added, and then all 19 were caught. The issue's third item, a
   round-trip property for the generated conversions, is left for later
+- [x] Artifact Hub annotations (#90, `feat/artifacthub-annotations`). Why the page showed none, read in Artifact Hub's
+  tracker (`internal/tracker/source/helm`, 2026-10-28): it finds a chart's images by a dry-run install for Kubernetes
+  1.29, which `kubeVersion: ">=1.34.0-0"` refuses (Helm 4.3.1: "incompatible with Kubernetes v1.29"), and the license
+  in a `LICENSE` file in the chart. Chart.yaml now holds the license, category (`networking`), operator level (`Basic
+  Install`, not the issue's `Seamless Upgrades`: upgrading to v0.3.0 needs manifests rewritten by hand) and links by
+  hand, and `make helm` writes the rest with `hack/chartannotations` (CONTRIBUTING.md, The Helm chart). Artifact Hub
+  refuses a whole version over one annotation it cannot read (`EnrichPackageFromAnnotations`), so the command fails
+  rather than write one, and its tests check the committed annotations as the tracker does; 35 of 35 mutations
+  caught. A dry run with the release branch's CHANGELOG.md gave v0.3.0 15 changes. Left: check the page after the
+  next release (license, CRDs with examples, a security report)
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
