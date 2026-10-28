@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package cloudflare_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	cf "github.com/cloudflare/cloudflare-go"
@@ -23,12 +25,12 @@ import (
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 )
 
-// getV7Namespace makes one cloudflare-go v7 call against baseURL, without
-// retries, and returns its error.
-func getV7Namespace(baseURL string) error {
+// getV7Namespace makes one cloudflare-go v7 call with opts, without retries,
+// and returns its error.
+func getV7Namespace(opts ...option.RequestOption) error {
 	var params kv.NamespaceGetParams
 	params.AccountID.Value, params.AccountID.Present = "account-id", true
-	_, err := kv.NewNamespaceService(option.WithBaseURL(baseURL), option.WithMaxRetries(0)).
+	_, err := kv.NewNamespaceService(append(opts, option.WithMaxRetries(0))...).
 		Get(context.Background(), "ns-id", params)
 	return err
 }
@@ -65,7 +67,7 @@ func v7ErrorBody(t *testing.T, status int, body string) error {
 	}))
 	defer server.Close()
 
-	err := getV7Namespace(server.URL)
+	err := getV7Namespace(option.WithBaseURL(server.URL))
 	var apiErr *kv.Error
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != status {
 		t.Fatalf("v7 returned %v, want a *cloudflare.Error with status %d", err, status)
@@ -80,7 +82,7 @@ func v7ConnectionError(t *testing.T) error {
 	server := httptest.NewServer(http.NotFoundHandler())
 	server.Close()
 
-	err := getV7Namespace(server.URL)
+	err := getV7Namespace(option.WithBaseURL(server.URL))
 	var apiErr *kv.Error
 	if err == nil || errors.As(err, &apiErr) {
 		t.Fatalf("v7 returned %v, want a connection error", err)
@@ -310,6 +312,12 @@ func TestErrorMessage(t *testing.T) {
 		{"v7 error without codes", v7Error(t, 503), "HTTP 503 Service Unavailable"},
 		{"v7 error whose only entry is empty", v7ErrorBody(t, 502,
 			`{"result":null,"success":false,"errors":[{"code":0,"message":""}],"messages":[]}`), "HTTP 502 Bad Gateway"},
+		{"v7 error whose only message is blank", v7ErrorBody(t, 403,
+			`{"result":null,"success":false,"errors":[{"code":0,"message":" \n"}],"messages":[]}`), "HTTP 403 Forbidden"},
+		{"v7 error with a code and a blank message", v7ErrorBody(t, 400,
+			`{"result":null,"success":false,"errors":[{"code":10014,"message":" "}],"messages":[]}`), "(10014)"},
+		{"v7 error whose message is padded", v7ErrorBody(t, 404,
+			`{"result":null,"success":false,"errors":[{"code":0,"message":" not found\n"}],"messages":[]}`), "not found"},
 		{"wrapped v7 error", fmt.Errorf("outer: %w", v7Error(t, 404, 10013)), "rejected (10013)"},
 		{"v0 error", ptrRequest(&cf.Error{StatusCode: 400, ErrorCodes: []int{10014},
 			Errors: []cf.ResponseInfo{{Code: 10014, Message: "title already exists"}}}), "title already exists (10014)"},
@@ -323,4 +331,72 @@ func TestErrorMessage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// v7Answer returns the error cloudflare-go v7 returns when a response has
+// status and body, answered without a server so that a fuzzer can send many.
+func v7Answer(status int, body []byte) error {
+	answer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	return getV7Namespace(option.WithBaseURL("https://api.cloudflare.com/client/v4/"),
+		option.WithHTTPClient(&http.Client{Transport: answer}))
+}
+
+// FuzzV7ErrorClassification classifies the error cloudflare-go v7 returns for
+// a response with any status and body, as Cloudflare, or a proxy in front of
+// it, may send. Whatever the response, the controllers' reading of the error
+// must hold together:
+//   - ErrorMessage is never blank, since the Ready condition shows it
+//   - a rate limit is never terminal, so that it is retried
+//   - a not-found, and an error HasErrorCode matches by any of its codes, are
+//     always terminal, as the controllers that check for them expect
+func FuzzV7ErrorClassification(f *testing.F) {
+	envelope := func(errs string) []byte {
+		return []byte(`{"result":null,"success":false,"errors":` + errs + `,"messages":[]}`)
+	}
+	f.Add(404, envelope(`[{"code":10013,"message":"namespace not found"}]`))
+	f.Add(409, envelope(`[{"code":10008,"message":"The bucket you tried to delete is not empty"}]`))
+	f.Add(400, envelope(`[{"code":10005,"message":"rejected"},{"code":10008,"message":"rejected"}]`))
+	f.Add(403, envelope(`[{"code":10000,"message":"Authentication error"}]`))
+	f.Add(429, envelope(`[{"code":971,"message":"Please wait and consider throttling your request speed"}]`))
+	f.Add(429, envelope(`[{"code":10008,"message":"rejected"}]`))
+	f.Add(502, envelope(`[{"code":0,"message":""}]`))
+	f.Add(500, envelope(`[]`))
+	f.Add(503, []byte("<html><body>Service Unavailable</body></html>"))
+	f.Add(401, []byte{})
+	f.Add(200, []byte(`{"result":{"id":"ns-id","title":"t"},"success":true,"errors":[],"messages":[]}`))
+
+	f.Fuzz(func(t *testing.T, status int, body []byte) {
+		if status < 100 || status > 999 {
+			t.Skip("not an HTTP status")
+		}
+		err := v7Answer(status, body)
+		if err == nil {
+			return // a success v7 could read
+		}
+		if message := cfpkg.ErrorMessage(err); strings.TrimSpace(message) == "" {
+			t.Errorf("ErrorMessage(%v) = %q: the Ready condition would say nothing", err, message)
+		}
+		terminal := cfpkg.IsTerminalError(err)
+		if cfpkg.IsRateLimit(err) && terminal {
+			t.Errorf("IsTerminalError(%v) = true for a rate limit, which must be retried", err)
+		}
+		if cfpkg.IsNotFound(err) && !terminal {
+			t.Errorf("IsTerminalError(%v) = false for a not-found", err)
+		}
+		var apiErr *kv.Error
+		if errors.As(err, &apiErr) {
+			for _, e := range apiErr.Errors {
+				if cfpkg.HasErrorCode(err, int(e.Code)) && !terminal {
+					t.Errorf("IsTerminalError(%v) = false for an error HasErrorCode matches by %d", err, e.Code)
+				}
+			}
+		}
+	})
 }

@@ -140,7 +140,7 @@ func ErrorMessage(err error) string {
 	}
 	messages := make([]string, 0, len(v7Err.Errors))
 	for _, e := range v7Err.Errors {
-		message := e.Message
+		message := strings.TrimSpace(e.Message)
 		if e.Code != 0 {
 			message = strings.TrimSpace(fmt.Sprintf("%s (%d)", message, e.Code))
 		}

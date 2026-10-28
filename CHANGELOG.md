@@ -163,6 +163,11 @@ spec:
     content: Blocked
 ```
 
+### The controller
+
+- A Ready condition no longer ends in a blank message when Cloudflare's error holds only spaces: it names the HTTP
+  status, as it does for an error without a message. Found by the new fuzz tests (#108)
+
 ## v0.2.1 (alpha)
 
 The third alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It is the first

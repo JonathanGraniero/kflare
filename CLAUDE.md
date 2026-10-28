@@ -705,6 +705,22 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     CLI needs a digest: mutating a tag to its digest is the admission webhook's step, not run). Artifact Hub listed
     0.2.1 with `signed: true`, `signatures: ["cosign"]` at 21:31 UTC, about 20 minutes after the run, so it reads
     cosign's bundles. The release scan, by hand (40402475027): Grype 0 matches in 78 packages, the binary clean
+- [x] Fuzz tests (#108, `test/fuzzing`), for Scorecard's Fuzzing check (0 on `475bff1`, a score of 7.5). Go's native
+  fuzzing, no new tool: `FuzzReview` sends `pkg/metricsauth`'s filter any method, path and Authorization header, with
+  fake reviews that know two tokens, and checks that only a request the access review allowed reaches the handler,
+  that a request without a token the API server authenticates gets a 401 and no access review, that the reviews are
+  asked about the header's trimmed bearer token and the request's own verb and path, and that a reviewer that has
+  already allowed a scrape answers every request as a new one does. `FuzzV7ErrorClassification` gives cloudflare-go v7
+  any status and body through a `RoundTripper` (no server, about 80,000 inputs a second) and checks that
+  `ErrorMessage` is never blank, a rate limit never terminal, and a not-found or an error `HasErrorCode` matches always
+  terminal. metricsauth's envtest now starts with the first test that needs it (`apiServer`), since every fuzz worker
+  runs `TestMain`. Fuzzed 2026-10-27: the error target found in 2 seconds a 403 whose only message was a space, without
+  a code (v7 reads JSON leniently: the body was malformed), for which `ErrorMessage` returned `" "`; it now trims
+  Cloudflare's messages, and the input is kept in `testdata/fuzz`. Then 11.3 million inputs in 3 minutes for it, and
+  4.1 million in 3 for `FuzzReview`'s final properties, without a failure. A mutation check of 19 hand-written bugs against the seeds alone
+  (`hack/mutate.sh` with `run`) left 4 alive in the first version: the access review's verb and path and a refused
+  token went unchecked, so those properties were added, and then all 19 were caught. The issue's third item, a
+  round-trip property for the generated conversions, is left for later
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
