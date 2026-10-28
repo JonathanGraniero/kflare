@@ -202,6 +202,12 @@ func TestBuildRuleKindRefuses(t *testing.T) {
 		{"a column of a map's values", func(e *ruleKindConfig, _ *apiSpec) {
 			e.Fields["headers[].value"] = ruleFieldConfig{PrintColumn: "Value"}
 		}, "fields.headers[].value.printColumn: headers[].value is not a string, an integer or a boolean outside"},
+		{"a zero left out of a string", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Fields["uri.query.value"] = ruleFieldConfig{OmitZero: "x"}
+		}, "fields.uri.query.value.omitZero: uri.query.value is not an optional boolean or integer"},
+		{"a zero left out of an object", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Fields["uri"] = ruleFieldConfig{OmitZero: "x"}
+		}, "fields.uri.omitZero: uri is not an optional boolean or integer"},
 		{"validation of an object", func(e *ruleKindConfig, _ *apiSpec) {
 			e.Fields["uri"] = ruleFieldConfig{Validation: &validationConfig{MinLength: new(int64(1)), Reason: "x"}}
 		}, "only a string or an integer is validated"},
@@ -321,6 +327,10 @@ func TestBuildRuleKindRefusesTheTestKindsUnmapped(t *testing.T) {
 			}
 			resolved.Items.Properties["score_threshold"] = &schema{Type: "number"}
 		}, "score_threshold is a number the OpenAPI spec does not say is an integer"},
+		{"a zero left out of a required integer", "TestRateLimitRule", func(e *ruleKindConfig, _ *apiSpec) {
+			e.Fields = cloneMap(e.Fields)
+			e.Fields["ratelimit.period"] = ruleFieldConfig{OmitZero: "x"}
+		}, "fields.ratelimit.period.omitZero: ratelimit.period is not an optional boolean or integer"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -30,12 +30,12 @@ import (
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
-// Every rule kind (WAFCustomRule, RateLimitRule, and the kinds kflare-gen
-// generates) reconciles the same way: wait for the Zone, resolve
-// the account's token, write the one rule the resource manages with
-// syncRulesetRule (rulesetrule.go), and delete it with the resource. The
-// kind's own controller supplies only what differs: its phase and how its
-// spec becomes a Cloudflare rule.
+// Every rule kind (WAFCustomRule, and the kinds kflare-gen generates)
+// reconciles the same way: wait for the Zone, resolve the account's token,
+// write the one rule the resource manages with syncRulesetRule
+// (rulesetrule.go), and delete it with the resource. The kind's own controller
+// supplies only what differs: its phase and how its spec becomes a Cloudflare
+// rule.
 
 // rulesetRuleRecheckInterval is how soon a resource that reordered rules
 // checks the order again: another resource may have been reordering the same
@@ -96,7 +96,7 @@ func (k rulesetRuleKind) conflict(err error) (string, bool) {
 // rulesetRuleKinds lists every rule kind: the hand-written ones and those
 // kflare-gen generates. The rules of all the kinds that share a phase are
 // kept in one order (see syncRulesetRule).
-var rulesetRuleKinds = append([]rulesetRuleKind{wafCustomRuleKind, rateLimitRuleKind}, generatedRulesetRuleKinds...)
+var rulesetRuleKinds = append([]rulesetRuleKind{wafCustomRuleKind}, generatedRulesetRuleKinds...)
 
 // rulesetRuleReconciler reconciles the resources of one rule kind. Each kind's
 // exported reconciler delegates to one.

@@ -221,7 +221,7 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestRateLimitRule]{
 		{
 			what: "action block, every field set, optional scalars to their zero values where allowed",
 			spec: `{"action":"block","expression":"starts_with(http.request.uri.path, \"/api/\")","ratelimit":{"characteristics":["cf.colo.id"],"countingExpression":"http.request.body.raw eq \"abcd\"","mitigationTimeout":0,"period":10,"requestsPerPeriod":100,"requestsToOrigin":false,"scorePerPeriod":0,"scoreResponseHeaderName":"my-score"},"response":{"content":"{\n  \"success\": false,\n  \"error\": \"you have been blocked\"\n}","contentType":"application/json","statusCode":401}}`,
-			rule: `{"action":"block","action_parameters":{"response":{"content":"{\n  \"success\": false,\n  \"error\": \"you have been blocked\"\n}","content_type":"application/json","status_code":401}},"enabled":true,"expression":"starts_with(http.request.uri.path, \"/api/\")","ratelimit":{"characteristics":["cf.colo.id"],"counting_expression":"http.request.body.raw eq \"abcd\"","mitigation_timeout":0,"period":10,"requests_per_period":100,"requests_to_origin":false,"score_per_period":0,"score_response_header_name":"my-score"}}`,
+			rule: `{"action":"block","action_parameters":{"response":{"content":"{\n  \"success\": false,\n  \"error\": \"you have been blocked\"\n}","content_type":"application/json","status_code":401}},"enabled":true,"expression":"starts_with(http.request.uri.path, \"/api/\")","ratelimit":{"characteristics":["cf.colo.id"],"counting_expression":"http.request.body.raw eq \"abcd\"","period":10,"requests_per_period":100,"score_per_period":0,"score_response_header_name":"my-score"}}`,
 		},
 		{
 			what: "action managed_challenge, every field set",
@@ -231,7 +231,7 @@ var _ = describeRuleKind(ruleKindSpecs[*cloudflarev1alpha1.TestRateLimitRule]{
 		{
 			what: "action managed_challenge, every field set, optional scalars to their zero values where allowed",
 			spec: `{"action":"managed_challenge","expression":"starts_with(http.request.uri.path, \"/api/\")","ratelimit":{"characteristics":["cf.colo.id"],"countingExpression":"http.request.body.raw eq \"abcd\"","mitigationTimeout":0,"period":10,"requestsPerPeriod":100,"requestsToOrigin":false,"scorePerPeriod":0,"scoreResponseHeaderName":"my-score"}}`,
-			rule: `{"action":"managed_challenge","enabled":true,"expression":"starts_with(http.request.uri.path, \"/api/\")","ratelimit":{"characteristics":["cf.colo.id"],"counting_expression":"http.request.body.raw eq \"abcd\"","mitigation_timeout":0,"period":10,"requests_per_period":100,"requests_to_origin":false,"score_per_period":0,"score_response_header_name":"my-score"}}`,
+			rule: `{"action":"managed_challenge","enabled":true,"expression":"starts_with(http.request.uri.path, \"/api/\")","ratelimit":{"characteristics":["cf.colo.id"],"counting_expression":"http.request.body.raw eq \"abcd\"","period":10,"requests_per_period":100,"score_per_period":0,"score_response_header_name":"my-score"}}`,
 		},
 	},
 })

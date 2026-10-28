@@ -126,7 +126,6 @@ rules:
       - workerroutes
       - r2buckets
       - wafcustomrules
-      - ratelimitrules
       - iplists
       # +kflare-gen:begin The kinds in generator/generator.yaml: make codegen keeps this block.
       - cacherules
@@ -136,6 +135,7 @@ rules:
       - managedrulesets
       - managedtransforms
       - originrules
+      - ratelimitrules
       - redirectrules
       - transformrules
       # +kflare-gen:end

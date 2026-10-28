@@ -123,13 +123,13 @@ func testRateLimitRuleRatelimitParam(in cloudflarev1alpha1.TestRateLimitRuleRate
 	if in.CountingExpression != "" {
 		out.CountingExpression.Value, out.CountingExpression.Present = in.CountingExpression, true
 	}
-	if in.MitigationTimeout != nil {
+	if in.MitigationTimeout != nil && *in.MitigationTimeout != 0 {
 		out.MitigationTimeout.Value, out.MitigationTimeout.Present = *in.MitigationTimeout, true
 	}
 	if in.RequestsPerPeriod != nil {
 		out.RequestsPerPeriod.Value, out.RequestsPerPeriod.Present = *in.RequestsPerPeriod, true
 	}
-	if in.RequestsToOrigin != nil {
+	if in.RequestsToOrigin != nil && *in.RequestsToOrigin {
 		out.RequestsToOrigin.Value, out.RequestsToOrigin.Present = *in.RequestsToOrigin, true
 	}
 	if in.ScorePerPeriod != nil {

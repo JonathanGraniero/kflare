@@ -49,6 +49,54 @@ spec:
         action: log
 ```
 
+### `RateLimitRule`
+
+- **The rate limit moves under `ratelimit`**, the API's name for it: `characteristics`, `period`, `requestsPerPeriod`,
+  `mitigationTimeout`, `countingExpression` and `requestsToOrigin`. **`blockResponse` is now `response`.** A
+  RateLimitRule stored with the old fields has no rate limit after the upgrade, and cannot be updated until it gets
+  one: apply your RateLimitRule manifests in the new shape right after upgrading. Until then its Cloudflare rule is
+  left as it was
+- Nothing defaults any more: set `action` (was `block`), `ratelimit.characteristics` (was `[ip.src]`),
+  `ratelimit.period` (was 10), `ratelimit.mitigationTimeout` (was the period; 0 throttles, on Enterprise plans) and
+  `response.statusCode` (was 429)
+- `ratelimit.characteristics` must list `cf.colo.id`, which kflare no longer adds for you, and at least one other
+  field. They are sent sorted
+- For Go clients: `RateLimitRuleBlockResponse` is now `RateLimitRuleResponse`, the rate limit is a
+  `RateLimitRuleRatelimit`, its characteristics are `[]string`, and its integers are `int64`, the optional ones
+  pointers
+
+Before:
+
+```yaml
+spec:
+  zoneRef:
+    name: example-zone
+  expression: 'starts_with(http.request.uri.path, "/api/")'
+  requestsPerPeriod: 100
+  blockResponse:
+    contentType: application/json
+    content: '{"error":"rate limited"}'
+```
+
+After:
+
+```yaml
+spec:
+  zoneRef:
+    name: example-zone
+  expression: 'starts_with(http.request.uri.path, "/api/")'
+  action: block
+  ratelimit:
+    characteristics: [cf.colo.id, ip.src]
+    period: 10
+    requestsPerPeriod: 100
+    mitigationTimeout: 10
+  response:
+    statusCode: 429
+    contentType: application/json
+    content: '{"error":"rate limited"}'
+```
+
 ## v0.2.1 (alpha)
 
 The third alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It is the first

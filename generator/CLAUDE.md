@@ -418,6 +418,17 @@ kinds:
   to it, the resources re-triggered) are shared specs now, for every kind with a sample in a phase of
   `emptiedEntrypointPhases`; every other kind checks that it watches no deletions. Mutations: 20 of kflare-gen's
   changes, and 43 of ManagedRuleset's generated code, its CRD and the runtime those specs cover, all caught
+- **RateLimitRule generated** (`feat/generate-rate-limit-rule`, 2026-10-27), PR 4 of Generate every kind. A stored
+  probe on `kflare.dev` showed that Cloudflare stores a rate limiting rule's `requests_to_origin: false` as absent,
+  while the generated conversion sent every optional field a spec sets: such a rule would have been written again on
+  every reconcile. A rule kind's optional boolean or integer now takes `omitZero`, with the reason: the conversion
+  sends it only when it is not zero (`emitAssignment`), and the rule the generated specs expect leaves it out at zero
+  (`apiStruct`), so the specs that set every optional scalar to zero check it. The CRD keeps the pointer, so a spec
+  can still say false or 0 and CEL's `has()` sees it; a string, an object, a required field and a settings kind's
+  field refuse it. RateLimitRule's `requests_to_origin` and `mitigation_timeout` take it. Its rules on `ratelimit`
+  (a rule's own field) carry the hand-written CRD's constraints, and its tests list characteristics out of order, so
+  the sorting of a set is checked for it too. Mutations: 11 of kflare-gen's changes, and 35 of RateLimitRule's
+  generated code, its CRD and its wiring, all caught
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without `New`, and secrets. Also
   cross-kind references such as
