@@ -49,6 +49,72 @@ spec:
         action: log
 ```
 
+### `WAFCustomRule`
+
+- **A skip rule's parameters move to the spec's root**, as the API names them: `skip.remainingRules: true` is now
+  `ruleset: current`, and `skip.phases` and `skip.products` are `phases` and `products`. **`skip.log` is now
+  `logging.enabled`**, and **`blockResponse` is now `response`**
+- A WAFCustomRule stored with the old fields loses them after the upgrade:
+  - A skip rule then has no parameters, which Cloudflare refuses (20115): kflare reports `TerminalError` and leaves
+    the Cloudflare rule as it was until you apply the manifest in the new shape
+  - A block rule with a `blockResponse` becomes a plain block rule, and kflare writes its Cloudflare rule again
+    without the response. Pause such rules (`kflare.dev/paused: "true"`) before upgrading, apply them in the new
+    shape, then remove the annotation
+- Nothing defaults any more: set `response.statusCode` (was 403). A skip rule without `logging` still logs its
+  matches, Cloudflare's default, which kflare no longer sends itself
+- New: `phase: current` skips the rest of the phase, the custom rulesets that run later in it included. It combines
+  with `products`, but not with `phases` or `ruleset`
+- For Go clients: `WAFCustomRuleSkip`, `WAFCustomRuleSkipPhase`, `WAFCustomRuleSkipProduct` and
+  `WAFCustomRuleBlockResponse` are gone. The phases and products are `[]string`, the response is a
+  `WAFCustomRuleResponse` whose `statusCode` is an `int64`, and logging is a `WAFCustomRuleLogging`
+
+Before:
+
+```yaml
+spec:
+  zoneRef:
+    name: example-zone
+  expression: 'http.request.uri.path eq "/healthz"'
+  action: skip
+  skip:
+    remainingRules: true
+    phases: [http_ratelimit]
+    log: false
+---
+spec:
+  zoneRef:
+    name: example-zone
+  expression: 'http.request.uri.path wildcard "/admin*"'
+  action: block
+  blockResponse:
+    contentType: text/plain
+    content: Blocked
+```
+
+After:
+
+```yaml
+spec:
+  zoneRef:
+    name: example-zone
+  expression: 'http.request.uri.path eq "/healthz"'
+  action: skip
+  ruleset: current
+  phases: [http_ratelimit]
+  logging:
+    enabled: false
+---
+spec:
+  zoneRef:
+    name: example-zone
+  expression: 'http.request.uri.path wildcard "/admin*"'
+  action: block
+  response:
+    statusCode: 403
+    contentType: text/plain
+    content: Blocked
+```
+
 ## v0.2.1 (alpha)
 
 The third alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It is the first
