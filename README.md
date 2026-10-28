@@ -31,7 +31,7 @@ Note your account ID, shown on the account's overview page.
 
 ```sh
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
-  --version 0.2.1 --namespace kflare-system --create-namespace
+  --version 0.3.0 --namespace kflare-system --create-namespace
 kubectl -n kflare-system rollout status deployment/kflare
 ```
 
@@ -61,7 +61,7 @@ your existing domain, a `Tunnel`, its `TunnelConfiguration`, a `DNSRecord` point
 tunnel, and a `cloudflared` Deployment that connects it. Apply it with your domain in place of `example.com`:
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.2.1/examples/expose-a-service/expose-a-service.yaml \
+curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.3.0/examples/expose-a-service/expose-a-service.yaml \
   | sed 's/example\.com/your-domain.com/g' | kubectl apply -f -
 
 kubectl -n kflare-example wait --for=condition=Ready dnsrecords.kflare.dev/hello --timeout=5m
