@@ -725,7 +725,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(cfExclusion.ScriptName).To(BeEmpty())
 	})
 
-	It("writes WAF custom rules in priority order and leaves them alone once they are in sync", func() {
+	It("writes WAF custom rules in priority order, updates a skip rule in place and leaves them alone", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")
 		}
@@ -755,7 +755,12 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 					Expression: `http.request.uri.path eq "` + path + `/health"`,
 				},
 				Action: "skip",
-				Skip:   &cloudflarev1alpha1.WAFCustomRuleSkip{RemainingRules: true},
+				// Listed out of order: the conversion sorts them, as Cloudflare
+				// keeps the order it is sent.
+				Ruleset:  "current",
+				Phases:   []string{"http_request_sbfm", "http_ratelimit"},
+				Products: []string{"waf", "bic"},
+				Logging:  &cloudflarev1alpha1.WAFCustomRuleLogging{Enabled: false},
 			},
 		}
 		Expect(k8s.Create(ctx, skip)).To(Succeed())
@@ -774,9 +779,32 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(blockRule.Action).To(Equal("block"))
 		Expect(blockRule.Expression).To(Equal(block.Spec.Expression))
 		Expect(blockRule.Description).To(Equal(block.Spec.Description))
+		skipRule := rules[slices.Index(refs, skipRef)]
+		Expect(skipRule.ID).To(Equal(skip.Status.CloudflareMetadata.RuleID))
+		Expect(skipRule.Logging).To(Equal(&cf.RulesetRuleLogging{Enabled: new(false)}))
+		Expect(rawActionParameters(ctx, cfAPI, zoneID, customRulesPhase, skipRef)).To(MatchJSON(
+			`{"ruleset":"current","phases":["http_ratelimit","http_request_sbfm"],"products":["bic","waf"]}`))
 
-		By("re-triggering the reconcile and checking the ruleset is not written to again")
 		expectIdle(ctx, k8s, cfAPI, zoneID, customRulesPhase, block)
+
+		By("skipping the rest of the phase instead, with logging left to Cloudflare, which updates the rule in place")
+		patch := client.MergeFrom(skip.DeepCopy())
+		skip.Spec.Ruleset, skip.Spec.Phases, skip.Spec.Logging = "", nil, nil
+		skip.Spec.Phase, skip.Spec.Products = "current", []string{"securityLevel"}
+		Expect(k8s.Patch(ctx, skip, patch)).To(Succeed())
+		Eventually(func(g Gomega) {
+			updated, ok := ruleByRef(phaseRules(ctx, cfAPI, zoneID, customRulesPhase), skipRef)
+			g.Expect(ok).To(BeTrue(), "Cloudflare has no rule with ref %s", skipRef)
+			g.Expect(updated.ID).To(Equal(skipRule.ID))
+			// Cloudflare logs a skip rule's matches unless told otherwise.
+			g.Expect(updated.Logging).To(Equal(&cf.RulesetRuleLogging{Enabled: new(true)}))
+			g.Expect(rawActionParameters(ctx, cfAPI, zoneID, customRulesPhase, skipRef)).To(MatchJSON(
+				`{"phase":"current","products":["securityLevel"]}`))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+
+		// Cloudflare must store the phase as sent, and kflare count the logging
+		// it fills in as unset, or the rule would be rewritten on every reconcile.
+		expectIdle(ctx, k8s, cfAPI, zoneID, customRulesPhase, skip)
 	})
 
 	It("writes a rate limiting rule, updates it in place and then leaves it alone", func() {

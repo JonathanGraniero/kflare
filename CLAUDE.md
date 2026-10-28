@@ -164,8 +164,8 @@ why.
    - Rule kinds (`ruleKinds:`, run by `rulesetrule_controller.go`): one rule in a zone's Rulesets phase, typed by v7's
      `rulesets.<Action>RuleParam`, or one of several actions (`actions`), with the rule's own fields such as
      `ratelimit` unless ignored, and `conflicts`. Closest examples: `OriginRule` (small), `CacheRule` (CEL rules and
-     `tests`), `ManagedRuleset` (`conflicts`, keyed lists, a `printColumn`); for several actions, `RateLimitRule`
-     (rules on the rule's own `ratelimit`, `omitZero`) and `generator/testdata/generator.yaml`'s TestCustomRule
+     `tests`), `ManagedRuleset` (`conflicts`, keyed lists, a `printColumn`); for several actions, `WAFCustomRule`
+     (six actions, CEL rules between parameters) and `RateLimitRule` (rules on the rule's own `ratelimit`, `omitZero`)
    - Settings kinds (`settingsKinds:`, run by `settings_controller.go`): a zone's settings of one product, a v7 service
      without `New` whose read (`Get`, or a `List` that returns the settings), `Update` or `Edit`, and `Delete` (the
      reset) take only the zone's ID. Closest example: `ManagedTransform` (keyed lists); for enums,
@@ -305,9 +305,9 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 ### Generate every kind
 **Status:** 🚧 Decided 2026-10-27: the user asked that every kind written before kflare-gen move onto it, so that no
 kind is custom and the generated specs, the OpenAPI constraints and the mutation checks harden what those kinds already
-do. PR 1 (`feat/generator-rule-actions`, #113) and PR 2 (`ManagedRuleset`, #114) are merged. PR 4, `RateLimitRule`,
-is `feat/generate-rate-limit-rule`, taken before PR 3 (the user's call, 2026-10-27: neither needs the other, and PR 4
-settled what Cloudflare stores for `requests_to_origin: false`); PR 3 follows.
+do. PR 1 (`feat/generator-rule-actions`, #113), PR 2 (`ManagedRuleset`, #114) and PR 4 (`RateLimitRule`, #115, taken
+before PR 3 by the user's call on 2026-10-27) are merged. PR 3, `WAFCustomRule`, is `feat/generate-waf-custom-rule`;
+with it, every rule kind is generated.
 
 **Decided (the user, 2026-10-27):**
 1. Every hand-written kind is generated: the earlier plan's line that `Zone`, `DNSRecord`, `Tunnel`,
@@ -743,10 +743,11 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > done.**
 > cloudflare-go is at v0.119, with v7.13.0 next to it for the generated kinds and the rule kinds; rule kinds share the
 > Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
-> generated in full on the shared CRUD reconciler, and ManagedRuleset, RateLimitRule, TransformRule, RedirectRule,
-> CacheRule, ConfigurationRule and OriginRule on the shared rule controller, and ManagedTransform, the first settings
-> kind, on the shared settings controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order;
-> L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on hold.
+> generated in full on the shared CRUD reconciler, and WAFCustomRule, RateLimitRule, ManagedRuleset, TransformRule,
+> RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule controller, and ManagedTransform, the
+> first settings kind, on the shared settings controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1
+> to L7 in order; L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on
+> hold.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero

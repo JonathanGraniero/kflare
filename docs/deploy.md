@@ -240,7 +240,7 @@ Every other kind references the account (or a resource that does). Examples are 
 | `KVNamespace` | Namespaced | `accountRef`; WorkerScripts bind it with `kvNamespaceRef` | [KV namespace](../config/samples/cloudflare_v1alpha1_kvnamespace.yaml) |
 | `R2Bucket` | Namespaced | `accountRef`; WorkerScripts bind it with `r2BucketRef` | [R2 bucket](../config/samples/cloudflare_v1alpha1_r2bucket.yaml) |
 | `D1Database` | Namespaced | `accountRef` | [D1 database](../config/samples/cloudflare_v1alpha1_d1database.yaml) |
-| `WAFCustomRule` | Namespaced | `zoneRef` (same namespace) | [block and skip rules](../config/samples/cloudflare_v1alpha1_wafcustomrule.yaml) |
+| `WAFCustomRule` | Namespaced | `zoneRef` (same namespace) | [block rule](../config/samples/cloudflare_v1alpha1_wafcustomrule.yaml) |
 | `RateLimitRule` | Namespaced | `zoneRef` (same namespace) | [API rate limit](../config/samples/cloudflare_v1alpha1_ratelimitrule.yaml) |
 | `IPList` | Namespaced | `accountRef`; rule expressions use it as `$name` | [office addresses and a rule using them](../config/samples/cloudflare_v1alpha1_iplist.yaml) |
 | `ManagedRuleset` | Namespaced | `zoneRef` (same namespace) | [Free Managed Ruleset with overrides](../config/samples/cloudflare_v1alpha1_managedruleset.yaml) |

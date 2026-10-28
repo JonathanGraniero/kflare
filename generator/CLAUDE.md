@@ -76,7 +76,7 @@ CRD defaults, so nothing is late-initialized.
   - API defaults become CRD defaults, so a resource's spec and Cloudflare's copy compare directly. A field Cloudflare
     fills in itself (`computed_optional` without a default) is compared only when the resource sets it: DNSRecord's
     `priority` rule, generalized
-  - Sets → `+listType=set`, sorted in the conversion (as WAFCustomRule and RateLimitRule do by hand); `x-sensitive` →
+  - Sets → `+listType=set`, sorted in the conversion (as WAFCustomRule and RateLimitRule did); `x-sensitive` →
     a `SecretKeySelector` (not built yet: kflare-gen refuses an `x-sensitive` field until then); the ID and computed
     fields → `status.cloudflareMetadata`
   - Unions → one struct with the fields of every variant and a CEL rule that a value matches a variant (built for rule
@@ -429,6 +429,16 @@ kinds:
   (a rule's own field) carry the hand-written CRD's constraints, and its tests list characteristics out of order, so
   the sorting of a set is checked for it too. Mutations: 11 of kflare-gen's changes, and 35 of RateLimitRule's
   generated code, its CRD and its wiring, all caught
+- **WAFCustomRule generated** (`feat/generate-waf-custom-rule`, 2026-10-27), PR 3 of Generate every kind, with no
+  change to kflare-gen: six actions, two without a v7 rule type (`challenge`, `js_challenge`), skip's parameters and
+  `logging`, the block response, and two CEL rules for skip parameters Cloudflare refuses together (20247, 20116).
+  Two things moved with it. Its hand-written tests were the shared rule controller's only tests of its own paths
+  (waiting for the Zone, the credentials, drift, the order across namespaces, errors, deletion's edge cases, peers, the
+  Zone mapper, the production client): they are `rulesetrule_controller_test.go` now, run on the generated kind, and
+  the specs the generated tables run were dropped from them. And the Rulesets fake holds 10 rules a phase rather than
+  5, since the generated specs write each sample and test of a kind at once and a kind of six actions needs a sample
+  or test of each. Mutations: 56 of WAFCustomRule's generated code, its CRD, its wiring and the shared controller's
+  paths the moved tests cover, all caught
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without `New`, and secrets. Also
   cross-kind references such as

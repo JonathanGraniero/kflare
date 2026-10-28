@@ -60,12 +60,6 @@ func (in *R2Bucket) GetConditions() []metav1.Condition { return in.Status.Condit
 // SetConditions replaces the R2 bucket's status conditions.
 func (in *R2Bucket) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
 
-// GetConditions returns the WAF custom rule's status conditions.
-func (in *WAFCustomRule) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the WAF custom rule's status conditions.
-func (in *WAFCustomRule) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
 // GetConditions returns the IP list's status conditions.
 func (in *IPList) GetConditions() []metav1.Condition { return in.Status.Conditions }
 

@@ -386,7 +386,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | `feat/r2-bucket-controller` | `R2Bucket` (+ WorkerScript `r2BucketRef`) | shared-client | ✅ |
 | `feat/cloudflare-go-v0.119` | none: SDK bump (see [SDK decision](#sdk-decision)) | — | ✅ |
 | `feat/rulesets-foundation` | none: Rulesets client calls and the shared rule sync | zone-controller | ✅ |
-| `feat/waf-custom-rule-controller` | `WAFCustomRule` (was `FirewallRule`) | rulesets-foundation | ✅ Free: 5 rules, no regex, no Log action, no custom block response |
+| `feat/waf-custom-rule-controller` | `WAFCustomRule` (was `FirewallRule`) | rulesets-foundation | ✅ Generated since `feat/generate-waf-custom-rule`. Free: 5 rules, no regex, no Log action, no custom block response |
 | `feat/rate-limit-rule-controller` | `RateLimitRule` (was `RateLimit`) | rulesets-foundation | ✅ Generated since `feat/generate-rate-limit-rule`. Free: 1 rule, 10 s period and timeout, counts by IP, block only |
 | `feat/ip-list-controller` | `IPList` | shared-client | ✅ Free: 1 IP list, 10,000 items |
 | `feat/zero-trust-controllers` | `AccessGroup`, `AccessPolicy`, `AccessApplication` | shared-client | Blocked: Zero Trust is not enabled on the account (a free plan exists) |
@@ -572,7 +572,7 @@ Last checked 2026-10-07; the Free-plan limits and Zero Trust again on 2026-10-09
 | Item | Why | What exists | When we come back to it |
 |------|-----|-------------|-------------------------|
 | Zone `spec.plan` | Changing a plan bills the account | Implemented (subscription POST/PUT, `plan_pending`), unit-tested against response shapes read from the live Free zone | Exercise once on a disposable zone (upgrade, check status, downgrade); expect a prorated charge |
-| WAFCustomRule `blockResponse` | Custom block responses need a Pro plan; a Free zone refuses them ("not entitled to use a custom response", dry run 2026-10-09) | Implemented to Cloudflare's documented limits (status 400–499, four content types, 2 KB body), unit-tested. A dry run on 2026-10-13 confirmed the limits: Cloudflare validates a response before it checks the plan (codes 20048, 20052). The same response on a `RateLimitRule`, which Free allows, is verified live | On a Pro zone: create a block rule with a response, request the path, check the status and body |
+| WAFCustomRule `response` (was `blockResponse`) | Custom block responses need a Pro plan; a Free zone refuses them ("not entitled to use a custom response", dry run 2026-10-09) | Implemented to Cloudflare's documented limits (status 400–499, four content types, 2 KB body), checked by the generated specs. Dry runs on 2026-10-13 and 2026-10-27 confirmed the limits: Cloudflare validates a response before it checks the plan (codes 20048, 20050, 20051, 20052). The same response on a `RateLimitRule`, which Free allows, is verified live | On a Pro zone: create a block rule with a response, request the path, check the status and body |
 
 **Worked around because the clean option is paid:**
 
@@ -768,7 +768,7 @@ creation, idle sync, placement, reordering, drift, deletion), and `WAFCustomRule
 
 #### Branch: `feat/waf-custom-rule-controller`
 **Depends on:** `feat/rulesets-foundation`
-**Status:** ✅ Complete
+**Status:** ✅ Complete; generated since `feat/generate-waf-custom-rule` (below)
 
 - [x] Shared API types for every rule kind (`api/v1alpha1/rulesetrule_types.go`): `RulesetRuleSpec`, embedded inline
   (`zoneRef` immutable, `expression` 1–4096 characters, `enabled` default true, `description` up to 4096 characters,
@@ -802,6 +802,29 @@ creation, idle sync, placement, reordering, drift, deletion), and `WAFCustomRule
   (20127); a description over 4096 characters (20208)
 - `blockResponse` follows Cloudflare's documentation (Pro plans and up); it is not verified live, see Deferred
 - deploy.md documents Zone · Zone WAF · Edit, which is enough on its own (verified 2026-10-13, see Token permissions)
+
+**Generated** (`feat/generate-waf-custom-rule`, 2026-10-27; [Generate every kind](../CLAUDE.md#generate-every-kind),
+PR 3). Its entry in `generator/generator.yaml` replaces the hand-written types and controller. A skip rule's
+parameters sit at the spec's root as the API names them (`ruleset: current`, `phases`, `products`), its logging is the
+rule's own `logging`, and the block response is `response`; nothing defaults any more, so the response's status code
+is set in the spec (CHANGELOG.md lists the changes). The entry keeps what the notes above verified: the phases a skip
+can skip and the four content types, as enums, the 2,048-byte body, `logging` only on skip rules, and a skip that
+skips something (kflare-gen's rule for an action whose parameters must set one). Dry runs on `kflare.dev` on
+2026-10-27 (`?dry_run=true`, which stores nothing) checked again the refusals the entry encodes, and settled the rest:
+
+- Skip's `phase: current` is accepted, alone, with `products` and with `logging`, and is mapped. Cloudflare refuses it
+  with `phases` (20247) and with `ruleset` (20116), neither of which the API description says: two CEL rules
+- Refused in this phase, and ignored with these as reasons: skip's `rulesets` (20117) and `rules` (20118), which
+  belong to the managed phase, `ratelimit` (20131) and `exposed_credential_check` (20189, "not allowed in phase
+  http_request_firewall_custom with kind zone")
+- The block response: a status outside 400–499 or none (20048), another content type (20050), an empty body (20051)
+  and one over 2,048 bytes (20052) are refused before the plan is checked; a valid one is "not entitled" on Free
+- Also refused: a skip without parameters or with an empty `phases` (20115), its own phase or one listed twice
+  (20120), `logging` on `block` or `managed_challenge` (20018), and the `log` action on Free ("not entitled")
+
+Cloudflare logs a skip rule's matches when `logging` is left out, as its docs say, and kflare counts that as unset,
+so a skip rule that leaves it out is idle. The live e2e spec updates its skip rule in place to `phase: current` with
+`logging` left out, and checks the rule Cloudflare stores and that a reconcile then writes nothing.
 
 #### Branch: `feat/rate-limit-rule-controller`
 **Depends on:** `feat/rulesets-foundation`

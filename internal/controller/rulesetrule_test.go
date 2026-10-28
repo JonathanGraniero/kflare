@@ -40,7 +40,10 @@ const (
 //   - A new rule goes last unless placed before or after another rule. A rule
 //     without a ref gets its ID as ref. Refs are unique within a ruleset and
 //     cannot change (400, code 20023). The plan caps the rules in a phase
-//     (400, code 50001).
+//     (400, code 50001). The fake caps them at 10, the most a Free zone holds
+//     in a phase, so that a kind's samples and tests fit in one: a Free
+//     zone's WAF custom rules are capped at 5, and WAFCustomRule's table
+//     writes one rule of each of its six actions, and a few more.
 //   - A rule comes back as sent, plus its ID, version and update time.
 //     Cloudflare enables a rule unless told otherwise, and makes a skip rule
 //     log its matches.
@@ -116,7 +119,7 @@ func (r fakeRule) clone() fakeRule {
 func newFakeRulesetAPI() *fakeRulesetAPI {
 	return &fakeRulesetAPI{
 		entrypoints: map[rulesets.Phase]*fakeRuleset{},
-		maxRules:    5,
+		maxRules:    10,
 		clock:       time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC),
 		errs:        map[string]error{},
 	}
@@ -509,6 +512,18 @@ func blockRule(ref, path string) rulesets.RulesetNewParamsRule {
 	return rule
 }
 
+// blockResponseParameters are the action parameters of a block rule that
+// answers with its own response: a 403 with a plain-text body.
+func blockResponseParameters() rulesets.BlockRuleActionParametersParam {
+	var response rulesets.BlockRuleActionParametersResponseParam
+	response.StatusCode.Value, response.StatusCode.Present = 403, true
+	response.ContentType.Value, response.ContentType.Present = "text/plain", true
+	response.Content.Value, response.Content.Present = "no", true
+	var params rulesets.BlockRuleActionParametersParam
+	params.Response.Value, params.Response.Present = response, true
+	return params
+}
+
 // executeRule deploys the managed ruleset rulesetID to every request.
 func executeRule(ref, rulesetID string) rulesets.RulesetNewParamsRule {
 	var params rulesets.ExecuteRuleActionParametersParam
@@ -638,7 +653,7 @@ var _ = Describe("Ruleset rules", func() {
 			rule.Logging.Value.Enabled.Value, rule.Logging.Value.Enabled.Present = false, true
 			rule.Logging.Present = true
 			rule.Ratelimit.Value, rule.Ratelimit.Present = map[string]any{"period": 10}, true
-			rule.ActionParameters.Value, rule.ActionParameters.Present = blockResponseParameters(403, "text/plain", "no"), true
+			rule.ActionParameters.Value, rule.ActionParameters.Present = blockResponseParameters(), true
 			want, err := rule.MarshalJSON()
 			Expect(err).NotTo(HaveOccurred())
 
