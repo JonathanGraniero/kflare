@@ -307,8 +307,9 @@ export CF_E2E_ZONE=kflare.dev               # zone for the DNS e2e specs; adopte
 **Status:** 🚧 Decided 2026-10-27: the user asked that every kind written before kflare-gen move onto it, so that no
 kind is custom and the generated specs, the OpenAPI constraints and the mutation checks harden what those kinds already
 do. PR 1 (`feat/generator-rule-actions`, #113), PR 2 (`ManagedRuleset`, #114) and PR 4 (`RateLimitRule`, #115, taken
-before PR 3 by the user's call on 2026-10-27) are merged. PR 3, `WAFCustomRule`, is `feat/generate-waf-custom-rule`;
-with it, every rule kind is generated.
+before PR 3 by the user's call on 2026-10-27) and PR 3 (`WAFCustomRule`, #116) are merged: every rule kind is
+generated. They ship as v0.3.0 (`docs/release-v0.3.0`), released before the other kinds move, at the user's request on
+2026-10-28; PR 5 is next.
 
 **Decided (the user, 2026-10-27):**
 1. Every hand-written kind is generated: the earlier plan's line that `Zone`, `DNSRecord`, `Tunnel`,
@@ -316,7 +317,9 @@ with it, every rule kind is generated.
    never a decision of the user's) is withdrawn
 2. Field names follow the API, as every generated kind's do, so manifests written for v0.2 change (WAFCustomRule's
    `blockResponse` becomes `response`, ManagedRuleset's `rulesetID` becomes `id`, ...). Each kind's PR lists its
-   changes under CHANGELOG.md's Unreleased, with a manifest before and after; they ship together as v0.3.0
+   changes under CHANGELOG.md's Unreleased, with a manifest before and after; they ship together as v0.3.0.
+   Changed on 2026-10-28, when the user asked for a release once the rule kinds were generated: v0.3.0 carries the
+   rule kinds (PRs 1 to 4), and the kinds of PRs 5 to 20 ship in later releases, whose notes list their changes
 
 `CloudflareAccount` is not a Cloudflare object: it holds the API token kflare calls Cloudflare with, as a provider
 configuration does, and no part of Cloudflare's API describes it. It is the one kind kflare-gen has nothing to generate
@@ -349,7 +352,8 @@ say it, into a hook. The later capabilities are sketched only; each is planned i
 | 18 | `feat/generate-zone` | `Zone` generated |
 | 19 | `feat/generator-worker-scripts` | Uploads (a Worker's modules and bindings), drift by a hash in status |
 | 20 | `feat/generate-worker-script` | `WorkerScript` generated |
-| 21 | `docs/release-v0.3.0` | v0.3.0's notes: every field change, with manifests before and after |
+| 21 | `docs/release-v0.3.0` | v0.3.0's notes, for PRs 1 to 4: every field change, with manifests before and after |
+| 22 | a release branch per release | The notes of the releases that carry PRs 5 to 20: every field change, as in v0.3.0's |
 
 Done when: `api/v1alpha1` holds no hand-written kind but `CloudflareAccount` and the shared types, every kind's
 envtest table runs the shared specs, and the live suite passes on main.
@@ -722,6 +726,17 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   (`hack/mutate.sh` with `run`) left 4 alive in the first version: the access review's verb and path and a refused
   token went unchecked, so those properties were added, and then all 19 were caught. The issue's third item, a
   round-trip property for the generated conversions, is left for later
+- [ ] v0.3.0's pre-tag checks (`docs/release-v0.3.0`), a minor release: WAFCustomRule, RateLimitRule and
+  ManagedRuleset moved onto kflare-gen (#114 to #116), which renames fields. Done on the branch:
+  - An upgrade from 0.2.1 on an envtest API server (1.34.1; no Helm in that session, so v0.2.1's CRDs and samples
+    from the tag, then the branch's CRDs applied over them): v0.2.1's samples, a block rule with `blockResponse` and
+    finalizers, then the upgrade. The stored objects read back without their old fields; metadata changes (the pause
+    annotation, removing the finalizer of a deleted resource) and status updates still pass, with the CEL rules'
+    warnings; a spec change is refused (`spec.id: Required value`) until the new shape is applied, which then
+    passes. The new samples are refused by v0.2.1's CRDs (`unknown field "spec.ratelimit"`), so CHANGELOG.md's
+    upgrade steps apply them after the chart
+  - Left: the live suite on the release branch (a `/live-e2e` review comment, never alongside a local run), then the
+    tag on the release PR's merge commit, the release workflow, and #84's checks on the published release
 - [x] Artifact Hub annotations (#90, `feat/artifacthub-annotations`). Why the page showed none, read in Artifact Hub's
   tracker (`internal/tracker/source/helm`, 2026-10-28): it finds a chart's images by a dry-run install for Kubernetes
   1.29, which `kubeVersion: ">=1.34.0-0"` refuses (Helm 4.3.1: "incompatible with Kubernetes v1.29"), and the license
@@ -730,8 +745,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   hand, and `make helm` writes the rest with `hack/chartannotations` (CONTRIBUTING.md, The Helm chart). Artifact Hub
   refuses a whole version over one annotation it cannot read (`EnrichPackageFromAnnotations`), so the command fails
   rather than write one, and its tests check the committed annotations as the tracker does; 35 of 35 mutations
-  caught. A dry run with the release branch's CHANGELOG.md gave v0.3.0 15 changes. Left: check the page after the
-  next release (license, CRDs with examples, a security report)
+  caught. v0.3.0's CHANGELOG.md section gives 15 changes. Left: check the page after the first release that carries
+  the annotations (license, CRDs with examples, a security report), then close #90
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
@@ -774,7 +789,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule controller, and ManagedTransform, the
 > first settings kind, on the shared settings controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1
 > to L7 in order; L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on
-> hold.
+> hold. v0.2.1 is the latest release; v0.3.0, with every rule kind generated, is prepared in `docs/release-v0.3.0`.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero

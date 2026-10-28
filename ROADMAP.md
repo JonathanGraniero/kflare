@@ -26,6 +26,9 @@ schedule, each change of a resource's `Ready` condition is recorded as a Kuberne
 lists every kflare resource. A resource annotated `kflare.dev/paused: "true"` is left alone, its Cloudflare object
 included, until the annotation is removed. From v0.2.1, the image and the chart are signed with
 cosign, and the image comes with SBOMs and provenance (see [Verifying a release](docs/deploy.md#verifying-a-release)).
+Since v0.3.0 every rule kind is generated from Cloudflare's API description, and its fields take the API's names; the
+other kinds written before the generator follow in later releases, which will change their manifests the same way
+(the [changelog](CHANGELOG.md) shows each change, with a manifest before and after).
 
 ## Next
 
