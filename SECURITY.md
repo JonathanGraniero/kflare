@@ -14,6 +14,9 @@ For how kflare handles credentials and what its controller can access, see the d
   modules or the Go standard library that kflare's code calls, and [Grype](https://github.com/anchore/grype) fails on
   a fixable vulnerability of high or critical severity in the controller image CI builds. CodeQL analyzes the code,
   and dependency review refuses a new dependency with a known vulnerability.
+- **Fuzz tests** cover the code that reads input kflare does not control: the metrics endpoint's authentication,
+  which serves any client that can reach its port, and the reading of the errors Cloudflare's API returns. `make test`
+  runs their seed inputs and every input that once failed.
 - **Every week:** Grype scans the latest release's image, sending its report to code scanning, and govulncheck checks
   the release's binary, so that a vulnerability published after a release shows up without a new commit. A fix goes
   into the next release.

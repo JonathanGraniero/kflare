@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -34,26 +35,39 @@ import (
 
 // The API server the tests review requests against: envtest's, which
 // authenticates ServiceAccount tokens and authorizes with RBAC, as a cluster
-// does. `make test` points KUBEBUILDER_ASSETS at its binaries.
+// does. `make test` points KUBEBUILDER_ASSETS at its binaries. It starts with
+// the first test that asks for it (apiServer), so that a fuzz worker, which
+// runs TestMain too, starts none.
 var (
-	cfg       *rest.Config
-	clientset *kubernetes.Clientset
+	testEnv      envtest.Environment
+	startOnce    sync.Once
+	startErr     error
+	apiConfig    *rest.Config
+	apiClientset *kubernetes.Clientset
 )
 
+// apiServer starts the API server if no test has yet, and returns its config
+// and a clientset for it.
+func apiServer(t *testing.T) (*rest.Config, *kubernetes.Clientset) {
+	t.Helper()
+	startOnce.Do(func() {
+		if apiConfig, startErr = testEnv.Start(); startErr != nil {
+			return
+		}
+		apiClientset, startErr = kubernetes.NewForConfig(apiConfig)
+	})
+	if startErr != nil {
+		t.Fatalf("starting envtest: %v", startErr)
+	}
+	return apiConfig, apiClientset
+}
+
 func TestMain(m *testing.M) {
-	testEnv := &envtest.Environment{}
-	var err error
-	if cfg, err = testEnv.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "starting envtest:", err)
-		os.Exit(1)
-	}
-	if clientset, err = kubernetes.NewForConfig(cfg); err != nil {
-		fmt.Fprintln(os.Stderr, "creating a clientset:", err)
-		os.Exit(1)
-	}
 	code := m.Run()
-	if err := testEnv.Stop(); err != nil {
-		fmt.Fprintln(os.Stderr, "stopping envtest:", err)
+	if apiConfig != nil {
+		if err := testEnv.Stop(); err != nil {
+			fmt.Fprintln(os.Stderr, "stopping envtest:", err)
+		}
 	}
 	os.Exit(code)
 }
@@ -119,6 +133,7 @@ func do(t *testing.T, srv *httptest.Server, method, path, auth string) response 
 // namespace and returns a token for it.
 func serviceAccountToken(t *testing.T, name string) string {
 	t.Helper()
+	_, clientset := apiServer(t)
 	ctx := context.Background()
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
 	if _, err := clientset.CoreV1().ServiceAccounts("default").Create(ctx, sa, metav1.CreateOptions{}); err != nil {
@@ -140,6 +155,7 @@ func serviceAccountToken(t *testing.T, name string) string {
 // function that deletes the binding.
 func grantGet(t *testing.T, name, path string) (revoke func()) {
 	t.Helper()
+	_, clientset := apiServer(t)
 	ctx := context.Background()
 	role := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -178,6 +194,7 @@ func eventually(t *testing.T, what string, check func() bool) {
 }
 
 func TestWithAuthenticationAndAuthorization(t *testing.T) {
+	cfg, _ := apiServer(t)
 	httpClient, err := rest.HTTPClientFor(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +255,7 @@ func TestWithAuthenticationAndAuthorizationRefusesABadConfig(t *testing.T) {
 }
 
 func TestReviewsAreRateLimited(t *testing.T) {
+	cfg, _ := apiServer(t)
 	// A config whose own limit would let every review through at once.
 	unlimited := rest.CopyConfig(cfg)
 	unlimited.QPS, unlimited.Burst = 1000, 1000
@@ -289,6 +307,7 @@ func (c *clock) Advance(d time.Duration) {
 }
 
 func TestAnAllowedRequestIsRememberedForAMinute(t *testing.T) {
+	_, clientset := apiServer(t)
 	newClocked := func() (*reviewer, *clock) {
 		c := &clock{now: time.Now()}
 		return newReviewer(clientset.AuthenticationV1().TokenReviews(),
@@ -486,4 +505,185 @@ func TestRequestsWithoutABearerTokenAreNotReviewed(t *testing.T) {
 	if len(tokens.tokens) != 0 {
 		t.Errorf("sent %d token reviews for requests without a bearer token", len(tokens.tokens))
 	}
+}
+
+// usersByToken authenticates the tokens it maps to a user, as the API server's
+// TokenReview does, refuses any other, and records the tokens it was sent and
+// how many it refused.
+type usersByToken struct {
+	users   map[string]authenticationv1.UserInfo
+	tokens  []string
+	refused int
+}
+
+func (u *usersByToken) Create(_ context.Context, tr *authenticationv1.TokenReview,
+	_ metav1.CreateOptions) (*authenticationv1.TokenReview, error) {
+	u.tokens = append(u.tokens, tr.Spec.Token)
+	user, ok := u.users[tr.Spec.Token]
+	status := authenticationv1.TokenReviewStatus{Authenticated: ok, User: user}
+	if !ok {
+		status.Error = "invalid bearer token"
+		u.refused++
+	}
+	return &authenticationv1.TokenReview{Spec: tr.Spec, Status: status}, nil
+}
+
+// getGrants allows each user it maps get on one path, as a ClusterRole for a
+// non-resource URL does, refuses everything else, and records what it was
+// asked about and how much it allowed.
+type getGrants struct {
+	paths   map[string]string
+	asked   []authorizationv1.NonResourceAttributes
+	allowed int
+}
+
+func (g *getGrants) Create(_ context.Context, sar *authorizationv1.SubjectAccessReview,
+	_ metav1.CreateOptions) (*authorizationv1.SubjectAccessReview, error) {
+	attrs := sar.Spec.NonResourceAttributes
+	if attrs == nil {
+		return nil, errors.New("not a review of a non-resource URL")
+	}
+	g.asked = append(g.asked, *attrs)
+	path, ok := g.paths[sar.Spec.User]
+	allowed := ok && attrs.Verb == "get" && attrs.Path == path
+	if allowed {
+		g.allowed++
+	}
+	return &authorizationv1.SubjectAccessReview{
+		Spec:   sar.Spec,
+		Status: authorizationv1.SubjectAccessReviewStatus{Allowed: allowed},
+	}, nil
+}
+
+// fuzzedFilter is the filter in front of a handler, reviewing with
+// usersByToken and getGrants.
+type fuzzedFilter struct {
+	handler http.Handler
+	tokens  *usersByToken
+	grants  *getGrants
+	reached bool
+}
+
+func newFuzzedFilter(t *testing.T, users map[string]authenticationv1.UserInfo, paths map[string]string) *fuzzedFilter {
+	t.Helper()
+	f := &fuzzedFilter{tokens: &usersByToken{users: users}, grants: &getGrants{paths: paths}}
+	handler, err := newReviewer(f.tokens, f.grants, time.Now).filter(logr.Discard(),
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			f.reached = true
+			_, _ = io.WriteString(w, "ok")
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.handler = handler
+	return f
+}
+
+// outcome is what a request got, and what the reviews did meanwhile.
+type outcome struct {
+	code            int
+	wwwAuthenticate string
+	reached         bool
+	tokenReviews    int
+	refusedTokens   int
+	accessReviews   int
+	allowed         int
+}
+
+// send serves a request with method, path and the Authorization header auth
+// (none when empty), as the metrics server does with what a client sent.
+func (f *fuzzedFilter) send(method, path, auth string) outcome {
+	req := &http.Request{Method: method, URL: &url.URL{Path: path}, Header: http.Header{}}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	tokenReviews, refused := len(f.tokens.tokens), f.tokens.refused
+	accessReviews, allowed := len(f.grants.asked), f.grants.allowed
+	f.reached = false
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, req)
+	return outcome{
+		code:            w.Code,
+		wwwAuthenticate: w.Header().Get("WWW-Authenticate"),
+		reached:         f.reached,
+		tokenReviews:    len(f.tokens.tokens) - tokenReviews,
+		refusedTokens:   f.tokens.refused - refused,
+		accessReviews:   len(f.grants.asked) - accessReviews,
+		allowed:         f.grants.allowed - allowed,
+	}
+}
+
+// FuzzReview sends the filter requests with any method, path and
+// Authorization header, as any client that can reach the metrics port may.
+// The reviews know two tokens: the reader's, whose user may get /metrics, and
+// another user's, who may get nothing. Whatever the request:
+//   - it reaches the handler only when the access review allowed it, and gets
+//     a 401 asking for a bearer token unless it had one the token review
+//     authenticated, without an access review
+//   - the token reviewed is the header's bearer token, trimmed, and the access
+//     review asks about the request's verb, in lower case, and path
+//   - a reviewer that has already allowed the reader's scrape answers it as a
+//     new reviewer does: remembering an allowed request lets in no other
+func FuzzReview(f *testing.F) {
+	for _, seed := range []struct{ method, path, auth string }{
+		{http.MethodGet, "/metrics", "Bearer reader-token"},
+		{http.MethodGet, "/metrics", "bearer reader-token"},
+		{http.MethodGet, "/metrics", "Bearer  reader-token "},
+		{"get", "/metrics", "BEARER reader-token"},
+		{http.MethodPost, "/metrics", "Bearer reader-token"},
+		{http.MethodGet, "/metrics/", "Bearer reader-token"},
+		{http.MethodGet, "/debug/pprof", "Bearer reader-token"},
+		{http.MethodGet, "/metrics", "Bearer other-token"},
+		{http.MethodGet, "/metrics", "Bearer reader-token other-token"},
+		{http.MethodGet, "/metrics", "Bearer\treader-token"},
+		{http.MethodGet, "/metrics", "Basic cmVhZGVyOnRva2Vu"},
+		{http.MethodGet, "/metrics", "Bearer"},
+		{http.MethodGet, "/metrics", ""},
+	} {
+		f.Add(seed.method, seed.path, seed.auth)
+	}
+
+	users := map[string]authenticationv1.UserInfo{
+		"reader-token": {Username: "system:serviceaccount:monitoring:prometheus"},
+		"other-token":  {Username: "system:serviceaccount:default:other"},
+	}
+	paths := map[string]string{"system:serviceaccount:monitoring:prometheus": "/metrics"}
+
+	f.Fuzz(func(t *testing.T, method, path, auth string) {
+		fresh := newFuzzedFilter(t, users, paths)
+		got := fresh.send(method, path, auth)
+		if got.reached != (got.code == http.StatusOK) {
+			t.Errorf("%+v: reached the handler, or not, with %d", got, got.code)
+		}
+		if got.reached && got.allowed != 1 {
+			t.Errorf("%+v: reached the handler without an access review allowing it", got)
+		}
+		if (got.tokenReviews == 0 || got.refusedTokens > 0) && (got.code != http.StatusUnauthorized ||
+			got.wwwAuthenticate != `Bearer realm="metrics"` || got.accessReviews != 0) {
+			t.Errorf("%+v: a request without a token the API server authenticates must get a 401 asking for one",
+				got)
+		}
+		if got.code != http.StatusOK && got.code != http.StatusUnauthorized && got.code != http.StatusForbidden {
+			t.Errorf("%+v: reviews that do not fail must not give %d", got, got.code)
+		}
+		for _, token := range fresh.tokens.tokens {
+			scheme, rest, _ := strings.Cut(auth, " ")
+			if !strings.EqualFold(scheme, "Bearer") || token == "" || token != strings.TrimSpace(rest) {
+				t.Errorf("reviewed token %q, which is not the trimmed bearer token of %q", token, auth)
+			}
+		}
+		for _, attrs := range fresh.grants.asked {
+			if attrs.Verb != strings.ToLower(method) || attrs.Path != path {
+				t.Errorf("asked about %s %q for a %s request to %q", attrs.Verb, attrs.Path, method, path)
+			}
+		}
+
+		warm := newFuzzedFilter(t, users, paths)
+		if scrape := warm.send(http.MethodGet, "/metrics", "Bearer reader-token"); !scrape.reached {
+			t.Fatalf("the reader's scrape was refused: %+v", scrape)
+		}
+		if again := warm.send(method, path, auth); again.code != got.code || again.reached != got.reached {
+			t.Errorf("after allowing the reader's scrape: %+v; from a new reviewer: %+v", again, got)
+		}
+	})
 }

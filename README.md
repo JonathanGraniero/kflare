@@ -152,6 +152,8 @@ kflare is developed with AI assistance (Claude Code). What keeps it honest:
 - **A live end-to-end suite** runs every resource kind against a real Cloudflare account on the Free plan, in GitHub
   Actions, and checks Cloudflare's copy after each step. Its token holds nothing beyond the permissions above.
 - **Mutation testing** on the controllers: deliberate bugs, which the tests must catch.
+- **Fuzz tests** on the code that reads input kflare does not control: the metrics endpoint's authentication and the
+  reading of Cloudflare's errors.
 - **Cloudflare's behavior is checked live before code relies on it**: what the API accepts, refuses and stores.
   [ARCHITECTURE.md](ARCHITECTURE.md) records what was verified.
 - **Known vulnerabilities are checked for** in the code and the image on every pull request, and in the latest
