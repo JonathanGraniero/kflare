@@ -1,0 +1,2 @@
+# The `require reviews` ruleset on main asks for a code owner's approval on every pull request.
+* @JonathanGraniero
