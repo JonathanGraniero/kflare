@@ -731,6 +731,15 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   (`hack/mutate.sh` with `run`) left 4 alive in the first version: the access review's verb and path and a refused
   token went unchecked, so those properties were added, and then all 19 were caught. The issue's third item, a
   round-trip property for the generated conversions, is left for later
+- [x] Branch-Protection (3 on `bf97313`, a score of 8), 2026-10-28: `main` has two rulesets. `protect main`, which no
+  one bypasses, also requires CI's checks from GitHub Actions, by name (`Build & Test`, `Test (newest Kubernetes)`,
+  both `E2E Tests` jobs, `review`), on a branch up to date with `main`. `require reviews` asks for two approvals, one
+  a code owner's (`.github/CODEOWNERS`), a new one after the last push, and dismisses stale ones; the repository
+  admin role bypasses it on a pull request (the merge box's "bypass rules"). Scorecard v5.6.0 scores this 9. 10
+  needs no bypass actor in any ruleset (it reads one as "doesn't apply to admins"), and one maintainer, who can't
+  approve their own pull requests, could then merge nothing: the user chose 9. Renaming a required job or changing
+  E2E's Kubernetes versions means changing `protect main`'s checks too. Code-Review stays 0: a bypassed merge has
+  no approval
 - [ ] v0.3.0's pre-tag checks (`docs/release-v0.3.0`), a minor release: WAFCustomRule, RateLimitRule and
   ManagedRuleset moved onto kflare-gen (#114 to #116), which renames fields. Done on the branch:
   - An upgrade from 0.2.1 on an envtest API server (1.34.1; no Helm in that session, so v0.2.1's CRDs and samples

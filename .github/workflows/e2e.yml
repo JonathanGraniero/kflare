@@ -33,7 +33,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The oldest supported release and the newest one.
+        # The oldest supported release and the newest one. The `protect main`
+        # ruleset requires each job by name: change its versions there too.
         kubernetes: [v1.34.11, v1.37.0]
     env:
       GOTOOLCHAIN: local
