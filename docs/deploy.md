@@ -236,7 +236,7 @@ Every other kind references the account (or a resource that does). Examples are 
 | `Tunnel` | Namespaced | `accountRef` | [tunnel](../config/samples/cloudflare_v1alpha1_tunnel.yaml) |
 | `TunnelConfiguration` | Namespaced | `tunnelRef` (same namespace) | [tunnel configuration](../config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml) |
 | `WorkerScript` | Namespaced | `accountRef` | [worker](../config/samples/cloudflare_v1alpha1_workerscript.yaml) |
-| `WorkerRoute` | Namespaced | `zoneRef`, optional `workerScriptRef` (same namespace) | [route and exclusion](../config/samples/cloudflare_v1alpha1_workerroute.yaml) |
+| `WorkerRoute` | Namespaced | `zoneRef`, optional `workerScriptRef` (same namespace) | [route](../config/samples/cloudflare_v1alpha1_workerroute.yaml) |
 | `KVNamespace` | Namespaced | `accountRef`; WorkerScripts bind it with `kvNamespaceRef` | [KV namespace](../config/samples/cloudflare_v1alpha1_kvnamespace.yaml) |
 | `R2Bucket` | Namespaced | `accountRef`; WorkerScripts bind it with `r2BucketRef` | [R2 bucket](../config/samples/cloudflare_v1alpha1_r2bucket.yaml) |
 | `D1Database` | Namespaced | `accountRef` | [D1 database](../config/samples/cloudflare_v1alpha1_d1database.yaml) |
@@ -823,8 +823,8 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `AlreadyExists` | The Cloudflare object the resource names (a zone, record, tunnel, Worker, bucket, ...) exists and kflare did not create it | Annotate the resource `kflare.dev/adoption-policy: adopt` to manage it, or pick another name |
 | `NotFound` | The resource's adoption policy is `adopt` and there is nothing to adopt | Check the name, or use `adopt-or-create` to create one |
 | `InvalidAdoptionPolicy` | `kflare.dev/adoption-policy` holds a value other than `adopt` and `adopt-or-create` | Fix or remove the annotation |
-| `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern | Keep one WorkerRoute per pattern |
-| `PatternOutsideZone` | The route pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |
+| `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern in the same Cloudflare zone | Keep one WorkerRoute per pattern |
+| `TerminalError` (WorkerRoute) | A message with `Route pattern must include zone name` (10022): the pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |
 | `WorkerScriptNotFound`, `WorkerScriptNotReady`, `AccountMismatch` | The route's WorkerScript is missing, not uploaded yet, or in a different account than the zone | Check the WorkerScript; it must use the zone's account |
 | `AccountMismatch` (DNSRecord) | The Tunnel the record's `tunnelRef` names uses another `CloudflareAccount` than the record's Zone | Use the zone's account for the Tunnel: Cloudflare routes a tunnel's traffic only for DNS records in the tunnel's account |
 | `TitleConflict` | Another `KVNamespace` already manages a namespace with this title | Keep one KVNamespace per title |

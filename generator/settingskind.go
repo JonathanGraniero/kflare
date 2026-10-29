@@ -133,7 +133,7 @@ func (b *settingsKindBuilder) build() (*settingsKind, error) {
 		}
 	}
 	for _, f := range k.params.fields {
-		if f.jsonName == "zoneRef" {
+		if f.jsonName == zoneRefField {
 			return nil, fmt.Errorf("the settings have a field zoneRef, which the spec already holds")
 		}
 	}

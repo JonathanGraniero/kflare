@@ -185,7 +185,7 @@ func emitController(c *controller, header string) ([]byte, error) {
 	ctx := f.use("context", "context")
 	client := f.use(clientPackage, "client")
 
-	if c.list != nil {
+	if c.list != nil && !c.singlePage {
 		comment(&f.Builder, "", wrap(fmt.Sprintf("%sListPageSize is how many %s a page of the list asks for: the "+
 			"most the OpenAPI spec allows.", v, pluralOf(c.noun))))
 		f.printf("const %sListPageSize = %d\n\n", v, c.pageSize)
@@ -217,7 +217,13 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("name: %q,\nnoun: %q,\n", name, c.noun)
 	f.printf("newObject: func() %s { return &%s.%s{} },\n", obj, f.api(), name)
 	f.printf("newList: func() %s.ObjectList { return &%s.%sList{} },\n\n", client, f.api(), name)
-	f.printf("accountRef: func(obj %s) string { return obj.Spec.AccountRef.Name },\n", obj)
+	if c.zoned {
+		f.printf("zoneRef: func(obj %s) string { return obj.Spec.ZoneRef.Name },\n", obj)
+		f.printf("statusZoneID: func(obj %s) *string { return &obj.Status.CloudflareMetadata.%s },\n", obj,
+			c.statusZoneID)
+	} else {
+		f.printf("accountRef: func(obj %s) string { return obj.Spec.AccountRef.Name },\n", obj)
+	}
 	f.printf("key: func(obj %s) string { return obj.Spec.%s },\n", obj, c.key.goName)
 	f.printf("claimLabel: %s.%sIDLabel,\nconflictReason: %q,\n", f.api(), name, c.conflictReason)
 	if len(c.address) > 0 {
@@ -240,14 +246,15 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("},\n\n")
 
 	f.printf("id: func(current *%s) string { return current.%s },\n", object, c.id.goName)
-	matches, err := matchesExpr(f, c, false)
+	matches, usesRefs, err := matchesExpr(f, c, false)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	if matches == "" {
-		f.printf("matches: func(%s, *%s) bool { return true },\n", obj, object)
+		f.printf("matches: func(%s, *%s, map[string]string) bool { return true },\n", obj, object)
 	} else {
-		f.printf("matches: func(obj %s, current *%s) bool {\nreturn %s\n},\n", obj, object, matches)
+		f.printf("matches: func(obj %s, current *%s, %s map[string]string) bool {\nreturn %s\n},\n", obj, object,
+			refsParam(usesRefs), matches)
 	}
 	if c.list != nil {
 		listedID, err := f.convert("listed."+c.listedID.goName, c.listedID.typ, types.Typ[types.String])
@@ -265,6 +272,21 @@ func emitController(c *controller, header string) ([]byte, error) {
 
 	if err := emitCalls(f, c, api, obj, object); err != nil {
 		return nil, err
+	}
+	if len(c.references) > 0 {
+		f.printf("\nreferences: []crudReference[%s]{\n", obj)
+		for _, af := range c.references {
+			ref := "obj.Spec." + af.goName
+			refName := fmt.Sprintf("func(obj %s) string { return %s.Name }", obj, ref)
+			if af.optional {
+				refName = fmt.Sprintf("func(obj %s) string {\nif %s == nil {\nreturn \"\"\n}\nreturn %s.Name\n}", obj, ref, ref)
+			}
+			target := "*" + f.api() + "." + af.ref.Kind
+			f.printf("reference(%q, %q,\n%s,\nfunc(ref %s) string { return ref.Spec.AccountRef.Name },\n"+
+				"func(ref %s) string { return ref.Spec.%s }),\n", af.jsonName, af.ref.Kind, refName, target, target,
+				upperCamel(af.ref.Field))
+		}
+		f.printf("},\n")
 	}
 	if len(c.deletionBlockers) > 0 {
 		f.printf("\ndeletionBlockers: []deletionBlocker{\n")
@@ -295,14 +317,29 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("func (r *%sReconciler) Reconcile(ctx %s.Context, req %s.Request) (%s.Result, error) {\n", name, ctx, ctrl,
 		ctrl)
 	f.printf("return r.crud().reconcile(ctx, req)\n}\n\n")
-	setupDoc := fmt.Sprintf("SetupWithManager registers %sReconciler with the manager. It watches CloudflareAccounts, "+
-		"so %s waiting for its account is reconciled once the account is ready", name, article(name))
+	clauses := []string{fmt.Sprintf("CloudflareAccounts, so %s waiting for its account is reconciled once the "+
+		"account is ready", article(name))}
+	if c.zoned {
+		clauses[0] = fmt.Sprintf("Zones, so %s waiting for its Zone is reconciled once the Zone is ready", article(name))
+	}
+	for _, af := range c.references {
+		clauses = append(clauses, fmt.Sprintf("%s, so %s waiting for the %s its %s names is reconciled once it is "+
+			"ready", pluralOf(af.ref.Kind), article(name), af.ref.Kind, af.jsonName))
+	}
 	if len(c.dependents) > 0 {
 		var kinds []string
 		for _, d := range c.dependents {
 			kinds = append(kinds, pluralOf(d.Kind))
 		}
-		setupDoc += fmt.Sprintf(", and deleted %s, so %s waiting for them is released", prose(kinds), article(name))
+		clauses = append(clauses, fmt.Sprintf("deleted %s, so %s waiting for them is released", prose(kinds),
+			article(name)))
+	}
+	setupDoc := fmt.Sprintf("SetupWithManager registers %sReconciler with the manager. It watches %s", name,
+		strings.Join(clauses[:len(clauses)-1], ", "))
+	if len(clauses) > 1 {
+		setupDoc += ", and " + clauses[len(clauses)-1]
+	} else {
+		setupDoc += clauses[0]
 	}
 	comment(&f.Builder, "", wrap(setupDoc+"."))
 	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nreturn r.crud().setup(mgr, r)\n}\n\n",
@@ -324,8 +361,8 @@ func emitController(c *controller, header string) ([]byte, error) {
 }
 
 // emitCalls writes the descriptor's calls to Cloudflare: each builds its
-// params from the account, the resource and the address, and calls the
-// narrow interface api.
+// params from the parent's ID, the resource, the address and the values its
+// references give, and calls the narrow interface api.
 func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 	name, v := c.name, c.varName
 	ctx := f.use("context", "context")
@@ -333,45 +370,52 @@ func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 	if err != nil {
 		return err
 	}
-	f.printf("get: func(ctx %s.Context, api %s, %s %s,\naccountID, id string) (*%s, error) {\n", ctx, api,
+	f.printf("get: func(ctx %s.Context, api %s, %s %s,\nparentID, id string) (*%s, error) {\n", ctx, api,
 		objParam(getParams), obj, object)
 	if err := callBody(f, c, c.get, getParams, "return api.Get(ctx, id, params)"); err != nil {
 		return err
 	}
 	f.printf("},\n")
 	if c.list != nil {
-		page, err := f.convert("page", types.Typ[types.Int64], c.page.typ)
-		if err != nil {
-			return fmt.Errorf("%s: List's page: %w", name, err)
-		}
 		listParams, err := addressStatements(f, c, c.list)
 		if err != nil {
 			return err
 		}
-		f.printf("list: func(ctx %s.Context, api %s, %s %s,\naccountID string, page int64) (%s, error) {\n", ctx,
-			api, objParam(listParams), obj, f.typ(c.list.sig.Results().At(0).Type()))
-		listParams = append(listParams,
-			fmt.Sprintf("params.%s.Value, params.%s.Present = %s, true", c.page.goName, c.page.goName, page),
-			fmt.Sprintf("params.%s.Value, params.%s.Present = %sListPageSize, true", c.perPage.goName,
-				c.perPage.goName, v))
+		if c.singlePage {
+			f.printf("listAll: func(ctx %s.Context, api %s, %s %s,\nparentID string) (%s, error) {\n", ctx, api,
+				objParam(listParams), obj, f.typ(c.list.sig.Results().At(0).Type()))
+		} else {
+			page, err := f.convert("page", types.Typ[types.Int64], c.page.typ)
+			if err != nil {
+				return fmt.Errorf("%s: List's page: %w", name, err)
+			}
+			f.printf("list: func(ctx %s.Context, api %s, %s %s,\nparentID string, page int64) (%s, error) {\n", ctx,
+				api, objParam(listParams), obj, f.typ(c.list.sig.Results().At(0).Type()))
+			listParams = append(listParams,
+				fmt.Sprintf("params.%s.Value, params.%s.Present = %s, true", c.page.goName, c.page.goName, page),
+				fmt.Sprintf("params.%s.Value, params.%s.Present = %sListPageSize, true", c.perPage.goName,
+					c.perPage.goName, v))
+		}
 		if err := callBody(f, c, c.list, listParams, "return api.List(ctx, params)"); err != nil {
 			return err
 		}
 		f.printf("},\n")
 	}
-	f.printf("create: func(ctx %s.Context, api %s, accountID string,\nobj %s) (*%s, error) {\n", ctx, api, obj,
-		object)
 	createParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.create })
 	if err != nil {
 		return fmt.Errorf("%s: New: %w", name, err)
 	}
-	if err := callBody(f, c, c.create, createParams, "return api.New(ctx, params)"); err != nil {
+	f.printf("create: func(ctx %s.Context, api %s, parentID string,\nobj %s, %s map[string]string) (*%s, error) {\n",
+		ctx, api, obj, refsParam(readsRefs(createParams)), object)
+	ret, err := resultReturn(f, c, "api.New(ctx, params)", c.created)
+	if err != nil {
+		return fmt.Errorf("%s: New: %w", name, err)
+	}
+	if err := callBody(f, c, c.create, createParams, ret); err != nil {
 		return err
 	}
 	f.printf("},\n")
 	if c.update != nil {
-		f.printf("update: func(ctx %s.Context, api %s, obj %s,\naccountID, id string) (*%s, error) {\n", ctx, api,
-			obj, object)
 		updateParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.update })
 		if err != nil {
 			return fmt.Errorf("%s: %s: %w", name, c.update.name, err)
@@ -380,8 +424,13 @@ func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 		if err != nil {
 			return err
 		}
-		if err := callBody(f, c, c.update, append(address, updateParams...),
-			fmt.Sprintf("return api.%s(ctx, id, params)", c.update.name)); err != nil {
+		f.printf("update: func(ctx %s.Context, api %s, obj %s,\nparentID, id string, %s map[string]string) (*%s, "+
+			"error) {\n", ctx, api, obj, refsParam(readsRefs(updateParams)), object)
+		ret, err := resultReturn(f, c, fmt.Sprintf("api.%s(ctx, id, params)", c.update.name), c.updated)
+		if err != nil {
+			return fmt.Errorf("%s: %s: %w", name, c.update.name, err)
+		}
+		if err := callBody(f, c, c.update, append(address, updateParams...), ret); err != nil {
 			return err
 		}
 		f.printf("},\n")
@@ -390,13 +439,64 @@ func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 	if err != nil {
 		return err
 	}
-	f.printf("delete: func(ctx %s.Context, api %s, %s %s,\naccountID, id string) error {\n", ctx, api,
+	f.printf("delete: func(ctx %s.Context, api %s, %s %s,\nparentID, id string) error {\n", ctx, api,
 		objParam(deleteParams), obj)
 	if err := callBody(f, c, c.remove, deleteParams, "_, err := api.Delete(ctx, id, params)\nreturn err"); err != nil {
 		return err
 	}
 	f.printf("},\n")
 	return nil
+}
+
+// resultReturn returns the statements that return what call, a call to New
+// or Update, returns as the object Get returns: as it is, or, when the call
+// returns a type of its own (result), converted field by field.
+func resultReturn(f *goFile, c *controller, call string, result types.Type) (string, error) {
+	if result == nil {
+		return "return " + call, nil
+	}
+	converted, err := convertObject(f, "result", result, c.object, c.svc.object)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("result, err := %s\nif err != nil {\nreturn nil, err\n}\nreturn &%s, nil", call, converted), nil
+}
+
+// convertObject returns a composite literal of the type to that holds the
+// fields of value, of the type from: each of fields, the fields of the object
+// Get returns, by its Go name, converted. sameFields has checked that both
+// types hold them.
+func convertObject(f *goFile, value string, from, to types.Type, fields []sdkField) (string, error) {
+	var out []string
+	for _, field := range fields {
+		converted, err := f.convert(value+"."+field.goName, structFieldType(from, field.goName),
+			structFieldType(to, field.goName))
+		if err != nil {
+			return "", fmt.Errorf("converting %s: %w", field.goName, err)
+		}
+		out = append(out, fmt.Sprintf("%s: %s", field.goName, converted))
+	}
+	return compositeLiteral(f.typ(to), out), nil
+}
+
+// structFieldType returns the type of the field name of the struct type t.
+func structFieldType(t types.Type, name string) types.Type {
+	st := t.Underlying().(*types.Struct)
+	return st.Field(slices.IndexFunc(structFields(st), func(v *types.Var) bool { return v.Name() == name })).Type()
+}
+
+// refsParam names a descriptor function's references parameter: refs when its
+// body reads the values the references give, _ when it does not.
+func refsParam(used bool) string {
+	if used {
+		return "refs"
+	}
+	return "_"
+}
+
+// readsRefs reports whether statements read the values references give.
+func readsRefs(statements []string) bool {
+	return slices.ContainsFunc(statements, func(s string) bool { return strings.Contains(s, "refs[") })
 }
 
 // interfaceMethod declares call as the narrow interface does, with the SDK's
@@ -426,16 +526,16 @@ func interfaceMethod(f *goFile, call *sdkCall) string {
 }
 
 // callBody writes the body of a descriptor's call: its params, with the
-// account and the statements given, then the call.
+// parent's ID and the statements given, then ret, which returns.
 func callBody(f *goFile, c *controller, call *sdkCall, statements []string, ret string) error {
-	i := slices.IndexFunc(call.paramFields, isAccountID)
-	account, err := f.convert("accountID", types.Typ[types.String], call.paramFields[i].typ)
+	i := slices.IndexFunc(call.paramFields, c.isParent)
+	parent, err := f.convert("parentID", types.Typ[types.String], call.paramFields[i].typ)
 	if err != nil {
-		return fmt.Errorf("%s: %s's account_id: %w", c.name, call.name, err)
+		return fmt.Errorf("%s: %s's %s: %w", c.name, call.name, call.paramFields[i].apiName, err)
 	}
 	f.printf("var params %s\n", f.typ(call.params))
 	f.printf("params.%s.Value, params.%s.Present = %s, true\n", call.paramFields[i].goName,
-		call.paramFields[i].goName, account)
+		call.paramFields[i].goName, parent)
 	for _, s := range statements {
 		f.printf("%s\n", s)
 	}
@@ -480,7 +580,8 @@ func addressStatements(f *goFile, c *controller, call *sdkCall) ([]string, error
 }
 
 // assignParam returns the statement that sets the param p from the spec
-// field or fixed value af: an optional field's only when the spec sets it.
+// field or fixed value af: an optional field's only when the spec sets it. A
+// reference's value is the one it gives, in refs.
 func assignParam(f *goFile, af apiField, p *sdkField) (string, error) {
 	set := func(value string, from types.Type) (string, error) {
 		converted, err := f.convert(value, from, p.typ)
@@ -493,16 +594,24 @@ func assignParam(f *goFile, af apiField, p *sdkField) (string, error) {
 		return set(strconv.Quote(af.fixed), types.Typ[types.String])
 	}
 	spec := "obj.Spec." + af.goName
+	if af.ref != nil {
+		spec = refValue(af)
+	}
 	switch {
 	case !af.optional:
 		return set(spec, specType(af.field))
-	case strings.HasPrefix(af.goType, "*"):
+	case strings.HasPrefix(af.goType, "*") && af.ref == nil:
 		s, err := set("*"+spec, specType(af.field))
 		return fmt.Sprintf("if %s != nil {\n%s\n}", spec, s), err
 	default:
 		s, err := set(spec, specType(af.field))
 		return fmt.Sprintf("if %s != \"\" {\n%s\n}", spec, s), err
 	}
+}
+
+// refValue is the expression of the value the reference af gives, in refs.
+func refValue(af apiField) string {
+	return fmt.Sprintf("refs[%q]", af.jsonName)
 }
 
 // objParam names a call's resource parameter: obj when its statements read
@@ -517,19 +626,25 @@ func objParam(statements []string) string {
 // matchesExpr returns the expression that reports whether the object current
 // is what obj's spec asks for: every field Update can change matches, or with
 // all set, every field the object reports. A field the spec leaves unset is
-// not compared: Cloudflare keeps its value. "" when no field is compared.
-func matchesExpr(f *goFile, c *controller, all bool) (string, error) {
+// not compared: Cloudflare keeps its value. A reference is always compared
+// with the value it gives, in refs: an unset one gives none. "" when no field
+// is compared. It also reports whether the expression reads refs.
+func matchesExpr(f *goFile, c *controller, all bool) (string, bool, error) {
 	var terms []string
+	usesRefs := false
 	for _, af := range c.fields {
 		if af.object == nil || (af.update == nil && !all) {
 			continue
 		}
 		current, err := f.convert("current."+af.object.goName, af.object.typ, specType(af.field))
 		if err != nil {
-			return "", fmt.Errorf("comparing %s: %w", af.apiName, err)
+			return "", false, fmt.Errorf("comparing %s: %w", af.apiName, err)
 		}
 		spec := "obj.Spec." + af.goName
 		switch {
+		case af.ref != nil:
+			terms = append(terms, fmt.Sprintf("%s == %s", current, refValue(af)))
+			usesRefs = true
 		case !af.optional:
 			terms = append(terms, fmt.Sprintf("%s == %s", current, spec))
 		case strings.HasPrefix(af.goType, "*"):
@@ -538,19 +653,25 @@ func matchesExpr(f *goFile, c *controller, all bool) (string, error) {
 			terms = append(terms, fmt.Sprintf("(%s == \"\" || %s == %s)", spec, current, spec))
 		}
 	}
-	return strings.Join(terms, " &&\n"), nil
+	return strings.Join(terms, " &&\n"), usesRefs, nil
 }
 
 // rbacMarkers returns the RBAC markers of a kind's controller: its own
-// resources, its account and the account's token Secret, and the kinds it
-// waits for.
+// resources, its Zone, its account and the account's token Secret, the kinds
+// it references and those it waits for.
 func rbacMarkers(c *controller) []string {
 	group := "+kubebuilder:rbac:groups=kflare.dev,resources="
 	out := []string{
 		group + c.plural + ",verbs=get;list;watch;create;update;patch;delete",
 		group + c.plural + "/status,verbs=get;update;patch",
 		group + c.plural + "/finalizers,verbs=update",
-		group + "cloudflareaccounts,verbs=get;list;watch",
+	}
+	if c.zoned {
+		out = append(out, group+"zones,verbs=get;list;watch")
+	}
+	out = append(out, group+"cloudflareaccounts,verbs=get;list;watch")
+	for _, af := range c.references {
+		out = append(out, group+plural(af.ref.Kind)+",verbs=get;list;watch")
 	}
 	for _, d := range c.dependents {
 		out = append(out, group+plural(d.Kind)+",verbs=get;list;watch")
@@ -574,10 +695,14 @@ func kindDoc(c *controller) string {
 	for _, af := range c.address {
 		same = append(same, af.jsonName)
 	}
+	parent := "account"
+	if c.zoned {
+		parent = "zone"
+	}
 	var doc strings.Builder
 	fmt.Fprintf(&doc, "%sKind describes %s to the shared CRUD reconciler. %s creates its %s or, as its "+
-		"adoption policy allows, adopts the account's %s with the same %s, unless another %s manages it.",
-		c.varName, pluralOf(c.name), upperCamel(article(c.name)), c.noun, c.noun, prose(same), c.name)
+		"adoption policy allows, adopts the %s's %s with the same %s, unless another %s manages it.",
+		c.varName, pluralOf(c.name), upperCamel(article(c.name)), c.noun, parent, c.noun, prose(same), c.name)
 	if c.byKey {
 		fmt.Fprintf(&doc, " The %s has no ID but its %s, by which it is read.", c.noun, c.key.jsonName)
 	}
@@ -591,6 +716,10 @@ func kindDoc(c *controller) string {
 		}
 		fmt.Fprintf(&doc, " %s %s set when the %s is created and cannot change.", upperCamel(prose(immutable)),
 			verb, c.noun)
+	}
+	for _, af := range c.references {
+		fmt.Fprintf(&doc, " It sends the %s of the %s its %s names as %s, once that %s is ready.",
+			af.ref.Field, af.ref.Kind, af.jsonName, af.apiName, af.ref.Kind)
 	}
 	fmt.Fprintf(&doc, " %s deleted outside kflare is created again.", upperCamel(article(c.noun)))
 	for _, b := range c.deletionBlockers {
@@ -623,7 +752,7 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	f.printf("var _ = describeCRUDKind(crudKindSpecs[%s, %s, %s, %s]{\n", obj, api, object, listed)
 	f.printf("kind: %sKind,\nkeyField: %q,\n", v, c.key.jsonName)
 	f.printf("claimLabel: %q,\nconflictReason: %q,\n", c.claimLabel, c.conflictReason)
-	if c.list != nil {
+	if c.list != nil && !c.singlePage {
 		f.printf("pageSize: %sListPageSize,\n", v)
 	}
 	if c.scope != "" {
@@ -634,10 +763,14 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	f.printf("return &%sReconciler{Client: c, Scheme: c.Scheme(), New%s: newAPI}\n},\n", name, api)
 	f.printf("newFake: func(store *fakeCRUDStore[%s]) %s { return %s{store} },\n", object, api, fake)
 	f.printf("defaultAPI: default%s,\nservice: &%s{},\n", api, f.typ(c.svc.pkg.Scope().Lookup(c.svc.typeName).Type()))
-	f.printf("newResource: func(key %s.NamespacedName, account string) %s {\n", k8stypes, obj)
+	parentRef := "AccountRef"
+	if c.zoned {
+		parentRef = "ZoneRef"
+	}
+	f.printf("newResource: func(key %s.NamespacedName, parent string) %s {\n", k8stypes, obj)
 	f.printf("return &%s.%s{\nObjectMeta: %s.ObjectMeta{Name: key.Name, Namespace: key.Namespace},\n", f.api(), name,
 		f.use("k8s.io/apimachinery/pkg/apis/meta/v1", "metav1"))
-	f.printf("Spec: %s.%sSpec{\nAccountRef: %s.LocalObjectReference{Name: account},\n", f.api(), name,
+	f.printf("Spec: %s.%sSpec{\n%s: %s.LocalObjectReference{Name: parent},\n", f.api(), name, parentRef,
 		f.use("k8s.io/api/core/v1", "corev1"))
 	for _, af := range c.fields {
 		if value, ok := c.sample[af.apiName]; ok {
@@ -645,47 +778,18 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 		}
 	}
 	f.printf("},\n}\n},\n")
-	keyField, err := f.convert("key", types.Typ[types.String], c.key.object.typ)
-	if err != nil {
-		return nil, fmt.Errorf("%s: the fake's objects: %w", name, err)
+	if err := emitSeed(f, c, object); err != nil {
+		return nil, err
 	}
-	// A seeded object holds what Cloudflare reports for a field it defaults.
-	seedFields := []string{fmt.Sprintf("%s: %s", c.key.object.goName, keyField)}
-	idParam := "_"
-	if !c.byKey {
-		seedFields = append([]string{fmt.Sprintf("%s: id", c.id.goName)}, seedFields...)
-		idParam = "id"
-	}
-	for _, af := range c.fields {
-		if af.object == nil || af.def == "" || af.object.goName == c.key.object.goName {
-			continue
-		}
-		def, err := defaultValue(af.field)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %s's default: %w", name, af.apiName, err)
-		}
-		value, err := f.convert(goValue(f, field{goType: strings.TrimPrefix(af.goType, "*")}, def), specType(af.field),
-			af.object.typ)
-		if err != nil {
-			return nil, fmt.Errorf("%s: the fake's objects: %s: %w", name, af.apiName, err)
-		}
-		seedFields = append(seedFields, fmt.Sprintf("%s: %s", af.object.goName, value))
-	}
-	if len(seedFields) <= 2 {
-		f.printf("seed: func(%s, key string) %s { return %s },\n", idParam, object,
-			compositeLiteral(object, seedFields))
-	} else {
-		f.printf("seed: func(%s, key string) %s {\nreturn %s\n},\n", idParam, object,
-			compositeLiteral(object, seedFields))
-	}
-	created, err := matchesExpr(f, c, true)
+	created, usesRefs, err := matchesExpr(f, c, true)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	if created == "" {
 		created = "true"
 	}
-	f.printf("created: func(obj %s, current *%s) bool {\nreturn %s\n},\n", obj, object, created)
+	f.printf("created: func(obj %s, %s map[string]string, current *%s) bool {\nreturn %s\n},\n", obj,
+		refsParam(usesRefs), object, created)
 	if err := emitTableChecks(f, c, obj, object); err != nil {
 		return nil, err
 	}
@@ -703,8 +807,12 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	}
 	edits("changes", c.changes)
 	f.printf("immutable: []crudSpecEdit[%s]{\n", obj)
-	f.printf("{field: \"accountRef\", what: \"changing accountRef\",\nedit: func(obj %s) { "+
-		"obj.Spec.AccountRef.Name = \"other-account\" }},\n", obj)
+	parentField, parentName := "accountRef", "other-account"
+	if c.zoned {
+		parentField, parentName = zoneRefField, "other-zone"
+	}
+	f.printf("{field: %q, what: %q,\nedit: func(obj %s) { obj.Spec.%s.Name = %q }},\n", parentField,
+		"changing "+parentField, obj, parentRef, parentName)
 	for _, e := range c.immutable {
 		f.printf("{field: %q, what: %q,\n", e.f.jsonName, e.what)
 		if e.setup != nil {
@@ -719,6 +827,7 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 			"edit: func(obj %s) { obj.Spec.%s = %s }},\nscope: %q,\n},\n", obj, obj, e.f.jsonName, e.what, obj,
 			e.f.goName, goValue(f, e.f, e.value), c.scopeElsewhere)
 	}
+	emitReferenceSpecs(f, c, obj)
 	if len(c.deletionBlockers) > 0 {
 		// The table's own copy: the specs check the descriptor's against it.
 		f.printf("deletionBlockers: []deletionBlocker{\n")
@@ -731,13 +840,102 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	return f.source(header)
 }
 
+// emitSeed writes the table's seed: an object with an ID and a key, as
+// Cloudflare holds it for the sample, with the values Cloudflare defaults and
+// what the sample's references give.
+func emitSeed(f *goFile, c *controller, object string) error {
+	name := c.name
+	keyField, err := f.convert("key", types.Typ[types.String], c.key.object.typ)
+	if err != nil {
+		return fmt.Errorf("%s: the fake's objects: %w", name, err)
+	}
+	// A seeded object holds what Cloudflare holds for the sample: the sample's
+	// values, the defaults of the fields it leaves unset, the fixed values and
+	// what its references give.
+	seedFields := []string{fmt.Sprintf("%s: %s", c.key.object.goName, keyField)}
+	idParam := "_"
+	if !c.byKey {
+		seedFields = append([]string{fmt.Sprintf("%s: id", c.id.goName)}, seedFields...)
+		idParam = "id"
+	}
+	refs := "_"
+	for _, af := range c.fields {
+		if af.object == nil || af.object.goName == c.key.object.goName {
+			continue
+		}
+		var value string
+		var from types.Type
+		sample, set := c.sample[af.apiName]
+		switch {
+		case af.ref != nil:
+			value, from, refs = refValue(af), types.Typ[types.String], "refs"
+		case set:
+			value, from = goValue(f, field{goType: strings.TrimPrefix(af.goType, "*")}, sample), specType(af.field)
+		case af.def != "":
+			def, err := defaultValue(af.field)
+			if err != nil {
+				return fmt.Errorf("%s: %s's default: %w", name, af.apiName, err)
+			}
+			value, from = goValue(f, field{goType: strings.TrimPrefix(af.goType, "*")}, def), specType(af.field)
+		default:
+			continue
+		}
+		converted, err := f.convert(value, from, af.object.typ)
+		if err != nil {
+			return fmt.Errorf("%s: the fake's objects: %s: %w", name, af.apiName, err)
+		}
+		seedFields = append(seedFields, fmt.Sprintf("%s: %s", af.object.goName, converted))
+	}
+	for _, af := range c.fixedFields {
+		if af.object == nil {
+			continue
+		}
+		converted, err := f.convert(strconv.Quote(af.fixed), types.Typ[types.String], af.object.typ)
+		if err != nil {
+			return fmt.Errorf("%s: the fake's objects: %s: %w", name, af.apiName, err)
+		}
+		seedFields = append(seedFields, fmt.Sprintf("%s: %s", af.object.goName, converted))
+	}
+	if len(seedFields) <= 2 {
+		f.printf("seed: func(%s, key string, %s map[string]string) %s { return %s },\n", idParam, refs, object,
+			compositeLiteral(object, seedFields))
+	} else {
+		f.printf("seed: func(%s, key string, %s map[string]string) %s {\nreturn %s\n},\n", idParam, refs, object,
+			compositeLiteral(object, seedFields))
+	}
+	return nil
+}
+
+// emitReferenceSpecs writes the table's references: each with the resource
+// the sample names, and how to point a resource at another one.
+func emitReferenceSpecs(f *goFile, c *controller, obj string) {
+	if len(c.references) > 0 {
+		f.printf("references: []crudRefSpec[%s]{\n", obj)
+		for _, af := range c.references {
+			name, _ := c.sample[af.apiName].(string)
+			f.printf("{field: %q, kind: %q, name: %q, optional: %t,\n", af.jsonName, af.ref.Kind, name, af.optional)
+			corev1 := f.use("k8s.io/api/core/v1", "corev1")
+			if af.optional {
+				f.printf("set: func(obj %s, name string) {\nobj.Spec.%s = nil\nif name != \"\" {\n"+
+					"obj.Spec.%s = &%s.LocalObjectReference{Name: name}\n}\n}},\n", obj, af.goName, af.goName, corev1)
+			} else {
+				f.printf("set: func(obj %s, name string) { obj.Spec.%s = %s.LocalObjectReference{Name: name} }},\n",
+					obj, af.goName, corev1)
+			}
+		}
+		f.printf("},\n")
+	}
+}
+
 // emitTableChecks writes the table's checks of what the reconciler sends and
 // records: sent, that New's params hold every field of a resource's spec (a
-// field the object does not report included) and the fixed values; observed,
+// field the object does not report included), the values its references give
+// and the fixed values; observed,
 // that status records the object; and defaulted, when the spec has defaults,
 // that the API server applied them.
 func emitTableChecks(f *goFile, c *controller, obj, object string) error {
 	var sent []string
+	usesRefs := false
 	for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
 		if af.create == nil {
 			continue
@@ -757,6 +955,12 @@ func emitTableChecks(f *goFile, c *controller, obj, object string) error {
 		}
 		spec := "obj.Spec." + af.goName
 		switch {
+		case af.ref != nil:
+			// An unset reference sends nothing: Cloudflare refuses an empty
+			// value where it takes a name.
+			sent = append(sent, fmt.Sprintf("%s.Present == (%s != \"\") && %s == %s", p, refValue(af), value,
+				refValue(af)))
+			usesRefs = true
 		case !af.optional:
 			sent = append(sent, fmt.Sprintf("%s == %s", value, spec))
 		case strings.HasPrefix(af.goType, "*"):
@@ -765,8 +969,8 @@ func emitTableChecks(f *goFile, c *controller, obj, object string) error {
 			sent = append(sent, fmt.Sprintf("(%s == \"\" || %s.Present && %s == %s)", spec, p, value, spec))
 		}
 	}
-	f.printf("sent: func(obj %s, sent any) bool {\nparams := sent.(%s)\nreturn %s\n},\n", obj, f.typ(c.create.params),
-		strings.Join(sent, " &&\n"))
+	f.printf("sent: func(obj %s, %s map[string]string, sent any) bool {\nparams := sent.(%s)\nreturn %s\n},\n", obj,
+		refsParam(usesRefs), f.typ(c.create.params), strings.Join(sent, " &&\n"))
 
 	observed := make([]string, 0, len(c.status))
 	for _, st := range c.status {
@@ -812,12 +1016,16 @@ func emitFake(f *goFile, c *controller) error {
 	ctx := f.use("context", "context")
 	opts := f.typ(c.create.sig.Params().At(c.create.sig.Params().Len() - 1).Type().(*types.Slice).Elem())
 	params := func(call *sdkCall) string { return f.typ(call.params) }
-	account := func(call *sdkCall) string {
-		return "params." + call.paramFields[slices.IndexFunc(call.paramFields, isAccountID)].goName + ".Value"
+	parentID := func(call *sdkCall) string {
+		return "params." + call.paramFields[slices.IndexFunc(call.paramFields, c.isParent)].goName + ".Value"
 	}
 
-	doc := fmt.Sprintf("%s is an in-memory %s for %s's generated specs: it keeps one account's %s in a "+
-		"fakeCRUDStore", fake, c.svc.name, name, pluralOf(c.noun))
+	parent := "account"
+	if c.zoned {
+		parent = "zone"
+	}
+	doc := fmt.Sprintf("%s is an in-memory %s for %s's generated specs: it keeps one %s's %s in a "+
+		"fakeCRUDStore", fake, c.svc.name, name, parent, pluralOf(c.noun))
 	if len(c.address) > 0 {
 		names := make([]string, 0, len(c.address))
 		for _, af := range c.address {
@@ -852,36 +1060,9 @@ func emitFake(f *goFile, c *controller) error {
 		scopes[call] = sc
 	}
 
-	var fields []string
-	fields = append(fields, fmt.Sprintf("%s: id", c.id.goName))
-	for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
-		if af.create == nil || af.object == nil || af.object.goName == c.id.goName {
-			continue
-		}
-		value, err := f.convert("params."+af.create.goName+".Value", af.create.typ, af.object.typ)
-		if err != nil {
-			return fmt.Errorf("%s: the fake's New: %s: %w", name, af.apiName, err)
-		}
-		fields = append(fields, fmt.Sprintf("%s: %s", af.object.goName, value))
-	}
-	// What Cloudflare fills in, which status records: a value of the new
-	// object's own.
-	for _, st := range c.status[1:] {
-		var made string
-		var from types.Type
-		switch basicClass(st.object.typ) {
-		case types.IsString:
-			made, from = fmt.Sprintf("%q + id", st.jsonName+"-"), types.Typ[types.String]
-		case types.IsBoolean:
-			made, from = strconv.FormatBool(true), types.Typ[types.Bool]
-		default:
-			made, from = "1", types.Typ[types.Int64]
-		}
-		value, err := f.convert(made, from, st.object.typ)
-		if err != nil {
-			return fmt.Errorf("%s: the fake's New: status.cloudflareMetadata.%s: %w", name, st.jsonName, err)
-		}
-		fields = append(fields, fmt.Sprintf("%s: %s", st.object.goName, value))
+	fields, err := fakeNewFields(f, c)
+	if err != nil {
+		return err
 	}
 	// An object identified by its key is created under it; others get a new
 	// ID.
@@ -893,17 +1074,41 @@ func emitFake(f *goFile, c *controller) error {
 			return fmt.Errorf("%s: the fake's New: %w", name, err)
 		}
 	}
+	// A call that returns a type of its own returns the object converted.
+	returned := func(call string, result types.Type) (string, string, error) {
+		if result == nil {
+			return "return " + call, object, nil
+		}
+		converted, err := convertObject(f, "stored", c.object, result, c.svc.object)
+		if err != nil {
+			return "", "", err
+		}
+		return fmt.Sprintf("stored, err := %s\nif err != nil {\nreturn nil, err\n}\nreturn &%s, nil", call, converted),
+			f.typ(result), nil
+	}
+	ret, result, err := returned(fmt.Sprintf("f.create(%s, %s,\n%s, func(id string) %s {\nreturn %s\n})",
+		parentID(c.create), scopes[c.create], newID, object, compositeLiteral(object, fields)), c.created)
+	if err != nil {
+		return fmt.Errorf("%s: the fake's New: %w", name, err)
+	}
 	f.printf("func (f %s) New(_ %s.Context, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx, params(c.create), opts,
-		object)
-	f.printf("f.sent = append(f.sent, params)\n")
-	f.printf("return f.create(%s, %s,\n%s, func(id string) %s {\nreturn %s\n})\n}\n\n", account(c.create),
-		scopes[c.create], newID, object, compositeLiteral(object, fields))
+		result)
+	f.printf("f.sent = append(f.sent, params)\n%s\n}\n\n", ret)
 
 	f.printf("func (f %s) Get(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,
 		params(c.get), opts, object)
-	f.printf("return f.get(%s, %s, id)\n}\n\n", account(c.get), scopes[c.get])
+	f.printf("return f.get(%s, %s, id)\n}\n\n", parentID(c.get), scopes[c.get])
 
-	if c.list != nil {
+	if c.list != nil && c.singlePage {
+		asListed, err := listedObject(f, c)
+		if err != nil {
+			return fmt.Errorf("%s: the fake's List: %w", name, err)
+		}
+		f.printf("func (f %s) List(_ %s.Context, params %s,\n_ ...%s) (%s, error) {\n", fake, ctx, params(c.list),
+			opts, f.typ(c.list.sig.Results().At(0).Type()))
+		f.printf("return fakeListAll(f.fakeCRUDStore, %s, %s,\nfunc(current *%s) %s {\nreturn %s\n})\n}\n\n",
+			parentID(c.list), scopes[c.list], object, listed, asListed)
+	} else if c.list != nil {
 		page, err := f.convert("params."+c.page.goName+".Value", c.page.typ, types.Typ[types.Int64])
 		if err != nil {
 			return fmt.Errorf("%s: the fake's List: %w", name, err)
@@ -919,30 +1124,103 @@ func emitFake(f *goFile, c *controller) error {
 		f.printf("func (f %s) List(_ %s.Context, params %s,\n_ ...%s) (%s, error) {\n", fake, ctx, params(c.list),
 			opts, f.typ(c.list.sig.Results().At(0).Type()))
 		f.printf("return fakeList(f.fakeCRUDStore, %s, %s,\n%s, %s,\nfunc(current *%s) %s {\nreturn %s\n})\n}\n\n",
-			account(c.list), scopes[c.list], page, perPage, object, listed, asListed)
+			parentID(c.list), scopes[c.list], page, perPage, object, listed, asListed)
 	}
 
 	if c.update != nil {
-		f.printf("func (f %s) %s(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake,
-			c.update.name, ctx, params(c.update), opts, object)
-		f.printf("return f.update(%s, %s, id, func(current *%s) {\n", account(c.update), scopes[c.update], object)
-		for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
-			if af.update == nil || af.object == nil {
-				continue
-			}
-			value, err := f.convert("params."+af.update.goName+".Value", af.update.typ, af.object.typ)
-			if err != nil {
-				return fmt.Errorf("%s: the fake's %s: %s: %w", name, c.update.name, af.apiName, err)
-			}
-			f.printf("if params.%s.Present {\ncurrent.%s = %s\n}\n", af.update.goName, af.object.goName, value)
+		if err := emitFakeUpdate(f, c, parentID(c.update), scopes[c.update], returned); err != nil {
+			return err
 		}
-		f.printf("})\n}\n\n")
 	}
 
 	f.printf("func (f %s) Delete(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,
 		params(c.remove), opts, f.typ(c.deleteResult))
 	f.printf("if err := f.delete(%s, %s, id); err != nil {\nreturn nil, err\n}\nreturn new(%s), nil\n}\n\n",
-		account(c.remove), scopes[c.remove], f.typ(c.deleteResult))
+		parentID(c.remove), scopes[c.remove], f.typ(c.deleteResult))
+	return nil
+}
+
+// fakeNewFields returns the fields of the object a kind's fake creates for
+// New's params: the ID, what the params set, and a value of the new object's
+// own for each field status records that Cloudflare fills in.
+func fakeNewFields(f *goFile, c *controller) ([]string, error) {
+	name := c.name
+	var fields []string
+	fields = append(fields, fmt.Sprintf("%s: id", c.id.goName))
+	sent := map[string]bool{}
+	for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
+		if af.create == nil || af.object == nil || af.object.goName == c.id.goName {
+			continue
+		}
+		value, err := f.convert("params."+af.create.goName+".Value", af.create.typ, af.object.typ)
+		if err != nil {
+			return nil, fmt.Errorf("%s: the fake's New: %s: %w", name, af.apiName, err)
+		}
+		fields = append(fields, fmt.Sprintf("%s: %s", af.object.goName, value))
+		sent[af.object.goName] = true
+	}
+	// What Cloudflare fills in, which status records: a value of the new
+	// object's own. Status also records what a reference sends, which New's
+	// params hold.
+	for _, st := range c.status[1:] {
+		if sent[st.object.goName] {
+			continue
+		}
+		var made string
+		var from types.Type
+		switch basicClass(st.object.typ) {
+		case types.IsString:
+			made, from = fmt.Sprintf("%q + id", st.jsonName+"-"), types.Typ[types.String]
+		case types.IsBoolean:
+			made, from = strconv.FormatBool(true), types.Typ[types.Bool]
+		default:
+			made, from = "1", types.Typ[types.Int64]
+		}
+		value, err := f.convert(made, from, st.object.typ)
+		if err != nil {
+			return nil, fmt.Errorf("%s: the fake's New: status.cloudflareMetadata.%s: %w", name, st.jsonName, err)
+		}
+		fields = append(fields, fmt.Sprintf("%s: %s", st.object.goName, value))
+	}
+	return fields, nil
+}
+
+// emitFakeUpdate writes the fake's Update (or Edit): it applies the params to
+// the object id, as parentID and scope name it, and returns what returned
+// makes of the stored object.
+func emitFakeUpdate(f *goFile, c *controller, parentID, scope string,
+	returned func(call string, result types.Type) (string, string, error)) error {
+	name, fake := c.name, "fake"+c.name+"API"
+	object, ctx := f.typ(c.object), f.use("context", "context")
+	opts := f.typ(c.create.sig.Params().At(c.create.sig.Params().Len() - 1).Type().(*types.Slice).Elem())
+	// A PUT replaces the object: a field it is not sent is cleared, as
+	// Cloudflare clears a Worker route's script. A PATCH changes the
+	// fields it is sent.
+	replaces := strings.EqualFold(c.svc.updateRoute.verb, "put")
+	var apply strings.Builder
+	for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
+		if af.update == nil || af.object == nil {
+			continue
+		}
+		value, err := f.convert("params."+af.update.goName+".Value", af.update.typ, af.object.typ)
+		if err != nil {
+			return fmt.Errorf("%s: the fake's %s: %s: %w", name, c.update.name, af.apiName, err)
+		}
+		if replaces {
+			fmt.Fprintf(&apply, "current.%s = %s\n", af.object.goName, value)
+		} else {
+			fmt.Fprintf(&apply, "if params.%s.Present {\ncurrent.%s = %s\n}\n", af.update.goName, af.object.goName,
+				value)
+		}
+	}
+	ret, result, err := returned(fmt.Sprintf("f.update(%s, %s, id, func(current *%s) {\n%s})", parentID,
+		scope, object, apply.String()), c.updated)
+	if err != nil {
+		return fmt.Errorf("%s: the fake's %s: %w", name, c.update.name, err)
+	}
+	f.printf("func (f %s) %s(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake,
+		c.update.name, ctx, f.typ(c.update.params), opts, result)
+	f.printf("%s\n}\n\n", ret)
 	return nil
 }
 
@@ -985,8 +1263,17 @@ func compositeLiteral(typ string, fields []string) string {
 }
 
 // goValue writes a value of the spec field f as Go source: a pointer for a
-// pointer field, and a long run of one character with strings.Repeat.
+// pointer field, a long run of one character with strings.Repeat, and a
+// reference to the resource the value names.
 func goValue(f *goFile, sf field, value any) string {
+	if sf.ref != nil {
+		// A reference's value is the referenced resource's name.
+		ref := fmt.Sprintf("%s.LocalObjectReference{Name: %q}", f.use("k8s.io/api/core/v1", "corev1"), value)
+		if sf.optional {
+			return "&" + ref
+		}
+		return ref
+	}
 	var literal string
 	switch value := value.(type) {
 	case string:
@@ -1039,10 +1326,13 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*sett
 	}
 	f.printf("return nil\n}\n\n")
 
-	comment(&f.Builder, "", wrap("generatedAccountDependents are the generated kinds that the shared CRUD "+
-		"reconciler drives, whose resources use a CloudflareAccount's credentials directly."))
+	comment(&f.Builder, "", wrap("generatedAccountDependents are the generated kinds of an account that the shared "+
+		"CRUD reconciler drives, whose resources use a CloudflareAccount's credentials directly."))
 	f.printf("var generatedAccountDependents = []dependentKind{\n")
 	for _, c := range kinds {
+		if c.zoned {
+			continue
+		}
 		f.printf("dependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", c.name, client, f.api(), c.name)
 		f.printf("func(obj *%s.%s) []string { return []string{obj.Spec.AccountRef.Name} }),\n", f.api(), c.name)
 	}
@@ -1058,10 +1348,15 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*sett
 		f.printf("%sKind", k.varName)
 	}
 	f.printf("}\n\n")
-	comment(&f.Builder, "", wrap("generatedZoneDependents are the generated rule and settings kinds, whose "+
-		"resources reference a Zone in their namespace."))
+	comment(&f.Builder, "", wrap("generatedZoneDependents are the generated rule and settings kinds, and the CRUD "+
+		"kinds of a zone, whose resources reference a Zone in their namespace."))
 	f.printf("var generatedZoneDependents = []dependentKind{\n")
 	zoneKinds := make([]string, 0, len(ruleKinds)+len(settingsKinds))
+	for _, c := range kinds {
+		if c.zoned {
+			zoneKinds = append(zoneKinds, c.name)
+		}
+	}
 	for _, k := range ruleKinds {
 		zoneKinds = append(zoneKinds, k.name)
 	}
@@ -1090,7 +1385,12 @@ func emitSample(c *controller) ([]byte, error) {
 		"deleted. Without it, deleting the resource deletes the %s.", c.noun, c.noun), commentWidth-len("    # ")) {
 		yamlComment(&b, "    ", line)
 	}
-	fmt.Fprintf(&b, "    kflare.dev/deletion-policy: retain\nspec:\n  accountRef:\n    name: my-account\n")
+	fmt.Fprintf(&b, "    kflare.dev/deletion-policy: retain\nspec:\n")
+	if c.zoned {
+		fmt.Fprintf(&b, "  zoneRef:\n    name: example-zone\n")
+	} else {
+		fmt.Fprintf(&b, "  accountRef:\n    name: my-account\n")
+	}
 	for _, af := range c.fields {
 		value, ok := c.sample[af.apiName]
 		if !ok {
@@ -1098,6 +1398,10 @@ func emitSample(c *controller) ([]byte, error) {
 		}
 		for _, line := range af.doc {
 			yamlComment(&b, "  ", line)
+		}
+		if af.ref != nil {
+			fmt.Fprintf(&b, "  %s:\n    name: %s\n", af.jsonName, value)
+			continue
 		}
 		encoded, err := yaml.Marshal(value)
 		if err != nil {

@@ -83,28 +83,28 @@ var d1DatabaseKind = crudResourceKind[*cloudflarev1alpha1.D1Database, D1Database
 	},
 
 	id:        func(current *d1.D1) string { return current.UUID },
-	matches:   func(*cloudflarev1alpha1.D1Database, *d1.D1) bool { return true },
+	matches:   func(*cloudflarev1alpha1.D1Database, *d1.D1, map[string]string) bool { return true },
 	listedID:  func(listed *d1.DatabaseListResponse) string { return listed.UUID },
 	listedKey: func(listed *d1.DatabaseListResponse) string { return listed.Name },
 
 	get: func(ctx context.Context, api D1DatabaseAPI, _ *cloudflarev1alpha1.D1Database,
-		accountID, id string) (*d1.D1, error) {
+		parentID, id string) (*d1.D1, error) {
 		var params d1.DatabaseGetParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		return api.Get(ctx, id, params)
 	},
 	list: func(ctx context.Context, api D1DatabaseAPI, _ *cloudflarev1alpha1.D1Database,
-		accountID string, page int64) (*pagination.V4PagePaginationArray[d1.DatabaseListResponse], error) {
+		parentID string, page int64) (*pagination.V4PagePaginationArray[d1.DatabaseListResponse], error) {
 		var params d1.DatabaseListParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		params.Page.Value, params.Page.Present = float64(page), true
 		params.PerPage.Value, params.PerPage.Present = d1DatabaseListPageSize, true
 		return api.List(ctx, params)
 	},
-	create: func(ctx context.Context, api D1DatabaseAPI, accountID string,
-		obj *cloudflarev1alpha1.D1Database) (*d1.D1, error) {
+	create: func(ctx context.Context, api D1DatabaseAPI, parentID string,
+		obj *cloudflarev1alpha1.D1Database, _ map[string]string) (*d1.D1, error) {
 		var params d1.DatabaseNewParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		params.Name.Value, params.Name.Present = obj.Spec.Name, true
 		if obj.Spec.Jurisdiction != "" {
 			params.Jurisdiction.Value, params.Jurisdiction.Present = d1.DatabaseNewParamsJurisdiction(obj.Spec.Jurisdiction), true
@@ -115,9 +115,9 @@ var d1DatabaseKind = crudResourceKind[*cloudflarev1alpha1.D1Database, D1Database
 		return api.New(ctx, params)
 	},
 	delete: func(ctx context.Context, api D1DatabaseAPI, _ *cloudflarev1alpha1.D1Database,
-		accountID, id string) error {
+		parentID, id string) error {
 		var params d1.DatabaseDeleteParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		_, err := api.Delete(ctx, id, params)
 		return err
 	},

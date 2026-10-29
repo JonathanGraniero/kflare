@@ -480,3 +480,92 @@ func TestBuildKindRefusesWhatTheSubsetCannotRead(t *testing.T) {
 		}
 	}
 }
+
+// routeEntry is an entry for the Worker routes service: a zone's objects,
+// whose script is a WorkerScript's Worker.
+func routeEntry() kindConfig {
+	entry := kvEntry()
+	entry.Service, entry.Scope, entry.ID = "workers.RouteService", scopeZone, idConfig{Field: "id", Status: "routeID"}
+	entry.Noun, entry.Adopt = "Worker route", adoptConfig{By: "pattern"}
+	entry.Fields = map[string]fieldConfig{
+		"script": {Ref: &refConfig{Kind: "WorkerScript", Field: "name"}, PrintColumn: "Worker"},
+	}
+	return entry
+}
+
+func TestBuildKindMapsAZonesReferences(t *testing.T) {
+	k, err := buildKind(routeEntry(), loadTestService(t, "workers.RouteService"), loadTestSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	zoneRef := k.spec[0]
+	if zoneRef.goName != "ZoneRef" || zoneRef.jsonName != "zoneRef" || !zoneRef.immutable ||
+		!strings.Contains(strings.Join(zoneRef.doc, " "), "the Zone, in the same namespace, the Worker route") {
+		t.Errorf("spec[0] = %+v", zoneRef)
+	}
+	ref := fieldNamed(t, k.spec, "WorkerScriptRef")
+	if ref.jsonName != "workerScriptRef" || ref.goType != "*corev1.LocalObjectReference" || !ref.optional ||
+		ref.ref == nil || ref.ref.Kind != "WorkerScript" || ref.immutable || len(ref.markers()) != 0 {
+		t.Errorf("workerScriptRef = %+v", ref)
+	}
+	if want := "WorkerScriptRef references the WorkerScript, in the same namespace, whose name the Worker route " +
+		"takes as its script."; strings.Join(ref.doc, " ") != want {
+		t.Errorf("workerScriptRef's doc = %q, want %q", strings.Join(ref.doc, " "), want)
+	}
+	names := make([]string, 0, len(k.metadata))
+	for _, f := range k.metadata {
+		names = append(names, f.goName)
+	}
+	if !slices.Equal(names, []string{"RouteID", "ZoneID", "Script"}) || !k.metadata[1].zoneID {
+		t.Errorf("status = %v (%+v)", names, k.metadata)
+	}
+	if doc := strings.Join(fieldNamed(t, k.metadata, "Script").doc, " "); doc != "Script is the Worker route's script "+
+		"at the last sync: the name of the WorkerScript its workerScriptRef names. Empty when the Worker route has none." {
+		t.Errorf("status.script's doc = %q", doc)
+	}
+	if !slices.Contains(k.printColumns, printColumn{name: "Worker", typ: typeString,
+		jsonPath: ".spec.workerScriptRef.name"}) {
+		t.Errorf("print columns = %v", k.printColumns)
+	}
+}
+
+func TestBuildKindMapsARequiredReference(t *testing.T) {
+	svc := cloneService(loadTestService(t, "workers.RouteService"))
+	svc.create[slices.IndexFunc(svc.create, func(f sdkField) bool { return f.apiName == "script" })].required = true
+	svc.object = append(svc.object, sdkField{goName: "ZoneID", apiName: "zone_id", in: inBody,
+		typ: types.Typ[types.String]})
+	k, err := buildKind(routeEntry(), svc, loadTestSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := fieldNamed(t, k.spec, "WorkerScriptRef"); ref.goType != "corev1.LocalObjectReference" || ref.optional {
+		t.Errorf("a required reference = %+v", ref)
+	}
+	if doc := strings.Join(fieldNamed(t, k.metadata, "Script").doc, " "); strings.Contains(doc, "Empty") {
+		t.Errorf("a required reference's status doc = %q", doc)
+	}
+	zoneIDs := 0
+	for _, f := range k.metadata {
+		if f.goName == "ZoneID" {
+			zoneIDs++
+		}
+	}
+	if zoneIDs != 1 {
+		t.Errorf("status holds %d zone IDs: the zone's ID is the Zone's, not the object's", zoneIDs)
+	}
+}
+
+func TestBuildKindRefusesAZonesKindWithoutAZone(t *testing.T) {
+	entry := kvEntry()
+	entry.Scope = scopeZone
+	if _, err := buildKind(entry, loadTestService(t, "kv.NamespaceService"), loadTestSpec(t)); err == nil ||
+		!strings.Contains(err.Error(), "scope zone, but New takes no zone_id") {
+		t.Errorf("buildKind: err = %v", err)
+	}
+	entry = r2Entry()
+	entry.Fields["cf-r2-jurisdiction"] = fieldConfig{Ref: &refConfig{Kind: "Jurisdiction", Field: "name"}}
+	if _, err := buildKind(entry, loadTestService(t, "r2.BucketService"), loadTestSpec(t)); err == nil ||
+		!strings.Contains(err.Error(), "only a string the request body holds can reference a resource") {
+		t.Errorf("buildKind of a header made a reference: err = %v", err)
+	}
+}

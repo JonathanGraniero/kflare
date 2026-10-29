@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
 	. "github.com/onsi/ginkgo/v2"
@@ -30,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -40,17 +42,19 @@ import (
 // (zz_generated.<kind>_test.go): a fake of its cloudflare-go v7 service on
 // fakeCRUDStore, a valid resource from the kind's sample, and edits of it.
 // describeCRUDKind runs the shared CRUD reconciler's lifecycle against them:
-// the finalizer, credentials, creation and its claim, an idle reconcile that
-// writes nothing, adoption and its conflict, recreation, updates in place,
-// errors, deletion, its blockers and the retain policy. It also checks the
-// CRD: every immutable field, and values its validation refuses.
+// the finalizer, credentials and the Zone, creation and its claim, an idle
+// reconcile that writes nothing, adoption and its conflict, recreation,
+// updates in place, the references to other kinds, errors, deletion, its
+// blockers and the retain policy. It also checks the CRD: every immutable
+// field, and values its validation refuses.
 
-// fakeCRUDStore is an in-memory Cloudflare account's objects of one kind.
-// Each generated fake converts its service's params into calls on it. Like
-// Cloudflare, it returns 404 for an unknown ID, refuses a page larger than
-// pageSize and a second object under a key that is its ID (an R2 bucket's
-// name), and keeps objects apart by their address (an R2 bucket's
-// jurisdiction); like cloudflare-go, it refuses a call without an account ID.
+// fakeCRUDStore is an in-memory Cloudflare account's, or zone's, objects of
+// one kind. Each generated fake converts its service's params into calls on
+// it. Like Cloudflare, it returns 404 for an unknown ID, refuses a page larger
+// than pageSize and a second object under a key that is its ID (an R2
+// bucket's name), and keeps objects apart by their address (an R2 bucket's
+// jurisdiction); like cloudflare-go, it refuses a call without its parent's
+// ID.
 type fakeCRUDStore[R any] struct {
 	// objects are the objects at the address the sample names, scope, by ID;
 	// elsewhere holds those at other addresses, by scope.
@@ -62,9 +66,11 @@ type fakeCRUDStore[R any] struct {
 
 	createErr, getErr, listErr, updateErr, deleteErr error
 
-	accountIDs []string
-	listPages  []int64
-	writes     int
+	// parentIDs holds the account's or zone's ID of each call, and listPages
+	// the page each list asks for: 1 for a list that is never paged.
+	parentIDs []string
+	listPages []int64
+	writes    int
 	// sent holds the params of each New, in order.
 	sent []any
 }
@@ -85,24 +91,24 @@ func (s *fakeCRUDStore[R]) at(scope string) map[string]R {
 	return s.elsewhere[scope]
 }
 
-// account records the account ID a call names.
-func (s *fakeCRUDStore[R]) account(id string) error {
-	s.accountIDs = append(s.accountIDs, id)
+// parent records the account's or zone's ID a call names.
+func (s *fakeCRUDStore[R]) parent(id string) error {
+	s.parentIDs = append(s.parentIDs, id)
 	if id == "" {
-		return errors.New("missing required account_id parameter")
+		return errors.New("missing required parent ID")
 	}
 	return nil
 }
 
-func fakeCRUDNotFound(method, accountID, id string) error {
-	return v7APIError(method, fmt.Sprintf("accounts/%s/objects/%s", accountID, id), http.StatusNotFound, 1000,
+func fakeCRUDNotFound(method, parentID, id string) error {
+	return v7APIError(method, fmt.Sprintf("parents/%s/objects/%s", parentID, id), http.StatusNotFound, 1000,
 		"not found")
 }
 
 // create stores the object build returns at scope, under id, or a new ID
 // when id is empty.
-func (s *fakeCRUDStore[R]) create(accountID, scope, id string, build func(id string) R) (*R, error) {
-	if err := s.account(accountID); err != nil {
+func (s *fakeCRUDStore[R]) create(parentID, scope, id string, build func(id string) R) (*R, error) {
+	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
 	s.writes++
@@ -114,7 +120,7 @@ func (s *fakeCRUDStore[R]) create(accountID, scope, id string, build func(id str
 		s.nextID++
 		id = fmt.Sprintf("id-%d", s.nextID)
 	} else if _, taken := objects[id]; taken {
-		return nil, v7APIError(http.MethodPost, fmt.Sprintf("accounts/%s/objects", accountID), http.StatusConflict,
+		return nil, v7APIError(http.MethodPost, fmt.Sprintf("parents/%s/objects", parentID), http.StatusConflict,
 			1000, "already exists")
 	}
 	object := build(id)
@@ -122,8 +128,8 @@ func (s *fakeCRUDStore[R]) create(accountID, scope, id string, build func(id str
 	return &object, nil
 }
 
-func (s *fakeCRUDStore[R]) get(accountID, scope, id string) (*R, error) {
-	if err := s.account(accountID); err != nil {
+func (s *fakeCRUDStore[R]) get(parentID, scope, id string) (*R, error) {
+	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
 	if s.getErr != nil {
@@ -131,16 +137,16 @@ func (s *fakeCRUDStore[R]) get(accountID, scope, id string) (*R, error) {
 	}
 	object, ok := s.at(scope)[id]
 	if !ok {
-		return nil, fakeCRUDNotFound(http.MethodGet, accountID, id)
+		return nil, fakeCRUDNotFound(http.MethodGet, parentID, id)
 	}
 	return &object, nil
 }
 
 // fakeList returns a page of s's objects at scope, in the order of their IDs,
 // each as listed shows it.
-func fakeList[R any, L any](s *fakeCRUDStore[R], accountID, scope string, page, perPage int64,
+func fakeList[R any, L any](s *fakeCRUDStore[R], parentID, scope string, page, perPage int64,
 	listed func(*R) L) (*pagination.V4PagePaginationArray[L], error) {
-	if err := s.account(accountID); err != nil {
+	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
 	s.listPages = append(s.listPages, page)
@@ -148,7 +154,7 @@ func fakeList[R any, L any](s *fakeCRUDStore[R], accountID, scope string, page, 
 		return nil, s.listErr
 	}
 	if perPage > s.pageSize {
-		return nil, v7APIError(http.MethodGet, fmt.Sprintf("accounts/%s/objects", accountID), http.StatusBadRequest,
+		return nil, v7APIError(http.MethodGet, fmt.Sprintf("parents/%s/objects", parentID), http.StatusBadRequest,
 			1000, fmt.Sprintf("per_page must be no greater than %d", s.pageSize))
 	}
 	objects := s.at(scope)
@@ -165,9 +171,29 @@ func fakeList[R any, L any](s *fakeCRUDStore[R], accountID, scope string, page, 
 	return res, nil
 }
 
+// fakeListAll returns all of s's objects at scope, in the order of their IDs,
+// each as listed shows it, in the one page of a list that is never paged.
+func fakeListAll[R any, L any](s *fakeCRUDStore[R], parentID, scope string,
+	listed func(*R) L) (*pagination.SinglePage[L], error) {
+	if err := s.parent(parentID); err != nil {
+		return nil, err
+	}
+	s.listPages = append(s.listPages, 1)
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	objects := s.at(scope)
+	res := &pagination.SinglePage[L]{}
+	for _, id := range slices.Sorted(maps.Keys(objects)) {
+		object := objects[id]
+		res.Result = append(res.Result, listed(&object))
+	}
+	return res, nil
+}
+
 // update applies apply to the object id at scope.
-func (s *fakeCRUDStore[R]) update(accountID, scope, id string, apply func(*R)) (*R, error) {
-	if err := s.account(accountID); err != nil {
+func (s *fakeCRUDStore[R]) update(parentID, scope, id string, apply func(*R)) (*R, error) {
+	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
 	s.writes++
@@ -177,15 +203,15 @@ func (s *fakeCRUDStore[R]) update(accountID, scope, id string, apply func(*R)) (
 	objects := s.at(scope)
 	object, ok := objects[id]
 	if !ok {
-		return nil, fakeCRUDNotFound(http.MethodPut, accountID, id)
+		return nil, fakeCRUDNotFound(http.MethodPut, parentID, id)
 	}
 	apply(&object)
 	objects[id] = object
 	return &object, nil
 }
 
-func (s *fakeCRUDStore[R]) delete(accountID, scope, id string) error {
-	if err := s.account(accountID); err != nil {
+func (s *fakeCRUDStore[R]) delete(parentID, scope, id string) error {
+	if err := s.parent(parentID); err != nil {
 		return err
 	}
 	s.writes++
@@ -194,7 +220,7 @@ func (s *fakeCRUDStore[R]) delete(accountID, scope, id string) error {
 	}
 	objects := s.at(scope)
 	if _, ok := objects[id]; !ok {
-		return fakeCRUDNotFound(http.MethodDelete, accountID, id)
+		return fakeCRUDNotFound(http.MethodDelete, parentID, id)
 	}
 	delete(objects, id)
 	return nil
@@ -223,6 +249,37 @@ type crudScopeEdit[O any] struct {
 	scope string
 }
 
+// crudRefSpec is a spec field of a generated kind that references a resource
+// of another kind: field, referencing a kind, as the table describes it.
+type crudRefSpec[O any] struct {
+	field, kind string
+	// name is the resource the sample references: "" when the sample leaves
+	// the reference unset, which only an optional one can be.
+	name     string
+	optional bool
+	// set points a resource's reference at the resource name, or unsets it
+	// for "".
+	set func(obj O, name string)
+}
+
+// crudReferencedKinds builds, by kind, a valid resource at key that generated
+// kinds reference, using the CloudflareAccount account, and returns it with
+// the value a reference to it gives. That value differs from its name, as a
+// Worker's name may differ from its WorkerScript's.
+var crudReferencedKinds = map[string]func(key types.NamespacedName, account string) (conditionedObject, string){
+	"WorkerScript": func(key types.NamespacedName, account string) (conditionedObject, string) {
+		ws := &cloudflarev1alpha1.WorkerScript{
+			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+			Spec: cloudflarev1alpha1.WorkerScriptSpec{
+				Name:       "worker-" + key.Name,
+				AccountRef: corev1.LocalObjectReference{Name: account},
+				Script:     new("export default { fetch() { return new Response('ok') } }"),
+			},
+		}
+		return ws, ws.Spec.Name
+	},
+}
+
 // crudKindSpecs is the table kflare-gen writes for a generated kind.
 type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	kind crudResourceKind[O, A, R, L]
@@ -245,86 +302,594 @@ type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	// the cloudflare-go v7 service it returns.
 	defaultAPI func(token string) (A, error)
 	service    any
-	// newResource returns a resource at key, using account, with the
-	// sample's spec.
-	newResource func(key types.NamespacedName, account string) O
-	// seed returns an object with id and key, as Cloudflare would hold it.
-	seed func(id, key string) R
+	// newResource returns a resource at key, in parent, the CloudflareAccount
+	// or, for a zone's kind, the Zone it names, with the sample's spec.
+	newResource func(key types.NamespacedName, parent string) O
+	// seed returns an object with id and key, as Cloudflare would hold it for
+	// the sample, given what its references give (refs).
+	seed func(id, key string, refs map[string]string) R
 	// created reports whether an object holds every field of a resource's
-	// spec that Cloudflare reports, those set at creation only included.
-	created func(obj O, current *R) bool
+	// spec that Cloudflare reports, those set at creation only included, and
+	// what its references give.
+	created func(obj O, refs map[string]string, current *R) bool
 	// sent reports whether New's params hold every field of a resource's spec,
-	// those the object does not report included, and the fixed values;
-	// observed whether status records the object; defaulted, nil for a spec
-	// without defaults, whether the API server applied them.
-	sent      func(obj O, params any) bool
+	// those the object does not report included, what its references give
+	// and the fixed values; observed whether status records the object;
+	// defaulted, nil for a spec without defaults, whether the API server
+	// applied them.
+	sent      func(obj O, refs map[string]string, params any) bool
 	observed  func(obj O, current *R) bool
 	defaulted func(obj O) bool
 	// changes edit each field Update takes, immutable each field it does not
-	// (accountRef first), and invalid set values the CRD refuses. elsewhere
-	// moves the sample to another address: nil for a kind whose objects the
-	// account and the ID name alone.
+	// (accountRef or zoneRef first), and invalid set values the CRD refuses.
+	// elsewhere moves the sample to another address: nil for a kind whose
+	// objects the parent and the ID name alone.
 	changes, immutable, invalid []crudSpecEdit[O]
 	elsewhere                   *crudScopeEdit[O]
+	// references are the spec's references to resources of other kinds.
+	references []crudRefSpec[O]
 	// deletionBlockers are the entry's, a copy of the kind's own.
 	deletionBlockers []deletionBlocker
+}
+
+// crudSpecNamespace is where the shared specs create resources.
+const crudSpecNamespace = "default"
+
+// crudSpecEnv is what the groups of a generated kind's shared specs share: its
+// table, the names its resources and their parents use, the fake store and the
+// reconciler of the running spec, what the sample's references give, and the
+// helpers that set resources up and reconcile them. describeCRUDKind builds
+// it.
+type crudSpecEnv[O conditionedObject, A any, R any, L any] struct {
+	t   crudKindSpecs[O, A, R, L]
+	ctx context.Context
+	// key and otherKey name the resources, after base. A resource names
+	// parentName: the CloudflareAccount accountName, or, for a zone's kind
+	// (zoned), the Zone zoneName of the zone zoneID. otherAccountName and
+	// otherZoneName are second ones, for claims made through another one.
+	base                               string
+	key, otherKey                      types.NamespacedName
+	accountName, secretName, accountID string
+	zoneName, zoneID                   string
+	otherAccountName, otherZoneName    string
+	zoned                              bool
+	// parentName is what a resource names, parentID the ID its calls send
+	// and parentField the spec field. otherParent is the second parent,
+	// parentKind its kind, and cloudflareParent what it is in Cloudflare.
+	parentName, parentID, parentField         string
+	otherParent, parentKind, cloudflareParent string
+
+	store *fakeCRUDStore[R]
+	r     crudKindReconciler[O, A, R, L]
+	// refs holds what the sample's references give, by their field, once
+	// createParent has created the resources they reference.
+	refs map[string]string
+
+	// describeCRUDKind's helpers: create creates a resource that carries the
+	// finalizer, get reads it and ready its Ready condition, reconcileIt
+	// reconciles it, and synced creates it and the object it manages.
+	create      func(at types.NamespacedName, annotations map[string]string) O
+	get         func() O
+	ready       func() metav1.Condition
+	reconcileIt func() (ctrl.Result, error)
+	synced      func(annotations map[string]string) string
+}
+
+// newCRUDSpecEnv names the resources of t's shared specs.
+func newCRUDSpecEnv[O conditionedObject, A any, R any, L any](t crudKindSpecs[O, A, R, L]) *crudSpecEnv[O, A, R, L] {
+	base := "gen-" + strings.ToLower(t.kind.name)
+	e := &crudSpecEnv[O, A, R, L]{
+		t: t, ctx: context.Background(), base: base,
+		key:         types.NamespacedName{Name: base, Namespace: crudSpecNamespace},
+		otherKey:    types.NamespacedName{Name: base + "-other", Namespace: crudSpecNamespace},
+		accountName: base + "-account", secretName: base + "-token", accountID: "acct-" + base,
+		zoneName: base + "-zone", zoneID: "zone-" + base,
+		otherAccountName: base + "-other-account", otherZoneName: base + "-other-zone",
+		zoned: t.kind.zoneRef != nil,
+	}
+	e.parentName, e.parentID, e.parentField = e.accountName, e.accountID, "accountRef"
+	e.otherParent, e.parentKind, e.cloudflareParent = e.otherAccountName, "CloudflareAccount", "Cloudflare account"
+	if e.zoned {
+		e.parentName, e.parentID, e.parentField = e.zoneName, e.zoneID, "zoneRef"
+		e.otherParent, e.parentKind, e.cloudflareParent = e.otherZoneName, "Zone", "Cloudflare zone"
+	}
+	return e
+}
+
+// reset gives a spec a new fake store and a reconciler that calls it, and
+// forgets what the sample's references gave.
+func (e *crudSpecEnv[O, A, R, L]) reset() {
+	e.store = newFakeCRUDStore[R](e.t.pageSize, e.t.scope)
+	e.r = e.t.newReconciler(k8sClient, func(string) (A, error) { return e.t.newFake(e.store), nil })
+	e.refs = map[string]string{}
+	for _, ref := range e.t.references {
+		e.refs[ref.field] = ""
+	}
+}
+
+// seed stores an object with key, as Cloudflare would hold it, under id, or
+// under its key for a kind whose objects their key identifies, and returns
+// the ID it is stored under.
+func (e *crudSpecEnv[O, A, R, L]) seed(id, key string) string {
+	if e.t.kind.list == nil && e.t.kind.listAll == nil {
+		id = key
+	}
+	e.store.objects[id] = e.t.seed(id, key, e.refs)
+	return id
+}
+
+// createAccount creates the CloudflareAccount, ready or not, and its token.
+func (e *crudSpecEnv[O, A, R, L]) createAccount(ready bool) {
+	account := &cloudflarev1alpha1.CloudflareAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: e.accountName},
+		Spec: cloudflarev1alpha1.CloudflareAccountSpec{
+			AccountID: e.accountID,
+			TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: e.secretName, Namespace: crudSpecNamespace,
+				Key: "CF_API_TOKEN"},
+		},
+	}
+	Expect(k8sClient.Create(e.ctx, account)).To(Succeed())
+	if ready {
+		account.Status.Conditions = []metav1.Condition{{
+			Type: cloudflarev1alpha1.ConditionReady, Status: metav1.ConditionTrue,
+			Reason: "Validated", LastTransitionTime: metav1.Now(),
+		}}
+		Expect(k8sClient.Status().Update(e.ctx, account)).To(Succeed())
+	}
+	Expect(k8sClient.Create(e.ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: e.secretName, Namespace: crudSpecNamespace},
+		Data:       map[string][]byte{"CF_API_TOKEN": []byte("token")},
+	})).To(Succeed())
+}
+
+// createZone creates, at at, a Zone of the zone id, which uses the
+// CloudflareAccount, ready or not.
+func (e *crudSpecEnv[O, A, R, L]) createZone(at types.NamespacedName, id string, ready bool) {
+	zone := &cloudflarev1alpha1.Zone{
+		ObjectMeta: metav1.ObjectMeta{Name: at.Name, Namespace: at.Namespace},
+		Spec: cloudflarev1alpha1.ZoneSpec{
+			Name: e.base + ".example.com", AccountRef: corev1.LocalObjectReference{Name: e.accountName},
+		},
+	}
+	Expect(k8sClient.Create(e.ctx, zone)).To(Succeed())
+	if ready {
+		zone.Status.CloudflareMetadata.ZoneID = id
+		zone.Status.Conditions = []metav1.Condition{{
+			Type: cloudflarev1alpha1.ConditionReady, Status: metav1.ConditionTrue,
+			Reason: "Synced", LastTransitionTime: metav1.Now(),
+		}}
+		Expect(k8sClient.Status().Update(e.ctx, zone)).To(Succeed())
+	}
+}
+
+// createReferenced creates a resource of the kind ref refers to, named name,
+// which uses the CloudflareAccount account, ready or not, and returns the
+// value a reference to it gives. The spec deletes it again.
+func (e *crudSpecEnv[O, A, R, L]) createReferenced(ref crudRefSpec[O], name, account string, ready bool) string {
+	build, ok := crudReferencedKinds[ref.kind]
+	Expect(ok).To(BeTrue(), "crudReferencedKinds has no %s", ref.kind)
+	obj, value := build(types.NamespacedName{Name: name, Namespace: crudSpecNamespace}, account)
+	Expect(k8sClient.Create(e.ctx, obj)).To(Succeed())
+	if ready {
+		obj.SetConditions([]metav1.Condition{{
+			Type: cloudflarev1alpha1.ConditionReady, Status: metav1.ConditionTrue,
+			Reason: "Synced", LastTransitionTime: metav1.Now(),
+		}})
+		Expect(k8sClient.Status().Update(e.ctx, obj)).To(Succeed())
+	}
+	DeferCleanup(forceDelete, e.ctx, client.Object(obj), types.NamespacedName{Name: name, Namespace: crudSpecNamespace})
+	return value
+}
+
+// createParent creates what a resource needs before it calls Cloudflare: its
+// CloudflareAccount, ready when accountReady, with its token; for a zone's
+// kind, its Zone, ready; and the resources the sample references, ready,
+// whose values it records in refs.
+func (e *crudSpecEnv[O, A, R, L]) createParent(accountReady bool) {
+	e.createAccount(accountReady)
+	if e.zoned {
+		e.createZone(types.NamespacedName{Name: e.zoneName, Namespace: crudSpecNamespace}, e.zoneID, true)
+	}
+	for _, ref := range e.t.references {
+		if ref.name != "" {
+			e.refs[ref.field] = e.createReferenced(ref, ref.name, e.accountName, true)
+		}
+	}
+}
+
+// createOtherParent creates a second CloudflareAccount, or Zone for a zone's
+// kind, for the same Cloudflare account or zone as the resource's (same), or
+// for another one.
+func (e *crudSpecEnv[O, A, R, L]) createOtherParent(same bool) {
+	if e.zoned {
+		id := "zone-elsewhere"
+		if same {
+			id = e.zoneID
+		}
+		e.createZone(types.NamespacedName{Name: e.otherZoneName, Namespace: crudSpecNamespace}, id, true)
+		return
+	}
+	id := "acct-elsewhere"
+	if same {
+		id = e.accountID
+	}
+	Expect(k8sClient.Create(e.ctx, &cloudflarev1alpha1.CloudflareAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: e.otherAccountName},
+		Spec: cloudflarev1alpha1.CloudflareAccountSpec{
+			AccountID: id,
+			TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: e.secretName, Namespace: crudSpecNamespace,
+				Key: "CF_API_TOKEN"},
+		},
+	})).To(Succeed())
+}
+
+// failGets gives the spec a reconciler whose reads of an object named name
+// fail with err.
+func (e *crudSpecEnv[O, A, R, L]) failGets(name string, err error) {
+	base, clientErr := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+	Expect(clientErr).NotTo(HaveOccurred())
+	failing := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if key.Name == name {
+				return err
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	e.r = e.t.newReconciler(failing, func(string) (A, error) { return e.t.newFake(e.store), nil })
+}
+
+// runManager runs the kind's reconciler in a manager, on the spec's fake
+// store, until the spec ends, so that its watches reconcile the resource.
+func (e *crudSpecEnv[O, A, R, L]) runManager() {
+	mgr, err := manager.New(cfg, manager.Options{
+		Controller: config.Controller{SkipNameValidation: new(true)},
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	store := e.store
+	Expect(e.t.newReconciler(mgr.GetClient(), func(string) (A, error) { return e.t.newFake(store), nil }).
+		SetupWithManager(mgr)).To(Succeed())
+	ctx, stop := context.WithCancel(e.ctx)
+	stopped := make(chan struct{})
+	go func() {
+		defer GinkgoRecover()
+		defer close(stopped)
+		Expect(mgr.Start(ctx)).To(Succeed())
+	}()
+	// Stop it before the next spec, which reconciles the kind itself.
+	DeferCleanup(func() {
+		stop()
+		Eventually(stopped).Should(BeClosed())
+	})
+}
+
+// eventuallyReady waits until the resource reports Ready with reason.
+func (e *crudSpecEnv[O, A, R, L]) eventuallyReady(reason string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		obj := e.t.kind.newObject()
+		g.Expect(k8sClient.Get(e.ctx, e.key, obj)).To(Succeed())
+		cond := meta.FindStatusCondition(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Reason).To(Equal(reason), cond.Message)
+	}).WithTimeout(10 * time.Second).Should(Succeed())
+}
+
+// describeCRUDZone runs the specs of a zone's kind: its resources wait for
+// their Zone, delete their objects from the zone their status records, and
+// leave them when the Zone is gone.
+func describeCRUDZone[O conditionedObject, A any, R any, L any](e *crudSpecEnv[O, A, R, L]) {
+	k, ctx, ns := e.t.kind, e.ctx, crudSpecNamespace
+	key, zoneName, zoneID := e.key, e.zoneName, e.zoneID
+	startDeletion := func() {
+		Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+	}
+	expectGone := func() {
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue())
+	}
+
+	Describe("its Zone", func() {
+		It("is reconciled once its Zone is ready, which it watches", func() {
+			e.createAccount(true)
+			for _, ref := range e.t.references {
+				if ref.name != "" {
+					e.createReferenced(ref, ref.name, e.accountName, true)
+				}
+			}
+			e.create(key, nil)
+			e.runManager()
+			e.eventuallyReady("ZoneNotFound")
+			e.createZone(types.NamespacedName{Name: zoneName, Namespace: ns}, zoneID, true)
+			e.eventuallyReady("Synced")
+		})
+
+		It("adopts a "+k.noun+" that a resource in another namespace claims through a Zone of the same name for "+
+			"another zone", func() {
+			e.createParent(true)
+			elsewhere := e.base + "-elsewhere"
+			err := k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: elsewhere}})
+			Expect(err == nil || apierrors.IsAlreadyExists(err)).To(BeTrue(), "%v", err)
+			e.createZone(types.NamespacedName{Name: zoneName, Namespace: elsewhere}, "zone-elsewhere", true)
+			DeferCleanup(forceDelete, ctx, &cloudflarev1alpha1.Zone{},
+				types.NamespacedName{Name: zoneName, Namespace: elsewhere})
+			claimant := types.NamespacedName{Name: e.base, Namespace: elsewhere}
+			other := e.t.newResource(claimant, zoneName)
+			Expect(k8sClient.Create(ctx, other)).To(Succeed())
+			DeferCleanup(forceDelete, ctx, k.newObject(), claimant)
+			other.SetLabels(map[string]string{k.claimLabel: e.seed("taken", k.key(other))})
+			Expect(k8sClient.Update(ctx, other)).To(Succeed())
+			e.create(key, map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			_, err = e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready().Status).To(Equal(metav1.ConditionTrue), e.ready().Message)
+			Expect(e.get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+			Expect(e.store.writes).To(BeZero())
+		})
+
+		It("waits for its Zone without calling Cloudflare", func() {
+			e.createAccount(true)
+			e.create(key, nil)
+			result, err := e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsZero()).To(BeTrue(), "the Zone watch reconciles it once the Zone is ready")
+			Expect(e.ready().Reason).To(Equal("ZoneNotFound"))
+			Expect(e.ready().Message).To(ContainSubstring(zoneName))
+
+			By("waiting while the Zone is not ready")
+			e.createZone(types.NamespacedName{Name: zoneName, Namespace: ns}, zoneID, false)
+			_, err = e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready().Reason).To(Equal("ZoneNotReady"))
+			Expect(e.store.parentIDs).To(BeEmpty())
+		})
+
+		It("skips Cloudflare when its Zone is already gone", func() {
+			id := e.synced(nil)
+			forceDelete(ctx, &cloudflarev1alpha1.Zone{}, types.NamespacedName{Name: zoneName, Namespace: ns})
+			calls := len(e.store.parentIDs)
+			startDeletion()
+			_, err := e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.store.objects).To(HaveKey(id), "there are no credentials to delete it with")
+			Expect(e.store.parentIDs).To(HaveLen(calls))
+			expectGone()
+		})
+
+		It("deletes the "+k.noun+" from the zone its status records", func() {
+			e.synced(nil)
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: zoneName, Namespace: ns}, zone)).To(Succeed())
+			zone.Status.CloudflareMetadata.ZoneID = "zone-moved"
+			Expect(k8sClient.Status().Update(ctx, zone)).To(Succeed())
+			startDeletion()
+			_, err := e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.store.parentIDs[len(e.store.parentIDs)-1]).To(Equal(zoneID))
+			Expect(e.store.objects).To(BeEmpty())
+			expectGone()
+		})
+
+		It("keeps the finalizer when its Zone cannot be read", func() {
+			e.synced(nil)
+			e.failGets(zoneName, errors.New("zone unavailable"))
+			startDeletion()
+			_, err := e.reconcileIt()
+			Expect(err).To(MatchError("zone unavailable"))
+			Expect(e.get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+			Expect(e.store.objects).To(HaveLen(1))
+		})
+
+		It("maps a Zone to the resources in its zone", func() {
+			e.create(key, nil)
+			zone := func(name, namespace string) client.Object {
+				return &cloudflarev1alpha1.Zone{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+			}
+			Expect(e.r.crud().resourcesForZone(ctx, zone(zoneName, ns))).To(
+				ConsistOf(reconcile.Request{NamespacedName: key}))
+			Expect(e.r.crud().resourcesForZone(ctx, zone(zoneName+"-other", ns))).To(BeEmpty())
+			Expect(e.r.crud().resourcesForZone(ctx, zone(zoneName, "kube-system"))).To(BeEmpty())
+
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			Expect(e.r.crud().resourcesForZone(cancelled, zone(zoneName, ns))).To(BeNil(), "the list fails")
+		})
+
+		It("counts as a user of its Zone, which names the CloudflareAccount", func() {
+			e.create(key, nil)
+			deps, err := dependentsOf(ctx, k8sClient, ns, zoneName, zoneDependents)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deps).To(ConsistOf(k.name + " " + key.String()))
+			Expect(slices.ContainsFunc(accountDependents, func(d dependentKind) bool { return d.kind == k.name })).
+				To(BeFalse(), "it reaches its account through its Zone")
+		})
+	})
+}
+
+// describeCRUDReferences runs the specs of a kind's references to resources of
+// other kinds: a resource waits for each, sends what it gives, follows it to
+// another resource or, unset, sends nothing.
+func describeCRUDReferences[O conditionedObject, A any, R any, L any](e *crudSpecEnv[O, A, R, L]) {
+	t, k, ctx, ns := e.t, e.t.kind, e.ctx, crudSpecNamespace
+	key, base, accountName, otherAccountName, parentName := e.key, e.base, e.accountName, e.otherAccountName, e.parentName
+
+	Describe("its references", func() {
+		It("references what its entry says", func() {
+			kinds, entry := make([]string, 0, len(k.references)), make([]string, 0, len(t.references))
+			for _, ref := range k.references {
+				kinds = append(kinds, ref.field+" "+ref.kind)
+			}
+			for _, ref := range t.references {
+				entry = append(entry, ref.field+" "+ref.kind)
+			}
+			Expect(kinds).To(Equal(entry))
+		})
+
+		for i, ref := range t.references {
+			// target is a resource of the kind ref refers to, other than the
+			// sample's.
+			target := base + "-" + strings.ToLower(ref.kind)
+
+			// createReferencing creates the resource with ref naming target.
+			createReferencing := func() {
+				obj := t.newResource(key, parentName)
+				obj.SetFinalizers([]string{reconciler.Finalizer})
+				ref.set(obj, target)
+				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+			}
+
+			It("waits for the "+ref.kind+" its "+ref.field+" names, without calling Cloudflare", func() {
+				e.createParent(true)
+				createReferencing()
+				result, err := e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.IsZero()).To(BeTrue(), "the "+ref.kind+" watch reconciles it once it is ready")
+				Expect(e.ready().Reason).To(Equal(ref.kind + "NotFound"))
+				Expect(e.ready().Message).To(ContainSubstring(target))
+
+				By("waiting while the " + ref.kind + " is not ready")
+				e.createReferenced(ref, target, accountName, false)
+				_, err = e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.ready().Reason).To(Equal(ref.kind + "NotReady"))
+				Expect(e.store.parentIDs).To(BeEmpty())
+			})
+
+			It("refuses a "+ref.kind+" that uses another CloudflareAccount", func() {
+				e.createParent(true)
+				e.createReferenced(ref, target, otherAccountName, true)
+				createReferencing()
+				_, err := e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.ready().Reason).To(Equal(reasonAccountMismatch))
+				Expect(e.ready().Message).To(ContainSubstring(otherAccountName))
+				Expect(e.ready().Message).To(ContainSubstring(accountName))
+				Expect(e.store.parentIDs).To(BeEmpty())
+			})
+
+			It("points the "+k.noun+" at another "+ref.kind+" in place", func() {
+				id := e.synced(nil)
+				writes := e.store.writes
+				changed := maps.Clone(e.refs)
+				changed[ref.field] = e.createReferenced(ref, target, accountName, true)
+				obj := e.get()
+				ref.set(obj, target)
+				Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+				_, err := e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+
+				object := e.store.objects[id]
+				Expect(k.statusID(e.get())).To(Equal(id))
+				Expect(t.created(e.get(), changed, &object)).To(BeTrue(), "the object holds what the new "+ref.kind+
+					" gives")
+				Expect(t.observed(e.get(), &object)).To(BeTrue(), "status records it")
+				Expect(e.store.writes).To(Equal(writes + 1))
+			})
+
+			if ref.optional {
+				It("creates the "+k.noun+" without what its "+ref.field+" gives while it is unset", func() {
+					e.createParent(true)
+					obj := t.newResource(key, parentName)
+					obj.SetFinalizers([]string{reconciler.Finalizer})
+					ref.set(obj, "")
+					Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+					_, err := e.reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					unset := maps.Clone(e.refs)
+					unset[ref.field] = ""
+					object := e.store.objects[k.statusID(e.get())]
+					Expect(t.sent(e.get(), unset, e.store.sent[0])).To(BeTrue(), "New is sent nothing for it")
+					Expect(t.created(e.get(), unset, &object)).To(BeTrue())
+					Expect(e.store.writes).To(Equal(1))
+					Expect(e.ready().Status).To(Equal(metav1.ConditionTrue))
+				})
+
+				It("clears what its "+ref.field+" gave once it is unset", func() {
+					e.createParent(true)
+					given := maps.Clone(e.refs)
+					given[ref.field] = e.createReferenced(ref, target, accountName, true)
+					createReferencing()
+					_, err := e.reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					id := k.statusID(e.get())
+					object := e.store.objects[id]
+					Expect(t.created(e.get(), given, &object)).To(BeTrue())
+					Expect(t.sent(e.get(), given, e.store.sent[0])).To(BeTrue(), "New is sent what the "+ref.kind+
+						" gives")
+
+					writes := e.store.writes
+					obj := e.get()
+					ref.set(obj, "")
+					Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+					_, err = e.reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					unset := maps.Clone(e.refs)
+					unset[ref.field] = ""
+					object = e.store.objects[id]
+					Expect(t.created(e.get(), unset, &object)).To(BeTrue(), "the object holds nothing it gave")
+					Expect(e.store.writes).To(Equal(writes + 1))
+					Expect(e.ready().Status).To(Equal(metav1.ConditionTrue))
+				})
+			}
+
+			It("is reconciled once the "+ref.kind+" its "+ref.field+" names is ready, which it watches", func() {
+				e.createParent(true)
+				createReferencing()
+				e.runManager()
+				e.eventuallyReady(ref.kind + "NotFound")
+				e.createReferenced(ref, target, accountName, true)
+				e.eventuallyReady("Synced")
+			})
+
+			It("maps a "+ref.kind+" to the resources whose "+ref.field+" names it", func() {
+				createReferencing()
+				mapper := e.r.crud().resourcesReferencing(k.references[i])
+				named := func(name, namespace string) client.Object {
+					obj, _ := crudReferencedKinds[ref.kind](types.NamespacedName{Name: name, Namespace: namespace},
+						accountName)
+					return obj
+				}
+				Expect(mapper(ctx, named(target, ns))).To(ConsistOf(reconcile.Request{NamespacedName: key}))
+				Expect(mapper(ctx, named(target+"-other", ns))).To(BeEmpty())
+				Expect(mapper(ctx, named(target, "kube-system"))).To(BeEmpty())
+
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				Expect(mapper(cancelled, named(target, ns))).To(BeNil(), "the list fails")
+			})
+		}
+
+	})
 }
 
 // describeCRUDKind runs the shared specs on a generated kind's table.
 func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[O, A, R, L]) bool {
 	return Describe(t.kind.name+" (generated specs)", func() {
 		k := t.kind
-		base := "gen-" + strings.ToLower(k.name)
-		const ns = "default"
-		var (
-			key         = types.NamespacedName{Name: base, Namespace: ns}
-			otherKey    = types.NamespacedName{Name: base + "-other", Namespace: ns}
-			accountName = base + "-account"
-			secretName  = base + "-token"
-			accountID   = "acct-" + base
-			// otherAccountName is a second CloudflareAccount, for claims made
-			// through another one.
-			otherAccountName = base + "-other-account"
-		)
-		ctx := context.Background()
+		e := newCRUDSpecEnv(t)
+		ctx, ns := e.ctx, crudSpecNamespace
+		key, otherKey, accountName := e.key, e.otherKey, e.accountName
+		zoneName, otherAccountName, otherZoneName := e.zoneName, e.otherAccountName, e.otherZoneName
 		// byKey is set for a kind whose objects their key identifies: it reads
-		// them by their key and never lists them.
-		byKey := k.list == nil
-		// addressField is the field that names an object besides the account
+		// them by their key and never lists them. singlePage is set for one
+		// whose list is never paged.
+		byKey := k.list == nil && k.listAll == nil
+		singlePage := k.listAll != nil
+		// zoned is set for a zone's kind. Its resources name a Zone, which
+		// names the CloudflareAccount; parentName is what a resource names,
+		// parentID the ID its calls send, and parentField the spec field.
+		zoned, parentName, parentID, parentField := e.zoned, e.parentName, e.parentID, e.parentField
+		// addressField is the field that names an object besides the parent
 		// and the ID, if the kind has one.
 		addressField := ""
 		if t.elsewhere != nil {
 			addressField = t.elsewhere.field
 		}
 
-		var store *fakeCRUDStore[R]
-		var r crudKindReconciler[O, A, R, L]
-
-		createAccount := func(ready bool) {
-			account := &cloudflarev1alpha1.CloudflareAccount{
-				ObjectMeta: metav1.ObjectMeta{Name: accountName},
-				Spec: cloudflarev1alpha1.CloudflareAccountSpec{
-					AccountID:      accountID,
-					TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: secretName, Namespace: ns, Key: "CF_API_TOKEN"},
-				},
-			}
-			Expect(k8sClient.Create(ctx, account)).To(Succeed())
-			if ready {
-				account.Status.Conditions = []metav1.Condition{{
-					Type: cloudflarev1alpha1.ConditionReady, Status: metav1.ConditionTrue,
-					Reason: "Validated", LastTransitionTime: metav1.Now(),
-				}}
-				Expect(k8sClient.Status().Update(ctx, account)).To(Succeed())
-			}
-			Expect(k8sClient.Create(ctx, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: ns},
-				Data:       map[string][]byte{"CF_API_TOKEN": []byte("token")},
-			})).To(Succeed())
-		}
-
 		// create creates a resource that already carries the finalizer.
 		create := func(at types.NamespacedName, annotations map[string]string) O {
-			obj := t.newResource(at, accountName)
+			obj := t.newResource(at, parentName)
 			obj.SetAnnotations(annotations)
 			obj.SetFinalizers([]string{reconciler.Finalizer})
 			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
@@ -344,55 +909,51 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		}
 
 		reconcileIt := func() (ctrl.Result, error) {
-			return r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			return e.r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		}
 
 		// adopt and adoptOrCreate are the adoption policies' annotations.
 		adopt := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt}
 		adoptOrCreate := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate}
 
-		// seed stores an object with key, as Cloudflare would hold it, under id,
-		// or under its key for a kind whose objects their key identifies, and
-		// returns the ID it is stored under.
-		seed := func(id, key string) string {
-			if byKey {
-				id = key
-			}
-			store.objects[id] = t.seed(id, key)
-			return id
-		}
+		seed := e.seed
 
 		// findErr is the error of the call that finds the object a resource
 		// would adopt: the list's, or the read by its key.
 		findErr := func() *error {
 			if byKey {
-				return &store.getErr
+				return &e.store.getErr
 			}
-			return &store.listErr
+			return &e.store.listErr
 		}
 
 		// synced creates a resource and the object it manages.
 		synced := func(annotations map[string]string) string {
-			createAccount(true)
+			e.createParent(true)
 			create(key, annotations)
 			_, err := reconcileIt()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(store.objects).To(HaveLen(1))
+			Expect(e.store.objects).To(HaveLen(1))
 			return k.statusID(get())
 		}
+		e.create, e.get, e.ready, e.reconcileIt, e.synced = create, get, ready, reconcileIt, synced
 
-		BeforeEach(func() {
-			store = newFakeCRUDStore[R](t.pageSize, t.scope)
-			r = t.newReconciler(k8sClient, func(string) (A, error) { return t.newFake(store), nil })
-		})
+		BeforeEach(e.reset)
 
 		AfterEach(func() {
 			forceDelete(ctx, k.newObject(), key)
 			forceDelete(ctx, k.newObject(), otherKey)
+			forceDelete(ctx, &cloudflarev1alpha1.Zone{}, types.NamespacedName{Name: zoneName, Namespace: ns})
+			forceDelete(ctx, &cloudflarev1alpha1.Zone{}, types.NamespacedName{Name: otherZoneName, Namespace: ns})
 			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: accountName})
 			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: otherAccountName})
-			forceDelete(ctx, &corev1.Secret{}, types.NamespacedName{Name: secretName, Namespace: ns})
+			forceDelete(ctx, &corev1.Secret{}, types.NamespacedName{Name: e.secretName, Namespace: ns})
 		})
+
+		if zoned {
+			describeCRUDZone(e)
+		}
+		describeCRUDReferences(e)
 
 		Describe("Reconcile", func() {
 			It("returns no error when the resource does not exist", func() {
@@ -401,15 +962,15 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			})
 
 			It("adds the finalizer on the first reconcile without calling Cloudflare", func() {
-				Expect(k8sClient.Create(ctx, t.newResource(key, accountName))).To(Succeed())
+				Expect(k8sClient.Create(ctx, t.newResource(key, parentName))).To(Succeed())
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
-				Expect(store.accountIDs).To(BeEmpty())
+				Expect(e.store.parentIDs).To(BeEmpty())
 			})
 
 			It("retries after a minute when the account is not ready", func() {
-				createAccount(false)
+				e.createParent(false)
 				create(key, nil)
 				result, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
@@ -418,9 +979,9 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			})
 
 			It("reports InvalidToken when no Cloudflare client can be built", func() {
-				createAccount(true)
+				e.createParent(true)
 				create(key, nil)
-				r = t.newReconciler(k8sClient, func(string) (A, error) { return *new(A), errors.New("bad token") })
+				e.r = t.newReconciler(k8sClient, func(string) (A, error) { return *new(A), errors.New("bad token") })
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Reason).To(Equal("InvalidToken"))
@@ -428,42 +989,45 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("creates the "+k.noun+", claims it and reports its ID", func() {
 				id := synced(nil)
-				Expect(store.objects).To(HaveKey(id))
-				Expect(store.accountIDs).To(HaveEach(accountID))
+				Expect(e.store.objects).To(HaveKey(id))
+				Expect(e.store.parentIDs).To(HaveEach(parentID))
 				if byKey {
-					Expect(store.listPages).To(BeEmpty(), "the "+k.noun+" is read by its "+t.keyField+", never listed")
+					Expect(e.store.listPages).To(BeEmpty(), "the "+k.noun+" is read by its "+t.keyField+", never listed")
 				} else {
-					Expect(store.listPages).To(Equal([]int64{1}), "one page holds every object of the account")
+					Expect(e.store.listPages).To(Equal([]int64{1}), "one page holds every object of the account")
 				}
-				Expect(store.writes).To(Equal(1), "the new object is what the spec asks for: nothing to update")
+				Expect(e.store.writes).To(Equal(1), "the new object is what the spec asks for: nothing to update")
 				obj := get()
-				object := store.objects[id]
-				Expect(t.sent(obj, store.sent[0])).To(BeTrue(), "New is sent every field of the spec")
-				Expect(t.created(obj, &object)).To(BeTrue(), "the new object holds every field of the spec")
+				object := e.store.objects[id]
+				Expect(t.sent(obj, e.refs, e.store.sent[0])).To(BeTrue(), "New is sent every field of the spec")
+				Expect(t.created(obj, e.refs, &object)).To(BeTrue(), "the new object holds every field of the spec")
 				Expect(t.observed(obj, &object)).To(BeTrue(), "status records the new object")
-				Expect(k.matches(obj, &object)).To(BeTrue(), "the new object is what the spec asks for")
+				if zoned {
+					Expect(*k.statusZoneID(obj)).To(Equal(e.zoneID), "status records the zone")
+				}
+				Expect(k.matches(obj, &object, e.refs)).To(BeTrue(), "the new object is what the spec asks for")
 				Expect(obj.GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 			})
 
 			It("creates the "+k.noun+" with every field the spec sets", func() {
-				createAccount(true)
-				obj := t.newResource(key, accountName)
+				e.createParent(true)
+				obj := t.newResource(key, parentName)
 				obj.SetFinalizers([]string{reconciler.Finalizer})
 				// The address stays the sample's, where the store's objects are:
 				// the elsewhere specs move it.
 				for _, edit := range slices.Concat(t.changes, t.immutable) {
-					if edit.field != "accountRef" && edit.field != addressField {
+					if edit.field != parentField && edit.field != addressField {
 						edit.edit(obj)
 					}
 				}
 				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.writes).To(Equal(1))
-				object := store.objects[k.statusID(get())]
-				Expect(t.sent(get(), store.sent[0])).To(BeTrue(), "New is sent every field of the spec")
-				Expect(t.created(get(), &object)).To(BeTrue(), "the new object holds every field of the spec")
+				Expect(e.store.writes).To(Equal(1))
+				object := e.store.objects[k.statusID(get())]
+				Expect(t.sent(get(), e.refs, e.store.sent[0])).To(BeTrue(), "New is sent every field of the spec")
+				Expect(t.created(get(), e.refs, &object)).To(BeTrue(), "the new object holds every field of the spec")
 			})
 
 			It("claims with its entry's label, and reports its entry's conflict reason", func() {
@@ -480,36 +1044,53 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("writes nothing to Cloudflare once the "+k.noun+" is in sync", func() {
 				synced(nil)
-				writes, pages := store.writes, len(store.listPages)
+				writes, pages := e.store.writes, len(e.store.listPages)
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.writes).To(Equal(writes))
-				Expect(store.listPages).To(HaveLen(pages), "the object is read by its ID, not found in the list")
+				Expect(e.store.writes).To(Equal(writes))
+				Expect(e.store.listPages).To(HaveLen(pages), "the object is read by its ID, not found in the list")
 			})
 
 			It("schedules a drift check after a sync, once the manager sets an interval", func() {
 				synced(nil)
-				writes := store.writes
+				writes := e.store.writes
 				expectDriftCheck(reconcileIt)
-				Expect(store.writes).To(Equal(writes))
+				Expect(e.store.writes).To(Equal(writes))
 			})
 
 			if byKey {
 				It("adopts the "+k.noun+" with the same "+t.keyField+" by reading it, without listing", func() {
-					createAccount(true)
+					e.createParent(true)
 					obj := create(key, adopt)
 					id := seed("", k.key(obj))
 					_, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
-					Expect(store.listPages).To(BeEmpty())
+					Expect(e.store.listPages).To(BeEmpty())
 					Expect(k.statusID(get())).To(Equal(id))
 					Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
 					Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
-					Expect(store.writes).To(BeZero(), "the adopted object is what the spec asks for")
+					Expect(e.store.writes).To(BeZero(), "the adopted object is what the spec asks for")
+				})
+			} else if singlePage {
+				It("adopts the "+k.noun+" with the same "+t.keyField+" from its list, which is never paged", func() {
+					e.createParent(true)
+					obj := create(key, adopt)
+					for i := range 3 {
+						seed(fmt.Sprintf("a-%d", i), fmt.Sprintf("other-%d", i))
+					}
+					seed("z-last", k.key(obj))
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(e.store.listPages).To(Equal([]int64{1}))
+					Expect(e.store.objects).To(HaveLen(4), "nothing is created")
+					Expect(k.statusID(get())).To(Equal("z-last"))
+					Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, "z-last"))
+					Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+					Expect(e.store.writes).To(BeZero(), "the adopted object is what the spec asks for")
 				})
 			} else {
 				It("adopts the "+k.noun+" with the same "+t.keyField+" from a later page of the list", func() {
-					createAccount(true)
+					e.createParent(true)
 					obj := create(key, adopt)
 					// A full first page of other objects; the one to adopt sorts last.
 					for i := range t.pageSize {
@@ -518,18 +1099,18 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					seed("z-last", k.key(obj))
 					_, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
-					Expect(store.listPages[:2]).To(Equal([]int64{1, 2}))
-					Expect(store.objects).To(HaveLen(int(t.pageSize)+1), "nothing is created")
+					Expect(e.store.listPages[:2]).To(Equal([]int64{1, 2}))
+					Expect(e.store.objects).To(HaveLen(int(t.pageSize)+1), "nothing is created")
 					Expect(k.statusID(get())).To(Equal("z-last"))
 					Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, "z-last"))
 					Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
-					Expect(store.writes).To(BeZero(), "the adopted object is what the spec asks for")
+					Expect(e.store.writes).To(BeZero(), "the adopted object is what the spec asks for")
 				})
 			}
 
 			It("reports AlreadyExists for a "+k.noun+" with the same "+t.keyField+" without an adoption policy, "+
 				"and leaves it alone", func() {
-				createAccount(true)
+				e.createParent(true)
 				obj := create(key, nil)
 				seed("existing", k.key(obj))
 				result, err := reconcileIt()
@@ -538,60 +1119,60 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(ready().Reason).To(Equal(reasonAlreadyExists))
 				Expect(ready().Message).To(ContainSubstring(k.key(obj)))
 				Expect(ready().Message).To(ContainSubstring(reconciler.AdoptionPolicyAnnotation))
-				Expect(store.writes).To(BeZero())
-				Expect(store.objects).To(HaveLen(1))
+				Expect(e.store.writes).To(BeZero())
+				Expect(e.store.objects).To(HaveLen(1))
 				Expect(k.statusID(get())).To(BeEmpty())
 				Expect(get().GetLabels()).NotTo(HaveKey(k.claimLabel))
 			})
 
 			It("reports NotFound with the adopt policy when there is no "+k.noun+" to adopt, and creates none",
 				func() {
-					createAccount(true)
+					e.createParent(true)
 					create(key, adopt)
 					result, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
 					Expect(ready().Reason).To(Equal(reasonNotFound))
-					Expect(store.writes).To(BeZero())
-					Expect(store.objects).To(BeEmpty())
+					Expect(e.store.writes).To(BeZero())
+					Expect(e.store.objects).To(BeEmpty())
 				})
 
 			It("reports an unknown adoption policy instead of creating or adopting", func() {
-				createAccount(true)
+				e.createParent(true)
 				obj := create(key, map[string]string{reconciler.AdoptionPolicyAnnotation: "Adopt"})
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Reason).To(Equal(reasonInvalidAdoptionPolicy))
-				Expect(store.objects).To(BeEmpty(), "nothing is created")
+				Expect(e.store.objects).To(BeEmpty(), "nothing is created")
 
 				seed("existing", k.key(obj))
 				_, err = reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Reason).To(Equal(reasonInvalidAdoptionPolicy))
-				Expect(store.writes).To(BeZero())
+				Expect(e.store.writes).To(BeZero())
 				Expect(get().GetLabels()).NotTo(HaveKey(k.claimLabel), "nothing is adopted")
 			})
 
 			It("creates the "+k.noun+" with the adopt-or-create policy when there is none to adopt", func() {
-				createAccount(true)
+				e.createParent(true)
 				create(key, adoptOrCreate)
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.objects).To(HaveLen(1))
+				Expect(e.store.objects).To(HaveLen(1))
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 			})
 
 			It("marks the "+k.noun+" it is about to create, so a failed create leaves the mark", func() {
-				createAccount(true)
+				e.createParent(true)
 				obj := create(key, nil)
-				store.createErr = errors.New("unavailable")
+				e.store.createErr = errors.New("unavailable")
 				_, err := reconcileIt()
 				Expect(err).To(MatchError("unavailable"))
 				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.CreatingAnnotation, k.key(obj)))
 
 				By("creating it on the next reconcile, which drops the mark with the claim")
-				store.createErr = nil
+				e.store.createErr = nil
 				_, err = reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
@@ -599,21 +1180,21 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			})
 
 			It("finds the "+k.noun+" it was creating when neither its claim nor its status was recorded", func() {
-				createAccount(true)
-				obj := t.newResource(key, accountName)
+				e.createParent(true)
+				obj := t.newResource(key, parentName)
 				id := seed("created", k.key(obj))
 				create(key, map[string]string{reconciler.CreatingAnnotation: k.key(obj)})
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 				Expect(k.statusID(get())).To(Equal(id))
-				Expect(store.writes).To(BeZero(), "nothing is created")
+				Expect(e.store.writes).To(BeZero(), "nothing is created")
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "it is not adopted")
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
 			})
 
 			It("finds the "+k.noun+" it claimed when its status was not recorded", func() {
-				createAccount(true)
+				e.createParent(true)
 				obj := create(key, nil)
 				id := seed("claimed", k.key(obj))
 				obj.SetLabels(map[string]string{k.claimLabel: id})
@@ -622,41 +1203,41 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 				Expect(k.statusID(get())).To(Equal(id))
-				Expect(store.writes).To(BeZero())
+				Expect(e.store.writes).To(BeZero())
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
 			})
 
 			if !byKey {
 				It("creates the "+k.noun+" when the one it would adopt is gone before it is read", func() {
-					createAccount(true)
+					e.createParent(true)
 					obj := create(key, adoptOrCreate)
 					seed("listed", k.key(obj))
-					store.getErr = fakeCRUDNotFound(http.MethodGet, accountID, "listed")
+					e.store.getErr = fakeCRUDNotFound(http.MethodGet, parentID, "listed")
 					_, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
 					id := k.statusID(get())
 					Expect(id).NotTo(Equal("listed"))
-					Expect(store.objects).To(HaveKey(id))
+					Expect(e.store.objects).To(HaveKey(id))
 					Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 					Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "it created this one")
 				})
 			}
 
 			It("returns a failed read of the "+k.noun+" it would adopt for back-off", func() {
-				createAccount(true)
+				e.createParent(true)
 				obj := create(key, adopt)
 				seed("listed", k.key(obj))
-				store.getErr = errors.New("unavailable")
+				e.store.getErr = errors.New("unavailable")
 				_, err := reconcileIt()
 				Expect(err).To(MatchError("unavailable"))
-				Expect(store.objects).To(HaveLen(1), "nothing is created")
+				Expect(e.store.objects).To(HaveLen(1), "nothing is created")
 			})
 
-			// claimedBy creates, at otherKey, a resource that uses the
-			// CloudflareAccount account and claims the object with the
+			// claimedBy creates, at otherKey, a resource that names parent, a
+			// CloudflareAccount or a Zone, and claims the object with the
 			// sample's key, and stores that object.
-			claimedBy := func(account string) {
-				other := t.newResource(otherKey, account)
+			claimedBy := func(parent string) {
+				other := t.newResource(otherKey, parent)
 				other.SetFinalizers([]string{reconciler.Finalizer})
 				Expect(k8sClient.Create(ctx, other)).To(Succeed())
 				other.SetLabels(map[string]string{k.claimLabel: seed("taken", k.key(other))})
@@ -672,7 +1253,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
 				Expect(ready().Reason).To(Equal(k.conflictReason))
 				Expect(ready().Message).To(ContainSubstring(otherKey.String()))
-				Expect(store.writes).To(BeZero())
+				Expect(e.store.writes).To(BeZero())
 			}
 
 			// expectAdopted reconciles the resource, and expects it to adopt the
@@ -683,55 +1264,47 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue), ready().Message)
 				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
-				Expect(store.writes).To(BeZero())
+				Expect(e.store.writes).To(BeZero())
 			}
 
+			// otherParent is a second CloudflareAccount, or Zone for a zone's
+			// kind, which e.createOtherParent creates.
+			otherParent, parentKind, cloudflareParent := e.otherParent, e.parentKind, e.cloudflareParent
+
 			It("reports "+k.conflictReason+" instead of taking over a "+k.noun+" another "+k.name+" manages", func() {
-				createAccount(true)
-				claimedBy(accountName)
+				e.createParent(true)
+				claimedBy(parentName)
 				create(key, nil)
 				expectConflict()
 			})
 
-			It("reports "+k.conflictReason+" for a claim made through another CloudflareAccount for the same "+
-				"Cloudflare account", func() {
-				createAccount(true)
-				Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.CloudflareAccount{
-					ObjectMeta: metav1.ObjectMeta{Name: otherAccountName},
-					Spec: cloudflarev1alpha1.CloudflareAccountSpec{
-						AccountID:      accountID,
-						TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: secretName, Namespace: ns, Key: "CF_API_TOKEN"},
-					},
-				})).To(Succeed())
-				claimedBy(otherAccountName)
+			It("reports "+k.conflictReason+" for a claim made through another "+parentKind+" for the same "+
+				cloudflareParent, func() {
+				e.createParent(true)
+				e.createOtherParent(true)
+				claimedBy(otherParent)
 				create(key, adopt)
 				expectConflict()
 			})
 
-			It("adopts a "+k.noun+" whose ID a resource claims in another Cloudflare account", func() {
-				createAccount(true)
-				Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.CloudflareAccount{
-					ObjectMeta: metav1.ObjectMeta{Name: otherAccountName},
-					Spec: cloudflarev1alpha1.CloudflareAccountSpec{
-						AccountID:      "acct-elsewhere",
-						TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: secretName, Namespace: ns, Key: "CF_API_TOKEN"},
-					},
-				})).To(Succeed())
-				claimedBy(otherAccountName)
+			It("adopts a "+k.noun+" whose ID a resource claims in another "+cloudflareParent, func() {
+				e.createParent(true)
+				e.createOtherParent(false)
+				claimedBy(otherParent)
 				create(key, adopt)
 				expectAdopted()
 			})
 
-			It("adopts a "+k.noun+" that a resource whose CloudflareAccount is gone claims", func() {
-				createAccount(true)
-				claimedBy(otherAccountName)
+			It("adopts a "+k.noun+" that a resource whose "+parentKind+" is gone claims", func() {
+				e.createParent(true)
+				claimedBy(otherParent)
 				create(key, adopt)
 				expectAdopted()
 			})
 
 			It("adopts a "+k.noun+" though another "+k.name+" claims another", func() {
-				createAccount(true)
-				other := t.newResource(otherKey, accountName)
+				e.createParent(true)
+				other := t.newResource(otherKey, parentName)
 				other.SetLabels(map[string]string{k.claimLabel: "another"})
 				Expect(k8sClient.Create(ctx, other)).To(Succeed())
 				obj := create(key, adopt)
@@ -739,65 +1312,54 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				expectAdopted()
 			})
 
-			It("returns a failed read of a claimant's CloudflareAccount for back-off", func() {
-				createAccount(true)
-				claimedBy(otherAccountName)
+			It("returns a failed read of a claimant's "+parentKind+" for back-off", func() {
+				e.createParent(true)
+				claimedBy(otherParent)
 				create(key, adopt)
-				base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
-				Expect(err).NotTo(HaveOccurred())
-				failing := interceptor.NewClient(base, interceptor.Funcs{
-					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
-						opts ...client.GetOption) error {
-						if key.Name == otherAccountName {
-							return errors.New("account unavailable")
-						}
-						return c.Get(ctx, key, obj, opts...)
-					},
-				})
-				r = t.newReconciler(failing, func(string) (A, error) { return t.newFake(store), nil })
-				_, err = reconcileIt()
-				Expect(err).To(MatchError("account unavailable"))
-				Expect(store.writes).To(BeZero())
+				e.failGets(otherParent, errors.New("parent unavailable"))
+				_, err := reconcileIt()
+				Expect(err).To(MatchError("parent unavailable"))
+				Expect(e.store.writes).To(BeZero())
 			})
 
-			if e := t.elsewhere; e != nil {
+			if move := t.elsewhere; move != nil {
 				// createElsewhere creates the resource with the sample's spec
 				// moved to another address, and annotations.
 				createElsewhere := func(annotations map[string]string) O {
-					obj := t.newResource(key, accountName)
+					obj := t.newResource(key, parentName)
 					obj.SetAnnotations(annotations)
 					obj.SetFinalizers([]string{reconciler.Finalizer})
-					e.edit(obj)
+					move.edit(obj)
 					Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 					return obj
 				}
 
-				It("adopts the "+k.noun+" with the same "+t.keyField+" after "+e.what+", though another "+k.name+
+				It("adopts the "+k.noun+" with the same "+t.keyField+" after "+move.what+", though another "+k.name+
 					" claims the one at the sample's", func() {
-					createAccount(true)
-					claimedBy(accountName)
+					e.createParent(true)
+					claimedBy(parentName)
 					obj := createElsewhere(adopt)
 					id := k.key(obj)
 					if !byKey {
 						id = "elsewhere"
 					}
-					store.at(e.scope)[id] = t.seed(id, k.key(obj))
+					e.store.at(move.scope)[id] = t.seed(id, k.key(obj), e.refs)
 					expectAdopted()
 					Expect(k.statusID(get())).To(Equal(id))
-					Expect(store.objects).To(HaveLen(1), "the claimed one is left alone")
+					Expect(e.store.objects).To(HaveLen(1), "the claimed one is left alone")
 				})
 
-				It("creates its own "+k.noun+" after "+e.what+", rather than adopting the one at the sample's",
+				It("creates its own "+k.noun+" after "+move.what+", rather than adopting the one at the sample's",
 					func() {
-						createAccount(true)
-						seed("existing", k.key(t.newResource(key, accountName)))
+						e.createParent(true)
+						seed("existing", k.key(t.newResource(key, parentName)))
 						createElsewhere(adoptOrCreate)
 						_, err := reconcileIt()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(ready().Status).To(Equal(metav1.ConditionTrue), ready().Message)
 						Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
-						Expect(store.at(e.scope)).To(HaveKey(k.statusID(get())))
-						Expect(store.objects).To(HaveLen(1), "the one at the sample's is left alone")
+						Expect(e.store.at(move.scope)).To(HaveKey(k.statusID(get())))
+						Expect(e.store.objects).To(HaveLen(1), "the one at the sample's is left alone")
 					})
 			}
 
@@ -806,33 +1368,33 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			expectRecreated := func(id string, writes int) {
 				GinkgoHelper()
 				newID := k.statusID(get())
-				Expect(store.writes).To(Equal(writes+1), "one create")
+				Expect(e.store.writes).To(Equal(writes+1), "one create")
 				if !byKey {
 					Expect(newID).NotTo(Equal(id))
 				}
-				Expect(store.objects).To(HaveKey(newID))
+				Expect(e.store.objects).To(HaveKey(newID))
 				Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, newID))
 			}
 
 			It("recreates the "+k.noun+" when it was deleted outside kflare", func() {
 				id := synced(nil)
-				writes := store.writes
-				delete(store.objects, id)
+				writes := e.store.writes
+				delete(e.store.objects, id)
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				expectRecreated(id, writes)
 			})
 
 			It("recreates an adopted "+k.noun+" deleted outside kflare as its own with adopt-or-create", func() {
-				createAccount(true)
+				e.createParent(true)
 				obj := create(key, adoptOrCreate)
 				id := seed("existing", k.key(obj))
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 
-				writes := store.writes
-				delete(store.objects, id)
+				writes := e.store.writes
+				delete(e.store.objects, id)
 				_, err = reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				expectRecreated(id, writes)
@@ -841,24 +1403,24 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("reports NotFound with the adopt policy when an adopted "+k.noun+" is deleted outside kflare",
 				func() {
-					createAccount(true)
+					e.createParent(true)
 					obj := create(key, adopt)
 					id := seed("existing", k.key(obj))
 					_, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
 
-					delete(store.objects, id)
-					writes := store.writes
+					delete(e.store.objects, id)
+					writes := e.store.writes
 					_, err = reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(ready().Reason).To(Equal(reasonNotFound))
-					Expect(store.writes).To(Equal(writes), "nothing is created")
+					Expect(e.store.writes).To(Equal(writes), "nothing is created")
 				})
 
 			for _, change := range t.changes {
 				It("updates the "+k.noun+" in place after "+change.what, func() {
 					id := synced(nil)
-					writes := store.writes
+					writes := e.store.writes
 					obj := get()
 					change.edit(obj)
 					Expect(k8sClient.Update(ctx, obj)).To(Succeed())
@@ -867,9 +1429,9 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 					obj = get()
 					Expect(k.statusID(obj)).To(Equal(id))
-					object := store.objects[id]
-					Expect(k.matches(obj, &object)).To(BeTrue(), "the object is what the edited spec asks for")
-					Expect(store.writes).To(Equal(writes + 1))
+					object := e.store.objects[id]
+					Expect(k.matches(obj, &object, e.refs)).To(BeTrue(), "the object is what the edited spec asks for")
+					Expect(e.store.writes).To(Equal(writes + 1))
 					Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 				})
 			}
@@ -878,7 +1440,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				change := t.changes[0]
 				It("sets TerminalError when Cloudflare refuses an update", func() {
 					synced(nil)
-					store.updateErr = v7APIError(http.MethodPut, "accounts/"+accountID+"/objects", http.StatusBadRequest,
+					e.store.updateErr = v7APIError(http.MethodPut, "parents/"+parentID+"/objects", http.StatusBadRequest,
 						1000, "refused")
 					obj := get()
 					change.edit(obj)
@@ -892,19 +1454,19 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 				It("returns a failed update for back-off", func() {
 					id := synced(nil)
-					before := store.objects[id]
-					store.updateErr = errors.New("unavailable")
+					before := e.store.objects[id]
+					e.store.updateErr = errors.New("unavailable")
 					obj := get()
 					change.edit(obj)
 					Expect(k8sClient.Update(ctx, obj)).To(Succeed())
 					_, err := reconcileIt()
 					Expect(err).To(MatchError("unavailable"))
-					Expect(store.objects[id]).To(Equal(before))
+					Expect(e.store.objects[id]).To(Equal(before))
 				})
 			}
 
 			It("returns retryable errors for back-off", func() {
-				createAccount(true)
+				e.createParent(true)
 				create(key, nil)
 				*findErr() = errors.New("connection reset")
 				_, err := reconcileIt()
@@ -912,7 +1474,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(ready().Reason).To(Equal("APIError"))
 
 				*findErr() = nil
-				store.createErr = errors.New("unavailable")
+				e.store.createErr = errors.New("unavailable")
 				_, err = reconcileIt()
 				Expect(err).To(MatchError("unavailable"))
 			})
@@ -921,7 +1483,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				recorder := events.NewFakeRecorder(10)
 				SetEventRecorder(recorder)
 				DeferCleanup(func() { SetEventRecorder(nil) })
-				createAccount(true)
+				e.createParent(true)
 				create(key, nil)
 				*findErr() = errors.New("connection reset")
 				_, err := reconcileIt()
@@ -942,10 +1504,10 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("returns a failed read of the "+k.noun+" for back-off", func() {
 				synced(nil)
-				store.getErr = v7APIError(http.MethodGet, "accounts/"+accountID+"/objects/1",
+				e.store.getErr = v7APIError(http.MethodGet, "parents/"+parentID+"/objects/1",
 					http.StatusServiceUnavailable, 0, "")
 				_, err := reconcileIt()
-				Expect(err).To(MatchError(store.getErr))
+				Expect(err).To(MatchError(e.store.getErr))
 				Expect(ready().Reason).To(Equal("APIError"))
 				Expect(ready().Message).To(Equal("Cloudflare API error: HTTP 503 Service Unavailable"))
 			})
@@ -955,15 +1517,15 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				synced(nil)
 
 				By("returning a retryable error for back-off, with nothing scheduled")
-				store.getErr = v7APIError(http.MethodGet, "accounts/"+accountID+"/objects/1",
+				e.store.getErr = v7APIError(http.MethodGet, "parents/"+parentID+"/objects/1",
 					http.StatusServiceUnavailable, 0, "")
 				result, err := reconcileIt()
-				Expect(err).To(MatchError(store.getErr))
+				Expect(err).To(MatchError(e.store.getErr))
 				Expect(result).To(BeZero())
 				Expect(ready().Reason).To(Equal("APIError"))
 
 				By("waiting for a change after a terminal error")
-				store.getErr = v7APIError(http.MethodGet, "accounts/"+accountID+"/objects/1", http.StatusForbidden,
+				e.store.getErr = v7APIError(http.MethodGet, "parents/"+parentID+"/objects/1", http.StatusForbidden,
 					10000, "forbidden")
 				result, err = reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
@@ -985,7 +1547,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.objects).To(BeEmpty())
+				Expect(e.store.objects).To(BeEmpty())
 				expectGone()
 			})
 
@@ -994,7 +1556,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.objects).To(HaveLen(1))
+				Expect(e.store.objects).To(HaveLen(1))
 				expectGone()
 			})
 
@@ -1002,19 +1564,19 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(reconciler.SetDefaultDeletionPolicy(reconciler.DeletionPolicyRetain)).To(Succeed())
 				DeferCleanup(reconciler.SetDefaultDeletionPolicy, reconciler.DeletionPolicyDelete)
 				synced(nil)
-				writes := store.writes
+				writes := e.store.writes
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.objects).To(HaveLen(1))
-				Expect(store.writes).To(Equal(writes))
+				Expect(e.store.objects).To(HaveLen(1))
+				Expect(e.store.writes).To(Equal(writes))
 				expectGone()
 			})
 
 			// adopted creates a resource with annotations that adopts an
 			// existing object.
 			adopted := func(annotations map[string]string) string {
-				createAccount(true)
+				e.createParent(true)
 				obj := create(key, annotations)
 				id := seed("existing", k.key(obj))
 				_, err := reconcileIt()
@@ -1028,8 +1590,8 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.objects).To(HaveKey(id))
-				Expect(store.writes).To(BeZero())
+				Expect(e.store.objects).To(HaveKey(id))
+				Expect(e.store.writes).To(BeZero())
 				expectGone()
 			})
 
@@ -1041,13 +1603,13 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.objects).To(BeEmpty())
+				Expect(e.store.objects).To(BeEmpty())
 				expectGone()
 			})
 
 			It("finishes when the "+k.noun+" is already gone from Cloudflare", func() {
 				id := synced(nil)
-				delete(store.objects, id)
+				delete(e.store.objects, id)
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
@@ -1062,7 +1624,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				It("keeps the "+k.noun+" and reports "+blocker.reason+" while Cloudflare refuses the delete with "+
 					fmt.Sprint(blocker.code)+", and deletes it once Cloudflare no longer does", func() {
 					id := synced(nil)
-					store.deleteErr = v7APIError(http.MethodDelete, "accounts/"+accountID+"/objects/"+id,
+					e.store.deleteErr = v7APIError(http.MethodDelete, "parents/"+parentID+"/objects/"+id,
 						http.StatusConflict, blocker.code, "refused")
 					startDeletion()
 					result, err := reconcileIt()
@@ -1074,20 +1636,20 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					Expect(ready().Message).To(ContainSubstring(reconciler.DeletionPolicyAnnotation + ": " +
 						reconciler.DeletionPolicyRetain))
 					Expect(get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
-					Expect(store.objects).To(HaveKey(id))
+					Expect(e.store.objects).To(HaveKey(id))
 
 					By("deleting it once Cloudflare takes the delete")
-					store.deleteErr = nil
+					e.store.deleteErr = nil
 					_, err = reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
-					Expect(store.objects).To(BeEmpty())
+					Expect(e.store.objects).To(BeEmpty())
 					expectGone()
 				})
 			}
 
 			It("keeps the finalizer when Cloudflare fails, so deletion is retried", func() {
 				synced(nil)
-				store.deleteErr = errors.New("unavailable")
+				e.store.deleteErr = errors.New("unavailable")
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).To(MatchError("unavailable"))
@@ -1105,14 +1667,14 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("returns the error when no Cloudflare client can be built", func() {
 				synced(nil)
-				r = t.newReconciler(k8sClient, func(string) (A, error) { return *new(A), errors.New("bad token") })
+				e.r = t.newReconciler(k8sClient, func(string) (A, error) { return *new(A), errors.New("bad token") })
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).To(MatchError("bad token"))
 			})
 
 			It("does nothing for a resource without the finalizer", func() {
-				result, err := r.crud().reconcileDelete(ctx, k.newObject())
+				result, err := e.r.crud().reconcileDelete(ctx, k.newObject())
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.IsZero()).To(BeTrue())
 			})
@@ -1120,15 +1682,15 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 		Describe("pausing", func() {
 			// reconcilePaused reconciles the resource, and checks that it made no
-			// Cloudflare call, which the fake records the account of, and
+			// Cloudflare call, which the fake records the parent's ID of, and
 			// scheduled nothing.
 			reconcilePaused := func() {
 				GinkgoHelper()
-				calls := len(store.accountIDs)
+				calls := len(e.store.parentIDs)
 				result, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeZero())
-				Expect(store.accountIDs).To(HaveLen(calls), "a paused resource called Cloudflare")
+				Expect(e.store.parentIDs).To(HaveLen(calls), "a paused resource called Cloudflare")
 				Expect(ready().Reason).To(Equal(reasonPaused))
 			}
 
@@ -1149,8 +1711,8 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				setPaused(ctx, get(), false)
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				object := store.objects[id]
-				Expect(k.matches(get(), &object)).To(BeTrue(), "the object is what the spec asks for")
+				object := e.store.objects[id]
+				Expect(k.matches(get(), &object, e.refs)).To(BeTrue(), "the object is what the spec asks for")
 				Expect(ready().Reason).To(Equal("Synced"))
 				Expect(ready().ObservedGeneration).To(Equal(get().GetGeneration()))
 			})
@@ -1161,7 +1723,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					setPaused(ctx, get(), true)
 					Expect(k8sClient.Delete(ctx, get())).To(Succeed())
 					reconcilePaused()
-					Expect(store.objects).To(HaveKey(id))
+					Expect(e.store.objects).To(HaveKey(id))
 					Expect(get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
 					Expect(ready().Message).To(Equal(pausedDeletionMessage))
 
@@ -1169,13 +1731,13 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					setPaused(ctx, get(), false)
 					_, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
-					Expect(store.objects).NotTo(HaveKey(id))
+					Expect(e.store.objects).NotTo(HaveKey(id))
 					Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue())
 				})
 
 			It("adds no finalizer to a resource created paused", func() {
-				createAccount(true)
-				obj := t.newResource(key, accountName)
+				e.createParent(true)
+				obj := t.newResource(key, parentName)
 				obj.SetAnnotations(map[string]string{reconciler.PausedAnnotation: "true"})
 				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 				reconcilePaused()
@@ -1187,7 +1749,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		Describe("validation", func() {
 			for _, change := range t.immutable {
 				It("refuses "+change.what, func() {
-					obj := t.newResource(key, accountName)
+					obj := t.newResource(key, parentName)
 					if change.setup != nil {
 						change.setup(obj)
 					}
@@ -1200,7 +1762,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			for _, invalid := range t.invalid {
 				It("refuses "+invalid.what, func() {
-					obj := t.newResource(key, accountName)
+					obj := t.newResource(key, parentName)
 					invalid.edit(obj)
 					Expect(k8sClient.Create(ctx, obj)).To(MatchError(ContainSubstring("spec." + invalid.field)))
 				})
@@ -1229,24 +1791,26 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(t.newReconciler(mgr.GetClient(), nil).SetupWithManager(mgr)).To(Succeed())
 			})
 
-			It("maps a CloudflareAccount to the resources that use it", func() {
-				create(key, nil)
-				account := &cloudflarev1alpha1.CloudflareAccount{ObjectMeta: metav1.ObjectMeta{Name: accountName}}
-				Expect(r.crud().resourcesForAccount(ctx, account)).To(ConsistOf(reconcile.Request{NamespacedName: key}))
-				other := &cloudflarev1alpha1.CloudflareAccount{ObjectMeta: metav1.ObjectMeta{Name: accountName + "-other"}}
-				Expect(r.crud().resourcesForAccount(ctx, other)).To(BeEmpty())
+			if !zoned {
+				It("maps a CloudflareAccount to the resources that use it", func() {
+					create(key, nil)
+					account := &cloudflarev1alpha1.CloudflareAccount{ObjectMeta: metav1.ObjectMeta{Name: accountName}}
+					Expect(e.r.crud().resourcesForAccount(ctx, account)).To(ConsistOf(reconcile.Request{NamespacedName: key}))
+					other := &cloudflarev1alpha1.CloudflareAccount{ObjectMeta: metav1.ObjectMeta{Name: accountName + "-other"}}
+					Expect(e.r.crud().resourcesForAccount(ctx, other)).To(BeEmpty())
 
-				cancelled, cancel := context.WithCancel(ctx)
-				cancel()
-				Expect(r.crud().resourcesForAccount(cancelled, account)).To(BeNil(), "the list fails")
-			})
+					cancelled, cancel := context.WithCancel(ctx)
+					cancel()
+					Expect(e.r.crud().resourcesForAccount(cancelled, account)).To(BeNil(), "the list fails")
+				})
 
-			It("counts as a user of its CloudflareAccount", func() {
-				create(key, nil)
-				deps, err := dependentsOf(ctx, k8sClient, "", accountName, accountDependents)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(deps).To(ConsistOf(k.name + " " + key.String()))
-			})
+				It("counts as a user of its CloudflareAccount", func() {
+					create(key, nil)
+					deps, err := dependentsOf(ctx, k8sClient, "", accountName, accountDependents)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(deps).To(ConsistOf(k.name + " " + key.String()))
+				})
+			}
 		})
 	})
 }
@@ -1283,8 +1847,8 @@ var _ = Describe("SetupGeneratedReconcilers", func() {
 			names = append(names, name.String())
 		}
 		// Every generated kind's resources use a CloudflareAccount's
-		// credentials directly (CRUD kinds), or reference a Zone (rule and
-		// settings kinds).
+		// credentials directly (account CRUD kinds), or reference a Zone (zone
+		// CRUD kinds, rule and settings kinds).
 		want := make([]string, 0, len(generatedAccountDependents)+len(generatedZoneDependents))
 		for _, d := range slices.Concat(generatedAccountDependents, generatedZoneDependents) {
 			want = append(want, strings.ToLower(d.kind))

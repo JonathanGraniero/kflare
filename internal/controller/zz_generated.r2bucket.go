@@ -86,23 +86,23 @@ var r2BucketKind = crudResourceKind[*cloudflarev1alpha1.R2Bucket, R2BucketAPI, r
 	},
 
 	id: func(current *r2.Bucket) string { return current.Name },
-	matches: func(obj *cloudflarev1alpha1.R2Bucket, current *r2.Bucket) bool {
+	matches: func(obj *cloudflarev1alpha1.R2Bucket, current *r2.Bucket, _ map[string]string) bool {
 		return (obj.Spec.StorageClass == "" || string(current.StorageClass) == obj.Spec.StorageClass)
 	},
 
 	get: func(ctx context.Context, api R2BucketAPI, obj *cloudflarev1alpha1.R2Bucket,
-		accountID, id string) (*r2.Bucket, error) {
+		parentID, id string) (*r2.Bucket, error) {
 		var params r2.BucketGetParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		if obj.Spec.Jurisdiction != "" {
 			params.CfR2Jurisdiction.Value, params.CfR2Jurisdiction.Present = r2.BucketGetParamsCfR2Jurisdiction(obj.Spec.Jurisdiction), true
 		}
 		return api.Get(ctx, id, params)
 	},
-	create: func(ctx context.Context, api R2BucketAPI, accountID string,
-		obj *cloudflarev1alpha1.R2Bucket) (*r2.Bucket, error) {
+	create: func(ctx context.Context, api R2BucketAPI, parentID string,
+		obj *cloudflarev1alpha1.R2Bucket, _ map[string]string) (*r2.Bucket, error) {
 		var params r2.BucketNewParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		params.Name.Value, params.Name.Present = obj.Spec.Name, true
 		if obj.Spec.LocationHint != "" {
 			params.LocationHint.Value, params.LocationHint.Present = r2.BucketNewParamsLocationHint(obj.Spec.LocationHint), true
@@ -116,9 +116,9 @@ var r2BucketKind = crudResourceKind[*cloudflarev1alpha1.R2Bucket, R2BucketAPI, r
 		return api.New(ctx, params)
 	},
 	update: func(ctx context.Context, api R2BucketAPI, obj *cloudflarev1alpha1.R2Bucket,
-		accountID, id string) (*r2.Bucket, error) {
+		parentID, id string, _ map[string]string) (*r2.Bucket, error) {
 		var params r2.BucketEditParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		if obj.Spec.Jurisdiction != "" {
 			params.CfR2Jurisdiction.Value, params.CfR2Jurisdiction.Present = r2.BucketEditParamsCfR2Jurisdiction(obj.Spec.Jurisdiction), true
 		}
@@ -128,9 +128,9 @@ var r2BucketKind = crudResourceKind[*cloudflarev1alpha1.R2Bucket, R2BucketAPI, r
 		return api.Edit(ctx, id, params)
 	},
 	delete: func(ctx context.Context, api R2BucketAPI, obj *cloudflarev1alpha1.R2Bucket,
-		accountID, id string) error {
+		parentID, id string) error {
 		var params r2.BucketDeleteParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		if obj.Spec.Jurisdiction != "" {
 			params.CfR2Jurisdiction.Value, params.CfR2Jurisdiction.Present = r2.BucketDeleteParamsCfR2Jurisdiction(obj.Spec.Jurisdiction), true
 		}

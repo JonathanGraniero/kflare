@@ -481,10 +481,48 @@ kinds:
   rule, which it could not break. Mutations: 44 of the shared CRUD reconciler, R2Bucket's generated code, its CRD and
   WorkerScript's refusal, and 50 of kflare-gen's new code, all caught; the first runs left 13 and 6 alive, the gaps
   above, two equivalent mutants (code since simplified) and dead code, now gone
+- **CRUD kinds of a zone, references, single pages and calls of their own types as built**
+  (`feat/generate-worker-route`, 2026-10-29), rows 9 and 10 of [Generate every kind](../CLAUDE.md#generate-every-kind)
+  in one pull request, as the user asked for the next pair, with WorkerRoute as their kind. A Worker route is a zone's,
+  its `script` is a WorkerScript's Worker, v7 lists routes in one `SinglePage`, and New, Get, List and Update each
+  return a type of their own, with the same fields:
+  - `scope: zone`: the spec's first field is an immutable `zoneRef`, every call takes `zone_id` (`parentParam`,
+    `controller.isParent`), status records the zone's ID (`zoneID`, from the Zone, never the object's `zone_id`), and
+    the kind is a Zone dependent in `generatedZoneDependents`. The descriptor's `zoneRef` and `statusZoneID` replace
+    `accountRef`; the shared CRUD reconciler waits for the Zone (`ZoneNotFound`, `ZoneNotReady`), calls with its
+    account, watches Zones, deletes from the zone status records, and leaves the object when the Zone is gone, as the
+    rule kinds do. Calls take a `parentID`, the account's or the zone's
+  - `fields.<name>.ref: {kind, field}` makes a string body param a reference: the spec holds `<Kind>Ref`, a
+    `LocalObjectReference` (a pointer when optional), with no validation; status records the value it gave, with a
+    generated doc. The descriptor's `references` (`reference(...)`, typed like `dependents`) give the referenced
+    resource's name, account and value; the shared CRUD reconciler waits for it (`<Kind>NotFound`, `<Kind>NotReady`),
+    refuses one of another CloudflareAccount (`AccountMismatch`, by name, as before), watches the kind, and hands the
+    values to `create`, `update` and `matches` (`refs`). A reference is always compared, and unset it sends nothing:
+    Cloudflare refuses `"script": ""` (10019), and its PUT clears a script it is not sent
+  - A List that returns a `pagination.SinglePage` is read once (`listAll`, `fakeListAll`), without page params
+  - New and Update may return a type of their own when it holds every field of Get's object, each converting to the
+    object's type (`sameFields`): the descriptor converts what they return field by field (`resultReturn`,
+    `convertObject`), and the fake the other way. Custom lists pass it too, their kinds differing by a named string
+    type, so TestList and TestIPList now generate in full and the test data refuses no kind
+  - The fake's Update of a PUT replaces the fields Update takes, as Cloudflare does; a PATCH's changes those it is sent.
+    A PUT also clears an optional field the spec leaves unset, which `matches` does not compare: no kind has one yet
+    (`computed_optional`, PR 11, will tell them apart)
+
+  The shared specs learned the shape: their harness moved onto `crudSpecEnv` (the parent, the store, the reconciler
+  and what the sample's references give), with groups for a zone's kind (`describeCRUDZone`: the Zone's wait, its
+  watch in a running manager, claims through another Zone and across namespaces, deletion from the recorded zone and
+  with the Zone gone) and for references (`describeCRUDReferences`: each wait, another account, pointing at another
+  resource in place, unsetting, creating without, the watch in a running manager, the mapper). A hand-written registry,
+  `crudReferencedKinds`, builds a resource of each referenced kind with a value unlike its name. The generator's
+  TestWorkerRoute is the golden kind. A seed now holds what Cloudflare holds for the sample: its values too, and the
+  fixed ones, where it held the key and the defaults, which no committed kind's sample went beyond; the test kinds'
+  generated tables (TestList's, TestIPList's and TestWorkerRoute's) ran once in a copy of the tree, 191 of 191 specs.
+  Mutations: 65 of the shared CRUD reconciler, WorkerRoute's generated code, its registration and its CRD, 64 caught
+  and one equivalent (a mapper's early return on a failed list, which leaves the list empty anyway); 52 of kflare-gen's
+  new code, all caught. The first runs left two alive: the pattern's `minLength`, which the pattern already implied
+  (dropped from the entry), and the page params of a single page, which a unit test now covers
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
-  zone-scoped CRUD kinds, `SinglePage` lists, services without `New`, and secrets. Also
-  cross-kind references such as
-  `kvNamespaceRef`, generated live e2e specs, and deploy.md
+  services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is
   not reliable: for managed transforms it lists a permission that is refused, see Token permissions)
 - **The hand-written kinds** move onto kflare-gen too (the user, 2026-10-27), each after the capability it needs:

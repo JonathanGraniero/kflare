@@ -86,44 +86,44 @@ var kvNamespaceKind = crudResourceKind[*cloudflarev1alpha1.KVNamespace, KVNamesp
 	},
 
 	id: func(current *kv.Namespace) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.KVNamespace, current *kv.Namespace) bool {
+	matches: func(obj *cloudflarev1alpha1.KVNamespace, current *kv.Namespace, _ map[string]string) bool {
 		return current.Title == obj.Spec.Title
 	},
 	listedID:  func(listed *kv.Namespace) string { return listed.ID },
 	listedKey: func(listed *kv.Namespace) string { return listed.Title },
 
 	get: func(ctx context.Context, api KVNamespaceAPI, _ *cloudflarev1alpha1.KVNamespace,
-		accountID, id string) (*kv.Namespace, error) {
+		parentID, id string) (*kv.Namespace, error) {
 		var params kv.NamespaceGetParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		return api.Get(ctx, id, params)
 	},
 	list: func(ctx context.Context, api KVNamespaceAPI, _ *cloudflarev1alpha1.KVNamespace,
-		accountID string, page int64) (*pagination.V4PagePaginationArray[kv.Namespace], error) {
+		parentID string, page int64) (*pagination.V4PagePaginationArray[kv.Namespace], error) {
 		var params kv.NamespaceListParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		params.Page.Value, params.Page.Present = float64(page), true
 		params.PerPage.Value, params.PerPage.Present = kvNamespaceListPageSize, true
 		return api.List(ctx, params)
 	},
-	create: func(ctx context.Context, api KVNamespaceAPI, accountID string,
-		obj *cloudflarev1alpha1.KVNamespace) (*kv.Namespace, error) {
+	create: func(ctx context.Context, api KVNamespaceAPI, parentID string,
+		obj *cloudflarev1alpha1.KVNamespace, _ map[string]string) (*kv.Namespace, error) {
 		var params kv.NamespaceNewParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		params.Title.Value, params.Title.Present = obj.Spec.Title, true
 		return api.New(ctx, params)
 	},
 	update: func(ctx context.Context, api KVNamespaceAPI, obj *cloudflarev1alpha1.KVNamespace,
-		accountID, id string) (*kv.Namespace, error) {
+		parentID, id string, _ map[string]string) (*kv.Namespace, error) {
 		var params kv.NamespaceUpdateParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		params.Title.Value, params.Title.Present = obj.Spec.Title, true
 		return api.Update(ctx, id, params)
 	},
 	delete: func(ctx context.Context, api KVNamespaceAPI, _ *cloudflarev1alpha1.KVNamespace,
-		accountID, id string) error {
+		parentID, id string) error {
 		var params kv.NamespaceDeleteParams
-		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.AccountID.Value, params.AccountID.Present = parentID, true
 		_, err := api.Delete(ctx, id, params)
 		return err
 	},

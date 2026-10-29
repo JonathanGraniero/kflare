@@ -159,12 +159,15 @@ existing kind, read its notes in [docs/design-notes.md](docs/design-notes.md): w
 why.
 
 1. **Check the shape.** kflare-gen generates three:
-   - CRUD kinds (`kinds:` in `generator/generator.yaml`, run by `crudresource_controller.go`): an account-level v7
-     service with `New`, `Get`, `Delete`, optionally `Update` or `Edit`, and either a `List` that pages with
-     `V4PagePaginationArray`, its objects identified by an ID, or objects whose key is their ID (`adopt.by` its
-     `id.field`), read by it and never listed. Header params map too, and one that `Get` also takes names the object in
-     every call (R2's jurisdiction). Closest examples: `D1Database`, `KVNamespace`; `R2Bucket` for objects named by
-     their key, header params (`reportedAs`) and `deletionBlockers`
+   - CRUD kinds (`kinds:` in `generator/generator.yaml`, run by `crudresource_controller.go`): an account's
+     (`scope: account`) or a zone's (`scope: zone`, a `zoneRef`) v7 service with `New`, `Get`, `Delete`, optionally
+     `Update` or `Edit`, and either a `List` that pages with `V4PagePaginationArray` or returns one `SinglePage`, its
+     objects identified by an ID, or objects whose key is their ID (`adopt.by` its `id.field`), read by it and never
+     listed. New and Update may return types of their own if they hold Get's fields. Header params map too, and one
+     that `Get` also takes names the object in every call (R2's jurisdiction); a string field can reference another
+     kind's resource (`fields.<name>.ref`). Closest examples: `D1Database`, `KVNamespace`; `R2Bucket` for objects
+     named by their key, header params (`reportedAs`) and `deletionBlockers`; `WorkerRoute` for a zone's objects, a
+     single page and a reference
    - Rule kinds (`ruleKinds:`, run by `rulesetrule_controller.go`): one rule in a zone's Rulesets phase, typed by v7's
      `rulesets.<Action>RuleParam`, or one of several actions (`actions`), with the rule's own fields such as
      `ratelimit` unless ignored, and `conflicts`. Closest examples: `OriginRule` (small), `CacheRule` (CEL rules and
@@ -314,7 +317,10 @@ before PR 3 by the user's call on 2026-10-27) and PR 3 (`WAFCustomRule`, #116) a
 generated. They ship as v0.3.0 (`docs/release-v0.3.0`), released before the other kinds move, at the user's request on
 2026-10-28. PRs 5 and 6 (`feat/generate-r2-bucket`) are one pull request, the user's call on 2026-10-28 ("a couple of
 them in the same PR"): R2Bucket and the capability it needs, built on it rather than on a test kind first. The user
-also OK'd mapping R2's storage class then, with live Infrequent Access probes; PR 7 is next.
+also OK'd mapping R2's storage class then, with live Infrequent Access probes. PRs 9 and 10
+(`feat/generate-worker-route`) are one pull request the same way, the user's next pair on 2026-10-29: WorkerRoute and
+the capabilities it needs, which brought part of PR 7 along (calls that each return a type of their own) and one of the
+Next wave's (lists that are never paged). PR 7 (hooks) and PR 8 (IPList) are next.
 
 **Decided (the user, 2026-10-27):**
 1. Every hand-written kind is generated: the earlier plan's line that `Zone`, `DNSRecord`, `Tunnel`,
@@ -343,10 +349,10 @@ say it, into a hook. The later capabilities are sketched only; each is planned i
 | 4 | `feat/generate-rate-limit-rule` | `RateLimitRule` generated (`ratelimit`; `cf.colo.id` and the mitigation timeout, verified live) |
 | 5 | in `feat/generate-r2-bucket` | CRUD kinds: objects identified by their key (read by it, never listed, so no list beyond `V4PagePaginationArray` was needed), header params (jurisdiction) and an object's address, deletion blockers as data |
 | 6 | `feat/generate-r2-bucket` | `R2Bucket` generated, onto v7 (gains jurisdictions and storage class) |
-| 7 | `feat/generator-hooks` | Go hooks, and CRUD kinds whose New, Get and Update return different types (custom lists) |
+| 7 | `feat/generator-hooks` | Go hooks (CRUD kinds whose New, Get and Update return different types came with PR 9) |
 | 8 | `feat/generate-ip-list` | `IPList` generated, its items' bulk operation a hook |
-| 9 | `feat/generator-zone-crud` | Zone-scoped CRUD kinds, and references to other kinds (`workerScriptRef`) |
-| 10 | `feat/generate-worker-route` | `WorkerRoute` generated |
+| 9 | in `feat/generate-worker-route` | Zone-scoped CRUD kinds, and references to other kinds (`workerScriptRef`); also `SinglePage` lists and New, Get and Update returning types of their own with the same fields (custom lists too, now generated in the test data) |
+| 10 | `feat/generate-worker-route` | `WorkerRoute` generated, onto v7 (a pattern outside the zone becomes Cloudflare's refusal) |
 | 11 | `feat/generator-dns-records` | Unions in CRUD kinds (a DNS record's types), fields Cloudflare fills in (`computed_optional`) |
 | 12 | `feat/generate-dns-record` | `DNSRecord` generated (`tunnelRef` a reference) |
 | 13 | `feat/generator-secrets` | `x-sensitive` fields written to a Secret or read from one |
@@ -617,11 +623,12 @@ kflare-gen capabilities, in the order the candidates above need them:
    [generator/CLAUDE.md](generator/CLAUDE.md)), and for zone settings, named by an ID and without a reset
    (`feat/generator-zone-settings`)
 2. **`SinglePage` lists and objects identified by name** in the shared CRUD reconciler: queues, Vectorize indexes,
-   Workers custom domains. ✅ Objects identified by name, read by it rather than listed (`feat/generate-r2-bucket`)
+   Workers custom domains. ✅ Objects identified by name, read by it rather than listed (`feat/generate-r2-bucket`),
+   and `SinglePage` lists (`feat/generate-worker-route`)
 3. **Secrets:** an `x-sensitive` field written to a Kubernetes Secret (the Turnstile secret), or read from one (the
    Hyperdrive password)
-4. **Services without `New`** (a PUT that creates or replaces), and **zone-scoped CRUD kinds** (the shared CRUD
-   reconciler handles account-scoped kinds only)
+4. **Services without `New`** (a PUT that creates or replaces), and **zone-scoped CRUD kinds** (✅
+   `feat/generate-worker-route`)
 5. For rule kinds, when a plan that can use them can also check them: maps of lists (a cache key's `header.contains`)
    and union variants told apart by a number or a bool
 
@@ -798,10 +805,10 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule` and `OriginRule`
 > done.**
 > cloudflare-go is at v0.119, with v7.13.0 next to it for the generated kinds and the rule kinds; rule kinds share the
-> Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace, D1Database and
-> R2Bucket are generated in full on the shared CRUD reconciler, and WAFCustomRule, RateLimitRule, ManagedRuleset,
-> TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule controller, and
-> ManagedTransform, the first settings kind, on the shared settings controller. Next:
+> Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace, D1Database,
+> R2Bucket and WorkerRoute are generated in full on the shared CRUD reconciler, and WAFCustomRule, RateLimitRule,
+> ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule
+> controller, and ManagedTransform, the first settings kind, on the shared settings controller. Next:
 > [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on
 > hold. v0.2.1 is the latest release; v0.3.0, with every rule kind generated, is prepared in `docs/release-v0.3.0`.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is

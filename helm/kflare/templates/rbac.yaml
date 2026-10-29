@@ -123,7 +123,6 @@ rules:
       - tunnels
       - tunnelconfigurations
       - workerscripts
-      - workerroutes
       - iplists
       # +kflare-gen:begin The kinds in generator/generator.yaml: make codegen keeps this block.
       - cacherules
@@ -138,6 +137,7 @@ rules:
       - redirectrules
       - transformrules
       - wafcustomrules
+      - workerroutes
       # +kflare-gen:end
     verbs: ["create", "update", "patch", "delete", "deletecollection"]
 {{- end }}

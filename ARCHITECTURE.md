@@ -65,15 +65,20 @@ unproxied CNAME to a tunnel, but it resolves to a private IPv6 address the inter
 kflare's. And a proxied record's TTL is always automatic: Cloudflare stores 1 whatever it is sent, so the CRD refuses
 another `ttl` on any proxied record, which would otherwise be written again on every reconcile.
 
-The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace, D1Database and R2Bucket through
-the shared CRUD reconciler (`internal/controller/crudresource_controller.go`), WAFCustomRule, RateLimitRule,
-ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule through the shared rule
-controller (see [Rules](#rules)), and ManagedTransform through the shared settings controller (see
+The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace, D1Database, R2Bucket and
+WorkerRoute through the shared CRUD reconciler (`internal/controller/crudresource_controller.go`), WAFCustomRule,
+RateLimitRule, ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule through the
+shared rule controller (see [Rules](#rules)), and ManagedTransform through the shared settings controller (see
 [Settings](#settings)). A generated kind only describes its Cloudflare calls, its adoption key, what it compares, what
-keeps its object from being deleted and what depends on it. A CRUD kind's adoption finds the object in the account's
-list by its key, then reads it by its ID: a list may show less than a read, as D1's does. An object whose key is its ID
-(an R2 bucket's name) is read by its key instead, and never listed. Where something besides the account and the ID names
-the object in every call (an R2 bucket's jurisdiction), every call sends it. kflare-gen writes that description from the
+keeps its object from being deleted and what depends on it. A CRUD kind's object is in an account, or in a zone, which
+a resource names with its `zoneRef` and reaches its account through, as WorkerRoute does. Its adoption finds the object
+in the parent's list by its key, then reads it by its ID: a list may show less than a read, as D1's does. A list comes
+in pages, or in one, as a zone's Worker routes do. An object whose key is its ID (an R2 bucket's name) is read by its
+key instead, and never listed. Where something besides the parent and the ID names the object in every call (an R2
+bucket's jurisdiction), every call sends it. A field that names a resource of another kind in the namespace, as
+WorkerRoute's `workerScriptRef` names a WorkerScript, makes the resource wait until that resource is ready
+(`WorkerScriptNotFound`, `WorkerScriptNotReady`) and uses its own CloudflareAccount (`AccountMismatch`), then sends
+what it gives: the Worker's name. Unset, it sends nothing. kflare-gen writes that description from the
 kind's entry in `generator/generator.yaml`, cloudflare-go v7
 and Cloudflare's OpenAPI spec: its API types (`api/v1alpha1/zz_generated.<kind>_types.go`), its controller
 (`internal/controller/zz_generated.<kind>.go`), and a table of envtest specs that the shared specs of its shape run on
@@ -207,7 +212,7 @@ finds the object by the ID in status. An object a resource's claim label names i
 | `IPList` | The IP list named `spec.name` in the account (names are unique per account, across list kinds) unless another IPList manages it, or the name belongs to a list of another kind: either way it reports `NameConflict` and retries every minute. |
 | `D1Database` | The database named `spec.name` in the account (names are unique per account) unless another D1Database manages it, in which case it reports `NameConflict` and retries every minute. An adopted database keeps its jurisdiction and location; `spec.jurisdiction` and `spec.primaryLocationHint` only apply when kflare creates the database. |
 | `R2Bucket` | The bucket named `spec.name` in `spec.jurisdiction` (names are unique per account and jurisdiction) unless another R2Bucket in that jurisdiction for the same Cloudflare account manages it, in which case it reports `NameConflict` and retries every minute. An adopted bucket keeps its location, and takes the spec's storage class; `spec.locationHint` only applies when kflare creates the bucket. |
-| `WorkerRoute` | The route with the same pattern in the zone (patterns are unique per zone) unless another WorkerRoute manages it, in which case the WorkerRoute reports `PatternConflict` and retries every minute. |
+| `WorkerRoute` | The route with the same pattern in the zone (patterns are unique per zone) unless another WorkerRoute for the same Cloudflare zone manages it, through any Zone, in which case the WorkerRoute reports `PatternConflict` and retries every minute. An adopted route takes the spec's Worker, or none. |
 | `ManagedTransform` | The zone's managed transforms, when any of them is on and this ManagedTransform did not turn it on: a zone with all of them off counts as none. Adopting them leaves the transforms the spec does not list as they are. When several ManagedTransforms point at one Cloudflare zone, across namespaces, the one that configures it keeps it, and otherwise the oldest takes it; the others report `AlreadyConfigured` and check again every minute. |
 | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` | Nothing, whatever the policy. A rule is kflare's only if it carries the ref kflare derives for the resource (see [Rules](#rules)); rules created outside kflare are never touched. A zone deploys a managed ruleset at most once, so while a rule kflare does not manage deploys it, the ManagedRuleset reports `RulesetConflict` and checks again every minute. |
 
@@ -228,9 +233,10 @@ a Cloudflare-side alternative, but they are only available on paid plans.
 An R2 bucket has no ID, so R2Bucket claims the bucket name in `kflare.dev/r2-bucket-name`. Bucket names are only unique
 within an account and its jurisdiction, so a claim blocks another R2Bucket only when both name the same jurisdiction and
 point at the same Cloudflare account, through the same CloudflareAccount or two that share an account ID. The shared
-CRUD reconciler counts the claims of KVNamespace and D1Database the same way, though their IDs are unique anyway. A
-resource whose CloudflareAccount is gone manages nothing, so its claim does not count. An R2Bucket that never claimed
-its bucket, for example one reporting `NameConflict`, leaves the bucket alone when it is deleted.
+CRUD reconciler counts the claims of KVNamespace and D1Database the same way, though their IDs are unique anyway, and
+WorkerRoute's within a Cloudflare zone: through the same Zone, or two Zones for the same zone, in any namespace. A
+resource whose CloudflareAccount or Zone is gone manages nothing, so its claim does not count. An R2Bucket that never
+claimed its bucket, for example one reporting `NameConflict`, leaves the bucket alone when it is deleted.
 
 This prevents two DNSRecords from fighting over one record. Records created outside kflare are protected by the
 adoption policy above: without one, a DNSRecord never takes over a record it did not create. Tools such as external-dns
@@ -433,8 +439,9 @@ resource that still needs its parent for its own cleanup. Parents therefore keep
 (`internal/controller/protection.go`):
 
 - A `CloudflareAccount` waits for the Zones, Tunnels, WorkerScripts and IPLists that reference it, and for the resources
-  of every generated kind, KVNamespaces and R2Buckets among them.
-- A `Zone` waits for its DNSRecords, WorkerRoutes and the resources of every generated rule and settings kind,
+  of every generated kind of an account, KVNamespaces and R2Buckets among them.
+- A `Zone` waits for its DNSRecords and the resources of every generated kind of a zone: WorkerRoutes and every rule and
+  settings kind,
   WAFCustomRules, RateLimitRules, ManagedRulesets, TransformRules, RedirectRules, CacheRules, ConfigurationRules,
   OriginRules and ManagedTransforms among them: a ManagedTransform needs its Zone to reset the zone's managed
   transforms.
@@ -468,7 +475,8 @@ hang, and leaves its Cloudflare object, or the zone's settings, as they are.
 - **Rule order covers kflare's rules only.** A rule created outside kflare keeps its place, so it cannot be ordered
   relative to kflare's rules.
 - **Pinned to the legacy SDK.** Most of kflare's controllers use cloudflare-go v0.119, the newest of the v0 line; the
-  generated kinds and the rule kinds use the generated SDK, v7. Some limitations come from v0.119: Tunnel
+  generated kinds (WorkerRoute among them) and the rule kinds use the generated SDK, v7. Some limitations come from
+  v0.119: Tunnel
   renames are impossible because `UpdateTunnel` omits the tunnel ID from the request path,
   `originRequest` timeouts are not exposed because `TunnelDuration` does not round-trip, and a WorkerScript binds only
   R2 buckets in the default jurisdiction (`R2BucketJurisdictionUnsupported` otherwise): the SDK's Worker R2 binding has

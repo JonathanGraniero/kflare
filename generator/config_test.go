@@ -44,6 +44,12 @@ func TestLoadConfig(t *testing.T) {
 	if len(cfg.Kinds) != 1 || cfg.Kinds[0].Kind != "KVNamespace" || cfg.Kinds[0].ID.Status != "namespaceID" {
 		t.Errorf("loadConfig = %+v", cfg)
 	}
+	zoned := strings.Replace(validConfig, "scope: account", "scope: zone", 1) +
+		"    fields:\n      title: {ref: {kind: WorkerScript, field: name}}\n"
+	cfg, err = loadConfig(writeConfig(t, zoned))
+	if err != nil || cfg.Kinds[0].Fields["title"].Ref.Kind != "WorkerScript" {
+		t.Errorf("loadConfig of a zone's kind with a reference: %+v, %v", cfg, err)
+	}
 
 	if _, err := loadConfig(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
 		t.Error("loadConfig of a missing file: err = nil")
@@ -70,7 +76,7 @@ func TestLoadConfigRefuses(t *testing.T) {
 		{"a kind that is not a Go name", replace("kind: KVNamespace", "kind: kv-namespace"), "not a Go type name"},
 		{"a service without a type", replace("service: kv.NamespaceService", "service: kv"), "not <package>.<type>"},
 		{"a service ending in a dot", replace("service: kv.NamespaceService", "service: kv."), "not <package>.<type>"},
-		{"another scope", replace("scope: account", "scope: zone"), "the only scope is account"},
+		{"another scope", replace("scope: account", "scope: plan"), "it is account or zone"},
 		{"a short name in capitals", replace("shortName: cfkv", "shortName: CFKV"), "lower-case"},
 		{"no noun", replace("noun: KV namespace", `noun: ""`), "noun is empty"},
 		{"a doc not starting with the kind", replace("doc: KVNamespace is", "doc: It is"), "does not start with"},
@@ -123,6 +129,18 @@ func TestLoadConfigRefuses(t *testing.T) {
 		{"a dependent's refs that is exported", validConfig + dependent("WorkerScript", "Bound", "why"),
 			"not an unexported Go name"},
 		{"a dependent without a reason", validConfig + dependent("WorkerScript", "bound", `" "`), "gives no reason"},
+		{"a reference to a kind that is not a Go name",
+			validConfig + "    fields:\n      title: {ref: {kind: worker-script, field: name}}\n",
+			"fields.title.ref: kind \"worker-script\" is not a Go type name"},
+		{"a reference to a field in capitals",
+			validConfig + "    fields:\n      title: {ref: {kind: WorkerScript, field: Name}}\n",
+			"fields.title.ref: field \"Name\" is not a lowerCamel name"},
+		{"a reference with a validation",
+			validConfig + "    fields:\n      title: {ref: {kind: WorkerScript, field: name}, validation: {maxLength: 2, " +
+				"reason: x}}\n", "fields.title: a reference takes no validation"},
+		{"a reference reported as another field",
+			validConfig + "    fields:\n      title: {ref: {kind: WorkerScript, field: name}, reportedAs: name}\n",
+			"fields.title: a reference takes no reportedAs"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -26,8 +26,8 @@ type kind struct {
 	claimLabel string
 	// specRules are CEL rules on the spec as a whole.
 	specRules []string
-	// spec holds the spec's fields, accountRef first; metadata those of
-	// status.cloudflareMetadata, the ID first.
+	// spec holds the spec's fields, accountRef or zoneRef first; metadata
+	// those of status.cloudflareMetadata, the ID first.
 	spec, metadata []field
 	printColumns   []printColumn
 	// fixed holds the values kflare sends for fields the spec leaves out, by
@@ -38,7 +38,7 @@ type kind struct {
 // field is one field of a generated struct.
 type field struct {
 	// apiName is the field's name in the API, such as title; "" for
-	// accountRef.
+	// accountRef, zoneRef and the zone's ID in status.
 	apiName                  string
 	goName, jsonName, goType string
 	doc                      []string
@@ -50,6 +50,12 @@ type field struct {
 	excluded []string
 	// def is the field's default, as a marker value; "" when there is none.
 	def string
+	// ref, for a spec field that references a resource of another kind,
+	// names what it refers to.
+	ref *refConfig
+	// zoneID marks the field of a zone's kind's status that records its
+	// zone's ID, which the Zone gives rather than the object.
+	zoneID bool
 }
 
 // validation bounds a field's value: a string's length and pattern, or an
@@ -159,35 +165,44 @@ type kindBuilder struct {
 
 func (b *kindBuilder) build() (*kind, error) {
 	e := b.entry
-	if !slices.ContainsFunc(b.svc.create, isAccountID) {
-		return nil, fmt.Errorf("scope account, but New takes no account_id")
+	isParent, parentName := parentParam(e.Scope)
+	if !slices.ContainsFunc(b.svc.create, isParent) {
+		return nil, fmt.Errorf("scope %s, but New takes no %s", e.Scope, parentName)
 	}
 	if err := b.loadSpec(); err != nil {
 		return nil, err
 	}
 	k := &kind{name: e.Kind, shortName: e.ShortName, noun: e.Noun, plural: plural(e.Kind), doc: lines(e.Doc),
 		claimLabel: e.ClaimLabel, fixed: map[string]string{}}
-	k.spec = append(k.spec, field{
+	parent := field{
 		goName: "AccountRef", jsonName: "accountRef", goType: "corev1.LocalObjectReference", immutable: true,
 		doc: []string{
 			fmt.Sprintf("AccountRef references the CloudflareAccount that owns the %s.", e.Noun),
 			"Immutable after creation.",
 		},
-	})
+	}
+	if e.Scope == scopeZone {
+		parent.goName, parent.jsonName = "ZoneRef", zoneRefField
+		parent.doc = append(wrapIndented(fmt.Sprintf("ZoneRef references the Zone, in the same namespace, the %s "+
+			"belongs to.", e.Noun)), "Immutable after creation.")
+	}
+	k.spec = append(k.spec, parent)
 
 	// reported holds the fields of the object that New's params set, by API
 	// name: status holds the object's other fields.
 	reported := map[string]bool{}
 	var specColumns []printColumn
 	for _, f := range b.svc.create {
-		if isAccountID(f) {
+		if isParent(f) {
 			continue
 		}
 		object, err := b.objectCounterpart(f)
 		if err != nil {
 			return nil, err
 		}
-		if object != nil {
+		// Status records the value a reference gives too: the spec holds only
+		// the referenced resource's name.
+		if object != nil && e.Fields[f.apiName].Ref == nil {
 			reported[object.apiName] = true
 		}
 		if value, ok := e.Fixed[f.apiName]; ok {
@@ -227,7 +242,7 @@ func (b *kindBuilder) build() (*kind, error) {
 		specColumns = append(specColumns, column...)
 	}
 	for _, f := range b.svc.update {
-		if f.in != inBody && f.in != inHeader || isAccountID(f) || counterpart(b.svc.create, f) != nil ||
+		if f.in != inBody && f.in != inHeader || isParent(f) || counterpart(b.svc.create, f) != nil ||
 			b.ignored(f.apiName) {
 			continue
 		}
@@ -370,9 +385,16 @@ func (b *kindBuilder) metadata(k *kind, reported map[string]bool) ([]printColumn
 		idColumn = humanize(e.ID.Status)
 	}
 	columns := []printColumn{{name: idColumn, typ: typeString, jsonPath: ".status.cloudflareMetadata." + e.ID.Status}}
+	if e.Scope == scopeZone {
+		k.metadata = append(k.metadata, field{goName: "ZoneID", jsonName: "zoneID", goType: typeString, optional: true,
+			zoneID: true, doc: wrapIndented(fmt.Sprintf("ZoneID is the Cloudflare zone the %s belongs to (denormalized "+
+				"from the Zone status).", e.Noun))})
+	}
 	for _, f := range b.svc.object {
-		// The object's other fields that the spec sets are the spec's.
-		if f.apiName == e.ID.Field || reported[f.apiName] || b.ignored(f.apiName) {
+		// The object's other fields that the spec sets are the spec's. A
+		// zone's kind records its zone's ID from the Zone.
+		if f.apiName == e.ID.Field || reported[f.apiName] || b.ignored(f.apiName) ||
+			e.Scope == scopeZone && f.apiName == zoneIDParam {
 			continue
 		}
 		out, column, err := b.field(f, false)
@@ -464,6 +486,20 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 	if adjusted {
 		b.used[f.apiName] = true
 	}
+	if adjust.Ref != nil {
+		if spec {
+			return b.refField(f, adjust)
+		}
+		// The adjustments are the reference's: status records the value it
+		// gives, and says where it comes from.
+		ref := adjust.Ref
+		adjust = fieldConfig{Doc: fmt.Sprintf("%s is the %s's %s at the last sync: the %s of the %s its %sRef names.",
+			f.goName, b.entry.Noun, f.apiName, ref.Field, ref.Kind, lowerCamel(ref.Kind))}
+		if param := counterpart(b.svc.create, f); param != nil && !param.required {
+			adjust.Doc += fmt.Sprintf(" Empty when the %s has none.", b.entry.Noun)
+		}
+		adjust.Doc = strings.Join(wrapIndented(adjust.Doc), "\n")
+	}
 	if !spec && adjust.Validation != nil {
 		return field{}, nil, fmt.Errorf("fields.%s.validation: only spec fields are validated", f.apiName)
 	}
@@ -525,6 +561,36 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 	var columns []printColumn
 	if adjust.PrintColumn != "" {
 		columns = append(columns, printColumn{name: adjust.PrintColumn, typ: column, jsonPath: parent + out.jsonName})
+	}
+	return out, columns, nil
+}
+
+// refField maps the param f of New, which the entry makes a reference, to a
+// spec field that names a resource of the kind it refers to, in the
+// resource's namespace: <kind>Ref, optional unless New requires f. It takes no
+// validation, which the referenced resource's own value is subject to.
+func (b *kindBuilder) refField(f sdkField, adjust fieldConfig) (field, []printColumn, error) {
+	if f.in != inBody || !isString(f.typ) {
+		return field{}, nil, fmt.Errorf("fields.%s.ref: only a string the request body holds can reference a "+
+			"resource", f.apiName)
+	}
+	ref := adjust.Ref
+	goName := ref.Kind + "Ref"
+	out := field{apiName: f.apiName, goName: goName, jsonName: lowerCamel(goName),
+		goType: "corev1.LocalObjectReference", optional: !f.required, ref: ref}
+	if out.optional {
+		out.goType = "*" + out.goType
+	}
+	doc := adjust.Doc
+	if doc == "" {
+		doc = strings.Join(wrapIndented(fmt.Sprintf("%s references the %s, in the same namespace, whose %s the %s "+
+			"takes as its %s.", goName, ref.Kind, ref.Field, b.entry.Noun, f.apiName)), "\n")
+	}
+	out.doc = lines(doc)
+	var columns []printColumn
+	if adjust.PrintColumn != "" {
+		columns = append(columns, printColumn{name: adjust.PrintColumn, typ: typeString,
+			jsonPath: ".spec." + out.jsonName + ".name"})
 	}
 	return out, columns, nil
 }
@@ -622,7 +688,25 @@ func isAccountID(f sdkField) bool {
 
 // isZoneID reports whether f is the zone_id a call's path takes.
 func isZoneID(f sdkField) bool {
-	return f.in == inPath && f.apiName == "zone_id"
+	return f.in == inPath && f.apiName == zoneIDParam
+}
+
+// zoneIDParam is the name of a zone's ID, in a call's path and in an
+// object, and zoneRefField the spec field of a zone's kind that names its
+// Zone.
+const (
+	zoneIDParam  = "zone_id"
+	zoneRefField = "zoneRef"
+)
+
+// parentParam returns what reports whether a call's param is the ID of a
+// scope's parent, and the param's name: the account_id, or a zone's
+// zone_id.
+func parentParam(scope string) (func(sdkField) bool, string) {
+	if scope == scopeZone {
+		return isZoneID, zoneIDParam
+	}
+	return isAccountID, "account_id"
 }
 
 // isString reports whether t is a string type.

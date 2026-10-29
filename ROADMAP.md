@@ -29,7 +29,7 @@ cosign, and the image comes with SBOMs and provenance (see [Verifying a release]
 Since v0.3.0 every rule kind is generated from Cloudflare's API description, and its fields take the API's names; the
 other kinds written before the generator follow in later releases, which will change their manifests the same way
 (the [changelog](CHANGELOG.md) shows each change, with a manifest before and after). `R2Bucket` is the first of them,
-and gains a bucket's jurisdiction and storage class.
+and gains a bucket's jurisdiction and storage class; `WorkerRoute` follows, its manifests unchanged.
 
 ## Next
 

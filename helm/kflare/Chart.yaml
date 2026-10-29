@@ -207,7 +207,8 @@ annotations:
       kind: WAFCustomRule
       name: wafcustomrules.kflare.dev
       version: v1alpha1
-    - description: WorkerRoute routes requests matching a URL pattern in a zone to a WorkerScript.
+    - description: WorkerRoute routes requests matching a URL pattern in a zone to a WorkerScript,
+        or, without one, excludes the pattern from a broader route.
       displayName: WorkerRoute
       kind: WorkerRoute
       name: workerroutes.kflare.dev
@@ -489,7 +490,9 @@ annotations:
     - apiVersion: kflare.dev/v1alpha1
       kind: WorkerRoute
       metadata:
-        name: example-api-route
+        annotations:
+          kflare.dev/deletion-policy: retain
+        name: example-workerroute
         namespace: default
       spec:
         pattern: example.com/api/*

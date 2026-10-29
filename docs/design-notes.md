@@ -328,7 +328,7 @@ kubectl get workerscript example-worker -o yaml   # check Ready + cloudflareMeta
 #### Branch: `feat/worker-route-controller`
 **Depends on:** `feat/zone-controller`, `feat/worker-script-controller`
 **Merges into:** main
-**Status:** ✅ Complete
+**Status:** ✅ Complete; generated since `feat/generate-worker-route` (below)
 
 - [x] `api/v1alpha1/workerroute_types.go`
   - `spec`: `zoneRef` (immutable, same namespace), `pattern`, optional `workerScriptRef` (same namespace);
@@ -358,6 +358,28 @@ kubectl get workerscript example-worker -o yaml   # check Ready + cloudflareMeta
 - **Deleting a Worker deletes its routes.** The WorkerRoute sees a 404 by ID and recreates the route once the
   WorkerScript is uploaded again (the WorkerScript watch triggers it)
 - Needs the zone-level **Workers Routes: Edit** permission (added to the dev token on 2026-10-05)
+
+**Generated** (`feat/generate-worker-route`, 2026-10-29; [Generate every kind](../CLAUDE.md#generate-every-kind), PRs 9
+and 10 in one, as the user asked for the next pair). Its entry in `generator/generator.yaml` replaces the hand-written
+types and controller, on cloudflare-go v7's `workers.RouteService`. It needed kflare-gen's CRUD kinds of a zone,
+references to resources of another kind (`workerScriptRef`), lists that are never paged (v7's `SinglePage`) and calls
+that each return a type of their own, converted to Get's ([generator/CLAUDE.md](../generator/CLAUDE.md)). The CRD is the
+hand-written one but for descriptions and the pattern's `minLength: 1`, which its pattern already implied (a mutation
+check found it untestable), so v0.3 manifests apply unchanged. Probed on `kflare.dev` that day with a
+`kflare-probe-route` Worker, deleted afterwards with its routes:
+
+- Duplicate pattern 409 (10020), a pattern outside the zone, with a port or empty 400 (10022, "Route pattern must
+  include zone name: kflare.dev"), a missing Worker 400 (10019), all as on 2026-10-05. An unknown route ID is a 404 for
+  GET, PUT and DELETE (now 10007 or 10009), which the shared CRUD reconciler reads as gone
+- PUT replaces the route: without `script` it clears it (`"script": null` back), and `"script": ""` is refused
+  (10019), so an unset `workerScriptRef` sends no script at all. A new pattern moves the route in place, same ID
+- The list has no `result_info` and ignores `page` and `per_page`: one page holds every route of the zone, which v7
+  types as a `SinglePage`. Routes also carry `request_limit_fail_open`, which v7.13.0 does not know
+- A pattern's host is stored as given (`KFLARE-PROBE-ROUTE.kflare.dev` kept its capitals), so nothing drifts. A
+  scheme is stored too (`https://...`); the entry's validation keeps refusing one, as the hand-written CRD did
+- What changed: kflare no longer checks the pattern's host against the Zone before calling Cloudflare, so a pattern
+  outside the zone is Cloudflare's `TerminalError` with the 10022 message rather than `PatternOutsideZone`. A claim on a
+  route counts from a WorkerRoute whose Zone is for the same Cloudflare zone, through any Zone, in any namespace
 
 **Test locally:**
 ```sh

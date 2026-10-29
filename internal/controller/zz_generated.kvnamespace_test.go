@@ -57,9 +57,7 @@ func (f fakeKVNamespaceAPI) List(_ context.Context, params kv.NamespaceListParam
 func (f fakeKVNamespaceAPI) Update(_ context.Context, id string, params kv.NamespaceUpdateParams,
 	_ ...option.RequestOption) (*kv.Namespace, error) {
 	return f.update(params.AccountID.Value, "", id, func(current *kv.Namespace) {
-		if params.Title.Present {
-			current.Title = params.Title.Value
-		}
+		current.Title = params.Title.Value
 	})
 }
 
@@ -84,20 +82,20 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.KVNamespace, KVNamesp
 	newFake:    func(store *fakeCRUDStore[kv.Namespace]) KVNamespaceAPI { return fakeKVNamespaceAPI{store} },
 	defaultAPI: defaultKVNamespaceAPI,
 	service:    &kv.NamespaceService{},
-	newResource: func(key types.NamespacedName, account string) *cloudflarev1alpha1.KVNamespace {
+	newResource: func(key types.NamespacedName, parent string) *cloudflarev1alpha1.KVNamespace {
 		return &cloudflarev1alpha1.KVNamespace{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: cloudflarev1alpha1.KVNamespaceSpec{
-				AccountRef: corev1.LocalObjectReference{Name: account},
+				AccountRef: corev1.LocalObjectReference{Name: parent},
 				Title:      "example-kv",
 			},
 		}
 	},
-	seed: func(id, key string) kv.Namespace { return kv.Namespace{ID: id, Title: key} },
-	created: func(obj *cloudflarev1alpha1.KVNamespace, current *kv.Namespace) bool {
+	seed: func(id, key string, _ map[string]string) kv.Namespace { return kv.Namespace{ID: id, Title: key} },
+	created: func(obj *cloudflarev1alpha1.KVNamespace, _ map[string]string, current *kv.Namespace) bool {
 		return current.Title == obj.Spec.Title
 	},
-	sent: func(obj *cloudflarev1alpha1.KVNamespace, sent any) bool {
+	sent: func(obj *cloudflarev1alpha1.KVNamespace, _ map[string]string, sent any) bool {
 		params := sent.(kv.NamespaceNewParams)
 		return params.Title.Value == obj.Spec.Title
 	},

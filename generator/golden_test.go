@@ -40,21 +40,10 @@ func loadTestSpec(t *testing.T) *apiSpec {
 	return spec
 }
 
-// refusedControllers are the test kinds whose controllers kflare-gen refuses,
-// with what it says: the shared CRUD reconciler cannot drive their services
-// yet.
-var refusedControllers = map[string]string{
-	"TestList": "New returns *rules.ListNewResponse and Get *rules.ListGetResponse: " +
-		"the shared CRUD reconciler needs one object type yet",
-	"TestIPList": "New returns *rules.ListNewResponse and Get *rules.ListGetResponse: " +
-		"the shared CRUD reconciler needs one object type yet",
-}
-
 // goldenFiles generates the kinds of testdata/generator.yaml, each from a
-// real cloudflare-go v7 service, by golden file name: a kind's types, and the
-// controller, envtest table and sample of a kind whose controller kflare-gen
-// does not refuse. It checks that it refuses the others, and why. Its rule
-// kinds, each from a real rule type, and its settings kinds get all four.
+// real cloudflare-go v7 service, by golden file name: a kind's types,
+// controller, envtest table and sample. Its rule kinds, each from a real rule
+// type, and its settings kinds get all four too.
 func goldenFiles(t *testing.T) map[string][]byte {
 	t.Helper()
 	cfg, err := loadConfig(filepath.Join("testdata", "generator.yaml"))
@@ -70,17 +59,6 @@ func goldenFiles(t *testing.T) map[string][]byte {
 			t.Fatal(err)
 		}
 		c, err := buildController(k, entry, svc, spec)
-		if want, refused := refusedControllers[entry.Kind]; refused {
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Errorf("%s's controller: err = %v, want one containing %q", entry.Kind, err, want)
-			}
-			src, err := emitTypes(k, testHeader)
-			if err != nil {
-				t.Fatal(err)
-			}
-			files[filepath.Base(typesFile(strings.ToLower(entry.Kind)))] = src
-			continue
-		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -177,9 +155,9 @@ func TestKindsPutAnBeforeAVowel(t *testing.T) {
 // golden files.
 func TestGolden(t *testing.T) {
 	files := goldenFiles(t)
-	if want := 4 + 2*3 + 5*4 + 4*4; len(files) != want {
-		t.Errorf("generated %d files, want %d: four types files, the controller, specs and sample of two kinds, and "+
-			"the four files of each of five rule kinds and of four settings kinds", len(files), want)
+	if want := 5*4 + 5*4 + 4*4; len(files) != want {
+		t.Errorf("generated %d files, want %d: the four files of each of five CRUD kinds, five rule kinds and four "+
+			"settings kinds", len(files), want)
 	}
 	for name, got := range files {
 		golden := filepath.Join("testdata", name+".golden")
@@ -201,9 +179,9 @@ func TestGolden(t *testing.T) {
 }
 
 // TestGoldenControllerCompiles type-checks the golden controllers and envtest
-// tables of TestKVNamespace, the test rule kinds and the test settings kinds
-// in internal/controller, as if they were generated there, with their golden
-// types in api/v1alpha1.
+// tables of TestKVNamespace, TestList, TestIPList, TestWorkerRoute, the test
+// rule kinds and the test settings kinds in internal/controller, as if they
+// were generated there, with their golden types in api/v1alpha1.
 // controller-gen writes a kind's deepcopy methods, so the test writes the two
 // each kind's types need.
 func TestGoldenControllerCompiles(t *testing.T) {
@@ -219,9 +197,9 @@ func TestGoldenControllerCompiles(t *testing.T) {
 		return src
 	}
 	overlay := map[string][]byte{}
-	for _, kind := range []string{"TestKVNamespace", "TestExecuteRule", "TestSkipRule", "TestCustomRule",
-		"TestManagedRule", "TestRateLimitRule", "TestURLNormalization", "TestManagedTransform", "TestDNSSEC",
-		"TestZoneSettings"} {
+	for _, kind := range []string{"TestKVNamespace", "TestList", "TestIPList", "TestWorkerRoute", "TestExecuteRule",
+		"TestSkipRule", "TestCustomRule", "TestManagedRule", "TestRateLimitRule", "TestURLNormalization",
+		"TestManagedTransform", "TestDNSSEC", "TestZoneSettings"} {
 		lower := strings.ToLower(kind)
 		overlay[filepath.Join(root, typesFile(lower))] = read(filepath.Base(typesFile(lower)))
 		overlay[filepath.Join(root, apiDir, lower+"_deepcopy.go")] = fmt.Appendf(nil, `package v1alpha1
@@ -252,7 +230,9 @@ func (in *%[1]sList) DeepCopyObject() runtime.Object { out := *in; return &out }
 			continue
 		}
 		scope := pkg.Types.Scope()
-		if scope.Lookup("fakeTestKVNamespaceAPI") != nil && scope.Lookup("testExecuteRuleKind") != nil &&
+		if scope.Lookup("fakeTestKVNamespaceAPI") != nil && scope.Lookup("fakeTestListAPI") != nil &&
+			scope.Lookup("fakeTestIPListAPI") != nil && scope.Lookup("fakeTestWorkerRouteAPI") != nil &&
+			scope.Lookup("testExecuteRuleKind") != nil &&
 			scope.Lookup("testSkipRuleKind") != nil && scope.Lookup("testCustomRuleKind") != nil &&
 			scope.Lookup("testManagedRuleKind") != nil &&
 			scope.Lookup("testRateLimitRuleKind") != nil && scope.Lookup("fakeTestURLNormalizationAPI") != nil &&

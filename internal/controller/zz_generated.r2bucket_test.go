@@ -80,28 +80,28 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.R2Bucket, R2BucketAPI
 	newFake:    func(store *fakeCRUDStore[r2.Bucket]) R2BucketAPI { return fakeR2BucketAPI{store} },
 	defaultAPI: defaultR2BucketAPI,
 	service:    &r2.BucketService{},
-	newResource: func(key types.NamespacedName, account string) *cloudflarev1alpha1.R2Bucket {
+	newResource: func(key types.NamespacedName, parent string) *cloudflarev1alpha1.R2Bucket {
 		return &cloudflarev1alpha1.R2Bucket{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: cloudflarev1alpha1.R2BucketSpec{
-				AccountRef: corev1.LocalObjectReference{Name: account},
+				AccountRef: corev1.LocalObjectReference{Name: parent},
 				Name:       "example-bucket",
 			},
 		}
 	},
-	seed: func(_, key string) r2.Bucket {
+	seed: func(_, key string, _ map[string]string) r2.Bucket {
 		return r2.Bucket{
 			Name:         key,
 			StorageClass: r2.BucketStorageClass("Standard"),
 			Jurisdiction: r2.BucketJurisdiction("default"),
 		}
 	},
-	created: func(obj *cloudflarev1alpha1.R2Bucket, current *r2.Bucket) bool {
+	created: func(obj *cloudflarev1alpha1.R2Bucket, _ map[string]string, current *r2.Bucket) bool {
 		return current.Name == obj.Spec.Name &&
 			(obj.Spec.StorageClass == "" || string(current.StorageClass) == obj.Spec.StorageClass) &&
 			(obj.Spec.Jurisdiction == "" || string(current.Jurisdiction) == obj.Spec.Jurisdiction)
 	},
-	sent: func(obj *cloudflarev1alpha1.R2Bucket, sent any) bool {
+	sent: func(obj *cloudflarev1alpha1.R2Bucket, _ map[string]string, sent any) bool {
 		params := sent.(r2.BucketNewParams)
 		return params.Name.Value == obj.Spec.Name &&
 			(obj.Spec.LocationHint == "" || params.LocationHint.Present && string(params.LocationHint.Value) == obj.Spec.LocationHint) &&
