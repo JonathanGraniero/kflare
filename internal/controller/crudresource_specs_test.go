@@ -41,17 +41,23 @@ import (
 // describeCRUDKind runs the shared CRUD reconciler's lifecycle against them:
 // the finalizer, credentials, creation and its claim, an idle reconcile that
 // writes nothing, adoption and its conflict, recreation, updates in place,
-// errors, deletion and the retain policy. It also checks the CRD: every
-// immutable field, and values its validation refuses.
+// errors, deletion, its blockers and the retain policy. It also checks the
+// CRD: every immutable field, and values its validation refuses.
 
 // fakeCRUDStore is an in-memory Cloudflare account's objects of one kind.
 // Each generated fake converts its service's params into calls on it. Like
-// Cloudflare, it returns 404 for an unknown ID and refuses a page larger than
-// pageSize; like cloudflare-go, it refuses a call without an account ID.
+// Cloudflare, it returns 404 for an unknown ID, refuses a page larger than
+// pageSize and a second object under a key that is its ID (an R2 bucket's
+// name), and keeps objects apart by their address (an R2 bucket's
+// jurisdiction); like cloudflare-go, it refuses a call without an account ID.
 type fakeCRUDStore[R any] struct {
-	objects  map[string]R
-	nextID   int
-	pageSize int64
+	// objects are the objects at the address the sample names, scope, by ID;
+	// elsewhere holds those at other addresses, by scope.
+	objects   map[string]R
+	elsewhere map[string]map[string]R
+	scope     string
+	nextID    int
+	pageSize  int64
 
 	createErr, getErr, listErr, updateErr, deleteErr error
 
@@ -60,8 +66,20 @@ type fakeCRUDStore[R any] struct {
 	writes     int
 }
 
-func newFakeCRUDStore[R any](pageSize int64) *fakeCRUDStore[R] {
-	return &fakeCRUDStore[R]{objects: map[string]R{}, pageSize: pageSize}
+func newFakeCRUDStore[R any](pageSize int64, scope string) *fakeCRUDStore[R] {
+	return &fakeCRUDStore[R]{objects: map[string]R{}, elsewhere: map[string]map[string]R{}, scope: scope,
+		pageSize: pageSize}
+}
+
+// at returns the objects at the address scope.
+func (s *fakeCRUDStore[R]) at(scope string) map[string]R {
+	if scope == s.scope {
+		return s.objects
+	}
+	if s.elsewhere[scope] == nil {
+		s.elsewhere[scope] = map[string]R{}
+	}
+	return s.elsewhere[scope]
 }
 
 // account records the account ID a call names.
@@ -78,8 +96,9 @@ func fakeCRUDNotFound(method, accountID, id string) error {
 		"not found")
 }
 
-// create stores the object build returns for a new ID.
-func (s *fakeCRUDStore[R]) create(accountID string, build func(id string) R) (*R, error) {
+// create stores the object build returns at scope, under id, or a new ID
+// when id is empty.
+func (s *fakeCRUDStore[R]) create(accountID, scope, id string, build func(id string) R) (*R, error) {
 	if err := s.account(accountID); err != nil {
 		return nil, err
 	}
@@ -87,30 +106,36 @@ func (s *fakeCRUDStore[R]) create(accountID string, build func(id string) R) (*R
 	if s.createErr != nil {
 		return nil, s.createErr
 	}
-	s.nextID++
-	id := fmt.Sprintf("id-%d", s.nextID)
+	objects := s.at(scope)
+	if id == "" {
+		s.nextID++
+		id = fmt.Sprintf("id-%d", s.nextID)
+	} else if _, taken := objects[id]; taken {
+		return nil, v7APIError(http.MethodPost, fmt.Sprintf("accounts/%s/objects", accountID), http.StatusConflict,
+			1000, "already exists")
+	}
 	object := build(id)
-	s.objects[id] = object
+	objects[id] = object
 	return &object, nil
 }
 
-func (s *fakeCRUDStore[R]) get(accountID, id string) (*R, error) {
+func (s *fakeCRUDStore[R]) get(accountID, scope, id string) (*R, error) {
 	if err := s.account(accountID); err != nil {
 		return nil, err
 	}
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
-	object, ok := s.objects[id]
+	object, ok := s.at(scope)[id]
 	if !ok {
 		return nil, fakeCRUDNotFound(http.MethodGet, accountID, id)
 	}
 	return &object, nil
 }
 
-// fakeList returns a page of s's objects, in the order of their IDs, each
-// as listed shows it.
-func fakeList[R any, L any](s *fakeCRUDStore[R], accountID string, page, perPage int64,
+// fakeList returns a page of s's objects at scope, in the order of their IDs,
+// each as listed shows it.
+func fakeList[R any, L any](s *fakeCRUDStore[R], accountID, scope string, page, perPage int64,
 	listed func(*R) L) (*pagination.V4PagePaginationArray[L], error) {
 	if err := s.account(accountID); err != nil {
 		return nil, err
@@ -123,21 +148,22 @@ func fakeList[R any, L any](s *fakeCRUDStore[R], accountID string, page, perPage
 		return nil, v7APIError(http.MethodGet, fmt.Sprintf("accounts/%s/objects", accountID), http.StatusBadRequest,
 			1000, fmt.Sprintf("per_page must be no greater than %d", s.pageSize))
 	}
-	ids := slices.Sorted(maps.Keys(s.objects))
+	objects := s.at(scope)
+	ids := slices.Sorted(maps.Keys(objects))
 	start := min(max(page-1, 0)*perPage, int64(len(ids)))
 	end := min(start+perPage, int64(len(ids)))
 	res := &pagination.V4PagePaginationArray[L]{
 		ResultInfo: pagination.V4PagePaginationArrayResultInfo{Page: page, PerPage: perPage},
 	}
 	for _, id := range ids[start:end] {
-		object := s.objects[id]
+		object := objects[id]
 		res.Result = append(res.Result, listed(&object))
 	}
 	return res, nil
 }
 
-// update applies apply to the object id.
-func (s *fakeCRUDStore[R]) update(accountID, id string, apply func(*R)) (*R, error) {
+// update applies apply to the object id at scope.
+func (s *fakeCRUDStore[R]) update(accountID, scope, id string, apply func(*R)) (*R, error) {
 	if err := s.account(accountID); err != nil {
 		return nil, err
 	}
@@ -145,16 +171,17 @@ func (s *fakeCRUDStore[R]) update(accountID, id string, apply func(*R)) (*R, err
 	if s.updateErr != nil {
 		return nil, s.updateErr
 	}
-	object, ok := s.objects[id]
+	objects := s.at(scope)
+	object, ok := objects[id]
 	if !ok {
 		return nil, fakeCRUDNotFound(http.MethodPut, accountID, id)
 	}
 	apply(&object)
-	s.objects[id] = object
+	objects[id] = object
 	return &object, nil
 }
 
-func (s *fakeCRUDStore[R]) delete(accountID, id string) error {
+func (s *fakeCRUDStore[R]) delete(accountID, scope, id string) error {
 	if err := s.account(accountID); err != nil {
 		return err
 	}
@@ -162,10 +189,11 @@ func (s *fakeCRUDStore[R]) delete(accountID, id string) error {
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}
-	if _, ok := s.objects[id]; !ok {
+	objects := s.at(scope)
+	if _, ok := objects[id]; !ok {
 		return fakeCRUDNotFound(http.MethodDelete, accountID, id)
 	}
-	delete(s.objects, id)
+	delete(objects, id)
 	return nil
 }
 
@@ -183,13 +211,24 @@ type crudSpecEdit[O any] struct {
 	edit        func(O)
 }
 
+// crudScopeEdit is an edit of a field that names a resource's object in every
+// call, besides the account and the ID, and the fake's scope for the address
+// it leads to.
+type crudScopeEdit[O any] struct {
+	crudSpecEdit[O]
+	scope string
+}
+
 // crudKindSpecs is the table kflare-gen writes for a generated kind.
 type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	kind crudResourceKind[O, A, R, L]
 	// keyField is the spec field a resource adopts an object by, and
-	// pageSize the most objects a page of the list holds.
+	// pageSize the most objects a page of the list holds: 0 for a kind that
+	// never lists. scope is the address of the sample's object, as the fake
+	// keeps objects apart by it.
 	keyField string
 	pageSize int64
+	scope    string
 	// newReconciler returns the kind's reconciler, with newAPI as its
 	// factory: nil for the production one.
 	newReconciler func(c client.Client, newAPI func(string) (A, error)) crudKindReconciler[O, A, R, L]
@@ -208,8 +247,10 @@ type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	// spec that Cloudflare reports, those set at creation only included.
 	created func(obj O, current *R) bool
 	// changes edit each field Update takes, immutable each field it does not
-	// (accountRef first), and invalid set values the CRD refuses.
+	// (accountRef first), and invalid set values the CRD refuses. elsewhere
+	// moves the sample to another address, a field at a time.
 	changes, immutable, invalid []crudSpecEdit[O]
+	elsewhere                   []crudScopeEdit[O]
 }
 
 // describeCRUDKind runs the shared specs on a generated kind's table.
@@ -224,8 +265,20 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			accountName = base + "-account"
 			secretName  = base + "-token"
 			accountID   = "acct-" + base
+			// otherAccountName is a second CloudflareAccount, for claims made
+			// through another one.
+			otherAccountName = base + "-other-account"
 		)
 		ctx := context.Background()
+		// byKey is set for a kind whose objects their key identifies: it reads
+		// them by their key and never lists them.
+		byKey := k.list == nil
+		// addressFields are the fields that name an object besides the account
+		// and the ID.
+		addressFields := map[string]bool{}
+		for _, e := range t.elsewhere {
+			addressFields[e.field] = true
+		}
 
 		var store *fakeCRUDStore[R]
 		var r crudKindReconciler[O, A, R, L]
@@ -281,6 +334,26 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		adopt := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt}
 		adoptOrCreate := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate}
 
+		// seed stores an object with key, as Cloudflare would hold it, under id,
+		// or under its key for a kind whose objects their key identifies, and
+		// returns the ID it is stored under.
+		seed := func(id, key string) string {
+			if byKey {
+				id = key
+			}
+			store.objects[id] = t.seed(id, key)
+			return id
+		}
+
+		// findErr is the error of the call that finds the object a resource
+		// would adopt: the list's, or the read by its key.
+		findErr := func() *error {
+			if byKey {
+				return &store.getErr
+			}
+			return &store.listErr
+		}
+
 		// synced creates a resource and the object it manages.
 		synced := func(annotations map[string]string) string {
 			createAccount(true)
@@ -292,7 +365,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		}
 
 		BeforeEach(func() {
-			store = newFakeCRUDStore[R](t.pageSize)
+			store = newFakeCRUDStore[R](t.pageSize, t.scope)
 			r = t.newReconciler(k8sClient, func(string) (A, error) { return t.newFake(store), nil })
 		})
 
@@ -300,6 +373,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			forceDelete(ctx, k.newObject(), key)
 			forceDelete(ctx, k.newObject(), otherKey)
 			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: accountName})
+			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: otherAccountName})
 			forceDelete(ctx, &corev1.Secret{}, types.NamespacedName{Name: secretName, Namespace: ns})
 		})
 
@@ -339,7 +413,11 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				id := synced(nil)
 				Expect(store.objects).To(HaveKey(id))
 				Expect(store.accountIDs).To(HaveEach(accountID))
-				Expect(store.listPages).To(Equal([]int64{1}), "one page holds every object of the account")
+				if byKey {
+					Expect(store.listPages).To(BeEmpty(), "the "+k.noun+" is read by its "+t.keyField+", never listed")
+				} else {
+					Expect(store.listPages).To(Equal([]int64{1}), "one page holds every object of the account")
+				}
 				Expect(store.writes).To(Equal(1), "the new object is what the spec asks for: nothing to update")
 				obj := get()
 				object := store.objects[id]
@@ -353,8 +431,10 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				createAccount(true)
 				obj := t.newResource(key, accountName)
 				obj.SetFinalizers([]string{reconciler.Finalizer})
+				// The address stays the sample's, where the store's objects are:
+				// the elsewhere specs move it.
 				for _, edit := range slices.Concat(t.changes, t.immutable) {
-					if edit.field != "accountRef" {
+					if edit.field != "accountRef" && !addressFields[edit.field] {
 						edit.edit(obj)
 					}
 				}
@@ -382,30 +462,44 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(store.writes).To(Equal(writes))
 			})
 
-			It("adopts the "+k.noun+" with the same "+t.keyField+" from a later page of the list", func() {
-				createAccount(true)
-				obj := create(key, adopt)
-				// A full first page of other objects; the one to adopt sorts last.
-				for i := range t.pageSize {
-					id := fmt.Sprintf("a-%04d", i)
-					store.objects[id] = t.seed(id, fmt.Sprintf("other-%04d", i))
-				}
-				store.objects["z-last"] = t.seed("z-last", k.key(obj))
-				_, err := reconcileIt()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(store.listPages[:2]).To(Equal([]int64{1, 2}))
-				Expect(store.objects).To(HaveLen(int(t.pageSize)+1), "nothing is created")
-				Expect(k.statusID(get())).To(Equal("z-last"))
-				Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, "z-last"))
-				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
-				Expect(store.writes).To(BeZero(), "the adopted object is what the spec asks for")
-			})
+			if byKey {
+				It("adopts the "+k.noun+" with the same "+t.keyField+" by reading it, without listing", func() {
+					createAccount(true)
+					obj := create(key, adopt)
+					id := seed("", k.key(obj))
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.listPages).To(BeEmpty())
+					Expect(k.statusID(get())).To(Equal(id))
+					Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+					Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+					Expect(store.writes).To(BeZero(), "the adopted object is what the spec asks for")
+				})
+			} else {
+				It("adopts the "+k.noun+" with the same "+t.keyField+" from a later page of the list", func() {
+					createAccount(true)
+					obj := create(key, adopt)
+					// A full first page of other objects; the one to adopt sorts last.
+					for i := range t.pageSize {
+						seed(fmt.Sprintf("a-%04d", i), fmt.Sprintf("other-%04d", i))
+					}
+					seed("z-last", k.key(obj))
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.listPages[:2]).To(Equal([]int64{1, 2}))
+					Expect(store.objects).To(HaveLen(int(t.pageSize)+1), "nothing is created")
+					Expect(k.statusID(get())).To(Equal("z-last"))
+					Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, "z-last"))
+					Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+					Expect(store.writes).To(BeZero(), "the adopted object is what the spec asks for")
+				})
+			}
 
 			It("reports AlreadyExists for a "+k.noun+" with the same "+t.keyField+" without an adoption policy, "+
 				"and leaves it alone", func() {
 				createAccount(true)
 				obj := create(key, nil)
-				store.objects["existing"] = t.seed("existing", k.key(obj))
+				seed("existing", k.key(obj))
 				result, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
@@ -438,7 +532,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(ready().Reason).To(Equal(reasonInvalidAdoptionPolicy))
 				Expect(store.objects).To(BeEmpty(), "nothing is created")
 
-				store.objects["existing"] = t.seed("existing", k.key(obj))
+				seed("existing", k.key(obj))
 				_, err = reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Reason).To(Equal(reasonInvalidAdoptionPolicy))
@@ -475,12 +569,12 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			It("finds the "+k.noun+" it was creating when neither its claim nor its status was recorded", func() {
 				createAccount(true)
 				obj := t.newResource(key, accountName)
-				store.objects["created"] = t.seed("created", k.key(obj))
+				id := seed("created", k.key(obj))
 				create(key, map[string]string{reconciler.CreatingAnnotation: k.key(obj)})
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
-				Expect(k.statusID(get())).To(Equal("created"))
+				Expect(k.statusID(get())).To(Equal(id))
 				Expect(store.writes).To(BeZero(), "nothing is created")
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "it is not adopted")
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
@@ -489,81 +583,196 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			It("finds the "+k.noun+" it claimed when its status was not recorded", func() {
 				createAccount(true)
 				obj := create(key, nil)
-				store.objects["claimed"] = t.seed("claimed", k.key(obj))
-				obj.SetLabels(map[string]string{k.claimLabel: "claimed"})
+				id := seed("claimed", k.key(obj))
+				obj.SetLabels(map[string]string{k.claimLabel: id})
 				Expect(k8sClient.Update(ctx, obj)).To(Succeed())
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
-				Expect(k.statusID(get())).To(Equal("claimed"))
+				Expect(k.statusID(get())).To(Equal(id))
 				Expect(store.writes).To(BeZero())
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
 			})
 
-			It("creates the "+k.noun+" when the one it would adopt is gone before it is read", func() {
-				createAccount(true)
-				obj := create(key, adoptOrCreate)
-				store.objects["listed"] = t.seed("listed", k.key(obj))
-				store.getErr = fakeCRUDNotFound(http.MethodGet, accountID, "listed")
-				_, err := reconcileIt()
-				Expect(err).NotTo(HaveOccurred())
-				id := k.statusID(get())
-				Expect(id).NotTo(Equal("listed"))
-				Expect(store.objects).To(HaveKey(id))
-				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
-				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "it created this one")
-			})
+			if !byKey {
+				It("creates the "+k.noun+" when the one it would adopt is gone before it is read", func() {
+					createAccount(true)
+					obj := create(key, adoptOrCreate)
+					seed("listed", k.key(obj))
+					store.getErr = fakeCRUDNotFound(http.MethodGet, accountID, "listed")
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					id := k.statusID(get())
+					Expect(id).NotTo(Equal("listed"))
+					Expect(store.objects).To(HaveKey(id))
+					Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+					Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "it created this one")
+				})
+			}
 
 			It("returns a failed read of the "+k.noun+" it would adopt for back-off", func() {
 				createAccount(true)
 				obj := create(key, adopt)
-				store.objects["listed"] = t.seed("listed", k.key(obj))
+				seed("listed", k.key(obj))
 				store.getErr = errors.New("unavailable")
 				_, err := reconcileIt()
 				Expect(err).To(MatchError("unavailable"))
 				Expect(store.objects).To(HaveLen(1), "nothing is created")
 			})
 
-			It("reports "+k.conflictReason+" instead of taking over a "+k.noun+" another "+k.name+" manages", func() {
-				createAccount(true)
-				other := create(otherKey, nil)
-				store.objects["taken"] = t.seed("taken", k.key(other))
-				other.SetLabels(map[string]string{k.claimLabel: "taken"})
+			// claimedBy creates, at otherKey, a resource that uses the
+			// CloudflareAccount account and claims the object with the
+			// sample's key, and stores that object.
+			claimedBy := func(account string) {
+				other := t.newResource(otherKey, account)
+				other.SetFinalizers([]string{reconciler.Finalizer})
+				Expect(k8sClient.Create(ctx, other)).To(Succeed())
+				other.SetLabels(map[string]string{k.claimLabel: seed("taken", k.key(other))})
 				Expect(k8sClient.Update(ctx, other)).To(Succeed())
+			}
 
-				create(key, nil)
+			// expectConflict reconciles the resource, and expects it to report
+			// that the resource at otherKey manages its object.
+			expectConflict := func() {
+				GinkgoHelper()
 				result, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
 				Expect(ready().Reason).To(Equal(k.conflictReason))
 				Expect(ready().Message).To(ContainSubstring(otherKey.String()))
 				Expect(store.writes).To(BeZero())
+			}
+
+			// expectAdopted reconciles the resource, and expects it to adopt the
+			// object with the sample's key.
+			expectAdopted := func() {
+				GinkgoHelper()
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready().Status).To(Equal(metav1.ConditionTrue), ready().Message)
+				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+				Expect(store.writes).To(BeZero())
+			}
+
+			It("reports "+k.conflictReason+" instead of taking over a "+k.noun+" another "+k.name+" manages", func() {
+				createAccount(true)
+				claimedBy(accountName)
+				create(key, nil)
+				expectConflict()
 			})
+
+			It("reports "+k.conflictReason+" for a claim made through another CloudflareAccount for the same "+
+				"Cloudflare account", func() {
+				createAccount(true)
+				Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.CloudflareAccount{
+					ObjectMeta: metav1.ObjectMeta{Name: otherAccountName},
+					Spec: cloudflarev1alpha1.CloudflareAccountSpec{
+						AccountID:      accountID,
+						TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: secretName, Namespace: ns, Key: "CF_API_TOKEN"},
+					},
+				})).To(Succeed())
+				claimedBy(otherAccountName)
+				create(key, adopt)
+				expectConflict()
+			})
+
+			It("adopts a "+k.noun+" whose ID a resource claims in another Cloudflare account", func() {
+				createAccount(true)
+				Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.CloudflareAccount{
+					ObjectMeta: metav1.ObjectMeta{Name: otherAccountName},
+					Spec: cloudflarev1alpha1.CloudflareAccountSpec{
+						AccountID:      "acct-elsewhere",
+						TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: secretName, Namespace: ns, Key: "CF_API_TOKEN"},
+					},
+				})).To(Succeed())
+				claimedBy(otherAccountName)
+				create(key, adopt)
+				expectAdopted()
+			})
+
+			It("adopts a "+k.noun+" that a resource whose CloudflareAccount is gone claims", func() {
+				createAccount(true)
+				claimedBy(otherAccountName)
+				create(key, adopt)
+				expectAdopted()
+			})
+
+			// createElsewhere creates the resource with the sample's spec moved
+			// to another address by e, and annotations.
+			createElsewhere := func(e crudScopeEdit[O], annotations map[string]string) O {
+				obj := t.newResource(key, accountName)
+				obj.SetAnnotations(annotations)
+				obj.SetFinalizers([]string{reconciler.Finalizer})
+				e.edit(obj)
+				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+				return obj
+			}
+
+			for _, e := range t.elsewhere {
+				It("adopts the "+k.noun+" with the same "+t.keyField+" after "+e.what+", though another "+k.name+
+					" claims the one at the sample's", func() {
+					createAccount(true)
+					claimedBy(accountName)
+					obj := createElsewhere(e, adopt)
+					id := k.key(obj)
+					if !byKey {
+						id = "elsewhere"
+					}
+					store.at(e.scope)[id] = t.seed(id, k.key(obj))
+					expectAdopted()
+					Expect(k.statusID(get())).To(Equal(id))
+					Expect(store.objects).To(HaveLen(1), "the claimed one is left alone")
+				})
+
+				It("creates its own "+k.noun+" after "+e.what+", rather than adopting the one at the sample's",
+					func() {
+						createAccount(true)
+						seed("existing", k.key(t.newResource(key, accountName)))
+						createElsewhere(e, adoptOrCreate)
+						_, err := reconcileIt()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(ready().Status).To(Equal(metav1.ConditionTrue), ready().Message)
+						Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+						Expect(store.at(e.scope)).To(HaveKey(k.statusID(get())))
+						Expect(store.objects).To(HaveLen(1), "the one at the sample's is left alone")
+					})
+			}
+
+			// An object identified by its key comes back under the same ID;
+			// another kind's under a new one.
+			expectRecreated := func(id string, writes int) {
+				GinkgoHelper()
+				newID := k.statusID(get())
+				Expect(store.writes).To(Equal(writes+1), "one create")
+				if !byKey {
+					Expect(newID).NotTo(Equal(id))
+				}
+				Expect(store.objects).To(HaveKey(newID))
+				Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, newID))
+			}
 
 			It("recreates the "+k.noun+" when it was deleted outside kflare", func() {
 				id := synced(nil)
+				writes := store.writes
 				delete(store.objects, id)
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				newID := k.statusID(get())
-				Expect(newID).NotTo(Equal(id))
-				Expect(store.objects).To(HaveKey(newID))
-				Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, newID))
+				expectRecreated(id, writes)
 			})
 
 			It("recreates an adopted "+k.noun+" deleted outside kflare as its own with adopt-or-create", func() {
 				createAccount(true)
 				obj := create(key, adoptOrCreate)
-				store.objects["existing"] = t.seed("existing", k.key(obj))
+				id := seed("existing", k.key(obj))
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 
-				delete(store.objects, "existing")
+				writes := store.writes
+				delete(store.objects, id)
 				_, err = reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(k.statusID(get())).NotTo(Equal("existing"))
-				Expect(store.objects).To(HaveKey(k.statusID(get())))
+				expectRecreated(id, writes)
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "kflare created this one")
 			})
 
@@ -571,11 +780,11 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				func() {
 					createAccount(true)
 					obj := create(key, adopt)
-					store.objects["existing"] = t.seed("existing", k.key(obj))
+					id := seed("existing", k.key(obj))
 					_, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
 
-					delete(store.objects, "existing")
+					delete(store.objects, id)
 					writes := store.writes
 					_, err = reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
@@ -634,12 +843,12 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			It("returns retryable errors for back-off", func() {
 				createAccount(true)
 				create(key, nil)
-				store.listErr = errors.New("connection reset")
+				*findErr() = errors.New("connection reset")
 				_, err := reconcileIt()
 				Expect(err).To(MatchError("connection reset"))
 				Expect(ready().Reason).To(Equal("APIError"))
 
-				store.listErr = nil
+				*findErr() = nil
 				store.createErr = errors.New("unavailable")
 				_, err = reconcileIt()
 				Expect(err).To(MatchError("unavailable"))
@@ -651,12 +860,12 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				DeferCleanup(func() { SetEventRecorder(nil) })
 				createAccount(true)
 				create(key, nil)
-				store.listErr = errors.New("connection reset")
+				*findErr() = errors.New("connection reset")
 				_, err := reconcileIt()
 				Expect(err).To(MatchError("connection reset"))
 				Expect(recorder.Events).To(Receive(Equal("Warning APIError " + ready().Message)))
 
-				store.listErr = nil
+				*findErr() = nil
 				_, err = reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				cond := ready()
@@ -741,21 +950,22 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			// adopted creates a resource with annotations that adopts an
 			// existing object.
-			adopted := func(annotations map[string]string) {
+			adopted := func(annotations map[string]string) string {
 				createAccount(true)
 				obj := create(key, annotations)
-				store.objects["existing"] = t.seed("existing", k.key(obj))
+				id := seed("existing", k.key(obj))
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(k.statusID(get())).To(Equal("existing"))
+				Expect(k.statusID(get())).To(Equal(id))
+				return id
 			}
 
 			It("keeps a "+k.noun+" it adopted", func() {
-				adopted(adopt)
+				id := adopted(adopt)
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(store.objects).To(HaveKey("existing"))
+				Expect(store.objects).To(HaveKey(id))
 				Expect(store.writes).To(BeZero())
 				expectGone()
 			})
@@ -780,6 +990,33 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(err).NotTo(HaveOccurred())
 				expectGone()
 			})
+
+			for _, blocker := range k.deletionBlockers {
+				It("keeps the "+k.noun+" and reports "+blocker.reason+" while Cloudflare refuses the delete with "+
+					fmt.Sprint(blocker.code)+", and deletes it once Cloudflare no longer does", func() {
+					id := synced(nil)
+					store.deleteErr = v7APIError(http.MethodDelete, "accounts/"+accountID+"/objects/"+id,
+						http.StatusConflict, blocker.code, "refused")
+					startDeletion()
+					result, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval), "the object is not watched")
+					Expect(ready().Reason).To(Equal(blocker.reason))
+					Expect(ready().Message).To(ContainSubstring(k.key(get())))
+					Expect(ready().Message).To(ContainSubstring(blocker.message))
+					Expect(ready().Message).To(ContainSubstring(reconciler.DeletionPolicyAnnotation + ": " +
+						reconciler.DeletionPolicyRetain))
+					Expect(get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+					Expect(store.objects).To(HaveKey(id))
+
+					By("deleting it once Cloudflare takes the delete")
+					store.deleteErr = nil
+					_, err = reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.objects).To(BeEmpty())
+					expectGone()
+				})
+			}
 
 			It("keeps the finalizer when Cloudflare fails, so deletion is retried", func() {
 				synced(nil)

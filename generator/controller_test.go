@@ -163,7 +163,7 @@ func TestBuildControllerRefuses(t *testing.T) {
 		{"a Get that requires more", func(svc *service, _ *kindConfig, _ *apiSpec) {
 			svc.calls["Get"].paramFields = append(svc.calls["Get"].paramFields,
 				sdkField{apiName: "version", in: inQuery, typ: str, required: true})
-		}, "Get requires version, which the shared CRUD reconciler does not set"},
+		}, "Get requires the query parameter version, which the shared CRUD reconciler does not set"},
 		{"a List without per_page", func(svc *service, _ *kindConfig, _ *apiSpec) {
 			svc.calls["List"].paramFields = without(svc.calls["List"].paramFields, "per_page")
 		}, "List takes no per_page number"},
@@ -183,10 +183,11 @@ func TestBuildControllerRefuses(t *testing.T) {
 			svc.calls["Update"].paramFields = svc.update
 			entry.Ignore = map[string]string{"color": "not tested"}
 		}, "Update requires color, which the entry ignores"},
-		{"an Update that requires a header", func(svc *service, _ *kindConfig, _ *apiSpec) {
+		{"an Update that requires an ignored header", func(svc *service, entry *kindConfig, _ *apiSpec) {
 			svc.update = append(svc.update, sdkField{goName: "Version", apiName: "version", in: inHeader, typ: str,
 				required: true})
 			svc.calls["Update"].paramFields = svc.update
+			entry.Ignore = map[string]string{"version": "not tested"}
 		}, "Update requires the header parameter version, which the shared CRUD reconciler does not set"},
 		{"adoption by an unknown field", func(_ *service, entry *kindConfig, _ *apiSpec) { entry.Adopt.By = "name" },
 			"adopt.by: the spec has no field name"},

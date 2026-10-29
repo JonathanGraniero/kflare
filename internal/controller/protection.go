@@ -27,9 +27,9 @@ import (
 // cleanup keeps its finalizer until they are gone, reporting Ready=False with
 // reason InUse meanwhile:
 //
-//   - a CloudflareAccount waits for the Zones, Tunnels, WorkerScripts,
-//     R2Buckets and IPLists that use its credentials, and for the resources
-//     of every kind kflare-gen generates, such as KVNamespaces;
+//   - a CloudflareAccount waits for the Zones, Tunnels, WorkerScripts and
+//     IPLists that use its credentials, and for the resources of every kind
+//     kflare-gen generates, such as KVNamespaces and R2Buckets;
 //   - a Zone waits for its DNSRecords, WorkerRoutes and rules
 //     (the generated rule kinds, such as WAFCustomRules and RateLimitRules),
 //     which need its zone ID and account;
@@ -85,8 +85,6 @@ var (
 			func(t *cloudflarev1alpha1.Tunnel) []string { return []string{t.Spec.AccountRef.Name} }),
 		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
 			func(w *cloudflarev1alpha1.WorkerScript) []string { return []string{w.Spec.AccountRef.Name} }),
-		dependents("R2Bucket", func() client.ObjectList { return &cloudflarev1alpha1.R2BucketList{} },
-			func(b *cloudflarev1alpha1.R2Bucket) []string { return []string{b.Spec.AccountRef.Name} }),
 		dependents("IPList", func() client.ObjectList { return &cloudflarev1alpha1.IPListList{} },
 			func(l *cloudflarev1alpha1.IPList) []string { return []string{l.Spec.AccountRef.Name} }),
 	}, generatedAccountDependents...)
@@ -99,13 +97,6 @@ var (
 		dependents("WorkerRoute", func() client.ObjectList { return &cloudflarev1alpha1.WorkerRouteList{} },
 			func(w *cloudflarev1alpha1.WorkerRoute) []string { return []string{w.Spec.ZoneRef.Name} }),
 	}, generatedZoneDependents...)
-
-	// r2BucketDependents live in an R2Bucket's namespace and bind it through
-	// r2BucketRef.
-	r2BucketDependents = []dependentKind{
-		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
-			boundR2Buckets),
-	}
 
 	// tunnelDependents live in a Tunnel's namespace and reference it by name.
 	tunnelDependents = []dependentKind{

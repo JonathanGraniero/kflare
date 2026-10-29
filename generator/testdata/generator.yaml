@@ -47,19 +47,27 @@ kinds:
       num_items: A number in the OpenAPI spec, not an integer.
       num_referencing_filters: A number in the OpenAPI spec, not an integer.
 
-  # R2Bucket's hand-written CRD, as kflare-gen generates it: TestConstraintsMatchTheHandWrittenCRDs compares the two.
+  # Objects whose key is their ID, an address sent with every call, and a deletion blocker: an R2 bucket is named by
+  # its name, which two buckets share only in different jurisdictions, and Cloudflare refuses to delete one that
+  # holds objects.
   - kind: TestR2Bucket
     service: r2.BucketService
     scope: account
     shortName: testr2
     noun: R2 bucket
-    doc: TestR2Bucket is R2Bucket as kflare-gen generates it.
+    doc: TestR2Bucket is an R2 bucket, named by its name in its jurisdiction.
     id:
       field: name
       status: bucketName
+      printColumn: Bucket
     claimLabel: kflare.dev/test-r2-bucket-name
     adopt:
       by: name
+    deletionBlockers:
+      - code: 10008
+        reason: BucketNotEmpty
+        message: "still holds objects, which kflare never deletes: empty it"
+        why: Cloudflare refuses to delete a bucket that holds objects (409, 10008; verified live 2026-10-07).
     sample:
       name: test-bucket
     fields:
@@ -70,9 +78,11 @@ kinds:
             Names are 3 to 63 characters, not up to 64 as the spec says, and the spec's pattern has no end anchor, so it
             passes a name that ends in a hyphen. Cloudflare took 63 characters and refused 64, a trailing hyphen, a
             capital and an underscore (10005; verified live 2026-10-14).
-    ignore:
-      storageClass: Testing Infrequent Access is billed usage; see Deferred in docs/design-notes.md.
-      cf-r2-jurisdiction: Jurisdictions are not supported yet; see R2Bucket in docs/design-notes.md.
+      cf-r2-jurisdiction:
+        reportedAs: jurisdiction
+        printColumn: Jurisdiction
+      location:
+        printColumn: Location
 
   # IPList's hand-written CRD, as kflare-gen generates it, without the items, which are not part of the list service.
   - kind: TestIPList

@@ -41,6 +41,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&OriginRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the OriginRule controller: %w", err)
 	}
+	if err := (&R2BucketReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the R2Bucket controller: %w", err)
+	}
 	if err := (&RateLimitRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the RateLimitRule controller: %w", err)
 	}
@@ -64,6 +67,8 @@ var generatedAccountDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.D1Database) []string { return []string{obj.Spec.AccountRef.Name} }),
 	dependents("KVNamespace", func() client.ObjectList { return &cloudflarev1alpha1.KVNamespaceList{} },
 		func(obj *cloudflarev1alpha1.KVNamespace) []string { return []string{obj.Spec.AccountRef.Name} }),
+	dependents("R2Bucket", func() client.ObjectList { return &cloudflarev1alpha1.R2BucketList{} },
+		func(obj *cloudflarev1alpha1.R2Bucket) []string { return []string{obj.Spec.AccountRef.Name} }),
 }
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule

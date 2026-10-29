@@ -12,7 +12,9 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // controller is the model of a generated kind's controller, of its envtest
@@ -25,8 +27,13 @@ type controller struct {
 	varName string
 	svc     *service
 	// The calls the shared CRUD reconciler makes. update is nil for a
-	// service that cannot change an object.
+	// service that cannot change an object, and list for a kind whose
+	// objects their key identifies (byKey).
 	create, get, list, update, remove *sdkCall
+	// byKey is set for a kind whose objects have no ID but their key, as an
+	// R2 bucket's name is: a resource reads the object by its key rather than
+	// finding it in the list.
+	byKey bool
 	// object is the type of the Cloudflare object that New, Get and Update
 	// return a pointer to, listed the type of the objects a page of List
 	// holds, and deleteResult the type Delete returns a pointer to.
@@ -36,9 +43,11 @@ type controller struct {
 	pageSize      int64
 	page, perPage sdkField
 	// fields are the spec's fields that the API takes, accountRef left out;
-	// key is the one a resource adopts an object by.
-	fields []apiField
-	key    apiField
+	// key is the one a resource adopts an object by, and address those that
+	// name the object in every call, besides the account and the ID.
+	fields  []apiField
+	key     apiField
+	address []apiField
 	// fixedFields holds the values kflare always sends, as fields without a
 	// spec field.
 	fixedFields []apiField
@@ -50,15 +59,28 @@ type controller struct {
 	listedID, listedKey sdkField
 	// conflictReason is the reason a resource reports when another one
 	// manages the object it would adopt.
-	conflictReason string
-	dependents     []dependentConfig
+	conflictReason   string
+	dependents       []dependentConfig
+	deletionBlockers []deletionBlockerConfig
 	// sample holds the sample's value of each spec field it sets, by API
 	// name.
 	sample map[string]any
+	// scope is the sample's address, as the fake keeps objects apart by it:
+	// its address fields' values, joined by "/".
+	scope string
 	// changes, immutable and invalid are the generated specs' edits of the
 	// sample: a change of each updatable field, of each immutable one, and
-	// values the CRD refuses.
+	// values the CRD refuses. elsewhere moves the sample to another address:
+	// a change of each address field, each with the scope it leads to.
 	changes, immutable, invalid []specEdit
+	elsewhere                   []scopeEdit
+}
+
+// scopeEdit is a change of an address field, and the scope of the address it
+// leads to.
+type scopeEdit struct {
+	specEdit
+	scope string
 }
 
 // apiField is a spec field, or a fixed value, with its counterparts in the
@@ -109,7 +131,8 @@ type controllerBuilder struct {
 
 func (b *controllerBuilder) build() (*controller, error) {
 	k, svc := b.k, b.svc
-	c := &controller{kind: k, varName: lowerCamel(k.name), svc: svc, dependents: b.entry.Dependents}
+	c := &controller{kind: k, varName: lowerCamel(k.name), svc: svc, dependents: b.entry.Dependents,
+		deletionBlockers: b.entry.DeletionBlockers, byKey: b.entry.ID.Field == b.entry.Adopt.By}
 	if err := b.calls(c); err != nil {
 		return nil, err
 	}
@@ -128,10 +151,15 @@ func (b *controllerBuilder) build() (*controller, error) {
 	return c, nil
 }
 
-// calls checks the shape of the calls the shared CRUD reconciler makes.
+// calls checks the shape of the calls the shared CRUD reconciler makes. A
+// kind whose objects their key identifies does not list them.
 func (b *controllerBuilder) calls(c *controller) error {
 	svc := b.svc
-	for _, name := range []string{listMethod, "Delete"} {
+	needed := []string{listMethod, "Delete"}
+	if c.byKey {
+		needed = needed[1:]
+	}
+	for _, name := range needed {
 		if svc.calls[name] == nil {
 			return fmt.Errorf("the service has no %s, which the shared CRUD reconciler calls", name)
 		}
@@ -139,7 +167,10 @@ func (b *controllerBuilder) calls(c *controller) error {
 	if _, ok := svc.pkg.Scope().Lookup("New" + svc.typeName).(*types.Func); !ok {
 		return fmt.Errorf("%s has no New%s to build the service with", svc.pkg.Name(), svc.typeName)
 	}
-	c.create, c.get, c.list, c.remove = svc.calls["New"], svc.calls["Get"], svc.calls["List"], svc.calls["Delete"]
+	c.create, c.get, c.remove = svc.calls["New"], svc.calls["Get"], svc.calls["Delete"]
+	if !c.byKey {
+		c.list = svc.calls["List"]
+	}
 	if svc.updateMethod != "" {
 		c.update = svc.calls[svc.updateMethod]
 	}
@@ -165,11 +196,27 @@ func (b *controllerBuilder) calls(c *controller) error {
 				call.name, typeName(got), typeName(ptr))
 		}
 	}
+	deleted, ok := c.remove.sig.Results().At(0).Type().(*types.Pointer)
+	if !ok {
+		return fmt.Errorf("the service's Delete does not return a pointer")
+	}
+	c.deleteResult = deleted.Elem()
+	// Every call names the account.
+	for _, call := range c.calls() {
+		if !slices.ContainsFunc(call.paramFields, isAccountID) {
+			return fmt.Errorf("%s takes no account_id", call.name)
+		}
+	}
+	if c.byKey {
+		c.listed = c.object
+		return nil
+	}
+
 	got := c.list.sig.Results().At(0).Type()
 	listed, ok := pageElement(got)
 	if !ok {
 		return fmt.Errorf("the service's List returns %s: the shared CRUD reconciler can only page through a "+
-			"pagination.V4PagePaginationArray yet", typeName(got))
+			"pagination.V4PagePaginationArray yet, or read an object by its key (adopt.by the ID)", typeName(got))
 	}
 	if svc.listed == nil {
 		return fmt.Errorf("the service's List returns pages of %s, which kflare-gen cannot read", typeName(listed))
@@ -178,33 +225,13 @@ func (b *controllerBuilder) calls(c *controller) error {
 	if c.listedID, ok = listedField(svc, b.entry.ID.Field); !ok {
 		return fmt.Errorf("the objects List returns have no %s, the ID", b.entry.ID.Field)
 	}
-	deleted, ok := c.remove.sig.Results().At(0).Type().(*types.Pointer)
-	if !ok {
-		return fmt.Errorf("the service's Delete does not return a pointer")
-	}
-	c.deleteResult = deleted.Elem()
-
-	// Every call names the account. The reconciler sets nothing else in
-	// Get's, List's and Delete's params, except List's page.
-	for _, call := range c.calls() {
-		if !slices.ContainsFunc(call.paramFields, isAccountID) {
-			return fmt.Errorf("%s takes no account_id", call.name)
-		}
-	}
-	for _, call := range []*sdkCall{c.get, c.list, c.remove} {
-		for _, f := range call.paramFields {
-			if f.required && !isAccountID(f) {
-				return fmt.Errorf("%s requires %s, which the shared CRUD reconciler does not set", call.name, f.apiName)
-			}
-		}
-	}
-	for _, name := range []string{"page", "per_page"} {
+	for _, name := range []string{pageParam, perPageParam} {
 		i := slices.IndexFunc(c.list.paramFields, func(f sdkField) bool { return f.in == inQuery && f.apiName == name })
 		if i < 0 || !isNumber(c.list.paramFields[i].typ) {
 			return fmt.Errorf("the service's List takes no %s number, which the shared CRUD reconciler pages with",
 				name)
 		}
-		if name == "page" {
+		if name == pageParam {
 			c.page = c.list.paramFields[i]
 		} else {
 			c.perPage = c.list.paramFields[i]
@@ -215,14 +242,56 @@ func (b *controllerBuilder) calls(c *controller) error {
 	return err
 }
 
+// pageParam and perPageParam are the query parameters of a List that ask for
+// a page.
+const (
+	pageParam    = "page"
+	perPageParam = "per_page"
+)
+
 // calls returns the calls the shared CRUD reconciler makes, in the order the
 // narrow interface declares them.
 func (c *controller) calls() []*sdkCall {
-	calls := []*sdkCall{c.create, c.get, c.list}
+	calls := []*sdkCall{c.create, c.get}
+	if c.list != nil {
+		calls = append(calls, c.list)
+	}
 	if c.update != nil {
 		calls = append(calls, c.update)
 	}
 	return append(calls, c.remove)
+}
+
+// addressParam returns call's param that carries the address field af.
+func addressParam(call *sdkCall, af apiField) *sdkField {
+	return counterpart(call.paramFields, *af.create)
+}
+
+// sets reports whether the reconciler sets call's param p: the account, a
+// field's param, the address, or List's page.
+func (c *controller) sets(call *sdkCall, p sdkField) bool {
+	if isAccountID(p) {
+		return true
+	}
+	if call == c.list && p.in == inQuery && (p.apiName == pageParam || p.apiName == perPageParam) {
+		return true
+	}
+	for _, af := range slices.Concat(c.fields, c.fixedFields) {
+		var param *sdkField
+		switch call {
+		case c.create:
+			param = af.create
+		case c.update:
+			param = af.update
+		}
+		if param != nil && param.goName == p.goName {
+			return true
+		}
+	}
+	return slices.ContainsFunc(c.address, func(af apiField) bool {
+		q := addressParam(call, af)
+		return q != nil && q.goName == p.goName
+	})
 }
 
 // checkShape checks that a call takes (ctx, params, opts...), or (ctx, id
@@ -249,52 +318,64 @@ func listedField(svc *service, apiName string) (sdkField, bool) {
 }
 
 // fields pairs each spec field and fixed value with the params that set it
-// and the object's field that reports it.
+// and the object's field that reports it, and checks that the reconciler
+// sets every param a call requires.
 func (b *controllerBuilder) fields(c *controller) error {
-	byName := func(fields []sdkField, apiName string) *sdkField {
-		i := slices.IndexFunc(fields, func(f sdkField) bool { return f.in == inBody && f.apiName == apiName })
-		if i < 0 {
-			return nil
-		}
-		return &fields[i]
-	}
 	var update []sdkField
 	if c.update != nil {
 		update = c.update.paramFields
 	}
-	pair := func(f apiField) apiField {
-		f.create, f.update, f.object = byName(c.create.paramFields, f.apiName), byName(update, f.apiName),
-			byName(b.svc.object, f.apiName)
-		return f
+	pair := func(f apiField) (apiField, error) {
+		i := slices.IndexFunc(c.create.paramFields, func(p sdkField) bool { return p.apiName == f.apiName })
+		if i < 0 {
+			return f, nil
+		}
+		f.create = &c.create.paramFields[i]
+		if !isAddress(b.svc, *f.create) {
+			f.update = counterpart(update, *f.create)
+		}
+		var err error
+		f.object, err = objectCounterpart(b.svc, b.entry, *f.create)
+		return f, err
 	}
 	for _, f := range c.spec[1:] {
-		af := pair(apiField{field: f})
+		af, err := pair(apiField{field: f})
+		if err != nil {
+			return err
+		}
 		if af.update != nil && af.object == nil {
 			return fmt.Errorf("%s can be updated, but Get's object does not report it, so drift in it would go "+
 				"unseen; ignore it with a reason", f.apiName)
 		}
 		c.fields = append(c.fields, af)
+		if isAddress(b.svc, *af.create) {
+			c.address = append(c.address, af)
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.fixed)) {
-		c.fixedFields = append(c.fixedFields, pair(apiField{field: field{apiName: name}, fixed: c.fixed[name]}))
+		af, err := pair(apiField{field: field{apiName: name}, fixed: c.fixed[name]})
+		if err != nil {
+			return err
+		}
+		c.fixedFields = append(c.fixedFields, af)
 	}
 	// An Update that takes nothing kflare sends is never called: a D1
 	// database's takes only its read replication.
 	if !slices.ContainsFunc(slices.Concat(c.fields, c.fixedFields), func(af apiField) bool { return af.update != nil }) {
-		c.update, update = nil, nil
+		c.update = nil
 	}
-	// Update may take a param kflare does not send only when it is optional.
-	for _, f := range update {
-		if !f.required || isAccountID(f) {
-			continue
-		}
-		if f.in != inBody {
+	// A call may take a param the reconciler does not set only when it is
+	// optional.
+	for _, call := range c.calls() {
+		for _, f := range call.paramFields {
+			if !f.required || c.sets(call, f) {
+				continue
+			}
+			if call == c.update && f.in == inBody {
+				return fmt.Errorf("%s requires %s, which the entry ignores", call.name, f.apiName)
+			}
 			return fmt.Errorf("%s requires the %s parameter %s, which the shared CRUD reconciler does not set",
-				c.update.name, f.in, f.apiName)
-		}
-		_, fixed := c.fixed[f.apiName]
-		if !fixed && !slices.ContainsFunc(c.fields, func(af apiField) bool { return af.apiName == f.apiName }) {
-			return fmt.Errorf("%s requires %s, which the entry ignores", c.update.name, f.apiName)
+				call.name, f.in, f.apiName)
 		}
 	}
 	return nil
@@ -325,12 +406,16 @@ func (b *controllerBuilder) adoption(c *controller) error {
 	case c.fields[i].object == nil:
 		return fmt.Errorf("adopt.by: Get's object does not report %s", by)
 	}
+	c.key = c.fields[i]
+	c.conflictReason = c.key.goName + "Conflict"
+	if c.byKey {
+		// The key is the ID: Get, Update and Delete name the object by it.
+		return nil
+	}
 	var ok bool
 	if c.listedKey, ok = listedField(b.svc, by); !ok {
 		return fmt.Errorf("adopt.by: the objects List returns do not report %s", by)
 	}
-	c.key = c.fields[i]
-	c.conflictReason = c.key.goName + "Conflict"
 	return nil
 }
 
@@ -353,10 +438,19 @@ func (b *controllerBuilder) sample(c *controller) error {
 		}
 		c.sample[name] = value
 	}
+	var scope []string
 	for _, f := range c.fields {
 		value, set := c.sample[f.apiName]
 		if !set && !f.optional {
 			return fmt.Errorf("sample.%s: the field is required, so the sample sets it", f.apiName)
+		}
+		// A field the sample leaves unset holds its default, once the API
+		// server has applied it.
+		if !set && f.def != "" {
+			var err error
+			if value, err = defaultValue(f.field); err != nil {
+				return fmt.Errorf("%s's default: %w", f.apiName, err)
+			}
 		}
 		// A field that cannot be updated is immutable: the generated specs
 		// check that the CRD refuses a change, or else that the reconciler
@@ -366,7 +460,7 @@ func (b *controllerBuilder) sample(c *controller) error {
 			return fmt.Errorf("sample.%s: %w; the generated specs change it, so the sample sets it", f.apiName, err)
 		}
 		edit := specEdit{f: f.field, value: other, what: "changing " + f.jsonName}
-		if !set {
+		if value == nil {
 			edit.what = "setting " + f.jsonName
 		}
 		if f.immutable {
@@ -375,8 +469,36 @@ func (b *controllerBuilder) sample(c *controller) error {
 			c.changes = append(c.changes, edit)
 		}
 		c.invalid = append(c.invalid, invalidValues(f.field)...)
+		if slices.ContainsFunc(c.address, func(af apiField) bool { return af.apiName == f.apiName }) {
+			if f.goType != typeString {
+				return fmt.Errorf("%s names the object in every call, so it is a string", f.apiName)
+			}
+			current, _ := value.(string)
+			scope = append(scope, current)
+			c.elsewhere = append(c.elsewhere, scopeEdit{specEdit: edit, scope: other.(string)})
+		}
+	}
+	c.scope = strings.Join(scope, "/")
+	for i := range c.elsewhere {
+		// The other address fields keep the sample's values.
+		parts := slices.Clone(scope)
+		parts[i] = c.elsewhere[i].scope
+		c.elsewhere[i].scope = strings.Join(parts, "/")
 	}
 	return nil
+}
+
+// defaultValue returns the default of f, as a sample gives a value.
+func defaultValue(f field) (any, error) {
+	switch strings.TrimPrefix(f.goType, "*") {
+	case typeString:
+		return strconv.Unquote(f.def)
+	case typeBool:
+		return strconv.ParseBool(f.def)
+	case typeInt64:
+		return strconv.ParseInt(f.def, 10, 64)
+	}
+	return nil, fmt.Errorf("a %s has no default kflare-gen reads", f.goType)
 }
 
 // sampleValue checks a sample's value for f, as YAML gives it, against f's
@@ -537,9 +659,16 @@ func invalidValues(f field) []specEdit {
 	return out
 }
 
-// article returns name after the article a or an, by its first letter.
+// article returns name after the article a or an: an before a vowel, and
+// before an initialism read letter by letter whose first letter sounds like
+// one (an R2 bucket, an HTTP header).
 func article(name string) string {
-	if name != "" && strings.ContainsRune("aeiouAEIOU", rune(name[0])) {
+	switch {
+	case name == "":
+	case strings.ContainsRune("aeiouAEIOU", rune(name[0])):
+		return "an " + name
+	case len(name) > 1 && strings.ContainsRune("FHLMNRSX", rune(name[0])) &&
+		(unicode.IsUpper(rune(name[1])) || unicode.IsDigit(rune(name[1]))):
 		return "an " + name
 	}
 	return "a " + name

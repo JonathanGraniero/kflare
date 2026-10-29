@@ -185,9 +185,11 @@ func emitController(c *controller, header string) ([]byte, error) {
 	ctx := f.use("context", "context")
 	client := f.use(clientPackage, "client")
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sListPageSize is how many %s a page of the list asks for: the most "+
-		"the OpenAPI spec allows.", v, pluralOf(c.noun))))
-	f.printf("const %sListPageSize = %d\n\n", v, c.pageSize)
+	if c.list != nil {
+		comment(&f.Builder, "", wrap(fmt.Sprintf("%sListPageSize is how many %s a page of the list asks for: the "+
+			"most the OpenAPI spec allows.", v, pluralOf(c.noun))))
+		f.printf("const %sListPageSize = %d\n\n", v, c.pageSize)
+	}
 
 	comment(&f.Builder, "", wrap(fmt.Sprintf("%s is the part of cloudflare-go v7's %s that the %s reconciler calls. "+
 		"Tests inject a fake; in production it is a *%s.", api, service, name, service)))
@@ -218,6 +220,13 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("accountRef: func(obj %s) string { return obj.Spec.AccountRef.Name },\n", obj)
 	f.printf("key: func(obj %s) string { return obj.Spec.%s },\n", obj, c.key.goName)
 	f.printf("claimLabel: %s.%sIDLabel,\nconflictReason: %q,\n", f.api(), name, c.conflictReason)
+	if len(c.address) > 0 {
+		values := make([]string, 0, len(c.address))
+		for _, af := range c.address {
+			values = append(values, "obj.Spec."+af.goName)
+		}
+		f.printf("address: func(obj %s) []string { return []string{%s} },\n", obj, strings.Join(values, ", "))
+	}
 	f.printf("statusID: func(obj %s) string {\nreturn obj.Status.CloudflareMetadata.%s\n},\n", obj,
 		c.status[0].goName)
 	f.printf("observe: func(obj %s, current *%s) {\n", obj, object)
@@ -240,63 +249,31 @@ func emitController(c *controller, header string) ([]byte, error) {
 	} else {
 		f.printf("matches: func(obj %s, current *%s) bool {\nreturn %s\n},\n", obj, object, matches)
 	}
-	listedID, err := f.convert("listed."+c.listedID.goName, c.listedID.typ, types.Typ[types.String])
-	if err != nil {
-		return nil, fmt.Errorf("%s: the listed ID: %w", name, err)
-	}
-	listedKey, err := f.convert("listed."+c.listedKey.goName, c.listedKey.typ, types.Typ[types.String])
-	if err != nil {
-		return nil, fmt.Errorf("%s: adopt.by: %w", name, err)
-	}
-	f.printf("listedID: func(listed *%s) string { return %s },\n", listed, listedID)
-	f.printf("listedKey: func(listed *%s) string { return %s },\n\n", listed, listedKey)
-
-	f.printf("get: func(ctx %s.Context, api %s, accountID, id string) (*%s, error) {\n", ctx, api, object)
-	if err := callBody(f, c, c.get, nil, "return api.Get(ctx, id, params)"); err != nil {
-		return nil, err
-	}
-	f.printf("},\nlist: func(ctx %s.Context, api %s, accountID string,\npage int64) (%s, error) {\n", ctx, api,
-		f.typ(c.list.sig.Results().At(0).Type()))
-	page, err := f.convert("page", types.Typ[types.Int64], c.page.typ)
-	if err != nil {
-		return nil, fmt.Errorf("%s: List's page: %w", name, err)
-	}
-	listParams := []string{
-		fmt.Sprintf("params.%s.Value, params.%s.Present = %s, true", c.page.goName, c.page.goName, page),
-		fmt.Sprintf("params.%s.Value, params.%s.Present = %sListPageSize, true", c.perPage.goName, c.perPage.goName,
-			v),
-	}
-	if err := callBody(f, c, c.list, listParams, "return api.List(ctx, params)"); err != nil {
-		return nil, err
-	}
-	f.printf("},\ncreate: func(ctx %s.Context, api %s, accountID string,\nobj %s) (*%s, error) {\n", ctx, api, obj,
-		object)
-	createParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.create })
-	if err != nil {
-		return nil, fmt.Errorf("%s: New: %w", name, err)
-	}
-	if err := callBody(f, c, c.create, createParams, "return api.New(ctx, params)"); err != nil {
-		return nil, err
-	}
-	f.printf("},\n")
-	if c.update != nil {
-		f.printf("update: func(ctx %s.Context, api %s, accountID, id string,\nobj %s) (*%s, error) {\n", ctx, api,
-			obj, object)
-		updateParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.update })
+	if c.list != nil {
+		listedID, err := f.convert("listed."+c.listedID.goName, c.listedID.typ, types.Typ[types.String])
 		if err != nil {
-			return nil, fmt.Errorf("%s: %s: %w", name, c.update.name, err)
+			return nil, fmt.Errorf("%s: the listed ID: %w", name, err)
 		}
-		if err := callBody(f, c, c.update, updateParams, fmt.Sprintf("return api.%s(ctx, id, params)",
-			c.update.name)); err != nil {
-			return nil, err
+		listedKey, err := f.convert("listed."+c.listedKey.goName, c.listedKey.typ, types.Typ[types.String])
+		if err != nil {
+			return nil, fmt.Errorf("%s: adopt.by: %w", name, err)
+		}
+		f.printf("listedID: func(listed *%s) string { return %s },\n", listed, listedID)
+		f.printf("listedKey: func(listed *%s) string { return %s },\n", listed, listedKey)
+	}
+	f.printf("\n")
+
+	if err := emitCalls(f, c, api, obj, object); err != nil {
+		return nil, err
+	}
+	if len(c.deletionBlockers) > 0 {
+		f.printf("\ndeletionBlockers: []deletionBlocker{\n")
+		for _, b := range c.deletionBlockers {
+			comment(&f.Builder, "\t", wrapIndented(b.Why))
+			f.printf("{code: %d, reason: %q,\nmessage: %q},\n", b.Code, b.Reason, b.Message)
 		}
 		f.printf("},\n")
 	}
-	f.printf("delete: func(ctx %s.Context, api %s, accountID, id string) error {\n", ctx, api)
-	if err := callBody(f, c, c.remove, nil, "_, err := api.Delete(ctx, id, params)\nreturn err"); err != nil {
-		return nil, err
-	}
-	f.printf("},\n")
 	if len(c.dependents) > 0 {
 		f.printf("\ndependents: %sDependents,\n", v)
 	}
@@ -344,6 +321,82 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("client, err := %s.New(token)\nif err != nil {\nreturn nil, err\n}\n", f.use(cfPackage, "cfpkg"))
 	f.printf("return %s.New%s(client.V7Options()...), nil\n}\n", svcPkg, c.svc.typeName)
 	return f.source(header)
+}
+
+// emitCalls writes the descriptor's calls to Cloudflare: each builds its
+// params from the account, the resource and the address, and calls the
+// narrow interface api.
+func emitCalls(f *goFile, c *controller, api, obj, object string) error {
+	name, v := c.name, c.varName
+	ctx := f.use("context", "context")
+	getParams, err := addressStatements(f, c, c.get)
+	if err != nil {
+		return err
+	}
+	f.printf("get: func(ctx %s.Context, api %s, %s %s,\naccountID, id string) (*%s, error) {\n", ctx, api,
+		objParam(getParams), obj, object)
+	if err := callBody(f, c, c.get, getParams, "return api.Get(ctx, id, params)"); err != nil {
+		return err
+	}
+	f.printf("},\n")
+	if c.list != nil {
+		page, err := f.convert("page", types.Typ[types.Int64], c.page.typ)
+		if err != nil {
+			return fmt.Errorf("%s: List's page: %w", name, err)
+		}
+		listParams, err := addressStatements(f, c, c.list)
+		if err != nil {
+			return err
+		}
+		f.printf("list: func(ctx %s.Context, api %s, %s %s,\naccountID string, page int64) (%s, error) {\n", ctx,
+			api, objParam(listParams), obj, f.typ(c.list.sig.Results().At(0).Type()))
+		listParams = append(listParams,
+			fmt.Sprintf("params.%s.Value, params.%s.Present = %s, true", c.page.goName, c.page.goName, page),
+			fmt.Sprintf("params.%s.Value, params.%s.Present = %sListPageSize, true", c.perPage.goName,
+				c.perPage.goName, v))
+		if err := callBody(f, c, c.list, listParams, "return api.List(ctx, params)"); err != nil {
+			return err
+		}
+		f.printf("},\n")
+	}
+	f.printf("create: func(ctx %s.Context, api %s, accountID string,\nobj %s) (*%s, error) {\n", ctx, api, obj,
+		object)
+	createParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.create })
+	if err != nil {
+		return fmt.Errorf("%s: New: %w", name, err)
+	}
+	if err := callBody(f, c, c.create, createParams, "return api.New(ctx, params)"); err != nil {
+		return err
+	}
+	f.printf("},\n")
+	if c.update != nil {
+		f.printf("update: func(ctx %s.Context, api %s, obj %s,\naccountID, id string) (*%s, error) {\n", ctx, api,
+			obj, object)
+		updateParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.update })
+		if err != nil {
+			return fmt.Errorf("%s: %s: %w", name, c.update.name, err)
+		}
+		address, err := addressStatements(f, c, c.update)
+		if err != nil {
+			return err
+		}
+		if err := callBody(f, c, c.update, append(address, updateParams...),
+			fmt.Sprintf("return api.%s(ctx, id, params)", c.update.name)); err != nil {
+			return err
+		}
+		f.printf("},\n")
+	}
+	deleteParams, err := addressStatements(f, c, c.remove)
+	if err != nil {
+		return err
+	}
+	f.printf("delete: func(ctx %s.Context, api %s, %s %s,\naccountID, id string) error {\n", ctx, api,
+		objParam(deleteParams), obj)
+	if err := callBody(f, c, c.remove, deleteParams, "_, err := api.Delete(ctx, id, params)\nreturn err"); err != nil {
+		return err
+	}
+	f.printf("},\n")
+	return nil
 }
 
 // interfaceMethod declares call as the narrow interface does, with the SDK's
@@ -399,44 +452,66 @@ func paramStatements(f *goFile, c *controller, param func(apiField) *sdkField) (
 		if p == nil {
 			continue
 		}
-		set := func(value string, from types.Type) (string, error) {
-			converted, err := f.convert(value, from, p.typ)
-			if err != nil {
-				return "", fmt.Errorf("%s: %w", af.apiName, err)
-			}
-			return fmt.Sprintf("params.%s.Value, params.%s.Present = %s, true", p.goName, p.goName, converted), nil
+		s, err := assignParam(f, af, p)
+		if err != nil {
+			return nil, err
 		}
-		if af.goName == "" {
-			s, err := set(strconv.Quote(af.fixed), types.Typ[types.String])
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, s)
-			continue
-		}
-		spec := "obj.Spec." + af.goName
-		switch {
-		case !af.optional:
-			s, err := set(spec, specType(af.field))
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, s)
-		case strings.HasPrefix(af.goType, "*"):
-			s, err := set("*"+spec, specType(af.field))
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, fmt.Sprintf("if %s != nil {\n%s\n}", spec, s))
-		default:
-			s, err := set(spec, specType(af.field))
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, fmt.Sprintf("if %s != \"\" {\n%s\n}", spec, s))
-		}
+		out = append(out, s)
 	}
 	return out, nil
+}
+
+// addressStatements returns the statements that set call's params that
+// carry the object's address, from the spec.
+func addressStatements(f *goFile, c *controller, call *sdkCall) ([]string, error) {
+	var out []string
+	for _, af := range c.address {
+		p := addressParam(call, af)
+		if p == nil {
+			continue
+		}
+		s, err := assignParam(f, af, p)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %s: %w", c.name, call.name, err)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// assignParam returns the statement that sets the param p from the spec
+// field or fixed value af: an optional field's only when the spec sets it.
+func assignParam(f *goFile, af apiField, p *sdkField) (string, error) {
+	set := func(value string, from types.Type) (string, error) {
+		converted, err := f.convert(value, from, p.typ)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", af.apiName, err)
+		}
+		return fmt.Sprintf("params.%s.Value, params.%s.Present = %s, true", p.goName, p.goName, converted), nil
+	}
+	if af.goName == "" {
+		return set(strconv.Quote(af.fixed), types.Typ[types.String])
+	}
+	spec := "obj.Spec." + af.goName
+	switch {
+	case !af.optional:
+		return set(spec, specType(af.field))
+	case strings.HasPrefix(af.goType, "*"):
+		s, err := set("*"+spec, specType(af.field))
+		return fmt.Sprintf("if %s != nil {\n%s\n}", spec, s), err
+	default:
+		s, err := set(spec, specType(af.field))
+		return fmt.Sprintf("if %s != \"\" {\n%s\n}", spec, s), err
+	}
+}
+
+// objParam names a call's resource parameter: obj when its statements read
+// the spec, _ when they do not.
+func objParam(statements []string) string {
+	if len(statements) == 0 {
+		return "_"
+	}
+	return "obj"
 }
 
 // matchesExpr returns the expression that reports whether the object current
@@ -494,10 +569,18 @@ func kindDoc(c *controller) string {
 			updatable = append(updatable, af.jsonName)
 		}
 	}
+	same := make([]string, 0, 1+len(c.address))
+	same = append(same, c.key.jsonName)
+	for _, af := range c.address {
+		same = append(same, af.jsonName)
+	}
 	var doc strings.Builder
-	fmt.Fprintf(&doc, "%sKind describes %s to the shared CRUD reconciler. A %s creates its %s or, as its "+
+	fmt.Fprintf(&doc, "%sKind describes %s to the shared CRUD reconciler. %s creates its %s or, as its "+
 		"adoption policy allows, adopts the account's %s with the same %s, unless another %s manages it.",
-		c.varName, pluralOf(c.name), c.name, c.noun, c.noun, c.key.jsonName, c.name)
+		c.varName, pluralOf(c.name), upperCamel(article(c.name)), c.noun, c.noun, prose(same), c.name)
+	if c.byKey {
+		fmt.Fprintf(&doc, " The %s has no ID but its %s, by which it is read.", c.noun, c.key.jsonName)
+	}
 	if len(updatable) > 0 {
 		fmt.Fprintf(&doc, " It changes %s in place.", prose(updatable))
 	}
@@ -509,10 +592,14 @@ func kindDoc(c *controller) string {
 		fmt.Fprintf(&doc, " %s %s set when the %s is created and cannot change.", upperCamel(prose(immutable)),
 			verb, c.noun)
 	}
-	fmt.Fprintf(&doc, " A %s deleted outside kflare is created again.", c.noun)
+	fmt.Fprintf(&doc, " %s deleted outside kflare is created again.", upperCamel(article(c.noun)))
+	for _, b := range c.deletionBlockers {
+		fmt.Fprintf(&doc, " While Cloudflare refuses to delete the %s with %d, the %s keeps its finalizer and "+
+			"reports %s.", c.noun, b.Code, c.name, b.Reason)
+	}
 	for _, d := range c.dependents {
-		fmt.Fprintf(&doc, " A %s waits for the %s that use it before it is deleted: %s", c.name, pluralOf(d.Kind),
-			strings.TrimSpace(d.Reason))
+		fmt.Fprintf(&doc, " %s waits for the %s that use it before it is deleted: %s", upperCamel(article(c.name)),
+			pluralOf(d.Kind), strings.TrimSpace(d.Reason))
 	}
 	return doc.String()
 }
@@ -526,82 +613,21 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	name, v := c.name, c.varName
 	api, fake := name+"API", "fake"+name+"API"
 	object, listed := f.typ(c.object), f.typ(c.listed)
-	ctx := f.use("context", "context")
-	opts := f.typ(c.create.sig.Params().At(c.create.sig.Params().Len() - 1).Type().(*types.Slice).Elem())
 	obj := "*" + f.api() + "." + name
-	params := func(call *sdkCall) string { return f.typ(call.params) }
-	account := func(call *sdkCall) string {
-		return "params." + call.paramFields[slices.IndexFunc(call.paramFields, isAccountID)].goName + ".Value"
+	if err := emitFake(f, c); err != nil {
+		return nil, err
 	}
-
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%s is an in-memory %s for %s's generated specs: it keeps one "+
-		"account's %s in a fakeCRUDStore.", fake, c.svc.name, name, pluralOf(c.noun))))
-	f.printf("type %s struct {\n*fakeCRUDStore[%s]\n}\n\nvar _ %s = %s{}\n\n", fake, object, api, fake)
-
-	var fields []string
-	fields = append(fields, fmt.Sprintf("%s: id", c.id.goName))
-	for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
-		if af.create == nil || af.object == nil || af.object.goName == c.id.goName {
-			continue
-		}
-		value, err := f.convert("params."+af.create.goName+".Value", af.create.typ, af.object.typ)
-		if err != nil {
-			return nil, fmt.Errorf("%s: the fake's New: %s: %w", name, af.apiName, err)
-		}
-		fields = append(fields, fmt.Sprintf("%s: %s", af.object.goName, value))
-	}
-	f.printf("func (f %s) New(_ %s.Context, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx, params(c.create), opts,
-		object)
-	f.printf("return f.create(%s, func(id string) %s {\nreturn %s\n})\n}\n\n", account(c.create), object,
-		compositeLiteral(object, fields))
-
-	f.printf("func (f %s) Get(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,
-		params(c.get), opts, object)
-	f.printf("return f.get(%s, id)\n}\n\n", account(c.get))
-
-	page, err := f.convert("params."+c.page.goName+".Value", c.page.typ, types.Typ[types.Int64])
-	if err != nil {
-		return nil, fmt.Errorf("%s: the fake's List: %w", name, err)
-	}
-	perPage, err := f.convert("params."+c.perPage.goName+".Value", c.perPage.typ, types.Typ[types.Int64])
-	if err != nil {
-		return nil, fmt.Errorf("%s: the fake's List: %w", name, err)
-	}
-	asListed, err := listedObject(f, c)
-	if err != nil {
-		return nil, fmt.Errorf("%s: the fake's List: %w", name, err)
-	}
-	f.printf("func (f %s) List(_ %s.Context, params %s,\n_ ...%s) (%s, error) {\n", fake, ctx, params(c.list), opts,
-		f.typ(c.list.sig.Results().At(0).Type()))
-	f.printf("return fakeList(f.fakeCRUDStore, %s, %s, %s,\nfunc(current *%s) %s {\nreturn %s\n})\n}\n\n",
-		account(c.list), page, perPage, object, listed, asListed)
-
-	if c.update != nil {
-		f.printf("func (f %s) %s(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake,
-			c.update.name, ctx, params(c.update), opts, object)
-		f.printf("return f.update(%s, id, func(current *%s) {\n", account(c.update), object)
-		for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
-			if af.update == nil || af.object == nil {
-				continue
-			}
-			value, err := f.convert("params."+af.update.goName+".Value", af.update.typ, af.object.typ)
-			if err != nil {
-				return nil, fmt.Errorf("%s: the fake's %s: %s: %w", name, c.update.name, af.apiName, err)
-			}
-			f.printf("if params.%s.Present {\ncurrent.%s = %s\n}\n", af.update.goName, af.object.goName, value)
-		}
-		f.printf("})\n}\n\n")
-	}
-
-	f.printf("func (f %s) Delete(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,
-		params(c.remove), opts, f.typ(c.deleteResult))
-	f.printf("if err := f.delete(%s, id); err != nil {\nreturn nil, err\n}\nreturn new(%s), nil\n}\n\n",
-		account(c.remove), f.typ(c.deleteResult))
 
 	client := f.use(clientPackage, "client")
 	k8stypes := f.use("k8s.io/apimachinery/pkg/types", "types")
 	f.printf("var _ = describeCRUDKind(crudKindSpecs[%s, %s, %s, %s]{\n", obj, api, object, listed)
-	f.printf("kind: %sKind,\nkeyField: %q,\npageSize: %sListPageSize,\n", v, c.key.jsonName, v)
+	f.printf("kind: %sKind,\nkeyField: %q,\n", v, c.key.jsonName)
+	if c.list != nil {
+		f.printf("pageSize: %sListPageSize,\n", v)
+	}
+	if c.scope != "" {
+		f.printf("scope: %q,\n", c.scope)
+	}
 	f.printf("newReconciler: func(c %s.Client,\nnewAPI func(string) (%s, error)) crudKindReconciler[%s, %s, %s, %s] {\n",
 		client, api, obj, api, object, listed)
 	f.printf("return &%sReconciler{Client: c, Scheme: c.Scheme(), New%s: newAPI}\n},\n", name, api)
@@ -622,8 +648,35 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: the fake's objects: %w", name, err)
 	}
-	f.printf("seed: func(id, key string) %s { return %s{%s: id, %s: %s} },\n", object, object, c.id.goName,
-		c.key.object.goName, keyField)
+	// A seeded object holds what Cloudflare reports for a field it defaults.
+	seedFields := []string{fmt.Sprintf("%s: %s", c.key.object.goName, keyField)}
+	idParam := "_"
+	if !c.byKey {
+		seedFields = append([]string{fmt.Sprintf("%s: id", c.id.goName)}, seedFields...)
+		idParam = "id"
+	}
+	for _, af := range c.fields {
+		if af.object == nil || af.def == "" || af.object.goName == c.key.object.goName {
+			continue
+		}
+		def, err := defaultValue(af.field)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %s's default: %w", name, af.apiName, err)
+		}
+		value, err := f.convert(goValue(f, field{goType: strings.TrimPrefix(af.goType, "*")}, def), specType(af.field),
+			af.object.typ)
+		if err != nil {
+			return nil, fmt.Errorf("%s: the fake's objects: %s: %w", name, af.apiName, err)
+		}
+		seedFields = append(seedFields, fmt.Sprintf("%s: %s", af.object.goName, value))
+	}
+	if len(seedFields) <= 2 {
+		f.printf("seed: func(%s, key string) %s { return %s },\n", idParam, object,
+			compositeLiteral(object, seedFields))
+	} else {
+		f.printf("seed: func(%s, key string) %s {\nreturn %s\n},\n", idParam, object,
+			compositeLiteral(object, seedFields))
+	}
 	created, err := matchesExpr(f, c, true)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
@@ -654,8 +707,144 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	}
 	f.printf("},\n")
 	edits("invalid", c.invalid)
+	if len(c.elsewhere) > 0 {
+		f.printf("elsewhere: []crudScopeEdit[%s]{\n", obj)
+		for _, e := range c.elsewhere {
+			f.printf("{crudSpecEdit: crudSpecEdit[%s]{field: %q, what: %q,\nedit: func(obj %s) { obj.Spec.%s = %s }},\n"+
+				"scope: %q},\n", obj, e.f.jsonName, e.what, obj, e.f.goName, goValue(f, e.f, e.value), e.scope)
+		}
+		f.printf("},\n")
+	}
 	f.printf("})\n")
 	return f.source(header)
+}
+
+// emitFake writes the fake of a kind's cloudflare-go v7 service that its
+// envtest table runs on: each call converts its params into a call on
+// fakeCRUDStore, at the address the params give.
+func emitFake(f *goFile, c *controller) error {
+	name := c.name
+	api, fake := name+"API", "fake"+name+"API"
+	object, listed := f.typ(c.object), f.typ(c.listed)
+	ctx := f.use("context", "context")
+	opts := f.typ(c.create.sig.Params().At(c.create.sig.Params().Len() - 1).Type().(*types.Slice).Elem())
+	params := func(call *sdkCall) string { return f.typ(call.params) }
+	account := func(call *sdkCall) string {
+		return "params." + call.paramFields[slices.IndexFunc(call.paramFields, isAccountID)].goName + ".Value"
+	}
+
+	doc := fmt.Sprintf("%s is an in-memory %s for %s's generated specs: it keeps one account's %s in a "+
+		"fakeCRUDStore", fake, c.svc.name, name, pluralOf(c.noun))
+	if len(c.address) > 0 {
+		names := make([]string, 0, len(c.address))
+		for _, af := range c.address {
+			names = append(names, af.jsonName)
+		}
+		doc += fmt.Sprintf(", apart by their %s", prose(names))
+	}
+	comment(&f.Builder, "", wrap(doc+"."))
+	f.printf("type %s struct {\n*fakeCRUDStore[%s]\n}\n\nvar _ %s = %s{}\n\n", fake, object, api, fake)
+	// scope writes the address a call's params give, as the fake keeps
+	// objects apart by it.
+	scope := func(call *sdkCall) (string, error) {
+		var parts []string
+		for _, af := range c.address {
+			p := addressParam(call, af)
+			if p == nil {
+				return "", fmt.Errorf("%s: %s takes no %s", name, call.name, af.apiName)
+			}
+			value, err := f.convert("params."+p.goName+".Value", p.typ, types.Typ[types.String])
+			if err != nil {
+				return "", fmt.Errorf("%s: the fake's %s: %w", name, call.name, err)
+			}
+			parts = append(parts, value)
+		}
+		if len(parts) == 0 {
+			return `""`, nil
+		}
+		return strings.Join(parts, ` + "/" + `), nil
+	}
+	scopes := map[*sdkCall]string{}
+	for _, call := range c.calls() {
+		sc, err := scope(call)
+		if err != nil {
+			return err
+		}
+		scopes[call] = sc
+	}
+
+	var fields []string
+	fields = append(fields, fmt.Sprintf("%s: id", c.id.goName))
+	for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
+		if af.create == nil || af.object == nil || af.object.goName == c.id.goName {
+			continue
+		}
+		value, err := f.convert("params."+af.create.goName+".Value", af.create.typ, af.object.typ)
+		if err != nil {
+			return fmt.Errorf("%s: the fake's New: %s: %w", name, af.apiName, err)
+		}
+		fields = append(fields, fmt.Sprintf("%s: %s", af.object.goName, value))
+	}
+	// An object identified by its key is created under it; others get a new
+	// ID.
+	newID := `""`
+	if c.byKey {
+		var err error
+		if newID, err = f.convert("params."+c.key.create.goName+".Value", c.key.create.typ,
+			types.Typ[types.String]); err != nil {
+			return fmt.Errorf("%s: the fake's New: %w", name, err)
+		}
+	}
+	f.printf("func (f %s) New(_ %s.Context, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx, params(c.create), opts,
+		object)
+	f.printf("return f.create(%s, %s, %s, func(id string) %s {\nreturn %s\n})\n}\n\n", account(c.create),
+		scopes[c.create], newID, object, compositeLiteral(object, fields))
+
+	f.printf("func (f %s) Get(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,
+		params(c.get), opts, object)
+	f.printf("return f.get(%s, %s, id)\n}\n\n", account(c.get), scopes[c.get])
+
+	if c.list != nil {
+		page, err := f.convert("params."+c.page.goName+".Value", c.page.typ, types.Typ[types.Int64])
+		if err != nil {
+			return fmt.Errorf("%s: the fake's List: %w", name, err)
+		}
+		perPage, err := f.convert("params."+c.perPage.goName+".Value", c.perPage.typ, types.Typ[types.Int64])
+		if err != nil {
+			return fmt.Errorf("%s: the fake's List: %w", name, err)
+		}
+		asListed, err := listedObject(f, c)
+		if err != nil {
+			return fmt.Errorf("%s: the fake's List: %w", name, err)
+		}
+		f.printf("func (f %s) List(_ %s.Context, params %s,\n_ ...%s) (%s, error) {\n", fake, ctx, params(c.list),
+			opts, f.typ(c.list.sig.Results().At(0).Type()))
+		f.printf("return fakeList(f.fakeCRUDStore, %s, %s,\n%s, %s,\nfunc(current *%s) %s {\nreturn %s\n})\n}\n\n",
+			account(c.list), scopes[c.list], page, perPage, object, listed, asListed)
+	}
+
+	if c.update != nil {
+		f.printf("func (f %s) %s(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake,
+			c.update.name, ctx, params(c.update), opts, object)
+		f.printf("return f.update(%s, %s, id, func(current *%s) {\n", account(c.update), scopes[c.update], object)
+		for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
+			if af.update == nil || af.object == nil {
+				continue
+			}
+			value, err := f.convert("params."+af.update.goName+".Value", af.update.typ, af.object.typ)
+			if err != nil {
+				return fmt.Errorf("%s: the fake's %s: %s: %w", name, c.update.name, af.apiName, err)
+			}
+			f.printf("if params.%s.Present {\ncurrent.%s = %s\n}\n", af.update.goName, af.object.goName, value)
+		}
+		f.printf("})\n}\n\n")
+	}
+
+	f.printf("func (f %s) Delete(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,
+		params(c.remove), opts, f.typ(c.deleteResult))
+	f.printf("if err := f.delete(%s, %s, id); err != nil {\nreturn nil, err\n}\nreturn new(%s), nil\n}\n\n",
+		account(c.remove), scopes[c.remove], f.typ(c.deleteResult))
+	return nil
 }
 
 // listedObject returns the expression that shows the object current as a

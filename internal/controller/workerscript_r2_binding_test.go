@@ -41,13 +41,14 @@ var _ = Describe("WorkerScript r2BucketRef bindings", func() {
 	var fake *fakeWorkerScriptAPI
 	var r *WorkerScriptReconciler
 
-	// createR2 creates the R2Bucket in account; when ready it is marked
-	// ready, as the R2Bucket controller would after a sync.
-	createR2 := func(account string, ready bool) {
+	// createR2In creates the R2Bucket in account, in jurisdiction, or the
+	// default one when it is empty; when ready it is marked ready, as the
+	// R2Bucket controller would after a sync.
+	createR2In := func(account, jurisdiction string, ready bool) {
 		b := &cloudflarev1alpha1.R2Bucket{
 			ObjectMeta: metav1.ObjectMeta{Name: r2Name, Namespace: ns},
 			Spec: cloudflarev1alpha1.R2BucketSpec{
-				AccountRef: corev1.LocalObjectReference{Name: account}, Name: bucketName,
+				AccountRef: corev1.LocalObjectReference{Name: account}, Name: bucketName, Jurisdiction: jurisdiction,
 			},
 		}
 		Expect(k8sClient.Create(ctx, b)).To(Succeed())
@@ -55,6 +56,7 @@ var _ = Describe("WorkerScript r2BucketRef bindings", func() {
 			setR2BucketCreated(ctx, r2Key, time.Date(2026, 10, 7, 9, 0, 0, 0, time.UTC))
 		}
 	}
+	createR2 := func(account string, ready bool) { createR2In(account, "", ready) }
 
 	getWorker := func() *cloudflarev1alpha1.WorkerScript {
 		ws := &cloudflarev1alpha1.WorkerScript{}
@@ -128,6 +130,9 @@ var _ = Describe("WorkerScript r2BucketRef bindings", func() {
 		Entry("when the R2Bucket is missing", func() {}, "R2BucketNotFound"),
 		Entry("when the R2Bucket is not ready", func() { createR2(accountName, false) }, "R2BucketNotReady"),
 		Entry("when the R2Bucket is in another account", func() { createR2("wsr2-other-account", true) }, "AccountMismatch"),
+		Entry("when the R2Bucket is in a jurisdiction other than the default", func() {
+			createR2In(accountName, "eu", true)
+		}, "R2BucketJurisdictionUnsupported"),
 	)
 
 	It("binds the bucket by its Cloudflare name", func() {
@@ -166,8 +171,9 @@ var _ = Describe("WorkerScript r2BucketRef bindings", func() {
 func setR2BucketCreated(ctx context.Context, key types.NamespacedName, created time.Time) {
 	b := &cloudflarev1alpha1.R2Bucket{}
 	Expect(k8sClient.Get(ctx, key, b)).To(Succeed())
-	createdOn := metav1.NewTime(created)
-	b.Status.CloudflareMetadata = cloudflarev1alpha1.R2BucketCloudflareMetadata{Location: "WEUR", CreationDate: &createdOn}
+	b.Status.CloudflareMetadata = cloudflarev1alpha1.R2BucketCloudflareMetadata{
+		BucketName: b.Spec.Name, Location: "WEUR", CreationDate: created.Format(time.RFC3339Nano),
+	}
 	b.Status.Conditions = []metav1.Condition{{
 		Type: cloudflarev1alpha1.ConditionReady, Status: metav1.ConditionTrue,
 		Reason: "Synced", LastTransitionTime: metav1.Now(),

@@ -32,7 +32,7 @@ var _ D1DatabaseAPI = fakeD1DatabaseAPI{}
 
 func (f fakeD1DatabaseAPI) New(_ context.Context, params d1.DatabaseNewParams,
 	_ ...option.RequestOption) (*d1.D1, error) {
-	return f.create(params.AccountID.Value, func(id string) d1.D1 {
+	return f.create(params.AccountID.Value, "", "", func(id string) d1.D1 {
 		return d1.D1{
 			UUID:         id,
 			Name:         params.Name.Value,
@@ -43,12 +43,13 @@ func (f fakeD1DatabaseAPI) New(_ context.Context, params d1.DatabaseNewParams,
 
 func (f fakeD1DatabaseAPI) Get(_ context.Context, id string, params d1.DatabaseGetParams,
 	_ ...option.RequestOption) (*d1.D1, error) {
-	return f.get(params.AccountID.Value, id)
+	return f.get(params.AccountID.Value, "", id)
 }
 
 func (f fakeD1DatabaseAPI) List(_ context.Context, params d1.DatabaseListParams,
 	_ ...option.RequestOption) (*pagination.V4PagePaginationArray[d1.DatabaseListResponse], error) {
-	return fakeList(f.fakeCRUDStore, params.AccountID.Value, int64(params.Page.Value), int64(params.PerPage.Value),
+	return fakeList(f.fakeCRUDStore, params.AccountID.Value, "",
+		int64(params.Page.Value), int64(params.PerPage.Value),
 		func(current *d1.D1) d1.DatabaseListResponse {
 			return d1.DatabaseListResponse{
 				CreatedAt:    current.CreatedAt,
@@ -62,7 +63,7 @@ func (f fakeD1DatabaseAPI) List(_ context.Context, params d1.DatabaseListParams,
 
 func (f fakeD1DatabaseAPI) Delete(_ context.Context, id string, params d1.DatabaseDeleteParams,
 	_ ...option.RequestOption) (*d1.DatabaseDeleteResponse, error) {
-	if err := f.delete(params.AccountID.Value, id); err != nil {
+	if err := f.delete(params.AccountID.Value, "", id); err != nil {
 		return nil, err
 	}
 	return new(d1.DatabaseDeleteResponse), nil

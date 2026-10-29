@@ -371,9 +371,16 @@ func boundKVNamespaces(ws *cloudflarev1alpha1.WorkerScript) []string {
 	return names
 }
 
+// r2DefaultJurisdiction is the jurisdiction of the R2 buckets a Worker binds
+// by name alone.
+const r2DefaultJurisdiction = "default"
+
 // bindingR2Bucket returns the Cloudflare bucket name of the R2Bucket an
 // r2BucketRef binding names. It must be ready, because Cloudflare refuses to
-// upload a Worker bound to a missing bucket, and use the Worker's account.
+// upload a Worker bound to a missing bucket, use the Worker's account, and be
+// in the default jurisdiction: cloudflare-go v0.119's R2 binding names a
+// bucket without one, so it would bind the default jurisdiction's bucket of
+// that name.
 //
 // The binding resolves the bucket by name: a Worker keeps working when its
 // bucket is deleted and created again under the same name (verified live),
@@ -396,6 +403,13 @@ func (r *WorkerScriptReconciler) bindingR2Bucket(
 			Reason: reasonAccountMismatch,
 			Message: fmt.Sprintf("R2Bucket %q for binding %q uses CloudflareAccount %q but this Worker uses %q",
 				bucket.Name, b.Name, bucket.Spec.AccountRef.Name, ws.Spec.AccountRef.Name),
+		}
+	}
+	if j := bucket.Spec.Jurisdiction; j != "" && j != r2DefaultJurisdiction {
+		return "", &conditionError{
+			Reason: "R2BucketJurisdictionUnsupported",
+			Message: fmt.Sprintf("R2Bucket %q for binding %q is in the %s jurisdiction, and kflare binds only "+
+				"buckets in the default one yet", bucket.Name, b.Name, j),
 		}
 	}
 	if !meta.IsStatusConditionTrue(bucket.Status.Conditions, cloudflarev1alpha1.ConditionReady) {

@@ -19,7 +19,10 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.name
+    - jsonPath: .spec.jurisdiction
+      name: Jurisdiction
+      type: string
+    - jsonPath: .status.cloudflareMetadata.bucketName
       name: Bucket
       type: string
     - jsonPath: .status.cloudflareMetadata.location
@@ -36,10 +39,9 @@ spec:
       openAPIV3Schema:
         description: |-
           R2Bucket is the Schema for the r2buckets API.
-          It represents a Cloudflare R2 bucket in the account's default
-          jurisdiction. Deleting it deletes the bucket, unless the retain deletion
-          policy is set; kflare never deletes objects, so a bucket that still holds
-          any is kept and reported as BucketNotEmpty.
+          It represents a Cloudflare R2 bucket. Deleting it deletes the bucket,
+          unless the retain deletion policy is set; kflare never deletes objects,
+          so a bucket that still holds any is kept and reported as BucketNotEmpty.
         properties:
           apiVersion:
             description: |-
@@ -63,7 +65,7 @@ spec:
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns the bucket.
+                  AccountRef references the CloudflareAccount that owns the R2 bucket.
                   Immutable after creation.
                 properties:
                   name:
@@ -80,19 +82,40 @@ spec:
                 x-kubernetes-validations:
                 - message: accountRef is immutable
                   rule: self == oldSelf
+              jurisdiction:
+                default: default
+                description: |-
+                  Jurisdiction is where Cloudflare keeps the bucket's objects: default,
+                  or eu or us, which keep them in the European Union or the United
+                  States (fedramp and fedramp-high need a FedRAMP account). Each
+                  jurisdiction has buckets of its own, so two R2Buckets can name
+                  buckets with the same name in different jurisdictions. WorkerScript
+                  binds only buckets in the default jurisdiction. Immutable after
+                  creation.
+                enum:
+                - default
+                - eu
+                - us
+                - fedramp
+                - fedramp-high
+                type: string
+                x-kubernetes-validations:
+                - message: jurisdiction is immutable
+                  rule: self == oldSelf
               locationHint:
                 description: |-
                   LocationHint asks Cloudflare to place a new bucket near a region:
                   wnam, enam, weur, eeur, apac or oc. It is only a hint, and only used
-                  when kflare creates the bucket; an adopted bucket stays where it is.
+                  when kflare creates the bucket: an adopted bucket stays where it is,
+                  and so does a bucket in the eu or us jurisdiction.
                   status.cloudflareMetadata.location shows where the bucket is.
                   Immutable after creation.
                 enum:
-                - wnam
+                - apac
+                - eeur
                 - enam
                 - weur
-                - eeur
-                - apac
+                - wnam
                 - oc
                 type: string
                 x-kubernetes-validations:
@@ -100,14 +123,26 @@ spec:
                   rule: self == oldSelf
               name:
                 description: |-
-                  Name is the bucket's name in Cloudflare, unique within the account:
-                  3 to 63 lowercase letters, digits and hyphens, starting and ending with
-                  a letter or digit. Buckets cannot be renamed, so it is immutable.
+                  Name is the bucket's name in Cloudflare, unique within the account
+                  and its jurisdiction: 3 to 63 lowercase letters, digits and hyphens,
+                  starting and ending with a letter or digit. Buckets cannot be
+                  renamed, so it is immutable.
                 pattern: ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$
                 type: string
                 x-kubernetes-validations:
                 - message: name is immutable
                   rule: self == oldSelf
+              storageClass:
+                default: Standard
+                description: |-
+                  StorageClass is the class of the objects uploaded to the bucket
+                  without one of their own: Standard, or InfrequentAccess, which costs
+                  less to keep and more to read. Changing it changes the bucket in
+                  place; the objects already in it keep their class.
+                enum:
+                - Standard
+                - InfrequentAccess
+                type: string
             required:
             - accountRef
             - name
@@ -115,27 +150,34 @@ spec:
             x-kubernetes-validations:
             - message: locationHint is immutable
               rule: has(self.locationHint) == has(oldSelf.locationHint)
+            - message: jurisdiction is immutable
+              rule: has(self.jurisdiction) == has(oldSelf.jurisdiction)
           status:
             description: R2BucketStatus defines the observed state of R2Bucket.
             properties:
               cloudflareMetadata:
-                description: CloudflareMetadata holds metadata returned by the Cloudflare
-                  API.
+                description: CloudflareMetadata holds identifiers and metadata returned
+                  by the Cloudflare API.
                 properties:
+                  bucketName:
+                    description: |-
+                      BucketName is the name of the bucket kflare created or adopted, which
+                      a WorkerScript's R2 binding names.
+                    type: string
                   creationDate:
                     description: |-
                       CreationDate is when Cloudflare created the bucket. It changes if the
                       bucket is deleted outside kflare and created again.
-                    format: date-time
                     type: string
                   location:
-                    description: Location is the region Cloudflare placed the bucket
-                      in, for example WEUR.
+                    description: |-
+                      Location is the region Cloudflare placed the bucket in, for example
+                      WEUR.
                     type: string
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the bucket state.
+                  of the R2 bucket state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

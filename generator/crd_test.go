@@ -96,12 +96,13 @@ func modelConstraints(f field) constraints {
 var ruleMarker = regexp.MustCompile(`XValidation:rule="(.*)",message=`)
 
 // TestConstraintsMatchTheHandWrittenCRDs is feat/generator-openapi's done
-// criterion. It builds KVNamespace, R2Bucket and IPList from cloudflare-go v7
-// and the OpenAPI subset, and compares the validation of every spec field
-// with their CRDs in config/crd/bases. R2Bucket's and IPList's types are
-// hand-written; KVNamespace's were generated before kflare-gen read the spec,
-// from validation the hand-written ones had. Where the spec is wrong, the
-// entries replace its validation and say why.
+// criterion. It builds KVNamespace and IPList from cloudflare-go v7 and the
+// OpenAPI subset, and compares the validation of every spec field with their
+// CRDs in config/crd/bases. IPList's types are hand-written; KVNamespace's were
+// generated before kflare-gen read the spec, from validation the hand-written
+// ones had. Where the spec is wrong, the entries replace its validation and say
+// why. R2Bucket was compared too until kflare-gen generated it
+// (feat/generate-r2-bucket).
 func TestConstraintsMatchTheHandWrittenCRDs(t *testing.T) {
 	tests := []struct {
 		config, kind, crd string
@@ -110,7 +111,6 @@ func TestConstraintsMatchTheHandWrittenCRDs(t *testing.T) {
 		handWrittenOnly map[string]string
 	}{
 		{config: "generator.yaml", kind: "KVNamespace", crd: "kflare.dev_kvnamespaces.yaml"},
-		{config: "testdata/generator.yaml", kind: "TestR2Bucket", crd: "kflare.dev_r2buckets.yaml"},
 		{config: "testdata/generator.yaml", kind: "TestIPList", crd: "kflare.dev_iplists.yaml",
 			handWrittenOnly: map[string]string{"items": "written through the list items API, not the list service"}},
 	}
