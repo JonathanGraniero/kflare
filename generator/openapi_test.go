@@ -304,3 +304,30 @@ func TestRequiredAndAlternatives(t *testing.T) {
 		}
 	}
 }
+
+func TestParameterSchemas(t *testing.T) {
+	spec, err := parseSpec([]byte(`{"paths": {}, "components": {"parameters": {
+		"jurisdiction": {"name": "cf-jurisdiction", "in": "header", "schema": {"type": "string", "default": "eu"}}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := &operation{Parameters: []*parameter{
+		{Name: "account_id", In: inPath, Schema: &schema{Type: typeString}},
+		{Name: "cursor", In: inQuery, Schema: &schema{Type: typeString}},
+		{Name: "cf-trace", In: inHeader},
+		{Ref: "#/components/parameters/jurisdiction"},
+	}}
+	got, err := spec.parameterSchemas(op, inHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got["cf-jurisdiction"] == nil || got["cf-jurisdiction"].Default != "eu" {
+		t.Errorf("parameterSchemas = %v, want the referenced header alone: a query, a path and a header without "+
+			"a schema are left out", got)
+	}
+
+	op.Parameters = append(op.Parameters, &parameter{Ref: "#/components/parameters/missing"})
+	if _, err := spec.parameterSchemas(op, inHeader); err == nil {
+		t.Error("parameterSchemas took a dangling reference")
+	}
+}

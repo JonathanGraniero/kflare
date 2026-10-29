@@ -124,7 +124,6 @@ rules:
       - tunnelconfigurations
       - workerscripts
       - workerroutes
-      - r2buckets
       - iplists
       # +kflare-gen:begin The kinds in generator/generator.yaml: make codegen keeps this block.
       - cacherules
@@ -134,6 +133,7 @@ rules:
       - managedrulesets
       - managedtransforms
       - originrules
+      - r2buckets
       - ratelimitrules
       - redirectrules
       - transformrules

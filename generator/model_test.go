@@ -24,6 +24,16 @@ func kvEntry() kindConfig {
 	}
 }
 
+// r2Entry is an entry for the R2 buckets service: a bucket's name is its ID,
+// and its jurisdiction a header every call sends.
+func r2Entry() kindConfig {
+	entry := kvEntry()
+	entry.Service, entry.ID, entry.Adopt = "r2.BucketService", idConfig{Field: "name", Status: "bucketName"},
+		adoptConfig{By: "name"}
+	entry.Fields = map[string]fieldConfig{"cf-r2-jurisdiction": {ReportedAs: "jurisdiction"}}
+	return entry
+}
+
 // listEntry is an entry for the custom list service that ignores its numbers.
 func listEntry() kindConfig {
 	entry := kvEntry()
@@ -398,14 +408,26 @@ func TestBuildKindRefuses(t *testing.T) {
 			entry: with(kvEntry(), func(e *kindConfig) { e.ID.Field = "uuid" }), want: "the object has no field uuid"},
 		{name: "an ID that is not a string", service: "kv.NamespaceService",
 			entry: with(kvEntry(), func(e *kindConfig) { e.ID.Field = "supports_url_encoding" }), want: "not a string"},
-		{name: "a header parameter", service: "r2.BucketService",
-			entry: with(kvEntry(), func(e *kindConfig) { e.ID.Field = "name" }),
-			want:  "cf-r2-jurisdiction is a header parameter"},
+		{name: "a query parameter", svc: thing(sdkField{goName: "Mode", apiName: "mode", in: inQuery, typ: str}),
+			spec: `{}`, entry: kvEntry(), want: "mode is a query parameter"},
+		{name: "a body field reported as another", service: "r2.BucketService",
+			entry: with(r2Entry(), func(e *kindConfig) {
+				e.Fields["locationHint"] = fieldConfig{ReportedAs: "location"}
+			}),
+			want: "fields.locationHint.reportedAs: only a header parameter of New that the spec holds takes one"},
+		{name: "a header reported as no field", service: "r2.BucketService",
+			entry: with(r2Entry(), func(e *kindConfig) {
+				e.Fields["cf-r2-jurisdiction"] = fieldConfig{ReportedAs: "nope"}
+			}),
+			want: "fields.cf-r2-jurisdiction.reportedAs: the object Get returns has no field nope"},
 		{name: "a zone-level service", service: "workers.RouteService", entry: kvEntry(),
 			want: "scope account, but New takes no account_id"},
 		{name: "a field only an update sets",
 			svc:  thingService(nil, []sdkField{{goName: "Color", apiName: "color", in: inBody, typ: str}}, nil),
 			spec: `{}`, entry: kvEntry(), want: "color can be updated but not set at creation"},
+		{name: "a header only an update sets",
+			svc:  thingService(nil, []sdkField{{goName: "Color", apiName: "x-color", in: inHeader, typ: str}}, nil),
+			spec: `{}`, entry: kvEntry(), want: "x-color can be updated but not set at creation"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

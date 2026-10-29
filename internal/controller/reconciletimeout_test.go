@@ -106,7 +106,7 @@ var _ = Describe("The reconcile timeout", func() {
 
 		By("running the KVNamespace controller, one reconcile at a time, with a timeout of a second")
 		api := &hungKVNamespaceAPI{fakeKVNamespaceAPI: fakeKVNamespaceAPI{newFakeCRUDStore[kv.Namespace](
-			kvNamespaceListPageSize)}, hung: "hung-title"}
+			kvNamespaceListPageSize, "")}, hung: "hung-title"}
 		mgr, err := manager.New(cfg, manager.Options{
 			Controller: config.Controller{SkipNameValidation: new(true), ReconciliationTimeout: time.Second},
 			Metrics:    metricsserver.Options{BindAddress: "0"},

@@ -161,8 +161,7 @@ annotations:
       kind: OriginRule
       name: originrules.kflare.dev
       version: v1alpha1
-    - description: R2Bucket represents a Cloudflare R2 bucket in the account's default
-        jurisdiction.
+    - description: R2Bucket represents a Cloudflare R2 bucket.
       displayName: R2Bucket
       kind: R2Bucket
       name: r2buckets.kflare.dev
@@ -388,13 +387,12 @@ annotations:
       metadata:
         annotations:
           kflare.dev/deletion-policy: retain
-        name: example-bucket
+        name: example-r2bucket
         namespace: default
       spec:
         accountRef:
           name: my-account
-        locationHint: weur
-        name: example-assets
+        name: example-bucket
     - apiVersion: kflare.dev/v1alpha1
       kind: RateLimitRule
       metadata:

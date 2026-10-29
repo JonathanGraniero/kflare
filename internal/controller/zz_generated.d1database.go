@@ -87,13 +87,14 @@ var d1DatabaseKind = crudResourceKind[*cloudflarev1alpha1.D1Database, D1Database
 	listedID:  func(listed *d1.DatabaseListResponse) string { return listed.UUID },
 	listedKey: func(listed *d1.DatabaseListResponse) string { return listed.Name },
 
-	get: func(ctx context.Context, api D1DatabaseAPI, accountID, id string) (*d1.D1, error) {
+	get: func(ctx context.Context, api D1DatabaseAPI, _ *cloudflarev1alpha1.D1Database,
+		accountID, id string) (*d1.D1, error) {
 		var params d1.DatabaseGetParams
 		params.AccountID.Value, params.AccountID.Present = accountID, true
 		return api.Get(ctx, id, params)
 	},
-	list: func(ctx context.Context, api D1DatabaseAPI, accountID string,
-		page int64) (*pagination.V4PagePaginationArray[d1.DatabaseListResponse], error) {
+	list: func(ctx context.Context, api D1DatabaseAPI, _ *cloudflarev1alpha1.D1Database,
+		accountID string, page int64) (*pagination.V4PagePaginationArray[d1.DatabaseListResponse], error) {
 		var params d1.DatabaseListParams
 		params.AccountID.Value, params.AccountID.Present = accountID, true
 		params.Page.Value, params.Page.Present = float64(page), true
@@ -113,7 +114,8 @@ var d1DatabaseKind = crudResourceKind[*cloudflarev1alpha1.D1Database, D1Database
 		}
 		return api.New(ctx, params)
 	},
-	delete: func(ctx context.Context, api D1DatabaseAPI, accountID, id string) error {
+	delete: func(ctx context.Context, api D1DatabaseAPI, _ *cloudflarev1alpha1.D1Database,
+		accountID, id string) error {
 		var params d1.DatabaseDeleteParams
 		params.AccountID.Value, params.AccountID.Present = accountID, true
 		_, err := api.Delete(ctx, id, params)

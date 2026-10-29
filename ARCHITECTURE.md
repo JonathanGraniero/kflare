@@ -65,13 +65,16 @@ unproxied CNAME to a tunnel, but it resolves to a private IPv6 address the inter
 kflare's. And a proxied record's TTL is always automatic: Cloudflare stores 1 whatever it is sent, so the CRD refuses
 another `ttl` on any proxied record, which would otherwise be written again on every reconcile.
 
-The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace and D1Database through the shared
-CRUD reconciler (`internal/controller/crudresource_controller.go`), WAFCustomRule, RateLimitRule, ManagedRuleset,
-TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule through the shared rule controller (see
-[Rules](#rules)), and ManagedTransform through the shared settings controller (see [Settings](#settings)). A generated
-kind only describes its Cloudflare calls, its adoption key, what it compares and what depends on it. A CRUD kind's
-adoption finds the object in the account's list by its key, then reads it by its ID: a list may show less than a read,
-as D1's does. kflare-gen writes that description from the kind's entry in `generator/generator.yaml`, cloudflare-go v7
+The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace, D1Database and R2Bucket through
+the shared CRUD reconciler (`internal/controller/crudresource_controller.go`), WAFCustomRule, RateLimitRule,
+ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule through the shared rule
+controller (see [Rules](#rules)), and ManagedTransform through the shared settings controller (see
+[Settings](#settings)). A generated kind only describes its Cloudflare calls, its adoption key, what it compares, what
+keeps its object from being deleted and what depends on it. A CRUD kind's adoption finds the object in the account's
+list by its key, then reads it by its ID: a list may show less than a read, as D1's does. An object whose key is its ID
+(an R2 bucket's name) is read by its key instead, and never listed. Where something besides the account and the ID names
+the object in every call (an R2 bucket's jurisdiction), every call sends it. kflare-gen writes that description from the
+kind's entry in `generator/generator.yaml`, cloudflare-go v7
 and Cloudflare's OpenAPI spec: its API types (`api/v1alpha1/zz_generated.<kind>_types.go`), its controller
 (`internal/controller/zz_generated.<kind>.go`), and a table of envtest specs that the shared specs of its shape run on
 (`zz_generated.<kind>_test.go`). The generated kinds register together (`SetupGeneratedReconcilers`), and each counts as
@@ -127,7 +130,7 @@ What each controller compares when it does reconcile:
 | `KVNamespace` | Title (renamed in place); recreated, empty, if deleted externally |
 | `IPList` | Description, updated in place, and items, compared as a set in canonical form (Cloudflare stores 203.0.113.7/32 as 203.0.113.7, IPv6 in lowercase and compressed) and replaced as a whole. Cloudflare applies a replace in the background: the IPList reports `ReplacingItems` and checks every 2 seconds until it is done. Recreated if deleted externally |
 | `D1Database` | Existence only: recreated, empty, if deleted externally. Its name, jurisdiction and location hint are fixed at creation |
-| `R2Bucket` | Existence only: recreated, empty, if deleted externally. Its name cannot change and its location is fixed at creation. Workers bind a bucket by name, so they keep working with the recreated bucket without a re-upload (verified live) |
+| `R2Bucket` | Storage class (changed in place); recreated, empty, if deleted externally. Its name and jurisdiction cannot change and its location is fixed at creation. Workers bind a bucket by name, so they keep working with the recreated bucket without a re-upload (verified live) |
 | `WorkerRoute` | Pattern and the Worker it runs; recreated if deleted externally, including when Cloudflare deletes it together with its Worker |
 | `ManagedTransform` | Whether each managed transform its spec lists is on, by ID. The transforms it does not list are neither compared nor changed |
 | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` | The rule's whole definition: expression, action and its parameters, enabled, description, for a rate limiting rule how it counts (characteristics, period, requests per period, mitigation timeout, counting expression, origin requests only), for a managed ruleset deployment the ruleset and its overrides, and for a transform rule its URL rewrite or header changes. Also its place among kflare's rules in the zone and phase (see [Rules](#rules)). Recreated if deleted externally |
@@ -203,7 +206,7 @@ finds the object by the ID in status. An object a resource's claim label names i
 | `KVNamespace` | The namespace with the same title in the account (titles are unique per account), unless another KVNamespace manages it, in which case it reports `TitleConflict` and retries every minute. |
 | `IPList` | The IP list named `spec.name` in the account (names are unique per account, across list kinds) unless another IPList manages it, or the name belongs to a list of another kind: either way it reports `NameConflict` and retries every minute. |
 | `D1Database` | The database named `spec.name` in the account (names are unique per account) unless another D1Database manages it, in which case it reports `NameConflict` and retries every minute. An adopted database keeps its jurisdiction and location; `spec.jurisdiction` and `spec.primaryLocationHint` only apply when kflare creates the database. |
-| `R2Bucket` | The bucket named `spec.name` in the account's default jurisdiction (names are unique per account) unless another R2Bucket for the same Cloudflare account manages it, in which case it reports `NameConflict` and retries every minute. An adopted bucket keeps its location; `spec.locationHint` only applies when kflare creates the bucket. |
+| `R2Bucket` | The bucket named `spec.name` in `spec.jurisdiction` (names are unique per account and jurisdiction) unless another R2Bucket in that jurisdiction for the same Cloudflare account manages it, in which case it reports `NameConflict` and retries every minute. An adopted bucket keeps its location, and takes the spec's storage class; `spec.locationHint` only applies when kflare creates the bucket. |
 | `WorkerRoute` | The route with the same pattern in the zone (patterns are unique per zone) unless another WorkerRoute manages it, in which case the WorkerRoute reports `PatternConflict` and retries every minute. |
 | `ManagedTransform` | The zone's managed transforms, when any of them is on and this ManagedTransform did not turn it on: a zone with all of them off counts as none. Adopting them leaves the transforms the spec does not list as they are. When several ManagedTransforms point at one Cloudflare zone, across namespaces, the one that configures it keeps it, and otherwise the oldest takes it; the others report `AlreadyConfigured` and check again every minute. |
 | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` | Nothing, whatever the policy. A rule is kflare's only if it carries the ref kflare derives for the resource (see [Rules](#rules)); rules created outside kflare are never touched. A zone deploys a managed ruleset at most once, so while a rule kflare does not manage deploys it, the ManagedRuleset reports `RulesetConflict` and checks again every minute. |
@@ -217,15 +220,17 @@ The adoption and deletion policy annotations are modelled on those of AWS Contro
 DNSRecord stores the Cloudflare record ID it manages in the `kflare.dev/record-id` label, WorkerRoute its route ID in
 `kflare.dev/route-id`, KVNamespace its namespace ID in `kflare.dev/kv-namespace-id`, D1Database its database ID in
 `kflare.dev/d1-database-id` and IPList its list ID in `kflare.dev/ip-list-id`; each claims the object before doing
-anything else with it (`internal/controller/ownership.go`).
+anything else with it (`internal/controller/ownership.go`, and `claimant` in the shared CRUD reconciler).
 Adoption skips any object another resource of the same kind already carries in its label, across all namespaces,
 because two Zone resources in different namespaces can point at the same Cloudflare zone. Cloudflare record tags would be
 a Cloudflare-side alternative, but they are only available on paid plans.
 
 An R2 bucket has no ID, so R2Bucket claims the bucket name in `kflare.dev/r2-bucket-name`. Bucket names are only unique
-within an account, so a claim blocks another R2Bucket only when both point at the same Cloudflare account, through the
-same CloudflareAccount or two that share an account ID. An R2Bucket that never claimed its bucket, for example one
-reporting `NameConflict`, leaves the bucket alone when it is deleted.
+within an account and its jurisdiction, so a claim blocks another R2Bucket only when both name the same jurisdiction and
+point at the same Cloudflare account, through the same CloudflareAccount or two that share an account ID. The shared
+CRUD reconciler counts the claims of KVNamespace and D1Database the same way, though their IDs are unique anyway. A
+resource whose CloudflareAccount is gone manages nothing, so its claim does not count. An R2Bucket that never claimed
+its bucket, for example one reporting `NameConflict`, leaves the bucket alone when it is deleted.
 
 This prevents two DNSRecords from fighting over one record. Records created outside kflare are protected by the
 adoption policy above: without one, a DNSRecord never takes over a record it did not create. Tools such as external-dns
@@ -419,15 +424,16 @@ Per-resource details:
   deleted. A rule created outside kflare holds it until that rule changes or the retain policy is set.
 - **R2Bucket** deletion deletes only an empty bucket: kflare never deletes objects. Cloudflare refuses to delete a bucket
   that holds objects (409, code 10008), so the R2Bucket keeps its finalizer and reports `BucketNotEmpty`, checking again
-  every minute until the bucket is emptied or the retain policy is set.
+  every minute until the bucket is emptied or the retain policy is set. The refusal is a deletion blocker in R2Bucket's
+  entry in `generator/generator.yaml`, which the shared CRUD reconciler handles for any generated kind.
 
 Deleting resources in any order, for example a namespace or `kubectl delete -f` on a directory, must not strand a
 resource that still needs its parent for its own cleanup. Parents therefore keep their finalizer, reporting
 `Ready=False` with reason `InUse` and the resources they wait for, until their dependents are gone
 (`internal/controller/protection.go`):
 
-- A `CloudflareAccount` waits for the Zones, Tunnels, WorkerScripts, R2Buckets and IPLists that reference it, and for
-  the resources of every generated kind, KVNamespaces among them.
+- A `CloudflareAccount` waits for the Zones, Tunnels, WorkerScripts and IPLists that reference it, and for the resources
+  of every generated kind, KVNamespaces and R2Buckets among them.
 - A `Zone` waits for its DNSRecords, WorkerRoutes and the resources of every generated rule and settings kind,
   WAFCustomRules, RateLimitRules, ManagedRulesets, TransformRules, RedirectRules, CacheRules, ConfigurationRules,
   OriginRules and ManagedTransforms among them: a ManagedTransform needs its Zone to reset the zone's managed
@@ -464,6 +470,6 @@ hang, and leaves its Cloudflare object, or the zone's settings, as they are.
 - **Pinned to the legacy SDK.** Most of kflare's controllers use cloudflare-go v0.119, the newest of the v0 line; the
   generated kinds and the rule kinds use the generated SDK, v7. Some limitations come from v0.119: Tunnel
   renames are impossible because `UpdateTunnel` omits the tunnel ID from the request path,
-  `originRequest` timeouts are not exposed because `TunnelDuration` does not round-trip, and R2Bucket manages buckets
-  in the default jurisdiction only: the SDK cannot send the `cf-r2-jurisdiction` header, and its Worker R2 binding has
-  no jurisdiction field.
+  `originRequest` timeouts are not exposed because `TunnelDuration` does not round-trip, and a WorkerScript binds only
+  R2 buckets in the default jurisdiction (`R2BucketJurisdictionUnsupported` otherwise): the SDK's Worker R2 binding has
+  no jurisdiction field. R2Bucket itself, generated on v7, manages buckets in any jurisdiction.

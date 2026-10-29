@@ -60,6 +60,9 @@ type kindConfig struct {
 	// Dependents are the kinds whose resources use a resource of this kind,
 	// which waits for them before it is deleted.
 	Dependents []dependentConfig `json:"dependents,omitempty"`
+	// DeletionBlockers are Cloudflare's refusals to delete an object that
+	// last until someone acts, such as emptying an R2 bucket.
+	DeletionBlockers []deletionBlockerConfig `json:"deletionBlockers,omitempty"`
 	// Sample holds the values of the sample's spec fields, by API name. It
 	// sets every required field, and every immutable string field, which the
 	// generated specs change.
@@ -108,6 +111,24 @@ type dependentConfig struct {
 	Reason string `json:"reason"`
 }
 
+// deletionBlockerConfig is a refusal to delete an object that lasts until
+// someone acts. A resource whose delete Cloudflare refuses with the code
+// keeps its finalizer, reports the reason with the message, and is checked
+// again after a minute.
+type deletionBlockerConfig struct {
+	// Code is the error code Cloudflare refuses the delete with, such as
+	// 10008 for an R2 bucket that holds objects.
+	Code int `json:"code"`
+	// Reason is the Ready condition's reason, such as BucketNotEmpty.
+	Reason string `json:"reason"`
+	// Message follows the object's noun and key in the condition's message,
+	// and says what to do: "still holds objects, which kflare never deletes:
+	// empty it". The message ends with how to keep the object instead.
+	Message string `json:"message"`
+	// Why says how the refusal was verified.
+	Why string `json:"why"`
+}
+
 // fieldConfig adjusts one field.
 type fieldConfig struct {
 	// Doc replaces the SDK's documentation of the field.
@@ -117,6 +138,11 @@ type fieldConfig struct {
 	// Validation replaces what the OpenAPI spec says the field's value may
 	// be. The spec is not always the live API.
 	Validation *validationConfig `json:"validation,omitempty"`
+	// ReportedAs names, by API name, the field of the object Get returns that
+	// reports what a header parameter of New sets, where neither their API
+	// names nor their Go names match: the header cf-r2-jurisdiction sets the
+	// R2 bucket's jurisdiction. The spec field takes the object field's name.
+	ReportedAs string `json:"reportedAs,omitempty"`
 }
 
 // validationConfig replaces a field's validation, with the reason.
@@ -281,6 +307,9 @@ func (k *kindConfig) validate() error {
 		}
 		seenDependents[d.Kind] = true
 	}
+	if err := validateDeletionBlockers(k.DeletionBlockers); err != nil {
+		return err
+	}
 	for name, reason := range k.Ignore {
 		if strings.TrimSpace(reason) == "" {
 			return fmt.Errorf("ignore.%s gives no reason", name)
@@ -303,6 +332,27 @@ func (k *kindConfig) validate() error {
 				return fmt.Errorf("fields.%s.validation: %w", name, err)
 			}
 		}
+	}
+	return nil
+}
+
+// validateDeletionBlockers checks a kind's deletion blockers.
+func validateDeletionBlockers(blockers []deletionBlockerConfig) error {
+	seen := map[int]bool{}
+	for i, b := range blockers {
+		switch {
+		case b.Code <= 0:
+			return fmt.Errorf("deletionBlockers[%d]: code %d is not a Cloudflare error code", i, b.Code)
+		case seen[b.Code]:
+			return fmt.Errorf("deletionBlockers[%d]: code %d is listed twice", i, b.Code)
+		case !kindName.MatchString(b.Reason):
+			return fmt.Errorf("deletionBlockers[%d]: reason %q is not a CamelCase condition reason", i, b.Reason)
+		case strings.TrimSpace(b.Message) == "":
+			return fmt.Errorf("deletionBlockers[%d]: gives no message", i)
+		case strings.TrimSpace(b.Why) == "":
+			return fmt.Errorf("deletionBlockers[%d]: does not say why", i)
+		}
+		seen[b.Code] = true
 	}
 	return nil
 }

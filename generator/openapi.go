@@ -175,7 +175,7 @@ func (s *apiSpec) pageSize(list route) (int64, error) {
 				return 0, err
 			}
 		}
-		if p.Name != "per_page" || p.In != inQuery {
+		if p.Name != perPageParam || p.In != inQuery {
 			continue
 		}
 		fs, err := s.fieldSpec(p.Schema)
@@ -189,6 +189,24 @@ func (s *apiSpec) pageSize(list route) (int64, error) {
 		return int64(*maximum), nil
 	}
 	return 0, fmt.Errorf("%s takes no per_page query parameter", list)
+}
+
+// parameterSchemas returns the schemas of an operation's parameters that go
+// in (a header, a query), by name.
+func (s *apiSpec) parameterSchemas(op *operation, in string) (map[string]*schema, error) {
+	out := map[string]*schema{}
+	for _, p := range op.Parameters {
+		if p.Ref != "" {
+			var err error
+			if p, err = component(s.Components.Parameters, p.Ref, "parameters"); err != nil {
+				return nil, err
+			}
+		}
+		if p.In == in && p.Schema != nil {
+			out[p.Name] = p.Schema
+		}
+	}
+	return out, nil
 }
 
 // requestProperties returns the properties of an operation's JSON request

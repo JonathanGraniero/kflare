@@ -9,9 +9,12 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,22 +29,27 @@ import (
 )
 
 // A CRUD kind's resources each manage one object in a Cloudflare account that
-// the API creates, reads, updates and deletes by ID: KVNamespace, and the
-// kinds kflare-gen is to generate. They reconcile the same way. A resource
-// resolves its account's token and reads its object by the ID in its status,
-// creating a new one if it was deleted outside kflare. Without one, it creates
-// one, or, as its adoption policy allows (adoption.go), adopts the account's
-// object with the same key, unless another resource of the kind claims it.
-// It claims the object, updates it when it differs from the spec, and deletes
-// it with the resource once nothing depends on it, unless it is retained.
-// A kind supplies only what differs: a crudResourceKind, which calls the
-// kind's cloudflare-go v7 service.
+// the API creates, reads, updates and deletes by ID: the kinds kflare-gen
+// generates from a cloudflare-go v7 service, such as KVNamespace. They
+// reconcile the same way. A resource resolves its account's token and reads
+// its object by the ID in its status, creating a new one if it was deleted
+// outside kflare. Without one, it creates one, or, as its adoption policy
+// allows (adoption.go), adopts the account's object with the same key, unless
+// another resource of the kind claims it. It claims the object, updates it
+// when it differs from the spec, and deletes it with the resource once nothing
+// depends on it, unless it is retained. A kind supplies only what differs: a
+// crudResourceKind, which calls the kind's cloudflare-go v7 service.
+//
+// Some objects have no ID of their own: their key is their ID, as an R2
+// bucket's name is. Such a kind reads the object by its key, where another
+// finds the object in the pages of its list.
 
 // crudResourceKind is what the shared CRUD reconciler needs to know about a
 // kind. O is the kind's API type, A the narrow interface to the
 // cloudflare-go v7 service it calls, R the Cloudflare object that service
 // returns, and L the object as a page of its list shows it: R itself for a
-// KV namespace, a shorter type for a D1 database.
+// KV namespace, a shorter type for a D1 database, and R for a kind that never
+// lists, such as R2Bucket.
 type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	// name is the kind's name, and noun what messages call its Cloudflare
 	// object, as in "KVNamespace" and "KV namespace".
@@ -55,9 +63,15 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	// a title that no two objects in an account share.
 	key func(O) string
 	// claimLabel holds the ID of the object a resource manages. A resource
-	// does not adopt an object that another one claims: it reports
-	// conflictReason instead.
+	// does not adopt an object that another one claims in the same Cloudflare
+	// account: it reports conflictReason instead.
 	claimLabel, conflictReason string
+	// address returns what, besides the account and the ID, names a
+	// resource's object in every call: an R2 bucket's jurisdiction, in which
+	// another bucket may have the same name. Two resources claim the same
+	// object only when their addresses match. nil for a kind whose objects
+	// the account and the ID name alone.
+	address func(O) []string
 	// statusID returns the ID of the object recorded in a resource's status,
 	// and observe records an object there, its ID included.
 	statusID func(O) string
@@ -71,17 +85,33 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	listedID  func(*L) string
 	listedKey func(*L) string
 
-	// The kind's calls to Cloudflare, in the account accountID. list returns
-	// one page of the account's objects, counting from 1.
-	get    func(ctx context.Context, api A, accountID, id string) (*R, error)
-	list   func(ctx context.Context, api A, accountID string, page int64) (*pagination.V4PagePaginationArray[L], error)
+	// The kind's calls to Cloudflare for the resource obj, in the account
+	// accountID; obj gives the object's address. list returns one page of
+	// the account's objects, counting from 1. It is nil for a kind whose
+	// objects their key identifies, together with listedID and listedKey:
+	// such a kind reads an object by its key instead.
+	get    func(ctx context.Context, api A, obj O, accountID, id string) (*R, error)
+	list   func(ctx context.Context, api A, obj O, accountID string, page int64) (*pagination.V4PagePaginationArray[L], error)
 	create func(ctx context.Context, api A, accountID string, obj O) (*R, error)
-	update func(ctx context.Context, api A, accountID, id string, obj O) (*R, error)
-	delete func(ctx context.Context, api A, accountID, id string) error
+	update func(ctx context.Context, api A, obj O, accountID, id string) (*R, error)
+	delete func(ctx context.Context, api A, obj O, accountID, id string) error
+
+	// deletionBlockers are the refusals that keep an object from being
+	// deleted until someone acts, such as emptying an R2 bucket.
+	deletionBlockers []deletionBlocker
 
 	// dependents use a resource of the kind, which waits for them before it is
 	// deleted.
 	dependents []dependentKind
+}
+
+// deletionBlocker is a refusal to delete an object that lasts until someone
+// acts: Cloudflare refuses the delete with code, and the resource reports
+// reason, with what is wrong (message), and is checked again after a minute.
+// The objects are not watched: kflare only sees the change on a retry.
+type deletionBlocker struct {
+	code            int
+	reason, message string
 }
 
 // crudResourceReconciler reconciles the resources of one CRUD kind. Each
@@ -144,7 +174,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 	// outside kflare; a new one is created.
 	var current *R
 	if id := k.statusID(obj); id != "" {
-		got, err := k.get(ctx, api, accountID, id)
+		got, err := k.get(ctx, api, obj, accountID, id)
 		switch {
 		case cfpkg.IsNotFound(err):
 			logger.Info(k.noun+" deleted outside kflare, recreating", "id", id)
@@ -166,19 +196,16 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 	if current == nil {
 		key := k.key(obj)
 		what := fmt.Sprintf("%s %q", k.noun, key)
-		existing, err := findInPages(func(page int64) (*pagination.V4PagePaginationArray[L], error) {
-			return k.list(ctx, api, accountID, page)
-		}, func(listed *L) bool { return k.listedKey(listed) == key })
+		id, found, err := r.find(ctx, api, obj, accountID, key)
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
 		}
-		if existing != nil {
-			id := k.listedID(existing)
-			claimed, err := claimedIDs(ctx, r.Client, k.newList(), k.claimLabel, obj)
+		if id != "" {
+			owner, err := r.claimant(ctx, obj, accountID, id)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
-			if owner, taken := claimed[id]; taken {
+			if owner != "" {
 				return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
 					Reason:  k.conflictReason,
 					Message: fmt.Sprintf("%s is already managed by %s %s", what, k.name, owner),
@@ -190,12 +217,17 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 					return notReadyRetryAfter(ctx, r.Client, obj, condErr)
 				}
 			}
-			found, err := k.get(ctx, api, accountID, id)
+			if found == nil {
+				found, err = k.get(ctx, api, obj, accountID, id)
+				switch {
+				case cfpkg.IsNotFound(err):
+					logger.Info(k.noun+" deleted since it was listed", "key", key, "id", id)
+				case err != nil:
+					return handleCloudflareError(ctx, r.Client, obj, err)
+				}
+			}
 			switch {
-			case cfpkg.IsNotFound(err):
-				logger.Info(k.noun+" deleted since it was listed", "key", key, "id", id)
-			case err != nil:
-				return handleCloudflareError(ctx, r.Client, obj, err)
+			case found == nil:
 			case own:
 				current = found
 				logger.Info("Found the "+k.noun+" this resource created", "key", key, "id", id)
@@ -227,7 +259,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 
 	// Drift: update the object in place when it is not what the spec asks for.
 	if !k.matches(obj, current) {
-		updated, err := k.update(ctx, api, accountID, k.id(current), obj)
+		updated, err := k.update(ctx, api, obj, accountID, k.id(current))
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
 		}
@@ -237,6 +269,75 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 
 	k.observe(obj, current)
 	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
+}
+
+// find returns the ID of the account's object with key, or "" when there is
+// none. A kind whose objects their key identifies reads the object by its key,
+// and also returns what it read; another finds the object in the pages of its
+// list.
+func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, obj O, accountID, key string) (string, *R, error) {
+	k := r.kind
+	if k.list == nil {
+		// The key is the object's ID.
+		found, err := k.get(ctx, api, obj, accountID, key)
+		switch {
+		case cfpkg.IsNotFound(err):
+			return "", nil, nil
+		case err != nil:
+			return "", nil, err
+		}
+		return key, found, nil
+	}
+	listed, err := findInPages(func(page int64) (*pagination.V4PagePaginationArray[L], error) {
+		return k.list(ctx, api, obj, accountID, page)
+	}, func(listed *L) bool { return k.listedKey(listed) == key })
+	if err != nil || listed == nil {
+		return "", nil, err
+	}
+	return k.listedID(listed), nil, nil
+}
+
+// claimant returns the "namespace/name" of another resource of the kind that
+// claims the object id in the Cloudflare account accountID, at obj's address,
+// or "" if none does. Resources in every namespace count, and an ID is unique
+// only within an account (an R2 bucket's name), so a claim counts when the
+// other resource uses obj's CloudflareAccount, or a different one for the same
+// Cloudflare account. A resource whose CloudflareAccount is gone manages
+// nothing, so its claim does not count.
+func (r *crudResourceReconciler[O, A, R, L]) claimant(ctx context.Context, obj O, accountID, id string) (string, error) {
+	k := r.kind
+	list := k.newList()
+	if err := r.List(ctx, list, client.MatchingLabels{k.claimLabel: id}); err != nil {
+		return "", err
+	}
+	items, err := meta.ExtractList(list)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range items {
+		other, ok := item.(O)
+		if !ok {
+			return "", fmt.Errorf("unexpected list item %T", item)
+		}
+		if other.GetUID() == obj.GetUID() || (k.address != nil && !slices.Equal(k.address(other), k.address(obj))) {
+			continue
+		}
+		owner := other.GetNamespace() + "/" + other.GetName()
+		if k.accountRef(other) == k.accountRef(obj) {
+			return owner, nil
+		}
+		account := &cloudflarev1alpha1.CloudflareAccount{}
+		err := r.Get(ctx, types.NamespacedName{Name: k.accountRef(other)}, account)
+		switch {
+		case apierrors.IsNotFound(err):
+			continue
+		case err != nil:
+			return "", err
+		case account.Spec.AccountID == accountID:
+			return owner, nil
+		}
+	}
+	return "", nil
 }
 
 // findInPages pages through a list of objects, from page 1, and returns the
@@ -264,7 +365,9 @@ func findInPages[R any](
 
 // reconcileDelete handles the deletion lifecycle. Once nothing depends on the
 // resource, it deletes the object from Cloudflare (unless the retain policy is
-// set), then removes the finalizer.
+// set), then removes the finalizer. An object that one of the kind's deletion
+// blockers keeps is kept with the finalizer, and the resource reports why
+// until the delete goes through.
 func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context, obj O) (ctrl.Result, error) {
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(obj, reconciler.Finalizer) {
@@ -288,7 +391,18 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.kind.delete(ctx, api, account.Spec.AccountID, id); err != nil && !cfpkg.IsNotFound(err) {
+		err = r.kind.delete(ctx, api, obj, account.Spec.AccountID, id)
+		for _, blocker := range r.kind.deletionBlockers {
+			if cfpkg.HasErrorCode(err, blocker.code) {
+				return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
+					Reason: blocker.reason,
+					Message: fmt.Sprintf("%s %q %s, or set the %s: %s annotation to keep it", r.kind.noun,
+						r.kind.key(obj), blocker.message, reconciler.DeletionPolicyAnnotation,
+						reconciler.DeletionPolicyRetain),
+				})
+			}
+		}
+		if err != nil && !cfpkg.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
 	}

@@ -32,23 +32,27 @@ var _ D1DatabaseAPI = fakeD1DatabaseAPI{}
 
 func (f fakeD1DatabaseAPI) New(_ context.Context, params d1.DatabaseNewParams,
 	_ ...option.RequestOption) (*d1.D1, error) {
-	return f.create(params.AccountID.Value, func(id string) d1.D1 {
-		return d1.D1{
-			UUID:         id,
-			Name:         params.Name.Value,
-			Jurisdiction: d1.D1Jurisdiction(params.Jurisdiction.Value),
-		}
-	})
+	f.sent = append(f.sent, params)
+	return f.create(params.AccountID.Value, "",
+		"", func(id string) d1.D1 {
+			return d1.D1{
+				UUID:         id,
+				Name:         params.Name.Value,
+				Jurisdiction: d1.D1Jurisdiction(params.Jurisdiction.Value),
+				Version:      "version-" + id,
+			}
+		})
 }
 
 func (f fakeD1DatabaseAPI) Get(_ context.Context, id string, params d1.DatabaseGetParams,
 	_ ...option.RequestOption) (*d1.D1, error) {
-	return f.get(params.AccountID.Value, id)
+	return f.get(params.AccountID.Value, "", id)
 }
 
 func (f fakeD1DatabaseAPI) List(_ context.Context, params d1.DatabaseListParams,
 	_ ...option.RequestOption) (*pagination.V4PagePaginationArray[d1.DatabaseListResponse], error) {
-	return fakeList(f.fakeCRUDStore, params.AccountID.Value, int64(params.Page.Value), int64(params.PerPage.Value),
+	return fakeList(f.fakeCRUDStore, params.AccountID.Value, "",
+		int64(params.Page.Value), int64(params.PerPage.Value),
 		func(current *d1.D1) d1.DatabaseListResponse {
 			return d1.DatabaseListResponse{
 				CreatedAt:    current.CreatedAt,
@@ -62,16 +66,18 @@ func (f fakeD1DatabaseAPI) List(_ context.Context, params d1.DatabaseListParams,
 
 func (f fakeD1DatabaseAPI) Delete(_ context.Context, id string, params d1.DatabaseDeleteParams,
 	_ ...option.RequestOption) (*d1.DatabaseDeleteResponse, error) {
-	if err := f.delete(params.AccountID.Value, id); err != nil {
+	if err := f.delete(params.AccountID.Value, "", id); err != nil {
 		return nil, err
 	}
 	return new(d1.DatabaseDeleteResponse), nil
 }
 
 var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.D1Database, D1DatabaseAPI, d1.D1, d1.DatabaseListResponse]{
-	kind:     d1DatabaseKind,
-	keyField: "name",
-	pageSize: d1DatabaseListPageSize,
+	kind:           d1DatabaseKind,
+	keyField:       "name",
+	claimLabel:     "kflare.dev/d1-database-id",
+	conflictReason: "NameConflict",
+	pageSize:       d1DatabaseListPageSize,
 	newReconciler: func(c client.Client,
 		newAPI func(string) (D1DatabaseAPI, error)) crudKindReconciler[*cloudflarev1alpha1.D1Database, D1DatabaseAPI, d1.D1, d1.DatabaseListResponse] {
 		return &D1DatabaseReconciler{Client: c, Scheme: c.Scheme(), NewD1DatabaseAPI: newAPI}
@@ -93,6 +99,16 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.D1Database, D1Databas
 		return current.Name == obj.Spec.Name &&
 			(obj.Spec.Jurisdiction == "" || string(current.Jurisdiction) == obj.Spec.Jurisdiction)
 	},
+	sent: func(obj *cloudflarev1alpha1.D1Database, sent any) bool {
+		params := sent.(d1.DatabaseNewParams)
+		return params.Name.Value == obj.Spec.Name &&
+			(obj.Spec.Jurisdiction == "" || params.Jurisdiction.Present && string(params.Jurisdiction.Value) == obj.Spec.Jurisdiction) &&
+			(obj.Spec.PrimaryLocationHint == "" || params.PrimaryLocationHint.Present && string(params.PrimaryLocationHint.Value) == obj.Spec.PrimaryLocationHint)
+	},
+	observed: func(obj *cloudflarev1alpha1.D1Database, current *d1.D1) bool {
+		return obj.Status.CloudflareMetadata.DatabaseID == current.UUID &&
+			obj.Status.CloudflareMetadata.Version == current.Version
+	},
 	immutable: []crudSpecEdit[*cloudflarev1alpha1.D1Database]{
 		{field: "accountRef", what: "changing accountRef",
 			edit: func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.AccountRef.Name = "other-account" }},
@@ -100,10 +116,18 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.D1Database, D1Databas
 			edit: func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.Name = "example-dc" }},
 		{field: "jurisdiction", what: "setting jurisdiction",
 			edit: func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.Jurisdiction = "eu" }},
+		{field: "jurisdiction", what: "changing jurisdiction once set",
+			setup: func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.Jurisdiction = "eu" },
+			edit:  func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.Jurisdiction = "fedramp" }},
 		{field: "primaryLocationHint", what: "setting primaryLocationHint",
 			edit: func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.PrimaryLocationHint = "wnam" }},
+		{field: "primaryLocationHint", what: "changing primaryLocationHint once set",
+			setup: func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.PrimaryLocationHint = "wnam" },
+			edit:  func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.PrimaryLocationHint = "enam" }},
 	},
 	invalid: []crudSpecEdit[*cloudflarev1alpha1.D1Database]{
+		{field: "name", what: "a name not matching its pattern",
+			edit: func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.Name = "kflare not matching!" }},
 		{field: "jurisdiction", what: "a jurisdiction outside its enum",
 			edit: func(obj *cloudflarev1alpha1.D1Database) { obj.Spec.Jurisdiction = "kflare-not-in-enum" }},
 		{field: "primaryLocationHint", what: "a primaryLocationHint outside its enum",

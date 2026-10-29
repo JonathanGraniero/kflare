@@ -98,9 +98,9 @@ CRD defaults, so nothing is late-initialized.
 - **Shared CRUD reconciler** (hand-written, `crudresource_controller.go`, the counterpart of
   `rulesetrule_controller.go`): ARCHITECTURE.md's reconcile loop for any kind a `crudResourceKind` describes, with
   adoption by key and claim labels (`claimedIDs`/`claimID`), recreation after a 404, writes only on drift, the retain
-  policy and waiting for dependents. Deletion blockers are data: `{code: 10008, reason: BucketNotEmpty}`,
-  `{code: 10041, reason: ListInUse}` (not built yet: they come with the first generated kind that needs one). It
-  carries the coverage target, which excludes generated files
+  policy and waiting for dependents. Deletion blockers are data: `{code: 10008, reason: BucketNotEmpty}` (built with
+  R2Bucket, `deletionBlockers`), `{code: 10041, reason: ListInUse}` (IPList's, to come). It carries the coverage
+  target, which excludes generated files
 - **Hooks:** optional Go functions in a hand-written `<kind>_hooks.go`, compiled and linted like any other code: adjust
   the desired params, normalize Cloudflare's copy before comparing, extra steps after a sync, extra watches. IPList's
   bulk operation and RateLimitRule's `cf.colo.id` are this kind of logic. Not built yet: no generated kind has needed
@@ -439,8 +439,50 @@ kinds:
   5, since the generated specs write each sample and test of a kind at once and a kind of six actions needs a sample
   or test of each. Mutations: 56 of WAFCustomRule's generated code, its CRD, its wiring and the shared controller's
   paths the moved tests cover, all caught
+- **CRUD kinds named by their key, header params and deletion blockers as built** (`feat/generate-r2-bucket`,
+  2026-10-28), rows 5 and 6 of [Generate every kind](../CLAUDE.md#generate-every-kind) in one pull request, at the
+  user's request, with R2Bucket as their kind. An R2 bucket has no ID but its name, v7 lists buckets by cursor, every
+  call on a bucket sends its jurisdiction as a header, and Edit takes the storage class as a header too:
+  - An entry whose `adopt.by` is its `id.field` (`name`) names its objects by their key: `controller.byKey`. The
+    resource reads its object by its key and never lists, so the narrow interface has no List, the descriptor's `list`,
+    `listedID` and `listedKey` are nil and `L` is the object's type; the shared CRUD reconciler's `find` reads the
+    object where another kind pages through its list
+  - New's header params map as body fields do, with the OpenAPI parameter's default and enum (`parameterSchemas`). A
+    param Get also takes names the object in every call, besides the account and the ID (`isAddress`): it is immutable,
+    every call sends it (`addressStatements`; the descriptor's calls take the resource for it), and two resources claim
+    the same object only at the same address (`crudResourceKind.address`). kflare-gen takes one such param yet
+  - A param pairs with its counterpart in another call, or in the object, by API name where it goes, or else by Go
+    name (`counterpart`), as Stainless names a param alike wherever a call sends it: the storage class is New's body
+    field `storageClass`, Edit's header `cf-r2-storage-class` and the object's `storage_class`, each `StorageClass`.
+    `fields.<header>.reportedAs` pairs a header with the object's field where neither name matches (the jurisdiction
+    header and the object's `jurisdiction`), and the spec field takes the object field's name. Every call's required
+    params must be ones the reconciler sets (`controller.sets`)
+  - `deletionBlockers`: a code, a reason, a message and why. The shared CRUD reconciler keeps the finalizer, reports the
+    reason with the noun, the key, the message and how to keep the object, and checks again after a minute. The
+    generated table carries its own copy, which a shared spec compares with the kind's and provokes each of
+  - Claims (`claimant`) count only from a resource at the same address through the same Cloudflare account, whichever
+    CloudflareAccount names it; one whose CloudflareAccount is gone claims nothing. A bucket name is unique only within
+    an account, as the hand-written R2Bucket had it; for the kinds with IDs it changes nothing but the gone account
+  - A sample's field left unset holds its default, so the generated changes start from it (`defaultValue`), and the
+    fake's seeded objects hold the defaults Cloudflare reports
+
+  The shared specs learned the shape: the fake keeps objects apart by address (`fakeCRUDStore.at`) and refuses a second
+  object under a key that is its ID, seeds go under their key, recreated objects may come back under the same ID, and
+  new specs cover claims through another CloudflareAccount, in another account, from a resource whose account is gone
+  or that claims another object, a failed read of a claimant's account, adoption and creation at another address, and
+  each deletion blocker. The generator's TestR2Bucket is the golden kind (it was R2Bucket's hand-written CRD, compared
+  by TestConstraintsMatchTheHandWrittenCRDs until now); the doc's articles learned initialisms (`an R2 bucket`).
+  R2Bucket's mutation check found gaps in the generated specs of every CRUD kind, now closed: nothing checked what New
+  is sent for a field the object does not report (R2's `locationHint`, D1's `primary_location_hint`: the table's
+  `sent`, from the params the fake records), that status records the object (`observed`; the fake's New fills in each
+  status field), the CRD's defaults (`defaulted`), the claim label and conflict reason (the table carries copies, as
+  rule kinds carry their conflicts), a pattern (a value it refuses, `patternMismatch`, shared with the rule kinds), or
+  an optional immutable field changed once set rather than added (`setup`). A field with a default gets no `has()`
+  rule, which it could not break. Mutations: 44 of the shared CRUD reconciler, R2Bucket's generated code, its CRD and
+  WorkerScript's refusal, and 50 of kflare-gen's new code, all caught; the first runs left 13 and 6 alive, the gaps
+  above, two equivalent mutants (code since simplified) and dead code, now gone
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
-  zone-scoped CRUD kinds, `SinglePage` lists, objects identified by name, services without `New`, and secrets. Also
+  zone-scoped CRUD kinds, `SinglePage` lists, services without `New`, and secrets. Also
   cross-kind references such as
   `kvNamespaceRef`, generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

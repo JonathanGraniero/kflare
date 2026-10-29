@@ -92,6 +92,86 @@ kinds:
       file_size: A number in the OpenAPI spec, not an integer.
       num_tables: Deprecated in cloudflare-go v7, which says the count is no longer accurate.
 
+  - kind: R2Bucket
+    service: r2.BucketService
+    scope: account
+    shortName: cfr2
+    noun: R2 bucket
+    doc: |
+      R2Bucket is the Schema for the r2buckets API.
+      It represents a Cloudflare R2 bucket. Deleting it deletes the bucket,
+      unless the retain deletion policy is set; kflare never deletes objects,
+      so a bucket that still holds any is kept and reported as BucketNotEmpty.
+    id:
+      field: name
+      status: bucketName
+      printColumn: Bucket
+      doc: |
+        BucketName is the name of the bucket kflare created or adopted, which
+        a WorkerScript's R2 binding names.
+    claimLabel: kflare.dev/r2-bucket-name
+    adopt:
+      by: name
+    dependents:
+      - kind: WorkerScript
+        refs: boundR2Buckets
+        reason: >-
+          Cloudflare deletes a bucket a Worker is bound to, but every later upload of that Worker then fails (10085).
+    deletionBlockers:
+      - code: 10008
+        reason: BucketNotEmpty
+        message: "still holds objects, which kflare never deletes: empty it"
+        why: Cloudflare refuses to delete a bucket that holds objects (409, 10008; verified live 2026-10-07).
+    sample:
+      name: example-bucket
+    fields:
+      name:
+        doc: |
+          Name is the bucket's name in Cloudflare, unique within the account
+          and its jurisdiction: 3 to 63 lowercase letters, digits and hyphens,
+          starting and ending with a letter or digit. Buckets cannot be
+          renamed, so it is immutable.
+        validation:
+          pattern: ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$
+          reason: >-
+            Names are 3 to 63 characters, not up to 64 as the spec says, and the spec's pattern has no end anchor, so it
+            passes a name that ends in a hyphen. Cloudflare took 63 characters and refused 64, a trailing hyphen, a
+            capital and an underscore (10005; verified live 2026-10-14).
+      locationHint:
+        doc: |
+          LocationHint asks Cloudflare to place a new bucket near a region:
+          wnam, enam, weur, eeur, apac or oc. It is only a hint, and only used
+          when kflare creates the bucket: an adopted bucket stays where it is,
+          and so does a bucket in the eu or us jurisdiction.
+          status.cloudflareMetadata.location shows where the bucket is.
+          Immutable after creation.
+      storageClass:
+        doc: |
+          StorageClass is the class of the objects uploaded to the bucket
+          without one of their own: Standard, or InfrequentAccess, which costs
+          less to keep and more to read. Changing it changes the bucket in
+          place; the objects already in it keep their class.
+      cf-r2-jurisdiction:
+        reportedAs: jurisdiction
+        printColumn: Jurisdiction
+        doc: |
+          Jurisdiction is where Cloudflare keeps the bucket's objects: default,
+          or eu or us, which keep them in the European Union or the United
+          States (fedramp and fedramp-high need a FedRAMP account). Each
+          jurisdiction has buckets of its own, so two R2Buckets can name
+          buckets with the same name in different jurisdictions. WorkerScript
+          binds only buckets in the default jurisdiction. Immutable after
+          creation.
+      creation_date:
+        doc: |
+          CreationDate is when Cloudflare created the bucket. It changes if the
+          bucket is deleted outside kflare and created again.
+      location:
+        printColumn: Location
+        doc: |
+          Location is the region Cloudflare placed the bucket in, for example
+          WEUR.
+
 # The rule kinds kflare-gen generates: each resource manages one rule in a zone's entry point ruleset for a Rulesets
 # phase, through the shared rule controller (internal/controller/rulesetrule_controller.go). A rule kind's spec holds
 # the fields every rule kind shares (RulesetRuleSpec) and the parameters of its action, which kflare-gen builds from

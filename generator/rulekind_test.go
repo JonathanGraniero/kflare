@@ -1169,10 +1169,11 @@ func TestSpecValidationTakesAnEntryEnum(t *testing.T) {
 		t.Errorf("enum = %v, excluded = %v, err = %v; want wnam and weur, enam excluded", out.enum, out.excluded, err)
 	}
 	out.jsonName = "locationHint"
-	if !slices.ContainsFunc(invalidValues(*out), func(e specEdit) bool {
+	invalid, err := invalidValues(*out)
+	if err != nil || !slices.ContainsFunc(invalid, func(e specEdit) bool {
 		return e.value == "enam" && e.what == "locationHint enam, which the entry's enum leaves out"
 	}) {
-		t.Errorf("invalidValues = %+v, want enam refused", invalidValues(*out))
+		t.Errorf("invalidValues = %+v, %v; want enam refused", invalid, err)
 	}
 	err = b.specValidation(out, f, fieldSpec{}, &validationConfig{Enum: []string{"oc"}, Reason: "r"})
 	if want := `fields.location_hint.validation.enum: "oc" is none of the values`; err == nil ||

@@ -59,7 +59,7 @@ var _ = Describe("KVNamespace and the WorkerScripts bound to it", func() {
 	}
 
 	BeforeEach(func() {
-		store = newFakeCRUDStore[kv.Namespace](kvNamespaceListPageSize)
+		store = newFakeCRUDStore[kv.Namespace](kvNamespaceListPageSize, "")
 		r = &KVNamespaceReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			NewKVNamespaceAPI: func(string) (KVNamespaceAPI, error) { return fakeKVNamespaceAPI{store}, nil },

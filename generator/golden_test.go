@@ -48,8 +48,6 @@ var refusedControllers = map[string]string{
 		"the shared CRUD reconciler needs one object type yet",
 	"TestIPList": "New returns *rules.ListNewResponse and Get *rules.ListGetResponse: " +
 		"the shared CRUD reconciler needs one object type yet",
-	"TestR2Bucket": "the service's List returns *r2.BucketListResponse: the shared CRUD reconciler can only page " +
-		"through a pagination.V4PagePaginationArray yet",
 }
 
 // goldenFiles generates the kinds of testdata/generator.yaml, each from a
@@ -179,8 +177,8 @@ func TestKindsPutAnBeforeAVowel(t *testing.T) {
 // golden files.
 func TestGolden(t *testing.T) {
 	files := goldenFiles(t)
-	if want := 4 + 3 + 5*4 + 4*4; len(files) != want {
-		t.Errorf("generated %d files, want %d: four types files, the controller, specs and sample of one kind, and "+
+	if want := 4 + 2*3 + 5*4 + 4*4; len(files) != want {
+		t.Errorf("generated %d files, want %d: four types files, the controller, specs and sample of two kinds, and "+
 			"the four files of each of five rule kinds and of four settings kinds", len(files), want)
 	}
 	for name, got := range files {

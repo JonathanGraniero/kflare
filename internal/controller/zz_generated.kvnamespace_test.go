@@ -33,19 +33,22 @@ var _ KVNamespaceAPI = fakeKVNamespaceAPI{}
 
 func (f fakeKVNamespaceAPI) New(_ context.Context, params kv.NamespaceNewParams,
 	_ ...option.RequestOption) (*kv.Namespace, error) {
-	return f.create(params.AccountID.Value, func(id string) kv.Namespace {
-		return kv.Namespace{ID: id, Title: params.Title.Value}
-	})
+	f.sent = append(f.sent, params)
+	return f.create(params.AccountID.Value, "",
+		"", func(id string) kv.Namespace {
+			return kv.Namespace{ID: id, Title: params.Title.Value}
+		})
 }
 
 func (f fakeKVNamespaceAPI) Get(_ context.Context, id string, params kv.NamespaceGetParams,
 	_ ...option.RequestOption) (*kv.Namespace, error) {
-	return f.get(params.AccountID.Value, id)
+	return f.get(params.AccountID.Value, "", id)
 }
 
 func (f fakeKVNamespaceAPI) List(_ context.Context, params kv.NamespaceListParams,
 	_ ...option.RequestOption) (*pagination.V4PagePaginationArray[kv.Namespace], error) {
-	return fakeList(f.fakeCRUDStore, params.AccountID.Value, int64(params.Page.Value), int64(params.PerPage.Value),
+	return fakeList(f.fakeCRUDStore, params.AccountID.Value, "",
+		int64(params.Page.Value), int64(params.PerPage.Value),
 		func(current *kv.Namespace) kv.Namespace {
 			return *current
 		})
@@ -53,7 +56,7 @@ func (f fakeKVNamespaceAPI) List(_ context.Context, params kv.NamespaceListParam
 
 func (f fakeKVNamespaceAPI) Update(_ context.Context, id string, params kv.NamespaceUpdateParams,
 	_ ...option.RequestOption) (*kv.Namespace, error) {
-	return f.update(params.AccountID.Value, id, func(current *kv.Namespace) {
+	return f.update(params.AccountID.Value, "", id, func(current *kv.Namespace) {
 		if params.Title.Present {
 			current.Title = params.Title.Value
 		}
@@ -62,16 +65,18 @@ func (f fakeKVNamespaceAPI) Update(_ context.Context, id string, params kv.Names
 
 func (f fakeKVNamespaceAPI) Delete(_ context.Context, id string, params kv.NamespaceDeleteParams,
 	_ ...option.RequestOption) (*kv.NamespaceDeleteResponse, error) {
-	if err := f.delete(params.AccountID.Value, id); err != nil {
+	if err := f.delete(params.AccountID.Value, "", id); err != nil {
 		return nil, err
 	}
 	return new(kv.NamespaceDeleteResponse), nil
 }
 
 var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.KVNamespace, KVNamespaceAPI, kv.Namespace, kv.Namespace]{
-	kind:     kvNamespaceKind,
-	keyField: "title",
-	pageSize: kvNamespaceListPageSize,
+	kind:           kvNamespaceKind,
+	keyField:       "title",
+	claimLabel:     "kflare.dev/kv-namespace-id",
+	conflictReason: "TitleConflict",
+	pageSize:       kvNamespaceListPageSize,
 	newReconciler: func(c client.Client,
 		newAPI func(string) (KVNamespaceAPI, error)) crudKindReconciler[*cloudflarev1alpha1.KVNamespace, KVNamespaceAPI, kv.Namespace, kv.Namespace] {
 		return &KVNamespaceReconciler{Client: c, Scheme: c.Scheme(), NewKVNamespaceAPI: newAPI}
@@ -91,6 +96,13 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.KVNamespace, KVNamesp
 	seed: func(id, key string) kv.Namespace { return kv.Namespace{ID: id, Title: key} },
 	created: func(obj *cloudflarev1alpha1.KVNamespace, current *kv.Namespace) bool {
 		return current.Title == obj.Spec.Title
+	},
+	sent: func(obj *cloudflarev1alpha1.KVNamespace, sent any) bool {
+		params := sent.(kv.NamespaceNewParams)
+		return params.Title.Value == obj.Spec.Title
+	},
+	observed: func(obj *cloudflarev1alpha1.KVNamespace, current *kv.Namespace) bool {
+		return obj.Status.CloudflareMetadata.NamespaceID == current.ID
 	},
 	changes: []crudSpecEdit[*cloudflarev1alpha1.KVNamespace]{
 		{field: "title", what: "changing title",

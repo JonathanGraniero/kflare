@@ -54,12 +54,6 @@ func (in *WorkerRoute) GetConditions() []metav1.Condition { return in.Status.Con
 // SetConditions replaces the Worker route's status conditions.
 func (in *WorkerRoute) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
 
-// GetConditions returns the R2 bucket's status conditions.
-func (in *R2Bucket) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the R2 bucket's status conditions.
-func (in *R2Bucket) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
 // GetConditions returns the IP list's status conditions.
 func (in *IPList) GetConditions() []metav1.Condition { return in.Status.Conditions }
 

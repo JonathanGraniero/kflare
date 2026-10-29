@@ -149,8 +149,9 @@ type kindBuilder struct {
 	svc   *service
 	spec  *apiSpec
 	// createProps and objectProps are the spec's properties of the create
-	// request and of the object Get returns.
-	createProps, objectProps map[string]*schema
+	// request and of the object Get returns, and createHeaders the schemas
+	// of the create operation's header parameters, by name.
+	createProps, objectProps, createHeaders map[string]*schema
 	// used records the entry's field, fixed and ignore names that matched a
 	// field.
 	used map[string]bool
@@ -174,12 +175,20 @@ func (b *kindBuilder) build() (*kind, error) {
 		},
 	})
 
-	inCreate := map[string]bool{}
+	// reported holds the fields of the object that New's params set, by API
+	// name: status holds the object's other fields.
+	reported := map[string]bool{}
 	var specColumns []printColumn
 	for _, f := range b.svc.create {
-		inCreate[f.apiName] = true
 		if isAccountID(f) {
 			continue
+		}
+		object, err := b.objectCounterpart(f)
+		if err != nil {
+			return nil, err
+		}
+		if object != nil {
+			reported[object.apiName] = true
 		}
 		if value, ok := e.Fixed[f.apiName]; ok {
 			b.used[f.apiName] = true
@@ -195,7 +204,7 @@ func (b *kindBuilder) build() (*kind, error) {
 			}
 			continue
 		}
-		if f.in != inBody {
+		if f.in != inBody && f.in != inHeader {
 			return nil, fmt.Errorf("%s is a %s parameter, which kflare-gen cannot map yet; ignore it with a reason",
 				f.apiName, f.in)
 		}
@@ -203,11 +212,12 @@ func (b *kindBuilder) build() (*kind, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !b.updatable(f.apiName) {
+		if !b.updatable(f) {
 			out.immutable = true
-			if out.optional {
+			if out.optional && out.def == "" {
 				// self == oldSelf holds only while the field is set: it must
-				// not be added or removed either.
+				// not be added or removed either. A field with a default is
+				// always set.
 				k.specRules = append(k.specRules, fmt.Sprintf(
 					`+kubebuilder:validation:XValidation:rule="has(self.%[1]s) == has(oldSelf.%[1]s)",message="%[1]s is immutable"`,
 					out.jsonName))
@@ -217,13 +227,18 @@ func (b *kindBuilder) build() (*kind, error) {
 		specColumns = append(specColumns, column...)
 	}
 	for _, f := range b.svc.update {
-		if f.in == inBody && !inCreate[f.apiName] && !b.ignored(f.apiName) {
-			return nil, fmt.Errorf("%s can be updated but not set at creation, which kflare-gen cannot map yet; "+
-				"ignore it with a reason", f.apiName)
+		if f.in != inBody && f.in != inHeader || isAccountID(f) || counterpart(b.svc.create, f) != nil ||
+			b.ignored(f.apiName) {
+			continue
 		}
+		return nil, fmt.Errorf("%s can be updated but not set at creation, which kflare-gen cannot map yet; "+
+			"ignore it with a reason", f.apiName)
+	}
+	if err := b.checkReportedAs(k); err != nil {
+		return nil, err
 	}
 
-	statusColumns, err := b.metadata(k, inCreate)
+	statusColumns, err := b.metadata(k, reported)
 	if err != nil {
 		return nil, err
 	}
@@ -264,12 +279,76 @@ func (b *kindBuilder) loadSpec() error {
 	if b.objectProps, err = b.spec.resultProperties(get); err != nil {
 		return fmt.Errorf("%s: %w", b.svc.getRoute, err)
 	}
+	if b.createHeaders, err = b.spec.parameterSchemas(create, inHeader); err != nil {
+		return fmt.Errorf("%s: %w", b.svc.newRoute, err)
+	}
 	return nil
 }
 
+// counterpart returns the field of fields that carries what the param f
+// does: the one with f's API name, where f goes, or else the one with f's Go
+// name, which Stainless gives a param in every call wherever the call sends
+// it. R2's storage class is New's body field storageClass, Edit's header
+// cf-r2-storage-class and the object's storage_class, each StorageClass.
+// Callers never ask for the account_id's: every call takes its own.
+func counterpart(fields []sdkField, f sdkField) *sdkField {
+	matches := []func(sdkField) bool{
+		func(o sdkField) bool { return o.in == f.in && o.apiName == f.apiName },
+		func(o sdkField) bool { return o.goName == f.goName },
+	}
+	for _, match := range matches {
+		i := slices.IndexFunc(fields, match)
+		if i >= 0 {
+			return &fields[i]
+		}
+	}
+	return nil
+}
+
+// objectCounterpart returns the field of the object Get returns that reports
+// what the param f of New sets: the one the entry names (reportedAs), or its
+// counterpart. nil when the object reports no such field.
+func (b *kindBuilder) objectCounterpart(f sdkField) (*sdkField, error) {
+	return objectCounterpart(b.svc, b.entry, f)
+}
+
+// objectCounterpart returns the field of the object svc's Get returns that
+// reports what the param f of New sets, as kindBuilder.objectCounterpart does.
+func objectCounterpart(svc *service, entry kindConfig, f sdkField) (*sdkField, error) {
+	as := entry.Fields[f.apiName].ReportedAs
+	if as == "" {
+		return counterpart(svc.object, f), nil
+	}
+	i := slices.IndexFunc(svc.object, func(o sdkField) bool { return o.apiName == as })
+	if i < 0 {
+		return nil, fmt.Errorf("fields.%s.reportedAs: the object Get returns has no field %s", f.apiName, as)
+	}
+	return &svc.object[i], nil
+}
+
+// checkReportedAs refuses a reportedAs on anything but a header param of New
+// that k's spec holds.
+func (b *kindBuilder) checkReportedAs(k *kind) error {
+	for _, name := range slices.Sorted(maps.Keys(b.entry.Fields)) {
+		if as := b.entry.Fields[name].ReportedAs; as != "" && !slices.ContainsFunc(k.spec, func(f field) bool {
+			return f.apiName == name && b.isHeader(name)
+		}) {
+			return fmt.Errorf("fields.%s.reportedAs: only a header parameter of New that the spec holds takes one",
+				name)
+		}
+	}
+	return nil
+}
+
+// isHeader reports whether New takes the param apiName as a header.
+func (b *kindBuilder) isHeader(apiName string) bool {
+	return slices.ContainsFunc(b.svc.create, func(f sdkField) bool { return f.in == inHeader && f.apiName == apiName })
+}
+
 // metadata adds the status fields to k: the ID, then the fields of the object
-// that the create params do not hold. It returns their print columns.
-func (b *kindBuilder) metadata(k *kind, inCreate map[string]bool) ([]printColumn, error) {
+// that the create params do not set (reported). It returns their print
+// columns.
+func (b *kindBuilder) metadata(k *kind, reported map[string]bool) ([]printColumn, error) {
 	e := b.entry
 	id, ok := b.objectField(e.ID.Field)
 	if !ok {
@@ -293,7 +372,7 @@ func (b *kindBuilder) metadata(k *kind, inCreate map[string]bool) ([]printColumn
 	columns := []printColumn{{name: idColumn, typ: typeString, jsonPath: ".status.cloudflareMetadata." + e.ID.Status}}
 	for _, f := range b.svc.object {
 		// The object's other fields that the spec sets are the spec's.
-		if f.apiName == e.ID.Field || inCreate[f.apiName] || b.ignored(f.apiName) {
+		if f.apiName == e.ID.Field || reported[f.apiName] || b.ignored(f.apiName) {
 			continue
 		}
 		out, column, err := b.field(f, false)
@@ -334,9 +413,19 @@ func (b *kindBuilder) ignored(apiName string) bool {
 	return false
 }
 
-// updatable reports whether the service's update takes the field apiName.
-func (b *kindBuilder) updatable(apiName string) bool {
-	return slices.ContainsFunc(b.svc.update, func(f sdkField) bool { return f.in == inBody && f.apiName == apiName })
+// updatable reports whether the service's update can change what the param
+// f of New sets: it takes f's counterpart, and f does not name the object.
+func (b *kindBuilder) updatable(f sdkField) bool {
+	return !isAddress(b.svc, f) && counterpart(b.svc.update, f) != nil
+}
+
+// isAddress reports whether the param f of New is part of what names the
+// object in every call, which Get also takes: an R2 bucket's jurisdiction,
+// whose header goes with every call on the bucket. Changing it would name
+// another object, so it is immutable.
+func isAddress(svc *service, f sdkField) bool {
+	get := svc.calls["Get"]
+	return get != nil && counterpart(get.paramFields, f) != nil
 }
 
 // objectField returns the object's field apiName.
@@ -379,7 +468,10 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 		return field{}, nil, fmt.Errorf("fields.%s.validation: only spec fields are validated", f.apiName)
 	}
 	props := b.objectProps
-	if spec {
+	switch {
+	case spec && f.in == inHeader:
+		props = b.createHeaders
+	case spec:
 		props = b.createProps
 	}
 	fs, err := b.fieldSpec(props, f.apiName)
@@ -401,6 +493,24 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 	}
 	out := field{apiName: f.apiName, goName: f.goName, jsonName: lowerCamel(f.goName), goType: goType,
 		optional: !spec || !f.required}
+	doc := adjust.Doc
+	if doc == "" {
+		doc = f.doc
+	}
+	if spec && f.in == inHeader {
+		// A header's name is no field name: the object's field that reports
+		// the value names it.
+		object, err := b.objectCounterpart(f)
+		if err != nil {
+			return field{}, nil, err
+		}
+		if object != nil {
+			out.goName, out.jsonName = object.goName, lowerCamel(object.goName)
+			if doc == "" {
+				doc = object.doc
+			}
+		}
+	}
 	parent := ".status.cloudflareMetadata."
 	if spec {
 		parent = ".spec."
@@ -410,10 +520,6 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 		if err := b.specValidation(&out, f, fs, adjust.Validation); err != nil {
 			return field{}, nil, err
 		}
-	}
-	doc := adjust.Doc
-	if doc == "" {
-		doc = f.doc
 	}
 	out.doc = lines(doc)
 	var columns []printColumn

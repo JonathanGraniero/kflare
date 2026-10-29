@@ -304,21 +304,6 @@ var pausedKinds = []pausedKind{
 		},
 	},
 	{
-		name: "R2Bucket",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.R2Bucket{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.R2BucketSpec{
-					AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount}, Name: name,
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &R2BucketReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewR2BucketAPI: func(string) (R2BucketAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
 		name: "IPList",
 		newObject: func(name string) conditionedObject {
 			return &cloudflarev1alpha1.IPList{

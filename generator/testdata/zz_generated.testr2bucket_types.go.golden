@@ -10,7 +10,7 @@ import (
 )
 
 // TestR2BucketIDLabel holds the ID of the Cloudflare R2 bucket a TestR2Bucket
-// manages. kflare sets it, and never adopts a R2 bucket that another
+// manages. kflare sets it, and never adopts an R2 bucket that another
 // TestR2Bucket already carries in this label.
 const TestR2BucketIDLabel = "kflare.dev/test-r2-bucket-name"
 
@@ -32,6 +32,19 @@ type TestR2BucketSpec struct {
 	// +kubebuilder:validation:Enum=apac;eeur;enam;weur;wnam;oc
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="locationHint is immutable"
 	LocationHint string `json:"locationHint,omitempty"`
+
+	// Storage class for newly uploaded objects, unless specified otherwise.
+	// +optional
+	// +kubebuilder:validation:Enum=Standard;InfrequentAccess
+	// +kubebuilder:default="Standard"
+	StorageClass string `json:"storageClass,omitempty"`
+
+	// Jurisdiction where objects in this bucket are guaranteed to be stored.
+	// +optional
+	// +kubebuilder:validation:Enum=default;eu;us;fedramp;fedramp-high
+	// +kubebuilder:default="default"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="jurisdiction is immutable"
+	Jurisdiction string `json:"jurisdiction,omitempty"`
 }
 
 // TestR2BucketCloudflareMetadata holds identifiers and metadata returned by the
@@ -43,14 +56,8 @@ type TestR2BucketCloudflareMetadata struct {
 	// Creation timestamp.
 	CreationDate string `json:"creationDate,omitempty"`
 
-	// Jurisdiction where objects in this bucket are guaranteed to be stored.
-	Jurisdiction string `json:"jurisdiction,omitempty"`
-
 	// Location of the bucket.
 	Location string `json:"location,omitempty"`
-
-	// Storage class for newly uploaded objects, unless specified otherwise.
-	StorageClass string `json:"storageClass,omitempty"`
 }
 
 // TestR2BucketStatus defines the observed state of TestR2Bucket.
@@ -67,11 +74,13 @@ type TestR2BucketStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=testr2buckets,scope=Namespaced,shortName=testr2,categories=kflare
-// +kubebuilder:printcolumn:name="Bucket Name",type=string,JSONPath=`.status.cloudflareMetadata.bucketName`
+// +kubebuilder:printcolumn:name="Jurisdiction",type=string,JSONPath=`.spec.jurisdiction`
+// +kubebuilder:printcolumn:name="Bucket",type=string,JSONPath=`.status.cloudflareMetadata.bucketName`
+// +kubebuilder:printcolumn:name="Location",type=string,JSONPath=`.status.cloudflareMetadata.location`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// TestR2Bucket is R2Bucket as kflare-gen generates it.
+// TestR2Bucket is an R2 bucket, named by its name in its jurisdiction.
 type TestR2Bucket struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
