@@ -78,6 +78,22 @@ func TestLoadConfigRefuses(t *testing.T) {
 		{"an ID status name in capitals", replace("status: namespaceID", "status: NamespaceID"), "lowerCamel"},
 		{"a claim label outside kflare.dev", replace("kflare.dev/kv-namespace-id", "example.com/id"), "kflare.dev/"},
 		{"an ignore without a reason", validConfig + "    ignore:\n      jurisdiction: \" \"\n", "gives no reason"},
+		{"a deletion blocker without a code", validConfig + "    deletionBlockers:\n" +
+			"      - {reason: BucketNotEmpty, message: holds objects, why: checked}\n",
+			"deletionBlockers[0]: code 0 is not a Cloudflare error code"},
+		{"a deletion blocker listed twice", validConfig + "    deletionBlockers:\n" +
+			"      - {code: 10008, reason: BucketNotEmpty, message: holds objects, why: checked}\n" +
+			"      - {code: 10008, reason: Again, message: holds objects, why: checked}\n",
+			"deletionBlockers[1]: code 10008 is listed twice"},
+		{"a deletion blocker's reason in lower case", validConfig + "    deletionBlockers:\n" +
+			"      - {code: 10008, reason: bucketNotEmpty, message: holds objects, why: checked}\n",
+			"deletionBlockers[0]: reason \"bucketNotEmpty\" is not a CamelCase condition reason"},
+		{"a deletion blocker without a message", validConfig + "    deletionBlockers:\n" +
+			"      - {code: 10008, reason: BucketNotEmpty, message: \" \", why: checked}\n",
+			"deletionBlockers[0]: gives no message"},
+		{"a deletion blocker without why", validConfig + "    deletionBlockers:\n" +
+			"      - {code: 10008, reason: BucketNotEmpty, message: holds objects}\n",
+			"deletionBlockers[0]: does not say why"},
 		{"a field both ignored and adjusted", validConfig + "    ignore:\n      title: why\n    fields:\n      title: {}\n",
 			"both ignored and adjusted"},
 		{"a validation without a reason", validConfig + "    fields:\n      title: {validation: {maxLength: 2}}\n",

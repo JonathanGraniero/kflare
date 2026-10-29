@@ -63,7 +63,12 @@ func describeEdits(edits []specEdit) []string {
 	out := make([]string, 0, len(edits))
 	for _, e := range edits {
 		value, _ := json.Marshal(e.value)
-		out = append(out, e.f.apiName+"="+string(value)+" ("+e.what+")")
+		from := ""
+		if e.setup != nil {
+			setup, _ := json.Marshal(e.setup)
+			from = " from " + string(setup)
+		}
+		out = append(out, e.f.apiName+"="+string(value)+from+" ("+e.what+")")
 	}
 	return out
 }
@@ -108,7 +113,7 @@ func TestBuildControllerForTheKVNamespaceService(t *testing.T) {
 		t.Errorf("changes = %q", got)
 	}
 	if got := describeEdits(c.immutable); !slices.Equal(got, []string{`jurisdiction="eu" (setting jurisdiction)`,
-		`mode="instant" (setting mode)`}) {
+		`jurisdiction="fedramp" from "eu" (changing jurisdiction once set)`, `mode="instant" (setting mode)`}) {
 		t.Errorf("immutable = %q", got)
 	}
 	if got := describeEdits(c.invalid); len(got) != 3 ||
@@ -141,6 +146,11 @@ func TestBuildControllerRefuses(t *testing.T) {
 			"the service has no List"},
 		{"a service without Delete", func(svc *service, _ *kindConfig, _ *apiSpec) { delete(svc.calls, "Delete") },
 			"the service has no Delete"},
+		{"a kind named by its key without Delete", func(svc *service, entry *kindConfig, _ *apiSpec) {
+			entry.ID.Field, entry.Adopt.By = "title", "title"
+			delete(svc.calls, "List")
+			delete(svc.calls, "Delete")
+		}, "the service has no Delete"},
 		{"a service without a constructor", func(svc *service, _ *kindConfig, _ *apiSpec) { svc.typeName = "Nothing" },
 			"kv has no NewNothing to build the service with"},
 		{"a Get without an ID", func(svc *service, _ *kindConfig, _ *apiSpec) {
@@ -248,6 +258,89 @@ func TestBuildControllerRefuses(t *testing.T) {
 			t.Errorf("buildController: err = %v", err)
 		}
 	})
+}
+
+func TestBuildControllerRefusesTwoAddresses(t *testing.T) {
+	svc := cloneService(loadTestService(t, "r2.BucketService"))
+	region := sdkField{goName: "CfR2Region", apiName: "cf-r2-region", in: inHeader, typ: types.Typ[types.String]}
+	svc.create = append(svc.create, region)
+	svc.calls["New"].paramFields = svc.create
+	svc.calls["Get"].paramFields = append(svc.calls["Get"].paramFields, region)
+	entry := r2Entry()
+	entry.Sample = map[string]any{"name": "a-bucket"}
+	_, err := buildTestController(t, entry, svc, loadTestSpec(t))
+	want := "cf-r2-jurisdiction and cf-r2-region both name the object in every call; kflare-gen takes one such param yet"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("buildController: err = %v, want one containing %q", err, want)
+	}
+}
+
+func TestBuildControllerPairsParamsWhereTheyGo(t *testing.T) {
+	// A Get that takes a query param of the title's name does not make the
+	// title the object's address: the title stays updatable.
+	svc := cloneService(loadTestService(t, "kv.NamespaceService"))
+	svc.calls["Get"].paramFields = append(svc.calls["Get"].paramFields,
+		sdkField{goName: "Version", apiName: "title", in: inQuery, typ: types.Typ[types.String]})
+	c, err := buildTestController(t, kvControllerEntry(), svc, loadTestSpec(t))
+	if err != nil {
+		t.Fatalf("buildController: %v", err)
+	}
+	if len(c.address) != 0 || len(c.changes) != 1 || c.changes[0].f.apiName != "title" {
+		t.Errorf("address = %v, changes = %q; want no address and the title updatable", c.address,
+			describeEdits(c.changes))
+	}
+}
+
+func TestBuildControllerSetsARequiredPage(t *testing.T) {
+	svc := cloneService(loadTestService(t, "kv.NamespaceService"))
+	for i, f := range svc.calls["List"].paramFields {
+		if f.apiName == "page" || f.apiName == "per_page" {
+			svc.calls["List"].paramFields[i].required = true
+		}
+	}
+	if _, err := buildTestController(t, kvControllerEntry(), svc, loadTestSpec(t)); err != nil {
+		t.Errorf("buildController: %v; the reconciler sets List's page and per_page", err)
+	}
+}
+
+func TestDefaultValue(t *testing.T) {
+	for _, tc := range []struct {
+		f    field
+		want any
+	}{
+		{field{goType: typeString, def: `"Standard"`}, "Standard"},
+		{field{goType: "*" + typeBool, def: "true"}, true},
+		{field{goType: typeBool, def: "false"}, false},
+		{field{goType: typeInt64, def: "42"}, int64(42)},
+	} {
+		got, err := defaultValue(tc.f)
+		if err != nil || got != tc.want {
+			t.Errorf("defaultValue(%s %s) = %v, %v; want %v", tc.f.goType, tc.f.def, got, err, tc.want)
+		}
+	}
+	if _, err := defaultValue(field{goType: "[]string", def: "[]"}); err == nil {
+		t.Error("defaultValue took a list's default")
+	}
+}
+
+func TestBuildControllerSetsTheAddressInEveryCall(t *testing.T) {
+	svc := cloneService(loadTestService(t, "r2.BucketService"))
+	for _, name := range []string{"Get", "Edit", "Delete"} {
+		fields := svc.calls[name].paramFields
+		fields[slices.IndexFunc(fields, func(f sdkField) bool { return f.apiName == "cf-r2-jurisdiction" })].required =
+			true
+	}
+	entry := r2Entry()
+	entry.Sample = map[string]any{"name": "a-bucket"}
+	c, err := buildTestController(t, entry, svc, loadTestSpec(t))
+	if err != nil {
+		t.Fatalf("buildController: %v; the reconciler sets the jurisdiction in every call", err)
+	}
+	if len(c.address) != 1 || c.address[0].jsonName != "jurisdiction" || c.scope != "default" ||
+		c.scopeElsewhere != "eu" {
+		t.Errorf("address = %v, scope %q, elsewhere %q; want the jurisdiction, default and eu", c.address, c.scope,
+			c.scopeElsewhere)
+	}
 }
 
 func TestCheckShape(t *testing.T) {
@@ -451,10 +544,22 @@ func TestInvalidValues(t *testing.T) {
 		}},
 		{testField(typeInt64, validation{minimum: &low, maximum: &high, exclusiveMinimum: true,
 			exclusiveMaximum: true}), []string{"f=1 (a f below its minimum)", "f=10 (a f above its maximum)"}},
+		{testField(typeString, validation{pattern: "^[a-z-]+$"}), []string{
+			`f="KFLARE-NOT-MATCHING" (a f not matching its pattern)`,
+		}},
+		{testField(typeString, validation{pattern: "^[a-z-]+$"}, "a", "b"), []string{
+			`f="kflare-not-in-enum" (a f outside its enum)`,
+		}},
 	} {
-		if got := describeEdits(invalidValues(tc.f)); !slices.Equal(got, tc.want) {
-			t.Errorf("invalidValues(%s, %+v) = %q, want %q", tc.f.goType, tc.f.validation, got, tc.want)
+		got, err := invalidValues(tc.f)
+		if err != nil || !slices.Equal(describeEdits(got), tc.want) {
+			t.Errorf("invalidValues(%s, %+v) = %q, %v; want %q", tc.f.goType, tc.f.validation, describeEdits(got), err,
+				tc.want)
 		}
+	}
+	if _, err := invalidValues(testField(typeString, validation{pattern: ".*"})); err == nil ||
+		!strings.Contains(err.Error(), "kflare-gen finds no value its pattern .* refuses") {
+		t.Errorf("invalidValues of a pattern that takes everything: err = %v", err)
 	}
 	for name, want := range map[string]string{"title": "a title", "ID": "an ID", "enabled": "an enabled"} {
 		if got := article(name); got != want {

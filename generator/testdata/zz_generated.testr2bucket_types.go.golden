@@ -16,7 +16,6 @@ const TestR2BucketIDLabel = "kflare.dev/test-r2-bucket-name"
 
 // TestR2BucketSpec defines the desired state of TestR2Bucket.
 // +kubebuilder:validation:XValidation:rule="has(self.locationHint) == has(oldSelf.locationHint)",message="locationHint is immutable"
-// +kubebuilder:validation:XValidation:rule="has(self.jurisdiction) == has(oldSelf.jurisdiction)",message="jurisdiction is immutable"
 type TestR2BucketSpec struct {
 	// AccountRef references the CloudflareAccount that owns the R2 bucket.
 	// Immutable after creation.

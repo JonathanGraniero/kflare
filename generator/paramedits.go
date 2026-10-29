@@ -444,7 +444,12 @@ func keyedCopies(key *paramField, first map[string]any) func(i int) (any, bool) 
 // mismatch returns a string of a length a scalar allows that its pattern
 // refuses.
 func mismatch(n *paramScalar) (string, bool) {
-	v := n.validation
+	return patternMismatch(n.validation)
+}
+
+// patternMismatch returns a string of a length v allows that v's pattern
+// refuses.
+func patternMismatch(v validation) (string, bool) {
 	pattern := regexp.MustCompile(v.pattern)
 	for _, s := range []string{"kflare-not-matching", "KFLARE-NOT-MATCHING", "kflare not matching!", "kflare-nöt-matching",
 		"", "-", "0", "/"} {

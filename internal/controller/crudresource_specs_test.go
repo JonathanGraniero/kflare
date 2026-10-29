@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -64,6 +65,8 @@ type fakeCRUDStore[R any] struct {
 	accountIDs []string
 	listPages  []int64
 	writes     int
+	// sent holds the params of each New, in order.
+	sent []any
 }
 
 func newFakeCRUDStore[R any](pageSize int64, scope string) *fakeCRUDStore[R] {
@@ -205,10 +208,11 @@ type crudKindReconciler[O conditionedObject, A any, R any, L any] interface {
 }
 
 // crudSpecEdit is an edit of a generated kind's sample spec: of field, as
-// what describes it.
+// what describes it. setup, when set, prepares the resource the edit starts
+// from, before it is created.
 type crudSpecEdit[O any] struct {
 	field, what string
-	edit        func(O)
+	setup, edit func(O)
 }
 
 // crudScopeEdit is an edit of a field that names a resource's object in every
@@ -229,6 +233,9 @@ type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	keyField string
 	pageSize int64
 	scope    string
+	// claimLabel and conflictReason are the entry's, copies of the kind's
+	// own.
+	claimLabel, conflictReason string
 	// newReconciler returns the kind's reconciler, with newAPI as its
 	// factory: nil for the production one.
 	newReconciler func(c client.Client, newAPI func(string) (A, error)) crudKindReconciler[O, A, R, L]
@@ -246,11 +253,21 @@ type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	// created reports whether an object holds every field of a resource's
 	// spec that Cloudflare reports, those set at creation only included.
 	created func(obj O, current *R) bool
+	// sent reports whether New's params hold every field of a resource's spec,
+	// those the object does not report included, and the fixed values;
+	// observed whether status records the object; defaulted, nil for a spec
+	// without defaults, whether the API server applied them.
+	sent      func(obj O, params any) bool
+	observed  func(obj O, current *R) bool
+	defaulted func(obj O) bool
 	// changes edit each field Update takes, immutable each field it does not
 	// (accountRef first), and invalid set values the CRD refuses. elsewhere
-	// moves the sample to another address, a field at a time.
+	// moves the sample to another address: nil for a kind whose objects the
+	// account and the ID name alone.
 	changes, immutable, invalid []crudSpecEdit[O]
-	elsewhere                   []crudScopeEdit[O]
+	elsewhere                   *crudScopeEdit[O]
+	// deletionBlockers are the entry's, a copy of the kind's own.
+	deletionBlockers []deletionBlocker
 }
 
 // describeCRUDKind runs the shared specs on a generated kind's table.
@@ -273,11 +290,11 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		// byKey is set for a kind whose objects their key identifies: it reads
 		// them by their key and never lists them.
 		byKey := k.list == nil
-		// addressFields are the fields that name an object besides the account
-		// and the ID.
-		addressFields := map[string]bool{}
-		for _, e := range t.elsewhere {
-			addressFields[e.field] = true
+		// addressField is the field that names an object besides the account
+		// and the ID, if the kind has one.
+		addressField := ""
+		if t.elsewhere != nil {
+			addressField = t.elsewhere.field
 		}
 
 		var store *fakeCRUDStore[R]
@@ -421,7 +438,9 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(store.writes).To(Equal(1), "the new object is what the spec asks for: nothing to update")
 				obj := get()
 				object := store.objects[id]
+				Expect(t.sent(obj, store.sent[0])).To(BeTrue(), "New is sent every field of the spec")
 				Expect(t.created(obj, &object)).To(BeTrue(), "the new object holds every field of the spec")
+				Expect(t.observed(obj, &object)).To(BeTrue(), "status records the new object")
 				Expect(k.matches(obj, &object)).To(BeTrue(), "the new object is what the spec asks for")
 				Expect(obj.GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
@@ -434,7 +453,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				// The address stays the sample's, where the store's objects are:
 				// the elsewhere specs move it.
 				for _, edit := range slices.Concat(t.changes, t.immutable) {
-					if edit.field != "accountRef" && !addressFields[edit.field] {
+					if edit.field != "accountRef" && edit.field != addressField {
 						edit.edit(obj)
 					}
 				}
@@ -443,8 +462,21 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(err).NotTo(HaveOccurred())
 				Expect(store.writes).To(Equal(1))
 				object := store.objects[k.statusID(get())]
+				Expect(t.sent(get(), store.sent[0])).To(BeTrue(), "New is sent every field of the spec")
 				Expect(t.created(get(), &object)).To(BeTrue(), "the new object holds every field of the spec")
 			})
+
+			It("claims with its entry's label, and reports its entry's conflict reason", func() {
+				Expect(k.claimLabel).To(Equal(t.claimLabel))
+				Expect(k.conflictReason).To(Equal(t.conflictReason))
+			})
+
+			if t.defaulted != nil {
+				It("takes the API's defaults for the fields its sample leaves unset", func() {
+					create(key, nil)
+					Expect(t.defaulted(get())).To(BeTrue())
+				})
+			}
 
 			It("writes nothing to Cloudflare once the "+k.noun+" is in sync", func() {
 				synced(nil)
@@ -697,23 +729,54 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				expectAdopted()
 			})
 
-			// createElsewhere creates the resource with the sample's spec moved
-			// to another address by e, and annotations.
-			createElsewhere := func(e crudScopeEdit[O], annotations map[string]string) O {
-				obj := t.newResource(key, accountName)
-				obj.SetAnnotations(annotations)
-				obj.SetFinalizers([]string{reconciler.Finalizer})
-				e.edit(obj)
-				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
-				return obj
-			}
+			It("adopts a "+k.noun+" though another "+k.name+" claims another", func() {
+				createAccount(true)
+				other := t.newResource(otherKey, accountName)
+				other.SetLabels(map[string]string{k.claimLabel: "another"})
+				Expect(k8sClient.Create(ctx, other)).To(Succeed())
+				obj := create(key, adopt)
+				seed("existing", k.key(obj))
+				expectAdopted()
+			})
 
-			for _, e := range t.elsewhere {
+			It("returns a failed read of a claimant's CloudflareAccount for back-off", func() {
+				createAccount(true)
+				claimedBy(otherAccountName)
+				create(key, adopt)
+				base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+				Expect(err).NotTo(HaveOccurred())
+				failing := interceptor.NewClient(base, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+						opts ...client.GetOption) error {
+						if key.Name == otherAccountName {
+							return errors.New("account unavailable")
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				})
+				r = t.newReconciler(failing, func(string) (A, error) { return t.newFake(store), nil })
+				_, err = reconcileIt()
+				Expect(err).To(MatchError("account unavailable"))
+				Expect(store.writes).To(BeZero())
+			})
+
+			if e := t.elsewhere; e != nil {
+				// createElsewhere creates the resource with the sample's spec
+				// moved to another address, and annotations.
+				createElsewhere := func(annotations map[string]string) O {
+					obj := t.newResource(key, accountName)
+					obj.SetAnnotations(annotations)
+					obj.SetFinalizers([]string{reconciler.Finalizer})
+					e.edit(obj)
+					Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+					return obj
+				}
+
 				It("adopts the "+k.noun+" with the same "+t.keyField+" after "+e.what+", though another "+k.name+
 					" claims the one at the sample's", func() {
 					createAccount(true)
 					claimedBy(accountName)
-					obj := createElsewhere(e, adopt)
+					obj := createElsewhere(adopt)
 					id := k.key(obj)
 					if !byKey {
 						id = "elsewhere"
@@ -728,7 +791,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					func() {
 						createAccount(true)
 						seed("existing", k.key(t.newResource(key, accountName)))
-						createElsewhere(e, adoptOrCreate)
+						createElsewhere(adoptOrCreate)
 						_, err := reconcileIt()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(ready().Status).To(Equal(metav1.ConditionTrue), ready().Message)
@@ -991,7 +1054,11 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				expectGone()
 			})
 
-			for _, blocker := range k.deletionBlockers {
+			It("refuses deletion as its entry's blockers say", func() {
+				Expect(k.deletionBlockers).To(Equal(t.deletionBlockers), "the kind's blockers are not its entry's")
+			})
+
+			for _, blocker := range t.deletionBlockers {
 				It("keeps the "+k.noun+" and reports "+blocker.reason+" while Cloudflare refuses the delete with "+
 					fmt.Sprint(blocker.code)+", and deletes it once Cloudflare no longer does", func() {
 					id := synced(nil)
@@ -1120,8 +1187,12 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		Describe("validation", func() {
 			for _, change := range t.immutable {
 				It("refuses "+change.what, func() {
-					create(key, nil)
-					obj := get()
+					obj := t.newResource(key, accountName)
+					if change.setup != nil {
+						change.setup(obj)
+					}
+					Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+					obj = get()
 					change.edit(obj)
 					Expect(k8sClient.Update(ctx, obj)).To(MatchError(ContainSubstring(change.field + " is immutable")))
 				})

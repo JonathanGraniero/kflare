@@ -278,6 +278,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, obj O, accountID, key string) (string, *R, error) {
 	k := r.kind
 	if k.list == nil {
+		// The key is the object's ID.
 		found, err := k.get(ctx, api, obj, accountID, key)
 		switch {
 		case cfpkg.IsNotFound(err):
@@ -285,7 +286,7 @@ func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, ob
 		case err != nil:
 			return "", nil, err
 		}
-		return k.id(found), found, nil
+		return key, found, nil
 	}
 	listed, err := findInPages(func(page int64) (*pagination.V4PagePaginationArray[L], error) {
 		return k.list(ctx, api, obj, accountID, page)

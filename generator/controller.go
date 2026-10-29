@@ -66,21 +66,16 @@ type controller struct {
 	// name.
 	sample map[string]any
 	// scope is the sample's address, as the fake keeps objects apart by it:
-	// its address fields' values, joined by "/".
+	// its address field's value.
 	scope string
 	// changes, immutable and invalid are the generated specs' edits of the
 	// sample: a change of each updatable field, of each immutable one, and
-	// values the CRD refuses. elsewhere moves the sample to another address:
-	// a change of each address field, each with the scope it leads to.
+	// values the CRD refuses. elsewhere moves the sample to another address,
+	// a change of the address field, and scopeElsewhere is the scope it
+	// leads to.
 	changes, immutable, invalid []specEdit
-	elsewhere                   []scopeEdit
-}
-
-// scopeEdit is a change of an address field, and the scope of the address it
-// leads to.
-type scopeEdit struct {
-	specEdit
-	scope string
+	elsewhere                   *specEdit
+	scopeElsewhere              string
 }
 
 // apiField is a spec field, or a fixed value, with its counterparts in the
@@ -103,11 +98,12 @@ type statusField struct {
 }
 
 // specEdit is an edit of the sample's spec in a generated spec: value set on
-// the spec field f, described by what.
+// the spec field f, described by what. setup, when set, is f's value in the
+// resource the edit starts from, which the sample leaves unset.
 type specEdit struct {
-	f     field
-	value any
-	what  string
+	f            field
+	value, setup any
+	what         string
 }
 
 // buildController builds the model of k's controller from the kind's entry,
@@ -352,6 +348,10 @@ func (b *controllerBuilder) fields(c *controller) error {
 			c.address = append(c.address, af)
 		}
 	}
+	if len(c.address) > 1 {
+		return fmt.Errorf("%s and %s both name the object in every call; kflare-gen takes one such param yet",
+			c.address[0].apiName, c.address[1].apiName)
+	}
 	for _, name := range slices.Sorted(maps.Keys(c.fixed)) {
 		af, err := pair(apiField{field: field{apiName: name}, fixed: c.fixed[name]})
 		if err != nil {
@@ -371,7 +371,9 @@ func (b *controllerBuilder) fields(c *controller) error {
 			if !f.required || c.sets(call, f) {
 				continue
 			}
-			if call == c.update && f.in == inBody {
+			// Only Update can require a body field the spec does not hold: New
+			// requires none the entry may ignore.
+			if f.in == inBody {
 				return fmt.Errorf("%s requires %s, which the entry ignores", call.name, f.apiName)
 			}
 			return fmt.Errorf("%s requires the %s parameter %s, which the shared CRUD reconciler does not set",
@@ -438,7 +440,6 @@ func (b *controllerBuilder) sample(c *controller) error {
 		}
 		c.sample[name] = value
 	}
-	var scope []string
 	for _, f := range c.fields {
 		value, set := c.sample[f.apiName]
 		if !set && !f.optional {
@@ -465,25 +466,28 @@ func (b *controllerBuilder) sample(c *controller) error {
 		}
 		if f.immutable {
 			c.immutable = append(c.immutable, edit)
+			// Setting the field is refused because it was unset; changing it
+			// once set is refused too, when it has another valid value (an
+			// enum of one value has none).
+			if changed, err := otherValue(f.field, other); value == nil && err == nil {
+				c.immutable = append(c.immutable, specEdit{f: f.field, setup: other, value: changed,
+					what: "changing " + f.jsonName + " once set"})
+			}
 		} else {
 			c.changes = append(c.changes, edit)
 		}
-		c.invalid = append(c.invalid, invalidValues(f.field)...)
+		invalid, err := invalidValues(f.field)
+		if err != nil {
+			return fmt.Errorf("%s: %w", f.apiName, err)
+		}
+		c.invalid = append(c.invalid, invalid...)
 		if slices.ContainsFunc(c.address, func(af apiField) bool { return af.apiName == f.apiName }) {
 			if f.goType != typeString {
 				return fmt.Errorf("%s names the object in every call, so it is a string", f.apiName)
 			}
-			current, _ := value.(string)
-			scope = append(scope, current)
-			c.elsewhere = append(c.elsewhere, scopeEdit{specEdit: edit, scope: other.(string)})
+			c.scope, _ = value.(string)
+			c.elsewhere, c.scopeElsewhere = &edit, other.(string)
 		}
-	}
-	c.scope = strings.Join(scope, "/")
-	for i := range c.elsewhere {
-		// The other address fields keep the sample's values.
-		parts := slices.Clone(scope)
-		parts[i] = c.elsewhere[i].scope
-		c.elsewhere[i].scope = strings.Join(parts, "/")
 	}
 	return nil
 }
@@ -615,13 +619,20 @@ func changedStrings(s string) []any {
 }
 
 // invalidValues returns values of f that the CRD refuses: too short, too
-// long, outside the enum or out of range.
-func invalidValues(f field) []specEdit {
+// long, not matching its pattern, outside the enum or out of range.
+func invalidValues(f field) ([]specEdit, error) {
 	v := f.validation
 	var out []specEdit
 	a := article(f.jsonName)
 	if len(f.enum) > 0 {
 		out = append(out, specEdit{f: f, value: "kflare-not-in-enum", what: a + " outside its enum"})
+	}
+	if v.pattern != "" && len(f.enum) == 0 {
+		s, ok := patternMismatch(v)
+		if !ok {
+			return nil, fmt.Errorf("kflare-gen finds no value its pattern %s refuses", v.pattern)
+		}
+		out = append(out, specEdit{f: f, value: s, what: a + " not matching its pattern"})
 	}
 	for _, value := range f.excluded {
 		out = append(out, specEdit{f: f, value: value, what: f.jsonName + " " + value + ", which the entry's enum " +
@@ -656,7 +667,7 @@ func invalidValues(f field) []specEdit {
 		}
 		out = append(out, specEdit{f: f, value: above, what: a + " above its maximum"})
 	}
-	return out
+	return out, nil
 }
 
 // article returns name after the article a or an: an before a vowel, and

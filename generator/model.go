@@ -214,9 +214,10 @@ func (b *kindBuilder) build() (*kind, error) {
 		}
 		if !b.updatable(f) {
 			out.immutable = true
-			if out.optional {
+			if out.optional && out.def == "" {
 				// self == oldSelf holds only while the field is set: it must
-				// not be added or removed either.
+				// not be added or removed either. A field with a default is
+				// always set.
 				k.specRules = append(k.specRules, fmt.Sprintf(
 					`+kubebuilder:validation:XValidation:rule="has(self.%[1]s) == has(oldSelf.%[1]s)",message="%[1]s is immutable"`,
 					out.jsonName))
@@ -233,13 +234,8 @@ func (b *kindBuilder) build() (*kind, error) {
 		return nil, fmt.Errorf("%s can be updated but not set at creation, which kflare-gen cannot map yet; "+
 			"ignore it with a reason", f.apiName)
 	}
-	for _, name := range slices.Sorted(maps.Keys(e.Fields)) {
-		if as := e.Fields[name].ReportedAs; as != "" && !slices.ContainsFunc(k.spec, func(f field) bool {
-			return f.apiName == name && b.isHeader(name)
-		}) {
-			return nil, fmt.Errorf("fields.%s.reportedAs: only a header parameter of New that the spec holds takes "+
-				"one", name)
-		}
+	if err := b.checkReportedAs(k); err != nil {
+		return nil, err
 	}
 
 	statusColumns, err := b.metadata(k, reported)
@@ -293,15 +289,15 @@ func (b *kindBuilder) loadSpec() error {
 // does: the one with f's API name, where f goes, or else the one with f's Go
 // name, which Stainless gives a param in every call wherever the call sends
 // it. R2's storage class is New's body field storageClass, Edit's header
-// cf-r2-storage-class and the object's storage_class, each StorageClass. The
-// account_id is nobody's counterpart: every call takes its own.
+// cf-r2-storage-class and the object's storage_class, each StorageClass.
+// Callers never ask for the account_id's: every call takes its own.
 func counterpart(fields []sdkField, f sdkField) *sdkField {
 	matches := []func(sdkField) bool{
 		func(o sdkField) bool { return o.in == f.in && o.apiName == f.apiName },
 		func(o sdkField) bool { return o.goName == f.goName },
 	}
 	for _, match := range matches {
-		i := slices.IndexFunc(fields, func(o sdkField) bool { return !isAccountID(o) && match(o) })
+		i := slices.IndexFunc(fields, match)
 		if i >= 0 {
 			return &fields[i]
 		}
@@ -328,6 +324,20 @@ func objectCounterpart(svc *service, entry kindConfig, f sdkField) (*sdkField, e
 		return nil, fmt.Errorf("fields.%s.reportedAs: the object Get returns has no field %s", f.apiName, as)
 	}
 	return &svc.object[i], nil
+}
+
+// checkReportedAs refuses a reportedAs on anything but a header param of New
+// that k's spec holds.
+func (b *kindBuilder) checkReportedAs(k *kind) error {
+	for _, name := range slices.Sorted(maps.Keys(b.entry.Fields)) {
+		if as := b.entry.Fields[name].ReportedAs; as != "" && !slices.ContainsFunc(k.spec, func(f field) bool {
+			return f.apiName == name && b.isHeader(name)
+		}) {
+			return fmt.Errorf("fields.%s.reportedAs: only a header parameter of New that the spec holds takes one",
+				name)
+		}
+	}
+	return nil
 }
 
 // isHeader reports whether New takes the param apiName as a header.

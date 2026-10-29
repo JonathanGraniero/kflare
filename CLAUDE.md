@@ -160,8 +160,11 @@ why.
 
 1. **Check the shape.** kflare-gen generates three:
    - CRUD kinds (`kinds:` in `generator/generator.yaml`, run by `crudresource_controller.go`): an account-level v7
-     service with `New`, `Get`, a `List` that pages with `V4PagePaginationArray`, `Delete`, and optionally `Update` or
-     `Edit`, its objects identified by an ID. Closest examples: `D1Database`, `KVNamespace`
+     service with `New`, `Get`, `Delete`, optionally `Update` or `Edit`, and either a `List` that pages with
+     `V4PagePaginationArray`, its objects identified by an ID, or objects whose key is their ID (`adopt.by` its
+     `id.field`), read by it and never listed. Header params map too, and one that `Get` also takes names the object in
+     every call (R2's jurisdiction). Closest examples: `D1Database`, `KVNamespace`; `R2Bucket` for objects named by
+     their key, header params (`reportedAs`) and `deletionBlockers`
    - Rule kinds (`ruleKinds:`, run by `rulesetrule_controller.go`): one rule in a zone's Rulesets phase, typed by v7's
      `rulesets.<Action>RuleParam`, or one of several actions (`actions`), with the rule's own fields such as
      `ratelimit` unless ignored, and `conflicts`. Closest examples: `OriginRule` (small), `CacheRule` (CEL rules and
@@ -309,7 +312,9 @@ kind is custom and the generated specs, the OpenAPI constraints and the mutation
 do. PR 1 (`feat/generator-rule-actions`, #113), PR 2 (`ManagedRuleset`, #114) and PR 4 (`RateLimitRule`, #115, taken
 before PR 3 by the user's call on 2026-10-27) and PR 3 (`WAFCustomRule`, #116) are merged: every rule kind is
 generated. They ship as v0.3.0 (`docs/release-v0.3.0`), released before the other kinds move, at the user's request on
-2026-10-28; PR 5 is next.
+2026-10-28. PRs 5 and 6 (`feat/generate-r2-bucket`) are one pull request, the user's call on 2026-10-28 ("a couple of
+them in the same PR"): R2Bucket and the capability it needs, built on it rather than on a test kind first. The user
+also OK'd mapping R2's storage class then, with live Infrequent Access probes; PR 7 is next.
 
 **Decided (the user, 2026-10-27):**
 1. Every hand-written kind is generated: the earlier plan's line that `Zone`, `DNSRecord`, `Tunnel`,
@@ -336,7 +341,7 @@ say it, into a hook. The later capabilities are sketched only; each is planned i
 | 2 | `feat/generate-managed-ruleset` | `ManagedRuleset` generated (`execute`; conflict 20014) |
 | 3 | `feat/generate-waf-custom-rule` | `WAFCustomRule` generated (block, challenges, skip, log; `logging` on skip) |
 | 4 | `feat/generate-rate-limit-rule` | `RateLimitRule` generated (`ratelimit`; `cf.colo.id` and the mitigation timeout, verified live) |
-| 5 | `feat/generator-buckets` | CRUD kinds: objects identified by name, lists that are not `V4PagePaginationArray`, header params (jurisdiction), deletion blockers as data |
+| 5 | in `feat/generate-r2-bucket` | CRUD kinds: objects identified by their key (read by it, never listed, so no list beyond `V4PagePaginationArray` was needed), header params (jurisdiction) and an object's address, deletion blockers as data |
 | 6 | `feat/generate-r2-bucket` | `R2Bucket` generated, onto v7 (gains jurisdictions and storage class) |
 | 7 | `feat/generator-hooks` | Go hooks, and CRUD kinds whose New, Get and Update return different types (custom lists) |
 | 8 | `feat/generate-ip-list` | `IPList` generated, its items' bulk operation a hook |
@@ -593,7 +598,7 @@ row also says what kflare-gen needs before it can generate the kind.
 | `ManagedTransform` (planned above) | the zone's managed request and response headers | ✔ all six, read live | ✔ Managed headers Write, added 2026-10-23 | ✅ the settings kinds (capability 1); generated in `feat/managed-transform-controller` |
 | `ZoneSettings` (one kind, the user's choice on 2026-10-26) | SSL mode, Always Use HTTPS, minimum TLS version, HSTS, and the other settings a zone has | 37 of v7's 67 editable on kflare.dev (read 2026-10-26), each to probe | ✔ Zone Settings Write, added 2026-10-26 | ✅ settings by ID (capability 1, `feat/generator-zone-settings`) |
 | `Queue` | a Workers queue (consumers later) | ✔ probe queue created and deleted | ✔ Queues Write | `SinglePage` lists: the shared CRUD reconciler pages only `V4PagePaginationArray` |
-| `VectorizeIndex` | a Vectorize index | ✔ probe index (dimensions 32 to 1,536) | ✔ Vectorize Write | objects identified by name (no ID, like R2 buckets), `SinglePage` lists |
+| `VectorizeIndex` | a Vectorize index | ✔ probe index (dimensions 32 to 1,536) | ✔ Vectorize Write | ✅ objects identified by name (no ID, like R2 buckets; `feat/generate-r2-bucket`) |
 | `TurnstileWidget` | a Turnstile widget | ✔ probe widget | ✔ Turnstile Sites Write | lists of strings in CRUD kinds (domains); the widget's secret written to a Kubernetes Secret; adoption without unique names |
 | `WorkerDomain` | a Worker on a custom domain, next to `WorkerRoute` | not probed: needs a hostname in the zone | ✔ Workers Scripts Write | a service without `New` (a PUT attaches), `SinglePage` lists |
 | `HyperdriveConfig` | a Hyperdrive connection to a database | not probed: a create checks that the database answers | ✔ Hyperdrive Write | an input secret (the password, from a Secret) |
@@ -612,7 +617,7 @@ kflare-gen capabilities, in the order the candidates above need them:
    [generator/CLAUDE.md](generator/CLAUDE.md)), and for zone settings, named by an ID and without a reset
    (`feat/generator-zone-settings`)
 2. **`SinglePage` lists and objects identified by name** in the shared CRUD reconciler: queues, Vectorize indexes,
-   Workers custom domains
+   Workers custom domains. ✅ Objects identified by name, read by it rather than listed (`feat/generate-r2-bucket`)
 3. **Secrets:** an `x-sensitive` field written to a Kubernetes Secret (the Turnstile secret), or read from one (the
    Hyperdrive password)
 4. **Services without `New`** (a PUT that creates or replaces), and **zone-scoped CRUD kinds** (the shared CRUD
@@ -625,7 +630,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   a successful reconcile requeues after the interval, give or take a tenth, which deploy.md sizes against
   Cloudflare's rate limit
 - **R2Bucket and Tunnel onto v7:** jurisdictions and storage class for buckets, renames for tunnels (both blocked on
-  v0.119), as SDK decision step 3 foresees
+  v0.119), as SDK decision step 3 foresees. ✅ R2Bucket, generated (`feat/generate-r2-bucket`)
 
 ### Release and CI
 **Status:** 🔲 Open, alongside Phase 3
@@ -784,11 +789,11 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule` and `OriginRule`
 > done.**
 > cloudflare-go is at v0.119, with v7.13.0 next to it for the generated kinds and the rule kinds; rule kinds share the
-> Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace and D1Database are
-> generated in full on the shared CRUD reconciler, and WAFCustomRule, RateLimitRule, ManagedRuleset, TransformRule,
-> RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule controller, and ManagedTransform, the
-> first settings kind, on the shared settings controller. Next: [Launch readiness](#launch-readiness) (Phase 3), L1
-> to L7 in order; L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on
+> Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace, D1Database and
+> R2Bucket are generated in full on the shared CRUD reconciler, and WAFCustomRule, RateLimitRule, ManagedRuleset,
+> TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule controller, and
+> ManagedTransform, the first settings kind, on the shared settings controller. Next:
+> [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on
 > hold. v0.2.1 is the latest release; v0.3.0, with every rule kind generated, is prepared in `docs/release-v0.3.0`.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.

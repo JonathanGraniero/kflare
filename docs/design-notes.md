@@ -383,7 +383,7 @@ shared machinery once; each rule CRD on top of it is mostly types plus a convers
 | Branch | CRD(s) | Depends on | Status / Free-plan scope |
 |--------|--------|------------|--------------------------|
 | `feat/kv-namespace-controller` | `KVNamespace` (+ WorkerScript `kvNamespaceRef`) | shared-client | ✅ |
-| `feat/r2-bucket-controller` | `R2Bucket` (+ WorkerScript `r2BucketRef`) | shared-client | ✅ |
+| `feat/r2-bucket-controller` | `R2Bucket` (+ WorkerScript `r2BucketRef`) | shared-client | ✅ Generated since `feat/generate-r2-bucket`, with jurisdictions and storage classes |
 | `feat/cloudflare-go-v0.119` | none: SDK bump (see [SDK decision](#sdk-decision)) | — | ✅ |
 | `feat/rulesets-foundation` | none: Rulesets client calls and the shared rule sync | zone-controller | ✅ |
 | `feat/waf-custom-rule-controller` | `WAFCustomRule` (was `FirewallRule`) | rulesets-foundation | ✅ Generated since `feat/generate-waf-custom-rule`. Free: 5 rules, no regex, no Log action, no custom block response |
@@ -503,8 +503,8 @@ Decided:
    below
 2. **Fill the remaining gaps with `API.Raw`** wrappers in `pkg/cloudflare`. ✅ For rulesets (`feat/rulesets-foundation`):
    rule create, edit, move and delete. v0's `cf.RulesetRule` and `cf.Ruleset` types already model rules, and `Raw`
-   returns the same typed errors as every other call. v7's rulesets services replaced them in `feat/rulesets-v7`. Still
-   open: R2 jurisdictions
+   returns the same typed errors as every other call. v7's rulesets services replaced them in `feat/rulesets-v7`. R2
+   jurisdictions came with R2Bucket's move onto v7 (`feat/generate-r2-bucket`)
 3. **Move to the generated SDK later, controller by controller** (Phase 4, or sooner if the v0 line stops getting
    releases). Each controller already sits behind its own narrow interface, so `pkg/cloudflare.Client` can embed both
    SDKs during the move, with `errors.go` classifying both error types until it is done. Brought forward on 2026-10-13
@@ -565,7 +565,6 @@ Last checked 2026-10-07; the Free-plan limits and Zero Trust again on 2026-10-09
 |------|-------|----------------|-------------------|-------------------------|
 | `LoadBalancerMonitor`, `LoadBalancer` (+ pools) | Load Balancing add-on (account) | $5/month incl. 2 origins, +$5/origin/month, +$0.50 per 500K DNS queries | Live, 2026-10-06: every monitor create fails, `interval is not in range [1, 1]`. The token already has Load Balancing: Monitors and Pools Write | Subscribe, build the monitor then the load balancer; cancel after if it was only for testing |
 | `HealthCheck` (standalone, zone-level Health Checks) | Pro plan or higher on the zone; zone-level Health Checks Write on the token | Pro plan ~$20+/month per zone | Docs: Free plan gets 0 checks (Pro 10, Business 50). Token has Health Checks Read only | Not in the Phase 3 table yet. Add a branch once a Pro zone exists; keep it separate from `LoadBalancerMonitor` |
-| R2Bucket `storageClass` (a bucket's default storage class, `Standard` or `InfrequentAccess`) | Nothing to subscribe to, but R2's free tier covers Standard storage only, so testing Infrequent Access is billed usage | Usage-based; see R2 pricing | Not probed, to stay free. Every bucket on the account reports `Standard`. Also needs `Raw` calls: cloudflare-go v0.119 cannot send the `cf-r2-storage-class` header | Decide whether a few cents of test usage are acceptable, then add it as an optional, mutable field (create header + PATCH) |
 
 **Built, but not verified live because it costs money:**
 
@@ -685,11 +684,35 @@ work unchanged.
 - Needs the account-level **Workers R2 Storage: Edit** permission
 
 **Not supported yet:**
-- Jurisdictions (`eu`, `fedramp`): cloudflare-go v0.119 cannot send `cf-r2-jurisdiction`, and its Worker R2 binding
-  has no `jurisdiction` field. Needs `Raw` calls and a custom binding, or the generated SDK (v7 supports both)
-- Default storage class: see Deferred (Infrequent Access testing is billed)
+- A WorkerScript binding of a bucket outside the default jurisdiction: WorkerScript uploads through cloudflare-go
+  v0.119, whose Worker R2 binding has no `jurisdiction` field, so it refuses one (`R2BucketJurisdictionUnsupported`)
+  until it moves onto v7 (Generate every kind, PR 20)
 - Bucket configuration that Terraform models as separate resources: CORS, lifecycle rules, custom domains and the
   r2.dev public URL, event notifications, bucket locks, Sippy
+
+**Generated** (`feat/generate-r2-bucket`, 2026-10-28; [Generate every kind](../CLAUDE.md#generate-every-kind), PRs 5
+and 6 in one, at the user's request). Its entry in `generator/generator.yaml` replaces the hand-written types and
+controller, on cloudflare-go v7's `r2.BucketService`, and needed kflare-gen's CRUD kinds named by their key, header
+params and deletion blockers ([generator/CLAUDE.md](../generator/CLAUDE.md)). The spec keeps `name` and `locationHint`,
+so v0.3 manifests apply unchanged, and gains `jurisdiction` and `storageClass`, both defaulted to Cloudflare's own
+defaults; status adds `bucketName` and reports `creationDate` as Cloudflare's string (CHANGELOG.md lists the changes).
+The user OK'd mapping the storage class and probing Infrequent Access live on 2026-10-28, accepting a few cents of
+usage (the buckets stay empty). Probes on the dev account that day, every `kflare-probe-*` bucket deleted afterwards:
+
+- `cf-r2-jurisdiction: eu` and `us` create buckets in those jurisdictions on this account; `fedramp` is refused (403,
+  10003 "Access Denied") and `fedramp-high` too ("invalid jurisdiction", plain text). The enum keeps all five, the
+  looser rule: a FedRAMP account can use them. A GET or DELETE without the header reaches the default jurisdiction
+  only, and `default` is the same as no header
+- The same name exists in two jurisdictions at once (`kflare-probe-r2-j` in `default` and `eu`): a jurisdiction holds
+  buckets of its own, so the address of a bucket is its jurisdiction and its name, and kflare's claims compare both.
+  Deleting one left the other. A second bucket of a name in one jurisdiction is refused (409, 10004)
+- A location hint does not move a bucket out of its jurisdiction: `us` with `locationHint: weur` stored `ENAM`
+- Storage class: a create with `storageClass: InfrequentAccess` stored it, and `PATCH` with `cf-r2-storage-class`
+  changed it both ways, in either jurisdiction, keeping the bucket (same `creation_date`). A PATCH without the header or
+  with another class is refused (400, 10062); a create with another class too (10040, "not well formed")
+- GET reports `location` in capitals (`EEUR`, `ENAM`), where v7's enum has them in lower case: status takes it as it is
+- The list pages by cursor, not by page number, and kflare does not need it: a bucket's name is its ID, so a resource
+  reads its bucket by name, as the hand-written controller did
 
 #### Branch: `feat/rulesets-foundation`
 **Depends on:** `feat/zone-controller`, `feat/cloudflare-go-v0.119`

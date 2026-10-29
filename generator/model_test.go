@@ -425,6 +425,9 @@ func TestBuildKindRefuses(t *testing.T) {
 		{name: "a field only an update sets",
 			svc:  thingService(nil, []sdkField{{goName: "Color", apiName: "color", in: inBody, typ: str}}, nil),
 			spec: `{}`, entry: kvEntry(), want: "color can be updated but not set at creation"},
+		{name: "a header only an update sets",
+			svc:  thingService(nil, []sdkField{{goName: "Color", apiName: "x-color", in: inHeader, typ: str}}, nil),
+			spec: `{}`, entry: kvEntry(), want: "x-color can be updated but not set at creation"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

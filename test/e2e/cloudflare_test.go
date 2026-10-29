@@ -26,6 +26,7 @@ import (
 	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/d1"
 	"github.com/cloudflare/cloudflare-go/v7/managed_transforms"
+	"github.com/cloudflare/cloudflare-go/v7/r2"
 	"github.com/cloudflare/cloudflare-go/v7/rulesets"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -110,6 +111,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		// databases is cloudflare-go v7's D1 service: v0 does not report a
 		// database's jurisdiction.
 		databases *d1.DatabaseService
+		// buckets is cloudflare-go v7's R2 bucket service: v0 reaches only the
+		// default jurisdiction, and reports no storage class.
+		buckets *r2.BucketService
 		// ruleService is cloudflare-go v7's ruleset rule service: v0's rule
 		// delete fails on the API's answer.
 		ruleService *rulesets.RuleService
@@ -119,7 +123,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 
 		accountKey, tunnelKey, tunnelConfigKey, workerKey, zoneKey, recordKey client.ObjectKey
 		tunnelRecordKey                                                       client.ObjectKey
-		routeKey, exclusionKey, kvKey, bucketKey, wafKey, wafSkipKey          client.ObjectKey
+		routeKey, exclusionKey, kvKey, bucketKey, euBucketKey, wafKey         client.ObjectKey
+		wafSkipKey                                                            client.ObjectKey
 		rateLimitKey, listKey, listRuleKey, managedKey, d1Key                 client.ObjectKey
 		urlRewriteKey, requestHeadersKey, responseHeadersKey, redirectKey     client.ObjectKey
 		cacheKey, configurationKey, originKey, managedTransformKey            client.ObjectKey
@@ -179,6 +184,14 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 	}
 
 	// expectGone waits until the object at key no longer exists.
+	// getBucket reads the bucket of the run's name in jurisdiction.
+	getBucket := func(jurisdiction r2.BucketGetParamsCfR2Jurisdiction) (*r2.Bucket, error) {
+		var params r2.BucketGetParams
+		params.AccountID.Value, params.AccountID.Present = accountID, true
+		params.CfR2Jurisdiction.Value, params.CfR2Jurisdiction.Present = jurisdiction, true
+		return buckets.Get(ctx, resourceName(), params)
+	}
+
 	expectGone := func(key client.ObjectKey, obj client.Object) {
 		Eventually(func() bool {
 			return apierrors.IsNotFound(k8s.Get(ctx, key, obj))
@@ -211,6 +224,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		cfClient, err := cfpkg.New(token)
 		Expect(err).NotTo(HaveOccurred())
 		databases = d1.NewDatabaseService(cfClient.V7Options()...)
+		buckets = r2.NewBucketService(cfClient.V7Options()...)
 		ruleService = rulesets.NewRuleService(cfClient.V7Options()...)
 		transforms = managed_transforms.NewManagedTransformService(cfClient.V7Options()...)
 
@@ -225,6 +239,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		exclusionKey = client.ObjectKey{Namespace: e2eNamespace, Name: "route-exclusion"}
 		kvKey = client.ObjectKey{Namespace: e2eNamespace, Name: "kv"}
 		bucketKey = client.ObjectKey{Namespace: e2eNamespace, Name: "bucket"}
+		euBucketKey = client.ObjectKey{Namespace: e2eNamespace, Name: "bucket-eu"}
 		wafKey = client.ObjectKey{Namespace: e2eNamespace, Name: "waf-block"}
 		wafSkipKey = client.ObjectKey{Namespace: e2eNamespace, Name: "waf-skip"}
 		rateLimitKey = client.ObjectKey{Namespace: e2eNamespace, Name: "rate-limit"}
@@ -252,8 +267,16 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 					GinkgoWriter.Printf("cleanup: deleting KV namespace %s: %v\n", kvNamespaceID, err)
 				}
 			}
-			if err := cfAPI.DeleteR2Bucket(ctx, accountRC, resourceName()); err != nil && !cfpkg.IsNotFound(err) {
-				GinkgoWriter.Printf("cleanup: deleting R2 bucket %s: %v\n", resourceName(), err)
+			for _, jurisdiction := range []r2.BucketDeleteParamsCfR2Jurisdiction{
+				r2.BucketDeleteParamsCfR2JurisdictionDefault, r2.BucketDeleteParamsCfR2JurisdictionEu,
+			} {
+				var params r2.BucketDeleteParams
+				params.AccountID.Value, params.AccountID.Present = accountID, true
+				params.CfR2Jurisdiction.Value, params.CfR2Jurisdiction.Present = jurisdiction, true
+				_, err := buckets.Delete(ctx, resourceName(), params)
+				if err != nil && !cfpkg.IsNotFound(err) {
+					GinkgoWriter.Printf("cleanup: deleting R2 bucket %s (%s): %v\n", resourceName(), jurisdiction, err)
+				}
 			}
 			cleanupD1Database(ctx, cfAPI, accountRC, resourceName())
 			if zoneID != "" {
@@ -380,7 +403,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(kvNamespaces(ctx, cfAPI, accountRC)).To(HaveKeyWithValue(kvNamespaceID, resourceName()+"-renamed"))
 	})
 
-	It("creates an R2Bucket", func() {
+	It("creates an R2Bucket, changes its storage class in place, and keeps a bucket of its name in the EU "+
+		"jurisdiction apart", func() {
 		bucket := &cloudflarev1alpha1.R2Bucket{
 			ObjectMeta: objectMeta(bucketKey),
 			Spec: cloudflarev1alpha1.R2BucketSpec{
@@ -391,11 +415,49 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}
 		Expect(k8s.Create(ctx, bucket)).To(Succeed())
 		expectReady(bucketKey, bucket, func() []metav1.Condition { return bucket.Status.Conditions })
+		Expect(bucket.Status.CloudflareMetadata.BucketName).To(Equal(resourceName()))
 		Expect(bucket.Status.CloudflareMetadata.Location).NotTo(BeEmpty())
+		Expect(bucket.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.R2BucketIDLabel, resourceName()))
 
-		cfBucket, err := cfAPI.GetR2Bucket(ctx, accountRC, resourceName())
+		cfBucket, err := getBucket(r2.BucketGetParamsCfR2JurisdictionDefault)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(cfBucket.Location).To(Equal(bucket.Status.CloudflareMetadata.Location))
+		Expect(string(cfBucket.Location)).To(Equal(bucket.Status.CloudflareMetadata.Location))
+		Expect(cfBucket.Jurisdiction).To(Equal(r2.BucketJurisdictionDefault))
+		Expect(cfBucket.StorageClass).To(Equal(r2.BucketStorageClassStandard), "the spec's default")
+
+		By("changing its storage class in place")
+		patch := client.MergeFrom(bucket.DeepCopy())
+		bucket.Spec.StorageClass = "InfrequentAccess"
+		Expect(k8s.Patch(ctx, bucket, patch)).To(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, bucketKey, bucket)).To(Succeed())
+			ready := meta.FindStatusCondition(bucket.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.ObservedGeneration).To(Equal(bucket.Generation), "the change is not reconciled yet")
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "%s: %s", ready.Reason, ready.Message)
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+		cfBucket, err = getBucket(r2.BucketGetParamsCfR2JurisdictionDefault)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfBucket.StorageClass).To(Equal(r2.BucketStorageClassInfrequentAccess))
+		Expect(cfBucket.CreationDate).To(Equal(bucket.Status.CloudflareMetadata.CreationDate), "the same bucket")
+
+		By("creating a bucket of the same name in the EU jurisdiction, which is another bucket")
+		euBucket := &cloudflarev1alpha1.R2Bucket{
+			ObjectMeta: objectMeta(euBucketKey),
+			Spec: cloudflarev1alpha1.R2BucketSpec{
+				AccountRef:   corev1.LocalObjectReference{Name: accountKey.Name},
+				Name:         resourceName(),
+				Jurisdiction: "eu",
+			},
+		}
+		Expect(k8s.Create(ctx, euBucket)).To(Succeed())
+		expectReady(euBucketKey, euBucket, func() []metav1.Condition { return euBucket.Status.Conditions })
+		Expect(euBucket.Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation), "kflare created it")
+		cfEUBucket, err := getBucket(r2.BucketGetParamsCfR2JurisdictionEu)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfEUBucket.Jurisdiction).To(Equal(r2.BucketJurisdictionEu))
+		Expect(cfEUBucket.CreationDate).To(Equal(euBucket.Status.CloudflareMetadata.CreationDate))
+		Expect(cfEUBucket.CreationDate).NotTo(Equal(cfBucket.CreationDate))
 	})
 
 	It("creates a D1Database in a jurisdiction, and adopts the database by name only when asked to", func() {
@@ -1408,6 +1470,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: objectMeta(workerKey)},
 			&cloudflarev1alpha1.KVNamespace{ObjectMeta: objectMeta(kvKey)},
 			&cloudflarev1alpha1.R2Bucket{ObjectMeta: objectMeta(bucketKey)},
+			&cloudflarev1alpha1.R2Bucket{ObjectMeta: objectMeta(euBucketKey)},
 			&cloudflarev1alpha1.D1Database{ObjectMeta: objectMeta(d1Key)},
 			&cloudflarev1alpha1.Tunnel{ObjectMeta: objectMeta(tunnelKey)},
 			&cloudflarev1alpha1.Zone{ObjectMeta: objectMeta(zoneKey)},
@@ -1430,8 +1493,12 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}
 		Expect(workerNames(ctx, cfAPI, accountRC)).NotTo(ContainElement(resourceName()))
 		Expect(kvNamespaces(ctx, cfAPI, accountRC)).NotTo(HaveKey(kvNamespaceID))
-		_, err = cfAPI.GetR2Bucket(ctx, accountRC, resourceName())
-		Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "bucket was not deleted: %v", err)
+		for _, jurisdiction := range []r2.BucketGetParamsCfR2Jurisdiction{
+			r2.BucketGetParamsCfR2JurisdictionDefault, r2.BucketGetParamsCfR2JurisdictionEu,
+		} {
+			_, err = getBucket(jurisdiction)
+			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "the %s bucket was not deleted: %v", jurisdiction, err)
+		}
 		Expect(d1DatabaseIDs(ctx, cfAPI, accountRC, resourceName())).To(BeEmpty(), "the D1 database was not deleted")
 		if listID != "" {
 			_, err = cfAPI.GetList(ctx, accountRC, listID)

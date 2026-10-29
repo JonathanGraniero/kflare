@@ -32,13 +32,17 @@ var _ R2BucketAPI = fakeR2BucketAPI{}
 
 func (f fakeR2BucketAPI) New(_ context.Context, params r2.BucketNewParams,
 	_ ...option.RequestOption) (*r2.Bucket, error) {
-	return f.create(params.AccountID.Value, string(params.CfR2Jurisdiction.Value), params.Name.Value, func(id string) r2.Bucket {
-		return r2.Bucket{
-			Name:         id,
-			StorageClass: r2.BucketStorageClass(params.StorageClass.Value),
-			Jurisdiction: r2.BucketJurisdiction(params.CfR2Jurisdiction.Value),
-		}
-	})
+	f.sent = append(f.sent, params)
+	return f.create(params.AccountID.Value, string(params.CfR2Jurisdiction.Value),
+		params.Name.Value, func(id string) r2.Bucket {
+			return r2.Bucket{
+				Name:         id,
+				StorageClass: r2.BucketStorageClass(params.StorageClass.Value),
+				Jurisdiction: r2.BucketJurisdiction(params.CfR2Jurisdiction.Value),
+				CreationDate: "creationDate-" + id,
+				Location:     r2.BucketLocation("location-" + id),
+			}
+		})
 }
 
 func (f fakeR2BucketAPI) Get(_ context.Context, id string, params r2.BucketGetParams,
@@ -64,9 +68,11 @@ func (f fakeR2BucketAPI) Delete(_ context.Context, id string, params r2.BucketDe
 }
 
 var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.R2Bucket, R2BucketAPI, r2.Bucket, r2.Bucket]{
-	kind:     r2BucketKind,
-	keyField: "name",
-	scope:    "default",
+	kind:           r2BucketKind,
+	keyField:       "name",
+	claimLabel:     "kflare.dev/r2-bucket-name",
+	conflictReason: "NameConflict",
+	scope:          "default",
 	newReconciler: func(c client.Client,
 		newAPI func(string) (R2BucketAPI, error)) crudKindReconciler[*cloudflarev1alpha1.R2Bucket, R2BucketAPI, r2.Bucket, r2.Bucket] {
 		return &R2BucketReconciler{Client: c, Scheme: c.Scheme(), NewR2BucketAPI: newAPI}
@@ -95,6 +101,22 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.R2Bucket, R2BucketAPI
 			(obj.Spec.StorageClass == "" || string(current.StorageClass) == obj.Spec.StorageClass) &&
 			(obj.Spec.Jurisdiction == "" || string(current.Jurisdiction) == obj.Spec.Jurisdiction)
 	},
+	sent: func(obj *cloudflarev1alpha1.R2Bucket, sent any) bool {
+		params := sent.(r2.BucketNewParams)
+		return params.Name.Value == obj.Spec.Name &&
+			(obj.Spec.LocationHint == "" || params.LocationHint.Present && string(params.LocationHint.Value) == obj.Spec.LocationHint) &&
+			(obj.Spec.StorageClass == "" || params.StorageClass.Present && string(params.StorageClass.Value) == obj.Spec.StorageClass) &&
+			(obj.Spec.Jurisdiction == "" || params.CfR2Jurisdiction.Present && string(params.CfR2Jurisdiction.Value) == obj.Spec.Jurisdiction)
+	},
+	observed: func(obj *cloudflarev1alpha1.R2Bucket, current *r2.Bucket) bool {
+		return obj.Status.CloudflareMetadata.BucketName == current.Name &&
+			obj.Status.CloudflareMetadata.CreationDate == current.CreationDate &&
+			obj.Status.CloudflareMetadata.Location == string(current.Location)
+	},
+	defaulted: func(obj *cloudflarev1alpha1.R2Bucket) bool {
+		return obj.Spec.StorageClass == "Standard" &&
+			obj.Spec.Jurisdiction == "default"
+	},
 	changes: []crudSpecEdit[*cloudflarev1alpha1.R2Bucket]{
 		{field: "storageClass", what: "changing storageClass",
 			edit: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.StorageClass = "InfrequentAccess" }},
@@ -106,10 +128,15 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.R2Bucket, R2BucketAPI
 			edit: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.Name = "example-buckeu" }},
 		{field: "locationHint", what: "setting locationHint",
 			edit: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.LocationHint = "apac" }},
+		{field: "locationHint", what: "changing locationHint once set",
+			setup: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.LocationHint = "apac" },
+			edit:  func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.LocationHint = "eeur" }},
 		{field: "jurisdiction", what: "changing jurisdiction",
 			edit: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.Jurisdiction = "eu" }},
 	},
 	invalid: []crudSpecEdit[*cloudflarev1alpha1.R2Bucket]{
+		{field: "name", what: "a name not matching its pattern",
+			edit: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.Name = "KFLARE-NOT-MATCHING" }},
 		{field: "locationHint", what: "a locationHint outside its enum",
 			edit: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.LocationHint = "kflare-not-in-enum" }},
 		{field: "storageClass", what: "a storageClass outside its enum",
@@ -117,9 +144,13 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.R2Bucket, R2BucketAPI
 		{field: "jurisdiction", what: "a jurisdiction outside its enum",
 			edit: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.Jurisdiction = "kflare-not-in-enum" }},
 	},
-	elsewhere: []crudScopeEdit[*cloudflarev1alpha1.R2Bucket]{
-		{crudSpecEdit: crudSpecEdit[*cloudflarev1alpha1.R2Bucket]{field: "jurisdiction", what: "changing jurisdiction",
+	elsewhere: &crudScopeEdit[*cloudflarev1alpha1.R2Bucket]{
+		crudSpecEdit: crudSpecEdit[*cloudflarev1alpha1.R2Bucket]{field: "jurisdiction", what: "changing jurisdiction",
 			edit: func(obj *cloudflarev1alpha1.R2Bucket) { obj.Spec.Jurisdiction = "eu" }},
-			scope: "eu"},
+		scope: "eu",
+	},
+	deletionBlockers: []deletionBlocker{
+		{code: 10008, reason: "BucketNotEmpty",
+			message: "still holds objects, which kflare never deletes: empty it"},
 	},
 })

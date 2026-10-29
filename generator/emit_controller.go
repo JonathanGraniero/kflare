@@ -622,6 +622,7 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	k8stypes := f.use("k8s.io/apimachinery/pkg/types", "types")
 	f.printf("var _ = describeCRUDKind(crudKindSpecs[%s, %s, %s, %s]{\n", obj, api, object, listed)
 	f.printf("kind: %sKind,\nkeyField: %q,\n", v, c.key.jsonName)
+	f.printf("claimLabel: %q,\nconflictReason: %q,\n", c.claimLabel, c.conflictReason)
 	if c.list != nil {
 		f.printf("pageSize: %sListPageSize,\n", v)
 	}
@@ -685,6 +686,9 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 		created = "true"
 	}
 	f.printf("created: func(obj %s, current *%s) bool {\nreturn %s\n},\n", obj, object, created)
+	if err := emitTableChecks(f, c, obj, object); err != nil {
+		return nil, err
+	}
 
 	edits := func(label string, edits []specEdit) {
 		if len(edits) == 0 {
@@ -702,21 +706,100 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	f.printf("{field: \"accountRef\", what: \"changing accountRef\",\nedit: func(obj %s) { "+
 		"obj.Spec.AccountRef.Name = \"other-account\" }},\n", obj)
 	for _, e := range c.immutable {
-		f.printf("{field: %q, what: %q,\nedit: func(obj %s) { obj.Spec.%s = %s }},\n", e.f.jsonName, e.what, obj,
-			e.f.goName, goValue(f, e.f, e.value))
+		f.printf("{field: %q, what: %q,\n", e.f.jsonName, e.what)
+		if e.setup != nil {
+			f.printf("setup: func(obj %s) { obj.Spec.%s = %s },\n", obj, e.f.goName, goValue(f, e.f, e.setup))
+		}
+		f.printf("edit: func(obj %s) { obj.Spec.%s = %s }},\n", obj, e.f.goName, goValue(f, e.f, e.value))
 	}
 	f.printf("},\n")
 	edits("invalid", c.invalid)
-	if len(c.elsewhere) > 0 {
-		f.printf("elsewhere: []crudScopeEdit[%s]{\n", obj)
-		for _, e := range c.elsewhere {
-			f.printf("{crudSpecEdit: crudSpecEdit[%s]{field: %q, what: %q,\nedit: func(obj %s) { obj.Spec.%s = %s }},\n"+
-				"scope: %q},\n", obj, e.f.jsonName, e.what, obj, e.f.goName, goValue(f, e.f, e.value), e.scope)
+	if e := c.elsewhere; e != nil {
+		f.printf("elsewhere: &crudScopeEdit[%s]{\ncrudSpecEdit: crudSpecEdit[%s]{field: %q, what: %q,\n"+
+			"edit: func(obj %s) { obj.Spec.%s = %s }},\nscope: %q,\n},\n", obj, obj, e.f.jsonName, e.what, obj,
+			e.f.goName, goValue(f, e.f, e.value), c.scopeElsewhere)
+	}
+	if len(c.deletionBlockers) > 0 {
+		// The table's own copy: the specs check the descriptor's against it.
+		f.printf("deletionBlockers: []deletionBlocker{\n")
+		for _, b := range c.deletionBlockers {
+			f.printf("{code: %d, reason: %q,\nmessage: %q},\n", b.Code, b.Reason, b.Message)
 		}
 		f.printf("},\n")
 	}
 	f.printf("})\n")
 	return f.source(header)
+}
+
+// emitTableChecks writes the table's checks of what the reconciler sends and
+// records: sent, that New's params hold every field of a resource's spec (a
+// field the object does not report included) and the fixed values; observed,
+// that status records the object; and defaulted, when the spec has defaults,
+// that the API server applied them.
+func emitTableChecks(f *goFile, c *controller, obj, object string) error {
+	var sent []string
+	for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
+		if af.create == nil {
+			continue
+		}
+		p := "params." + af.create.goName
+		if af.goName == "" {
+			value, err := f.convert(p+".Value", af.create.typ, types.Typ[types.String])
+			if err != nil {
+				return fmt.Errorf("%s: sent: %s: %w", c.name, af.apiName, err)
+			}
+			sent = append(sent, fmt.Sprintf("%s == %q", value, af.fixed))
+			continue
+		}
+		value, err := f.convert(p+".Value", af.create.typ, specType(af.field))
+		if err != nil {
+			return fmt.Errorf("%s: sent: %s: %w", c.name, af.apiName, err)
+		}
+		spec := "obj.Spec." + af.goName
+		switch {
+		case !af.optional:
+			sent = append(sent, fmt.Sprintf("%s == %s", value, spec))
+		case strings.HasPrefix(af.goType, "*"):
+			sent = append(sent, fmt.Sprintf("(%s == nil || %s.Present && %s == *%s)", spec, p, value, spec))
+		default:
+			sent = append(sent, fmt.Sprintf("(%s == \"\" || %s.Present && %s == %s)", spec, p, value, spec))
+		}
+	}
+	f.printf("sent: func(obj %s, sent any) bool {\nparams := sent.(%s)\nreturn %s\n},\n", obj, f.typ(c.create.params),
+		strings.Join(sent, " &&\n"))
+
+	observed := make([]string, 0, len(c.status))
+	for _, st := range c.status {
+		value, err := f.convert("current."+st.object.goName, st.object.typ, specType(st.field))
+		if err != nil {
+			return fmt.Errorf("%s: observed: %s: %w", c.name, st.jsonName, err)
+		}
+		observed = append(observed, fmt.Sprintf("obj.Status.CloudflareMetadata.%s == %s", st.goName, value))
+	}
+	f.printf("observed: func(obj %s, current *%s) bool {\nreturn %s\n},\n", obj, object,
+		strings.Join(observed, " &&\n"))
+
+	var defaulted []string
+	for _, af := range c.fields {
+		if af.def == "" {
+			continue
+		}
+		def, err := defaultValue(af.field)
+		if err != nil {
+			return fmt.Errorf("%s: %s's default: %w", c.name, af.apiName, err)
+		}
+		literal := goValue(f, field{goType: strings.TrimPrefix(af.goType, "*")}, def)
+		if strings.HasPrefix(af.goType, "*") {
+			defaulted = append(defaulted, fmt.Sprintf("(obj.Spec.%s != nil && *obj.Spec.%s == %s)", af.goName,
+				af.goName, literal))
+		} else {
+			defaulted = append(defaulted, fmt.Sprintf("obj.Spec.%s == %s", af.goName, literal))
+		}
+	}
+	if len(defaulted) > 0 {
+		f.printf("defaulted: func(obj %s) bool {\nreturn %s\n},\n", obj, strings.Join(defaulted, " &&\n"))
+	}
+	return nil
 }
 
 // emitFake writes the fake of a kind's cloudflare-go v7 service that its
@@ -747,22 +830,18 @@ func emitFake(f *goFile, c *controller) error {
 	// scope writes the address a call's params give, as the fake keeps
 	// objects apart by it.
 	scope := func(call *sdkCall) (string, error) {
-		var parts []string
-		for _, af := range c.address {
-			p := addressParam(call, af)
-			if p == nil {
-				return "", fmt.Errorf("%s: %s takes no %s", name, call.name, af.apiName)
-			}
-			value, err := f.convert("params."+p.goName+".Value", p.typ, types.Typ[types.String])
-			if err != nil {
-				return "", fmt.Errorf("%s: the fake's %s: %w", name, call.name, err)
-			}
-			parts = append(parts, value)
-		}
-		if len(parts) == 0 {
+		if len(c.address) == 0 {
 			return `""`, nil
 		}
-		return strings.Join(parts, ` + "/" + `), nil
+		p := addressParam(call, c.address[0])
+		if p == nil {
+			return "", fmt.Errorf("%s: %s takes no %s", name, call.name, c.address[0].apiName)
+		}
+		value, err := f.convert("params."+p.goName+".Value", p.typ, types.Typ[types.String])
+		if err != nil {
+			return "", fmt.Errorf("%s: the fake's %s: %w", name, call.name, err)
+		}
+		return value, nil
 	}
 	scopes := map[*sdkCall]string{}
 	for _, call := range c.calls() {
@@ -785,6 +864,25 @@ func emitFake(f *goFile, c *controller) error {
 		}
 		fields = append(fields, fmt.Sprintf("%s: %s", af.object.goName, value))
 	}
+	// What Cloudflare fills in, which status records: a value of the new
+	// object's own.
+	for _, st := range c.status[1:] {
+		var made string
+		var from types.Type
+		switch basicClass(st.object.typ) {
+		case types.IsString:
+			made, from = fmt.Sprintf("%q + id", st.jsonName+"-"), types.Typ[types.String]
+		case types.IsBoolean:
+			made, from = strconv.FormatBool(true), types.Typ[types.Bool]
+		default:
+			made, from = "1", types.Typ[types.Int64]
+		}
+		value, err := f.convert(made, from, st.object.typ)
+		if err != nil {
+			return fmt.Errorf("%s: the fake's New: status.cloudflareMetadata.%s: %w", name, st.jsonName, err)
+		}
+		fields = append(fields, fmt.Sprintf("%s: %s", st.object.goName, value))
+	}
 	// An object identified by its key is created under it; others get a new
 	// ID.
 	newID := `""`
@@ -797,7 +895,8 @@ func emitFake(f *goFile, c *controller) error {
 	}
 	f.printf("func (f %s) New(_ %s.Context, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx, params(c.create), opts,
 		object)
-	f.printf("return f.create(%s, %s, %s, func(id string) %s {\nreturn %s\n})\n}\n\n", account(c.create),
+	f.printf("f.sent = append(f.sent, params)\n")
+	f.printf("return f.create(%s, %s,\n%s, func(id string) %s {\nreturn %s\n})\n}\n\n", account(c.create),
 		scopes[c.create], newID, object, compositeLiteral(object, fields))
 
 	f.printf("func (f %s) Get(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,

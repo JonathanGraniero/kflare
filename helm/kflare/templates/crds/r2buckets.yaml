@@ -156,8 +156,6 @@ spec:
             x-kubernetes-validations:
             - message: locationHint is immutable
               rule: has(self.locationHint) == has(oldSelf.locationHint)
-            - message: jurisdiction is immutable
-              rule: has(self.jurisdiction) == has(oldSelf.jurisdiction)
           status:
             description: R2BucketStatus defines the observed state of R2Bucket.
             properties:

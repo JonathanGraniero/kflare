@@ -28,7 +28,8 @@ included, until the annotation is removed. From v0.2.1, the image and the chart 
 cosign, and the image comes with SBOMs and provenance (see [Verifying a release](docs/deploy.md#verifying-a-release)).
 Since v0.3.0 every rule kind is generated from Cloudflare's API description, and its fields take the API's names; the
 other kinds written before the generator follow in later releases, which will change their manifests the same way
-(the [changelog](CHANGELOG.md) shows each change, with a manifest before and after).
+(the [changelog](CHANGELOG.md) shows each change, with a manifest before and after). `R2Bucket` is the first of them,
+and gains a bucket's jurisdiction and storage class.
 
 ## Next
 
@@ -61,6 +62,5 @@ them:
 | Standalone health checks | A Pro plan or higher |
 | Zone plans (`Zone` `spec.plan`) | Built, but not tested live: changing a plan bills the account |
 | Custom block responses on WAF custom rules | Built to Cloudflare's documented limits, but a Free zone cannot use them, so not tested live |
-| R2 jurisdictions and storage classes | Moving `R2Bucket` to Cloudflare's generated Go SDK, which can send them |
 
 Later, beyond these: an OLM bundle, and a documentation site.
