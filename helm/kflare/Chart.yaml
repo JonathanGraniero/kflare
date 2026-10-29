@@ -96,6 +96,49 @@ annotations:
         `WAFCustomRuleSkipProduct` and `WAFCustomRuleBlockResponse` are gone. The phases
         and products are `[]string`, the response is a `WAFCustomRuleResponse` whose `statusCode`
         is an `int64`, and logging is a `WAFCustomRuleLogging`'
+    - description: 'R2Bucket: `jurisdiction`: `default`, `eu` or `us` keep the bucket''s
+        objects in that jurisdiction (`fedramp` and `fedramp-high` need a FedRAMP account).
+        Each jurisdiction has buckets of its own, so two R2Buckets can name buckets of
+        the same name in different jurisdictions. It defaults to `default`, the only jurisdiction
+        kflare reached before, and cannot change'
+    - description: 'R2Bucket: `storageClass`: `Standard` or `InfrequentAccess`, the class
+        of objects uploaded to the bucket without one of their own, changed in place.
+        It defaults to `Standard`, so a bucket whose class was set to `InfrequentAccess`
+        outside kflare is set back to `Standard` unless its R2Bucket says `InfrequentAccess`'
+    - description: 'R2Bucket: A WorkerScript does not bind an R2Bucket outside the default
+        jurisdiction yet: it reports `R2BucketJurisdictionUnsupported` (it still uploads
+        through the legacy SDK, whose binding has no jurisdiction)'
+    - description: 'R2Bucket: Status: `cloudflareMetadata.bucketName` records the bucket
+        kflare created or adopted, and `creationDate` is Cloudflare''s timestamp as a
+        string. `kubectl get r2buckets` shows the jurisdiction, the bucket and its location'
+    - description: 'R2Bucket: The claim label stays `kflare.dev/r2-bucket-name`, so an
+        upgraded R2Bucket keeps its bucket'
+    - description: 'R2Bucket: For Go clients: `R2BucketNameLabel` is now `R2BucketIDLabel`,
+        and `R2BucketCloudflareMetadata.CreationDate` a `string`'
+    - description: 'WorkerRoute: The spec and status are unchanged: `zoneRef`, `pattern`
+        and an optional `workerScriptRef`, and `routeID`, `zoneID` and `script` in `status.cloudflareMetadata`.
+        A v0.2.1 manifest applies and reads back as it is'
+    - description: 'WorkerRoute: A pattern outside the zone is reported as Cloudflare''s
+        refusal: `TerminalError`, with Cloudflare''s message ("Route pattern must include
+        zone name: example.com", 10022), where kflare reported `PatternOutsideZone` before
+        calling Cloudflare. An alert on `PatternOutsideZone` needs changing'
+    - description: 'WorkerRoute: A claim on a route counts only from a WorkerRoute whose
+        Zone is for the same Cloudflare zone, through any Zone'
+    - description: 'WorkerRoute: The sample in `config/samples` is generated: one route,
+        kept on deletion. The exclusion route it showed is a WorkerRoute without `workerScriptRef`,
+        as before'
+    - description: A claim on a `KVNamespace`'s, `D1Database`'s or `R2Bucket`'s Cloudflare
+        object counts only from a resource that uses the same Cloudflare account, through
+        any `CloudflareAccount`, and on a `WorkerRoute`'s from one in the same Cloudflare
+        zone, through any `Zone`. One whose `CloudflareAccount` or `Zone` is gone no longer
+        keeps another resource from adopting the object
+    - description: 'The chart''s Artifact Hub page lists its license, its CRDs with an
+        example of each, each release''s changes, and the controller image, which Artifact
+        Hub now scans for its security report. It found no image before: it renders a
+        chart for Kubernetes 1.29 to find them, which the chart refuses (#90)'
+      links:
+      - name: '#90'
+        url: https://github.com/JonathanGraniero/kflare/issues/90
     - description: 'A Ready condition no longer ends in a blank message when Cloudflare''s
         error holds only spaces: it names the HTTP status, as it does for an error without
         a message. Found by the new fuzz tests (#108)'

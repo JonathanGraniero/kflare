@@ -330,7 +330,10 @@ Next wave's (lists that are never paged). PR 7 (hooks) and PR 8 (IPList) are nex
    `blockResponse` becomes `response`, ManagedRuleset's `rulesetID` becomes `id`, ...). Each kind's PR lists its
    changes under CHANGELOG.md's Unreleased, with a manifest before and after; they ship together as v0.3.0.
    Changed on 2026-10-28, when the user asked for a release once the rule kinds were generated: v0.3.0 carries the
-   rule kinds (PRs 1 to 4), and the kinds of PRs 5 to 20 ship in later releases, whose notes list their changes
+   rule kinds (PRs 1 to 4), and the kinds of PRs 5 to 20 ship in later releases, whose notes list their changes.
+   Changed again on 2026-10-29, when the user found v0.3.0 unreleased and asked for its notes to cover everything
+   merged: v0.3.0 also carries R2Bucket and WorkerRoute (PRs 5, 6, 9 and 10, #121 and #122) and the chart's Artifact Hub
+   annotations (#119); PRs 7, 8 and 11 to 20 ship later
 
 `CloudflareAccount` is not a Cloudflare object: it holds the API token kflare calls Cloudflare with, as a provider
 configuration does, and no part of Cloudflare's API describes it. It is the one kind kflare-gen has nothing to generate
@@ -810,7 +813,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule
 > controller, and ManagedTransform, the first settings kind, on the shared settings controller. Next:
 > [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on
-> hold. v0.2.1 is the latest release; v0.3.0, with every rule kind generated, is prepared in `docs/release-v0.3.0`.
+> hold. v0.2.1 is the latest release; v0.3.0, with every rule kind, `R2Bucket` and `WorkerRoute` generated, is
+> prepared in `release/v0.3.0`.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero
