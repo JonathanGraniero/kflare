@@ -158,7 +158,9 @@ A change to how a controller behaves comes with:
 - One change per pull request, against `main`. Don't base a pull request on another open one; wait for it to merge
 - Merge `main` into your branch if it falls behind, rather than rebasing a branch others may have pulled
 - Describe what changed and how you checked it: the tests, and for live behavior, what you ran against Cloudflare
-- `main` is protected: every change lands through a pull request
+- `main` is protected: every change lands through a pull request whose checks (CI, the E2E smoke tests and the
+  dependency review) pass on a branch up to date with `main`. A code owner ([.github/CODEOWNERS](.github/CODEOWNERS))
+  reviews and merges it
 
 ## Releasing
 

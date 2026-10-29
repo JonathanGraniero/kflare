@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
 
+# The `protect main` ruleset requires the `review` job by name: rename it there too.
 jobs:
   review:
     runs-on: ubuntu-latest
