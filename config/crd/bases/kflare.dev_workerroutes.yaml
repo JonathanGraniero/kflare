@@ -39,7 +39,8 @@ spec:
       openAPIV3Schema:
         description: |-
           WorkerRoute is the Schema for the workerroutes API.
-          It routes requests matching a URL pattern in a zone to a WorkerScript.
+          It routes requests matching a URL pattern in a zone to a WorkerScript,
+          or, without one, excludes the pattern from a broader route.
         properties:
           apiVersion:
             description: |-
@@ -65,17 +66,19 @@ spec:
                 description: |-
                   Pattern selects the requests the route applies to, such as
                   "example.com/api/*" or "*.example.com/*". It has no scheme or port,
-                  may start with "*" (any subdomain) and end with "*" (any path), and its
-                  hostname must be in the zone. Patterns are unique within a zone.
+                  may start with "*" (any subdomain) and end with "*" (any path), and
+                  its hostname must be in the zone. Patterns are unique within a zone.
                 maxLength: 1024
-                minLength: 1
                 pattern: ^\*?[A-Za-z0-9.-]+(/\S*)?$
                 type: string
               workerScriptRef:
                 description: |-
-                  WorkerScriptRef references the WorkerScript, in the same namespace,
-                  that handles matching requests. Omit it to exclude the pattern from a
-                  broader route, so that no Worker runs for it.
+                  WorkerScriptRef references the WorkerScript, in the same namespace
+                  and the zone's account, that handles matching requests. The route
+                  waits until the WorkerScript has uploaded its Worker: Cloudflare
+                  refuses a route to a Worker that does not exist (10019). Omit it to
+                  exclude the pattern from a broader route, so that no Worker runs for
+                  it.
                 properties:
                   name:
                     default: ""
@@ -90,8 +93,9 @@ spec:
                 x-kubernetes-map-type: atomic
               zoneRef:
                 description: |-
-                  ZoneRef references the Zone, in the same namespace, the route belongs
-                  to. Immutable after creation.
+                  ZoneRef references the Zone, in the same namespace, the Worker route
+                  belongs to.
+                  Immutable after creation.
                 properties:
                   name:
                     default: ""
@@ -123,18 +127,19 @@ spec:
                     type: string
                   script:
                     description: |-
-                      Script is the Worker script the route sent requests to at the last
-                      sync. It is empty for a route that excludes its pattern.
+                      Script is the Worker route's script at the last sync: the name of the
+                      WorkerScript its workerScriptRef names. Empty when the Worker route has
+                      none.
                     type: string
                   zoneID:
                     description: |-
-                      ZoneID is the Cloudflare zone the route belongs to (denormalized from
-                      the Zone status).
+                      ZoneID is the Cloudflare zone the Worker route belongs to (denormalized
+                      from the Zone status).
                     type: string
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the route state.
+                  of the Worker route state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

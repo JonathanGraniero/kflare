@@ -28,10 +28,10 @@ import (
 // reason InUse meanwhile:
 //
 //   - a CloudflareAccount waits for the Zones, Tunnels, WorkerScripts and
-//     IPLists that use its credentials, and for the resources of every kind
-//     kflare-gen generates, such as KVNamespaces and R2Buckets;
-//   - a Zone waits for its DNSRecords, WorkerRoutes and rules
-//     (the generated rule kinds, such as WAFCustomRules and RateLimitRules),
+//     IPLists that use its credentials, and for the resources of every
+//     account kind kflare-gen generates, such as KVNamespaces and R2Buckets;
+//   - a Zone waits for its DNSRecords, WorkerRoutes, rules and settings (the
+//     generated zone kinds, such as WAFCustomRules and ManagedTransforms),
 //     which need its zone ID and account;
 //   - a Tunnel waits for its TunnelConfigurations, which reset its ingress
 //     rules through its account, and for the DNSRecords that point at it
@@ -90,12 +90,10 @@ var (
 	}, generatedAccountDependents...)
 
 	// zoneDependents live in a Zone's namespace and reference it by name: the
-	// hand-written kinds listed here, and the generated rule and settings kinds.
+	// hand-written kinds listed here, and the generated kinds of a zone.
 	zoneDependents = append([]dependentKind{
 		dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
 			func(d *cloudflarev1alpha1.DNSRecord) []string { return []string{d.Spec.ZoneRef.Name} }),
-		dependents("WorkerRoute", func() client.ObjectList { return &cloudflarev1alpha1.WorkerRouteList{} },
-			func(w *cloudflarev1alpha1.WorkerRoute) []string { return []string{w.Spec.ZoneRef.Name} }),
 	}, generatedZoneDependents...)
 
 	// tunnelDependents live in a Tunnel's namespace and reference it by name.

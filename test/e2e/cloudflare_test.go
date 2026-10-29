@@ -751,7 +751,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(err).NotTo(HaveOccurred(), "the adopted zone must still exist")
 	})
 
-	It("routes a pattern to the WorkerScript and excludes a sub-path", func() {
+	It("routes a pattern to the WorkerScript, excludes a sub-path and changes the exclusion in place", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")
 		}
@@ -785,6 +785,32 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		cfExclusion, err := cfAPI.GetWorkerRoute(ctx, cf.ZoneIdentifier(zoneID), exclusionID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfExclusion.ScriptName).To(BeEmpty())
+		Expect(route.Status.CloudflareMetadata.ZoneID).To(Equal(zoneID))
+		Expect(route.Status.CloudflareMetadata.Script).To(Equal(resourceName()))
+
+		// setWorker points the exclusion at the WorkerScript, or at none, and
+		// waits until Cloudflare's route says so, changed in place.
+		setWorker := func(ref *corev1.LocalObjectReference, script string) {
+			patch := client.MergeFrom(exclusion.DeepCopy())
+			exclusion.Spec.WorkerScriptRef = ref
+			Expect(k8s.Patch(ctx, exclusion, patch)).To(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(k8s.Get(ctx, exclusionKey, exclusion)).To(Succeed())
+				ready := meta.FindStatusCondition(exclusion.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.ObservedGeneration).To(Equal(exclusion.Generation), "the change is not reconciled yet")
+				g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "%s: %s", ready.Reason, ready.Message)
+			}, e2eTimeout, e2ePoll).Should(Succeed())
+			Expect(exclusion.Status.CloudflareMetadata.RouteID).To(Equal(exclusionID), "the route changed in place")
+			Expect(exclusion.Status.CloudflareMetadata.Script).To(Equal(script))
+			cfExclusion, err := cfAPI.GetWorkerRoute(ctx, cf.ZoneIdentifier(zoneID), exclusionID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfExclusion.ScriptName).To(Equal(script))
+		}
+		By("running the Worker for the sub-path")
+		setWorker(&corev1.LocalObjectReference{Name: workerKey.Name}, resourceName())
+		By("excluding the sub-path again")
+		setWorker(nil, "")
 	})
 
 	It("writes WAF custom rules in priority order, updates a skip rule in place and leaves them alone", func() {

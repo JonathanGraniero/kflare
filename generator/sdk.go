@@ -209,7 +209,7 @@ func (s sdk) service(name string) (*service, error) {
 		if svc.listRoute, err = routeOf("List"); err != nil {
 			return nil, err
 		}
-		if elem, ok := pageElement(list.sig.Results().At(0).Type()); ok {
+		if elem, _, ok := pageElement(list.sig.Results().At(0).Type()); ok {
 			// Not a struct of the package: listed stays nil, and kflare-gen
 			// says why when it builds the kind's controller.
 			svc.listed, _ = r.fields(elem, false)
@@ -221,19 +221,27 @@ func (s sdk) service(name string) (*service, error) {
 // paginationPackage holds cloudflare-go v7's pages of a list.
 const paginationPackage = sdkModule + "/packages/pagination"
 
-// pageElement returns T for *pagination.V4PagePaginationArray[T], the page a
-// list by page number returns.
-func pageElement(t types.Type) (types.Type, bool) {
+// The pages of a list that kflare-gen reads: one of a list by page number,
+// and the one page of a list that is never paged, as a zone's Worker routes
+// are.
+const (
+	pagedList  = "V4PagePaginationArray"
+	singlePage = "SinglePage"
+)
+
+// pageElement returns T for *pagination.V4PagePaginationArray[T] or
+// *pagination.SinglePage[T], and the page's type name.
+func pageElement(t types.Type) (types.Type, string, bool) {
 	ptr, ok := t.(*types.Pointer)
 	if !ok {
-		return nil, false
+		return nil, "", false
 	}
 	named, ok := ptr.Elem().(*types.Named)
 	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != paginationPackage ||
-		named.Obj().Name() != "V4PagePaginationArray" || named.TypeArgs().Len() != 1 {
-		return nil, false
+		named.Obj().Name() != pagedList && named.Obj().Name() != singlePage || named.TypeArgs().Len() != 1 {
+		return nil, "", false
 	}
-	return named.TypeArgs().At(0), true
+	return named.TypeArgs().At(0), named.Obj().Name(), true
 }
 
 // apiMDCall matches a call in a cloudflare-go v7 api.md: its route, then the

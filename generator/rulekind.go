@@ -493,7 +493,7 @@ func (k *ruleKind) fieldColumns(fields map[string]ruleFieldConfig) ([]printColum
 // the spec already holds.
 func (k *ruleKind) checkRootNames() error {
 	for _, f := range k.params.fields {
-		if f.jsonName == "zoneRef" || slices.Contains(sharedSpecFields, f.jsonName) {
+		if f.jsonName == zoneRefField || slices.Contains(sharedSpecFields, f.jsonName) {
 			return fmt.Errorf("the action parameters have a field %s, which the spec already holds", f.jsonName)
 		}
 	}

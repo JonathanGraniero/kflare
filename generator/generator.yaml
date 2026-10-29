@@ -172,6 +172,57 @@ kinds:
           Location is the region Cloudflare placed the bucket in, for example
           WEUR.
 
+  # Cloudflare's PUT replaces a route: without a script, it clears it (verified live 2026-10-05 and 2026-10-29).
+  - kind: WorkerRoute
+    service: workers.RouteService
+    scope: zone
+    shortName: cfroute
+    noun: Worker route
+    doc: |
+      WorkerRoute is the Schema for the workerroutes API.
+      It routes requests matching a URL pattern in a zone to a WorkerScript,
+      or, without one, excludes the pattern from a broader route.
+    id:
+      field: id
+      status: routeID
+      printColumn: Route ID
+      doc: RouteID is the Cloudflare route identifier.
+    claimLabel: kflare.dev/route-id
+    adopt:
+      by: pattern
+    sample:
+      pattern: example.com/api/*
+      script: example-worker
+    fields:
+      pattern:
+        printColumn: Pattern
+        doc: |
+          Pattern selects the requests the route applies to, such as
+          "example.com/api/*" or "*.example.com/*". It has no scheme or port,
+          may start with "*" (any subdomain) and end with "*" (any path), and
+          its hostname must be in the zone. Patterns are unique within a zone.
+        validation:
+          maxLength: 1024
+          pattern: ^\*?[A-Za-z0-9.-]+(/\S*)?$
+          reason: >-
+            The spec bounds the pattern in no way. Cloudflare refuses an empty pattern, one with a port and one
+            outside the zone (10022), but stores a scheme as it is given (verified live 2026-10-29), so the pattern
+            keeps to a host, with an optional leading wildcard, and a path, as Cloudflare's docs write routes and as
+            WorkerRoute did before kflare-gen; it needs a character of the host, so an empty pattern is refused too.
+            1,024 characters is that WorkerRoute's bound.
+      script:
+        ref:
+          kind: WorkerScript
+          field: name
+        printColumn: Worker
+        doc: |
+          WorkerScriptRef references the WorkerScript, in the same namespace
+          and the zone's account, that handles matching requests. The route
+          waits until the WorkerScript has uploaded its Worker: Cloudflare
+          refuses a route to a Worker that does not exist (10019). Omit it to
+          exclude the pattern from a broader route, so that no Worker runs for
+          it.
+
 # The rule kinds kflare-gen generates: each resource manages one rule in a zone's entry point ruleset for a Rulesets
 # phase, through the shared rule controller (internal/controller/rulesetrule_controller.go). A rule kind's spec holds
 # the fields every rule kind shares (RulesetRuleSpec) and the parameters of its action, which kflare-gen builds from

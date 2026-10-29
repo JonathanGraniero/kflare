@@ -288,22 +288,6 @@ var pausedKinds = []pausedKind{
 		},
 	},
 	{
-		name: "WorkerRoute",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.WorkerRoute{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.WorkerRouteSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: pausedSpecZone},
-					Pattern: pausedSpecDomain + "/static/*",
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &WorkerRouteReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewWorkerRouteAPI: func(string) (WorkerRouteAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
 		name: "IPList",
 		newObject: func(name string) conditionedObject {
 			return &cloudflarev1alpha1.IPList{

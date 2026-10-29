@@ -3987,6 +3987,146 @@
         },
         "type": "object"
       },
+      "workers_api-response-common": {
+        "properties": {
+          "errors": {
+            "$ref": "#/components/schemas/workers_messages"
+          },
+          "messages": {
+            "$ref": "#/components/schemas/workers_messages"
+          },
+          "success": {
+            "description": "Whether the API call was successful.",
+            "enum": [
+              true
+            ],
+            "example": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "errors",
+          "messages"
+        ],
+        "type": "object"
+      },
+      "workers_api-response-common-failure": {
+        "properties": {
+          "errors": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/workers_messages"
+              }
+            ],
+            "example": [
+              {
+                "code": 7003,
+                "message": "No route for the URI"
+              }
+            ],
+            "minLength": 1
+          },
+          "messages": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/workers_messages"
+              }
+            ],
+            "example": []
+          },
+          "result": {
+            "enum": [
+              null
+            ],
+            "nullable": true,
+            "type": "object"
+          },
+          "success": {
+            "description": "Whether the API call was successful.",
+            "enum": [
+              false
+            ],
+            "example": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "errors",
+          "messages",
+          "result"
+        ],
+        "type": "object"
+      },
+      "workers_identifier": {
+        "description": "Identifier.",
+        "example": "023e105f4ecef8ad9ca31a8372d0c353",
+        "maxLength": 32,
+        "type": "string",
+        "x-auditable": true
+      },
+      "workers_messages": {
+        "example": [],
+        "items": {
+          "properties": {
+            "code": {
+              "minimum": 1000,
+              "type": "integer"
+            },
+            "documentation_url": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "source": {
+              "properties": {
+                "pointer": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "type": "object",
+          "uniqueItems": true
+        },
+        "type": "array"
+      },
+      "workers_route": {
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/workers_identifier"
+              }
+            ],
+            "readOnly": true
+          },
+          "pattern": {
+            "description": "Pattern to match incoming requests against. [Learn more](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior).",
+            "example": "example.com/*",
+            "type": "string",
+            "x-auditable": true
+          },
+          "script": {
+            "description": "Name of the script to run if the route matches.",
+            "example": "my-workers-script",
+            "type": "string",
+            "x-auditable": true
+          }
+        },
+        "required": [
+          "id",
+          "pattern"
+        ],
+        "type": "object"
+      },
       "zones_0rtt": {
         "allOf": [
           {
@@ -8967,6 +9107,347 @@
         "x-fern-sdk-group-name": "url-normalization",
         "x-fern-sdk-method-name": "update",
         "x-forge-hidden": true
+      }
+    },
+    "/zones/{zone_id}/workers/routes": {
+      "get": {
+        "description": "Returns Worker routes for a zone.",
+        "operationId": "worker-routes-list-routes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/workers_identifier"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/workers_api-response-common"
+                    },
+                    {
+                      "properties": {
+                        "result": {
+                          "items": {
+                            "$ref": "#/components/schemas/workers_route"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    }
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "List Routes response."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workers_api-response-common-failure"
+                }
+              }
+            },
+            "description": "List Routes response failure."
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          }
+        ],
+        "summary": "List Worker Routes",
+        "tags": [
+          "Worker Routes"
+        ],
+        "x-api-token-group": [
+          "Workers Routes Write",
+          "Workers Routes Read"
+        ],
+        "x-fern-audiences": [
+          "sdk"
+        ],
+        "x-fern-availability": "generally-available",
+        "x-fern-sdk-group-name": "workers.routes",
+        "x-fern-sdk-method-name": "list"
+      },
+      "post": {
+        "description": "Creates a route that maps a URL pattern to a Worker.",
+        "operationId": "worker-routes-create-route",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/workers_identifier"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workers_route"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/workers_api-response-common"
+                    },
+                    {
+                      "properties": {
+                        "result": {
+                          "$ref": "#/components/schemas/workers_route"
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    }
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Create Route response."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workers_api-response-common-failure"
+                }
+              }
+            },
+            "description": "Create Route response failure."
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          }
+        ],
+        "summary": "Create Worker Route",
+        "tags": [
+          "Worker Routes"
+        ],
+        "x-api-token-group": [
+          "Workers Routes Write"
+        ],
+        "x-fern-audiences": [
+          "sdk"
+        ],
+        "x-fern-availability": "generally-available",
+        "x-fern-sdk-group-name": "workers.routes",
+        "x-fern-sdk-method-name": "create"
+      }
+    },
+    "/zones/{zone_id}/workers/routes/{route_id}": {
+      "get": {
+        "description": "Returns information about a Worker route, including URL pattern and Worker.",
+        "operationId": "worker-routes-get-route",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/workers_identifier"
+            }
+          },
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/workers_identifier"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/workers_api-response-common"
+                    },
+                    {
+                      "properties": {
+                        "result": {
+                          "$ref": "#/components/schemas/workers_route"
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    }
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Get Route response."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workers_api-response-common-failure"
+                }
+              }
+            },
+            "description": "Get Route response failure."
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          }
+        ],
+        "summary": "Get Worker Route",
+        "tags": [
+          "Worker Routes"
+        ],
+        "x-api-token-group": [
+          "Workers Routes Write",
+          "Workers Routes Read"
+        ],
+        "x-fern-audiences": [
+          "sdk"
+        ],
+        "x-fern-availability": "generally-available",
+        "x-fern-sdk-group-name": "workers.routes",
+        "x-fern-sdk-method-name": "get"
+      },
+      "put": {
+        "description": "Replaces the URL pattern or Worker associated with a Worker route.",
+        "operationId": "worker-routes-update-route",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/workers_identifier"
+            }
+          },
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/workers_identifier"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workers_route"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/workers_api-response-common"
+                    },
+                    {
+                      "properties": {
+                        "result": {
+                          "$ref": "#/components/schemas/workers_route"
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    }
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Update Route response."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workers_api-response-common-failure"
+                }
+              }
+            },
+            "description": "Update Route response failure."
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          },
+          {
+            "api_email": [],
+            "api_key": []
+          }
+        ],
+        "summary": "Replace Worker Route",
+        "tags": [
+          "Worker Routes"
+        ],
+        "x-api-token-group": [
+          "Workers Routes Write"
+        ],
+        "x-fern-audiences": [
+          "sdk"
+        ],
+        "x-fern-availability": "generally-available",
+        "x-fern-sdk-group-name": "workers.routes",
+        "x-fern-sdk-method-name": "update"
       }
     }
   }

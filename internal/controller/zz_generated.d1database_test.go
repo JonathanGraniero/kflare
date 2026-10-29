@@ -85,21 +85,21 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.D1Database, D1Databas
 	newFake:    func(store *fakeCRUDStore[d1.D1]) D1DatabaseAPI { return fakeD1DatabaseAPI{store} },
 	defaultAPI: defaultD1DatabaseAPI,
 	service:    &d1.DatabaseService{},
-	newResource: func(key types.NamespacedName, account string) *cloudflarev1alpha1.D1Database {
+	newResource: func(key types.NamespacedName, parent string) *cloudflarev1alpha1.D1Database {
 		return &cloudflarev1alpha1.D1Database{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: cloudflarev1alpha1.D1DatabaseSpec{
-				AccountRef: corev1.LocalObjectReference{Name: account},
+				AccountRef: corev1.LocalObjectReference{Name: parent},
 				Name:       "example-db",
 			},
 		}
 	},
-	seed: func(id, key string) d1.D1 { return d1.D1{UUID: id, Name: key} },
-	created: func(obj *cloudflarev1alpha1.D1Database, current *d1.D1) bool {
+	seed: func(id, key string, _ map[string]string) d1.D1 { return d1.D1{UUID: id, Name: key} },
+	created: func(obj *cloudflarev1alpha1.D1Database, _ map[string]string, current *d1.D1) bool {
 		return current.Name == obj.Spec.Name &&
 			(obj.Spec.Jurisdiction == "" || string(current.Jurisdiction) == obj.Spec.Jurisdiction)
 	},
-	sent: func(obj *cloudflarev1alpha1.D1Database, sent any) bool {
+	sent: func(obj *cloudflarev1alpha1.D1Database, _ map[string]string, sent any) bool {
 		params := sent.(d1.DatabaseNewParams)
 		return params.Name.Value == obj.Spec.Name &&
 			(obj.Spec.Jurisdiction == "" || params.Jurisdiction.Present && string(params.Jurisdiction.Value) == obj.Spec.Jurisdiction) &&

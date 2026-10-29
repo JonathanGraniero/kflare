@@ -39,9 +39,9 @@ type kindConfig struct {
 	// <package>.<type>, the package's path being relative to the module: the
 	// KV namespaces service is kv.NamespaceService.
 	Service string `json:"service"`
-	// Scope is what a resource of the kind names its parent with. The only
-	// scope so far is account: an accountRef, for the account_id the
-	// service's calls take.
+	// Scope is what a resource of the kind names its parent with: account,
+	// an accountRef, for the account_id the service's calls take, or zone, a
+	// zoneRef to a Zone in the resource's namespace, for their zone_id.
 	Scope string `json:"scope"`
 	// ShortName is the kind's short name for kubectl, such as cfkv.
 	ShortName string `json:"shortName"`
@@ -143,6 +143,21 @@ type fieldConfig struct {
 	// names nor their Go names match: the header cf-r2-jurisdiction sets the
 	// R2 bucket's jurisdiction. The spec field takes the object field's name.
 	ReportedAs string `json:"reportedAs,omitempty"`
+	// Ref makes a string field a reference to a resource of another kind, in
+	// the resource's namespace: the spec holds <kind>Ref, and kflare sends the
+	// referenced resource's field once it is ready. A Worker route's script
+	// is a WorkerScript's name.
+	Ref *refConfig `json:"ref,omitempty"`
+}
+
+// refConfig names what a reference field refers to.
+type refConfig struct {
+	// Kind is the referenced kind, such as WorkerScript. Its resources use a
+	// CloudflareAccount (spec.accountRef) and report a Ready condition.
+	Kind string `json:"kind"`
+	// Field is the referenced resource's spec field whose value kflare sends,
+	// by its JSON name, such as name.
+	Field string `json:"field"`
 }
 
 // validationConfig replaces a field's validation, with the reason.
@@ -274,8 +289,8 @@ func (k *kindConfig) validate() error {
 		return fmt.Errorf("kind %q is not a Go type name", k.Kind)
 	case strings.Count(k.Service, ".") == 0 || strings.HasPrefix(k.Service, ".") || strings.HasSuffix(k.Service, "."):
 		return fmt.Errorf("service %q is not <package>.<type>", k.Service)
-	case k.Scope != "account":
-		return fmt.Errorf("scope %q is not supported: the only scope is account", k.Scope)
+	case k.Scope != scopeAccount && k.Scope != scopeZone:
+		return fmt.Errorf("scope %q is not supported: it is account or zone", k.Scope)
 	case !shortName.MatchString(k.ShortName):
 		return fmt.Errorf("shortName %q is not lower-case letters and digits", k.ShortName)
 	case strings.TrimSpace(k.Noun) == "":
@@ -326,15 +341,49 @@ func (k *kindConfig) validate() error {
 			return fmt.Errorf("%s is both fixed and adjusted in fields", name)
 		}
 	}
-	for name, f := range k.Fields {
+	return validateFields(k.Fields)
+}
+
+// validateFields checks a kind's field adjustments: their validations and
+// references.
+func validateFields(fields map[string]fieldConfig) error {
+	for name, f := range fields {
 		if f.Validation != nil {
 			if err := f.Validation.validate(); err != nil {
 				return fmt.Errorf("fields.%s.validation: %w", name, err)
 			}
 		}
+		if err := f.validateRef(name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
+
+// validateRef checks a field's reference: a kind and a field it names, and
+// nothing that applies to the value itself, which the referenced resource
+// gives.
+func (f fieldConfig) validateRef(name string) error {
+	switch {
+	case f.Ref == nil:
+		return nil
+	case !kindName.MatchString(f.Ref.Kind):
+		return fmt.Errorf("fields.%s.ref: kind %q is not a Go type name", name, f.Ref.Kind)
+	case !statusName.MatchString(f.Ref.Field):
+		return fmt.Errorf("fields.%s.ref: field %q is not a lowerCamel name", name, f.Ref.Field)
+	case f.Validation != nil:
+		return fmt.Errorf("fields.%s: a reference takes no validation: the referenced resource gives its value", name)
+	case f.ReportedAs != "":
+		return fmt.Errorf("fields.%s: a reference takes no reportedAs", name)
+	}
+	return nil
+}
+
+// The scopes of a CRUD kind: what its resources name their parent with.
+const (
+	scopeAccount = "account"
+	scopeZone    = "zone"
+)
 
 // validateDeletionBlockers checks a kind's deletion blockers.
 func validateDeletionBlockers(blockers []deletionBlockerConfig) error {

@@ -58,6 +58,128 @@ func cloneService(svc *service) *service {
 	return &out
 }
 
+// objectLike returns a struct type of the things package with the fields of
+// svc's object, but for the field goName: missing when typ is nil, of typ
+// otherwise.
+func objectLike(svc *service, goName string, typ types.Type) types.Type {
+	pkg := types.NewPackage(sdkModule+"/things", "things")
+	var fields []*types.Var
+	for _, f := range svc.object {
+		switch {
+		case f.goName != goName:
+			fields = append(fields, types.NewField(token.NoPos, pkg, f.goName, f.typ, false))
+		case typ != nil:
+			fields = append(fields, types.NewField(token.NoPos, pkg, f.goName, typ, false))
+		}
+	}
+	return types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Result", nil), types.NewStruct(fields, nil), nil)
+}
+
+// routeController builds the controller of the Worker routes service, with a
+// sample whose reference names test-worker.
+func routeController(t *testing.T, svc *service) *controller {
+	t.Helper()
+	entry := routeEntry()
+	entry.Sample = map[string]any{"pattern": "example.com/*", "script": "test-worker"}
+	c, err := buildTestController(t, entry, svc, loadTestSpec(t))
+	if err != nil {
+		t.Fatalf("buildController: %v", err)
+	}
+	return c
+}
+
+func TestBuildControllerForTheRouteService(t *testing.T) {
+	svc := loadTestService(t, "workers.RouteService")
+	c := routeController(t, svc)
+	if !c.zoned || !c.singlePage || c.byKey || c.pageSize != 0 || c.statusZoneID != "ZoneID" {
+		t.Errorf("controller = zoned %t, single page %t, by key %t, page size %d, status zone ID %q", c.zoned,
+			c.singlePage, c.byKey, c.pageSize, c.statusZoneID)
+	}
+	if typeName(c.created) != "workers.RouteNewResponse" || typeName(c.updated) != "workers.RouteUpdateResponse" ||
+		typeName(c.object) != "workers.RouteGetResponse" || typeName(c.listed) != "workers.RouteListResponse" {
+		t.Errorf("types: created %v, updated %v, object %v, listed %v", c.created, c.updated, c.object, c.listed)
+	}
+	if len(c.references) != 1 || c.references[0].jsonName != "workerScriptRef" || c.references[0].update == nil ||
+		c.references[0].object == nil {
+		t.Errorf("references = %+v", c.references)
+	}
+	status := make([]string, 0, len(c.status))
+	for _, st := range c.status {
+		status = append(status, st.goName+"="+st.object.apiName)
+	}
+	if !slices.Equal(status, []string{"RouteID=id", "Script=script"}) {
+		t.Errorf("status = %v", status)
+	}
+	for _, call := range c.calls() {
+		zone := call.paramFields[slices.IndexFunc(call.paramFields, isZoneID)]
+		if !c.sets(call, zone) {
+			t.Errorf("%s's zone_id is not set", call.name)
+		}
+	}
+	if got := describeEdits(c.changes); !slices.Equal(got, []string{`pattern="example.com/+" (changing pattern)`}) {
+		t.Errorf("changes = %v: a reference's change needs the resource it names", got)
+	}
+	if c.sample["script"] != "test-worker" || len(c.immutable) != 0 {
+		t.Errorf("sample = %v, immutable = %v", c.sample, describeEdits(c.immutable))
+	}
+
+	t.Run("an immutable reference", func(t *testing.T) {
+		fixed := cloneService(svc)
+		update := fixed.calls["Update"]
+		update.paramFields = slices.DeleteFunc(update.paramFields, func(f sdkField) bool { return f.apiName == "script" })
+		fixed.update = update.paramFields
+		if got := describeEdits(routeController(t, fixed).immutable); !slices.Equal(got,
+			[]string{`script="other-workerscript" (changing workerScriptRef)`}) {
+			t.Errorf("immutable = %v", got)
+		}
+		entry := routeEntry()
+		entry.Sample = map[string]any{"pattern": "example.com/*"}
+		c, err := buildTestController(t, entry, fixed, loadTestSpec(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := describeEdits(c.immutable); !slices.Equal(got,
+			[]string{`script="other-workerscript" (setting workerScriptRef)`}) {
+			t.Errorf("immutable, unset = %v", got)
+		}
+	})
+
+	t.Run("a call without the zone", func(t *testing.T) {
+		broken := cloneService(svc)
+		remove := broken.calls["Delete"]
+		remove.paramFields = slices.DeleteFunc(remove.paramFields, isZoneID)
+		entry := routeEntry()
+		entry.Sample = map[string]any{"pattern": "example.com/*"}
+		if _, err := buildTestController(t, entry, broken, loadTestSpec(t)); err == nil ||
+			!strings.Contains(err.Error(), "Delete takes no zone_id") {
+			t.Errorf("buildController: err = %v", err)
+		}
+	})
+
+	t.Run("a single page that requires a page", func(t *testing.T) {
+		paged := cloneService(svc)
+		list := paged.calls["List"]
+		list.paramFields = append(list.paramFields, sdkField{goName: "Page", apiName: "page", in: inQuery,
+			typ: types.Typ[types.Float64], required: true})
+		entry := routeEntry()
+		entry.Sample = map[string]any{"pattern": "example.com/*"}
+		if _, err := buildTestController(t, entry, paged, loadTestSpec(t)); err == nil ||
+			!strings.Contains(err.Error(), "List requires the query parameter page, which the shared CRUD reconciler "+
+				"does not set") {
+			t.Errorf("buildController: err = %v", err)
+		}
+	})
+
+	t.Run("a sample that names no resource", func(t *testing.T) {
+		entry := routeEntry()
+		entry.Sample = map[string]any{"pattern": "example.com/*", "script": "Not A Name"}
+		if _, err := buildTestController(t, entry, svc, loadTestSpec(t)); err == nil ||
+			!strings.Contains(err.Error(), `sample.script: Not A Name is not the name of a WorkerScript`) {
+			t.Errorf("buildController: err = %v", err)
+		}
+	})
+}
+
 // describeEdits describes edits compactly.
 func describeEdits(edits []specEdit) []string {
 	out := make([]string, 0, len(edits))
@@ -163,7 +285,21 @@ func TestBuildControllerRefuses(t *testing.T) {
 		}, "the service's Get does not return a pointer"},
 		{"an Update that returns another type", func(svc *service, _ *kindConfig, _ *apiSpec) {
 			svc.calls["Update"] = withResult(svc.calls["Update"], types.NewPointer(str))
-		}, "Update returns *string and Get *kv.Namespace"},
+		}, "Update returns *string and Get *kv.Namespace: string is not a struct"},
+		{"a New that returns no pointer", func(svc *service, _ *kindConfig, _ *apiSpec) {
+			svc.calls["New"] = withResult(svc.calls["New"], str)
+		}, "the service's New does not return a pointer"},
+		{"a New whose object lacks a field Get reports", func(svc *service, _ *kindConfig, _ *apiSpec) {
+			svc.calls["New"] = withResult(svc.calls["New"], types.NewPointer(objectLike(svc, "Title", nil)))
+		}, "New returns *things.Result and Get *kv.Namespace: it has no Title, which kv.Namespace reports"},
+		{"a New whose field does not convert", func(svc *service, _ *kindConfig, _ *apiSpec) {
+			svc.calls["New"] = withResult(svc.calls["New"], types.NewPointer(objectLike(svc, "Title",
+				types.NewSlice(str))))
+		}, "its Title is a []string, which kflare-gen cannot convert to the string kv.Namespace reports"},
+		{"a List that returns neither page", func(svc *service, _ *kindConfig, _ *apiSpec) {
+			svc.calls["List"] = withResult(svc.calls["List"], types.NewPointer(str))
+		}, "the service's List returns *string: the shared CRUD reconciler can only read a " +
+			"pagination.V4PagePaginationArray or SinglePage yet"},
 		{"a Delete that returns no pointer", func(svc *service, _ *kindConfig, _ *apiSpec) {
 			svc.calls["Delete"] = withResult(svc.calls["Delete"], str)
 		}, "the service's Delete does not return a pointer"},
@@ -373,11 +509,11 @@ func TestCheckShape(t *testing.T) {
 func TestPageElement(t *testing.T) {
 	c := kvController(t)
 	page := c.list.sig.Results().At(0).Type()
-	if elem, ok := pageElement(page); !ok || !types.Identical(elem, c.object) {
-		t.Errorf("pageElement(%s) = %v, %t", typeName(page), elem, ok)
+	if elem, name, ok := pageElement(page); !ok || !types.Identical(elem, c.object) || name != pagedList {
+		t.Errorf("pageElement(%s) = %v, %s, %t", typeName(page), elem, name, ok)
 	}
 	for _, typ := range []types.Type{c.object, types.NewPointer(c.object), types.NewPointer(types.Typ[types.String])} {
-		if _, ok := pageElement(typ); ok {
+		if _, _, ok := pageElement(typ); ok {
 			t.Errorf("pageElement(%s) = true", typeName(typ))
 		}
 	}
@@ -680,7 +816,7 @@ func TestParamStatements(t *testing.T) {
 		t.Errorf("New's params:\n%s\nwant\n%s", strings.Join(create, "\n"), strings.Join(want, "\n"))
 	}
 
-	matches, err := matchesExpr(newGoFile(), c, false)
+	matches, _, err := matchesExpr(newGoFile(), c, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +826,7 @@ func TestParamStatements(t *testing.T) {
 		"(obj.Spec.Paused == nil || current.Paused == *obj.Spec.Paused)"; matches != want {
 		t.Errorf("matches:\n%s\nwant\n%s", matches, want)
 	}
-	created, err := matchesExpr(newGoFile(), c, true)
+	created, _, err := matchesExpr(newGoFile(), c, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +840,7 @@ func TestParamStatements(t *testing.T) {
 		t.Errorf("a param of another kind: err = %v", err)
 	}
 	c.fields[0].object.typ = types.Typ[types.Bool]
-	if _, err := matchesExpr(newGoFile(), c, false); err == nil || !strings.Contains(err.Error(), "comparing name") {
+	if _, _, err := matchesExpr(newGoFile(), c, false); err == nil || !strings.Contains(err.Error(), "comparing name") {
 		t.Errorf("an object's field of another kind: err = %v", err)
 	}
 	c.fixedFields[0].create.typ = types.Typ[types.Int]
@@ -712,7 +848,7 @@ func TestParamStatements(t *testing.T) {
 	if _, err := paramStatements(newGoFile(), c, func(af apiField) *sdkField { return af.create }); err == nil {
 		t.Error("a fixed value of another kind: err = nil")
 	}
-	if matches, err := matchesExpr(newGoFile(), c, true); err != nil || matches != "" {
+	if matches, _, err := matchesExpr(newGoFile(), c, true); err != nil || matches != "" {
 		t.Errorf("no field Update takes: matches = %q, %v", matches, err)
 	}
 }

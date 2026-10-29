@@ -28,21 +28,28 @@ import (
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
-// A CRUD kind's resources each manage one object in a Cloudflare account that
-// the API creates, reads, updates and deletes by ID: the kinds kflare-gen
-// generates from a cloudflare-go v7 service, such as KVNamespace. They
-// reconcile the same way. A resource resolves its account's token and reads
-// its object by the ID in its status, creating a new one if it was deleted
-// outside kflare. Without one, it creates one, or, as its adoption policy
-// allows (adoption.go), adopts the account's object with the same key, unless
-// another resource of the kind claims it. It claims the object, updates it
-// when it differs from the spec, and deletes it with the resource once nothing
-// depends on it, unless it is retained. A kind supplies only what differs: a
-// crudResourceKind, which calls the kind's cloudflare-go v7 service.
+// A CRUD kind's resources each manage one object in a Cloudflare account, or
+// in a zone, that the API creates, reads, updates and deletes by ID: the kinds
+// kflare-gen generates from a cloudflare-go v7 service, such as KVNamespace
+// and WorkerRoute. They reconcile the same way. A resource resolves its
+// account's token, through its Zone for a zone's kind, and reads its object by
+// the ID in its status, creating a new one if it was deleted outside kflare.
+// Without one, it creates one, or, as its adoption policy allows
+// (adoption.go), adopts the account's or zone's object with the same key,
+// unless another resource of the kind claims it. It claims the object, updates
+// it when it differs from the spec, and deletes it with the resource once
+// nothing depends on it, unless it is retained. A kind supplies only what
+// differs: a crudResourceKind, which calls the kind's cloudflare-go v7
+// service.
 //
 // Some objects have no ID of their own: their key is their ID, as an R2
 // bucket's name is. Such a kind reads the object by its key, where another
-// finds the object in the pages of its list.
+// finds the object in its list: in its pages, or in the one page of a list
+// that is never paged, as a zone's Worker routes are.
+//
+// A kind's spec may reference resources of other kinds in its namespace, as a
+// WorkerRoute names its WorkerScript: a resource waits for each to be ready,
+// and sends the value it gives, such as the Worker's name.
 
 // crudResourceKind is what the shared CRUD reconciler needs to know about a
 // kind. O is the kind's API type, A the narrow interface to the
@@ -57,8 +64,14 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	newObject  func() O
 	newList    func() client.ObjectList
 
-	// accountRef returns the name of the CloudflareAccount a resource uses.
-	accountRef func(O) string
+	// accountRef returns the name of the CloudflareAccount a resource of an
+	// account's kind uses. A zone's kind has zoneRef instead, which returns
+	// the name of the Zone, in the resource's namespace, whose zone holds its
+	// object, and statusZoneID, which returns where status records that
+	// zone's ID.
+	accountRef   func(O) string
+	zoneRef      func(O) string
+	statusZoneID func(O) *string
 	// key returns the value a resource adopts an existing object by, such as
 	// a title that no two objects in an account share.
 	key func(O) string
@@ -78,23 +91,30 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	observe  func(O, *R)
 
 	// id returns an object's ID, and matches whether the object is what a
-	// resource's spec asks for. listedID and listedKey return the ID and the
-	// key of an object a page of the list shows.
+	// resource's spec asks for, given what its references give (refs).
+	// listedID and listedKey return the ID and the key of an object a page of
+	// the list shows.
 	id        func(*R) string
-	matches   func(O, *R) bool
+	matches   func(obj O, current *R, refs map[string]string) bool
 	listedID  func(*L) string
 	listedKey func(*L) string
 
-	// The kind's calls to Cloudflare for the resource obj, in the account
-	// accountID; obj gives the object's address. list returns one page of
-	// the account's objects, counting from 1. It is nil for a kind whose
-	// objects their key identifies, together with listedID and listedKey:
-	// such a kind reads an object by its key instead.
-	get    func(ctx context.Context, api A, obj O, accountID, id string) (*R, error)
-	list   func(ctx context.Context, api A, obj O, accountID string, page int64) (*pagination.V4PagePaginationArray[L], error)
-	create func(ctx context.Context, api A, accountID string, obj O) (*R, error)
-	update func(ctx context.Context, api A, obj O, accountID, id string) (*R, error)
-	delete func(ctx context.Context, api A, obj O, accountID, id string) error
+	// The kind's calls to Cloudflare for the resource obj, in the account or
+	// zone parentID; obj gives the object's address, and refs the values its
+	// references give, by the spec field that holds each. list returns one
+	// page of the parent's objects, counting from 1, and listAll, for a kind
+	// whose list is never paged, all of them; the other one is nil. Both are
+	// nil for a kind whose objects their key identifies, together with
+	// listedID and listedKey: such a kind reads an object by its key instead.
+	get     func(ctx context.Context, api A, obj O, parentID, id string) (*R, error)
+	list    func(ctx context.Context, api A, obj O, parentID string, page int64) (*pagination.V4PagePaginationArray[L], error)
+	listAll func(ctx context.Context, api A, obj O, parentID string) (*pagination.SinglePage[L], error)
+	create  func(ctx context.Context, api A, parentID string, obj O, refs map[string]string) (*R, error)
+	update  func(ctx context.Context, api A, obj O, parentID, id string, refs map[string]string) (*R, error)
+	delete  func(ctx context.Context, api A, obj O, parentID, id string) error
+
+	// references are the spec's references to resources of other kinds.
+	references []crudReference[O]
 
 	// deletionBlockers are the refusals that keep an object from being
 	// deleted until someone acts, such as emptying an R2 bucket.
@@ -103,6 +123,36 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	// dependents use a resource of the kind, which waits for them before it is
 	// deleted.
 	dependents []dependentKind
+}
+
+// crudReference is a spec field of a kind that references a resource of
+// another kind in the resource's namespace, such as a WorkerRoute's
+// workerScriptRef. A resource waits until the referenced resource exists, uses
+// the resource's CloudflareAccount and is ready, then sends the value it
+// gives: the WorkerScript's Worker name.
+type crudReference[O any] struct {
+	// field is the spec field, and kind the referenced kind.
+	field, kind string
+	// name returns the referenced resource's name: "" when the spec leaves
+	// the reference unset, which gives no value.
+	name      func(O) string
+	newObject func() conditionedObject
+	// account returns the CloudflareAccount a referenced resource uses, and
+	// value what it gives.
+	account, value func(conditionedObject) string
+}
+
+// reference builds a crudReference to resources of type P (a *T).
+func reference[O any, T any, P interface {
+	*T
+	conditionedObject
+}](field, kind string, name func(O) string, account, value func(P) string) crudReference[O] {
+	return crudReference[O]{
+		field: field, kind: kind, name: name,
+		newObject: func() conditionedObject { return P(new(T)) },
+		account:   func(obj conditionedObject) string { return account(obj.(P)) },
+		value:     func(obj conditionedObject) string { return value(obj.(P)) },
+	}
 }
 
 // deletionBlocker is a refusal to delete an object that lasts until someone
@@ -153,7 +203,25 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 		return ctrl.Result{}, nil
 	}
 
-	account, token, credErr := resolveAccountToken(ctx, r.Client, r.kind.accountRef(obj), true)
+	// A zone's kind waits for its Zone (the Zone watch re-triggers this
+	// reconcile when it is ready) and calls Cloudflare with its account.
+	accountName, whose := "", "this "+r.kind.name
+	var zone *cloudflarev1alpha1.Zone
+	if r.kind.zoneRef != nil {
+		var condErr *conditionError
+		if zone, condErr = r.zone(ctx, obj); condErr != nil {
+			return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
+		}
+		accountName, whose = zone.Spec.AccountRef.Name, fmt.Sprintf("Zone %q", zone.Name)
+	} else {
+		accountName = r.kind.accountRef(obj)
+	}
+	refs, condErr := r.resolveReferences(ctx, obj, accountName, whose)
+	if condErr != nil {
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
+	}
+
+	account, token, credErr := resolveAccountToken(ctx, r.Client, accountName, true)
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
 	}
@@ -162,11 +230,70 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 		return invalidToken(ctx, r.Client, obj, err)
 	}
 
-	return r.sync(ctx, obj, account.Spec.AccountID, api)
+	parentID := account.Spec.AccountID
+	if zone != nil {
+		parentID = zone.Status.CloudflareMetadata.ZoneID
+	}
+	return r.sync(ctx, obj, parentID, refs, api)
 }
 
-// sync drives the desired→observed→delta→reconcile loop for one resource.
-func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, accountID string, api A) (ctrl.Result, error) {
+// zone returns the ready Zone a resource of a zone's kind belongs to, or why
+// the resource waits for it.
+func (r *crudResourceReconciler[O, A, R, L]) zone(ctx context.Context, obj O) (*cloudflarev1alpha1.Zone, *conditionError) {
+	zone := &cloudflarev1alpha1.Zone{}
+	key := types.NamespacedName{Name: r.kind.zoneRef(obj), Namespace: obj.GetNamespace()}
+	if err := r.Get(ctx, key, zone); err != nil {
+		return nil, &conditionError{Reason: "ZoneNotFound", Message: fmt.Sprintf("Zone %q not found: %v", key.Name, err)}
+	}
+	if !isZoneReady(zone) {
+		return nil, &conditionError{Reason: "ZoneNotReady", Message: fmt.Sprintf("Zone %q is not ready", key.Name)}
+	}
+	return zone, nil
+}
+
+// resolveReferences returns the value each of the kind's references gives, by
+// the spec field holding it, or why the resource waits. A referenced resource
+// must exist, be ready and use the CloudflareAccount accountName, which
+// whose uses: a Worker route can only run a Worker of its zone's account. An
+// unset reference gives "".
+func (r *crudResourceReconciler[O, A, R, L]) resolveReferences(ctx context.Context, obj O,
+	accountName, whose string) (map[string]string, *conditionError) {
+	refs := map[string]string{}
+	for _, ref := range r.kind.references {
+		name := ref.name(obj)
+		if name == "" {
+			refs[ref.field] = ""
+			continue
+		}
+		target := ref.newObject()
+		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: obj.GetNamespace()}, target); err != nil {
+			return nil, &conditionError{
+				Reason:  ref.kind + "NotFound",
+				Message: fmt.Sprintf("%s %q not found: %v", ref.kind, name, err),
+			}
+		}
+		if account := ref.account(target); account != accountName {
+			return nil, &conditionError{
+				Reason: reasonAccountMismatch,
+				Message: fmt.Sprintf("%s %q uses CloudflareAccount %q but %s uses %q; %s can only use %s of its "+
+					"own account", ref.kind, name, account, whose, accountName, r.kind.noun, ref.kind),
+			}
+		}
+		if !meta.IsStatusConditionTrue(target.GetConditions(), cloudflarev1alpha1.ConditionReady) {
+			return nil, &conditionError{
+				Reason:  ref.kind + "NotReady",
+				Message: fmt.Sprintf("%s %q is not ready", ref.kind, name),
+			}
+		}
+		refs[ref.field] = ref.value(target)
+	}
+	return refs, nil
+}
+
+// sync drives the desired→observed→delta→reconcile loop for one resource, in
+// the account or zone parentID.
+func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, parentID string,
+	refs map[string]string, api A) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	k := r.kind
 
@@ -174,7 +301,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 	// outside kflare; a new one is created.
 	var current *R
 	if id := k.statusID(obj); id != "" {
-		got, err := k.get(ctx, api, obj, accountID, id)
+		got, err := k.get(ctx, api, obj, parentID, id)
 		switch {
 		case cfpkg.IsNotFound(err):
 			logger.Info(k.noun+" deleted outside kflare, recreating", "id", id)
@@ -185,7 +312,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 		}
 	}
 
-	// No object yet: find the account's object with this key. It is this
+	// No object yet: find the parent's object with this key. It is this
 	// resource's own when its claim or its creating annotation says so (an
 	// earlier reconcile did not record it in status); another resource of the
 	// kind may claim it; otherwise the resource adopts it only if its adoption
@@ -196,12 +323,12 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 	if current == nil {
 		key := k.key(obj)
 		what := fmt.Sprintf("%s %q", k.noun, key)
-		id, found, err := r.find(ctx, api, obj, accountID, key)
+		id, found, err := r.find(ctx, api, obj, parentID, key)
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
 		}
 		if id != "" {
-			owner, err := r.claimant(ctx, obj, accountID, id)
+			owner, err := r.claimant(ctx, obj, parentID, id)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -218,7 +345,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 				}
 			}
 			if found == nil {
-				found, err = k.get(ctx, api, obj, accountID, id)
+				found, err = k.get(ctx, api, obj, parentID, id)
 				switch {
 				case cfpkg.IsNotFound(err):
 					logger.Info(k.noun+" deleted since it was listed", "key", key, "id", id)
@@ -243,7 +370,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 			if err := markCreating(ctx, r.Client, obj, key); err != nil {
 				return ctrl.Result{}, err
 			}
-			current, err = k.create(ctx, api, accountID, obj)
+			current, err = k.create(ctx, api, parentID, obj, refs)
 			if err != nil {
 				return handleCloudflareError(ctx, r.Client, obj, err)
 			}
@@ -258,8 +385,8 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 	}
 
 	// Drift: update the object in place when it is not what the spec asks for.
-	if !k.matches(obj, current) {
-		updated, err := k.update(ctx, api, obj, accountID, k.id(current))
+	if !k.matches(obj, current, refs) {
+		updated, err := k.update(ctx, api, obj, parentID, k.id(current), refs)
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
 		}
@@ -267,19 +394,40 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 		logger.Info("Updated "+k.noun, "id", k.id(current))
 	}
 
+	if k.statusZoneID != nil {
+		*k.statusZoneID(obj) = parentID
+	}
 	k.observe(obj, current)
 	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
 }
 
-// find returns the ID of the account's object with key, or "" when there is
+// find returns the ID of the parent's object with key, or "" when there is
 // none. A kind whose objects their key identifies reads the object by its key,
-// and also returns what it read; another finds the object in the pages of its
-// list.
-func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, obj O, accountID, key string) (string, *R, error) {
+// and also returns what it read; another finds the object in its list.
+func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, obj O, parentID, key string) (string, *R, error) {
 	k := r.kind
-	if k.list == nil {
+	match := func(listed *L) bool { return k.listedKey(listed) == key }
+	var listed *L
+	switch {
+	case k.listAll != nil:
+		res, err := k.listAll(ctx, api, obj, parentID)
+		if err != nil {
+			return "", nil, err
+		}
+		if i := slices.IndexFunc(res.Result, func(l L) bool { return match(&l) }); i >= 0 {
+			listed = &res.Result[i]
+		}
+	case k.list != nil:
+		var err error
+		listed, err = findInPages(func(page int64) (*pagination.V4PagePaginationArray[L], error) {
+			return k.list(ctx, api, obj, parentID, page)
+		}, match)
+		if err != nil {
+			return "", nil, err
+		}
+	default:
 		// The key is the object's ID.
-		found, err := k.get(ctx, api, obj, accountID, key)
+		found, err := k.get(ctx, api, obj, parentID, key)
 		switch {
 		case cfpkg.IsNotFound(err):
 			return "", nil, nil
@@ -288,23 +436,18 @@ func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, ob
 		}
 		return key, found, nil
 	}
-	listed, err := findInPages(func(page int64) (*pagination.V4PagePaginationArray[L], error) {
-		return k.list(ctx, api, obj, accountID, page)
-	}, func(listed *L) bool { return k.listedKey(listed) == key })
-	if err != nil || listed == nil {
-		return "", nil, err
+	if listed == nil {
+		return "", nil, nil
 	}
 	return k.listedID(listed), nil, nil
 }
 
 // claimant returns the "namespace/name" of another resource of the kind that
-// claims the object id in the Cloudflare account accountID, at obj's address,
-// or "" if none does. Resources in every namespace count, and an ID is unique
-// only within an account (an R2 bucket's name), so a claim counts when the
-// other resource uses obj's CloudflareAccount, or a different one for the same
-// Cloudflare account. A resource whose CloudflareAccount is gone manages
-// nothing, so its claim does not count.
-func (r *crudResourceReconciler[O, A, R, L]) claimant(ctx context.Context, obj O, accountID, id string) (string, error) {
+// claims the object id in the Cloudflare account or zone parentID, at obj's
+// address, or "" if none does. Resources in every namespace count, and an ID
+// is unique only within its parent (an R2 bucket's name), so a claim counts
+// only from a resource whose object is in the same parent (sameParent).
+func (r *crudResourceReconciler[O, A, R, L]) claimant(ctx context.Context, obj O, parentID, id string) (string, error) {
 	k := r.kind
 	list := k.newList()
 	if err := r.List(ctx, list, client.MatchingLabels{k.claimLabel: id}); err != nil {
@@ -322,22 +465,49 @@ func (r *crudResourceReconciler[O, A, R, L]) claimant(ctx context.Context, obj O
 		if other.GetUID() == obj.GetUID() || (k.address != nil && !slices.Equal(k.address(other), k.address(obj))) {
 			continue
 		}
-		owner := other.GetNamespace() + "/" + other.GetName()
-		if k.accountRef(other) == k.accountRef(obj) {
-			return owner, nil
-		}
-		account := &cloudflarev1alpha1.CloudflareAccount{}
-		err := r.Get(ctx, types.NamespacedName{Name: k.accountRef(other)}, account)
-		switch {
-		case apierrors.IsNotFound(err):
-			continue
-		case err != nil:
+		same, err := r.sameParent(ctx, obj, other, parentID)
+		if err != nil {
 			return "", err
-		case account.Spec.AccountID == accountID:
-			return owner, nil
+		}
+		if same {
+			return other.GetNamespace() + "/" + other.GetName(), nil
 		}
 	}
 	return "", nil
+}
+
+// sameParent reports whether other's object is in obj's Cloudflare account,
+// or zone, parentID: other names obj's CloudflareAccount (or Zone), or another
+// one for the same Cloudflare account (or zone). A resource whose
+// CloudflareAccount or Zone is gone manages nothing, so its object is in none.
+func (r *crudResourceReconciler[O, A, R, L]) sameParent(ctx context.Context, obj, other O, parentID string) (bool, error) {
+	k := r.kind
+	if k.zoneRef != nil {
+		if other.GetNamespace() == obj.GetNamespace() && k.zoneRef(other) == k.zoneRef(obj) {
+			return true, nil
+		}
+		zone := &cloudflarev1alpha1.Zone{}
+		err := r.Get(ctx, types.NamespacedName{Name: k.zoneRef(other), Namespace: other.GetNamespace()}, zone)
+		switch {
+		case apierrors.IsNotFound(err):
+			return false, nil
+		case err != nil:
+			return false, err
+		}
+		return zone.Status.CloudflareMetadata.ZoneID == parentID, nil
+	}
+	if k.accountRef(other) == k.accountRef(obj) {
+		return true, nil
+	}
+	account := &cloudflarev1alpha1.CloudflareAccount{}
+	err := r.Get(ctx, types.NamespacedName{Name: k.accountRef(other)}, account)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return account.Spec.AccountID == parentID, nil
 }
 
 // findInPages pages through a list of objects, from page 1, and returns the
@@ -383,27 +553,14 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 	}
 
 	if id := r.kind.statusID(obj); id != "" && !reconciler.RetainOnDelete(obj) {
-		account, token, credErr := resolveAccountToken(ctx, r.Client, r.kind.accountRef(obj), false)
-		if credErr != nil {
-			return ctrl.Result{}, credErr
-		}
-		api, err := r.newAPI(token)
+		accountName, zoneID, gone, err := r.deletionParent(ctx, obj)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		err = r.kind.delete(ctx, api, obj, account.Spec.AccountID, id)
-		for _, blocker := range r.kind.deletionBlockers {
-			if cfpkg.HasErrorCode(err, blocker.code) {
-				return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
-					Reason: blocker.reason,
-					Message: fmt.Sprintf("%s %q %s, or set the %s: %s annotation to keep it", r.kind.noun,
-						r.kind.key(obj), blocker.message, reconciler.DeletionPolicyAnnotation,
-						reconciler.DeletionPolicyRetain),
-				})
+		if !gone {
+			if result, err := r.deleteObject(ctx, obj, accountName, zoneID, id); err != nil || !result.IsZero() {
+				return result, err
 			}
-		}
-		if err != nil && !cfpkg.IsNotFound(err) {
-			return ctrl.Result{}, err
 		}
 	}
 
@@ -412,14 +569,80 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 	return ctrl.Result{}, err
 }
 
+// deleteObject deletes a resource's object id from Cloudflare, with the token
+// of the CloudflareAccount accountName, from its account or, for a zone's
+// kind, from the zone zoneID. While one of the kind's deletion blockers keeps
+// the object, it reports why and returns a retry.
+func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, obj O, accountName, zoneID,
+	id string) (ctrl.Result, error) {
+	account, token, credErr := resolveAccountToken(ctx, r.Client, accountName, false)
+	if credErr != nil {
+		return ctrl.Result{}, credErr
+	}
+	api, err := r.newAPI(token)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	parentID := account.Spec.AccountID
+	if r.kind.zoneRef != nil {
+		parentID = zoneID
+	}
+	err = r.kind.delete(ctx, api, obj, parentID, id)
+	for _, blocker := range r.kind.deletionBlockers {
+		if cfpkg.HasErrorCode(err, blocker.code) {
+			return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
+				Reason: blocker.reason,
+				Message: fmt.Sprintf("%s %q %s, or set the %s: %s annotation to keep it", r.kind.noun,
+					r.kind.key(obj), blocker.message, reconciler.DeletionPolicyAnnotation,
+					reconciler.DeletionPolicyRetain),
+			})
+		}
+	}
+	if err != nil && !cfpkg.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// deletionParent returns where a resource's object is deleted from: the
+// CloudflareAccount whose token deletes it and, for a zone's kind, the zone
+// its status records. A zone's kind's Zone waits for its resources before it
+// is deleted, so it is normally still there; if it is gone anyway (its
+// finalizer was removed by hand), there are no credentials to delete with,
+// the object stays in Cloudflare and gone is set.
+func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context, obj O) (accountName, zoneID string,
+	gone bool, err error) {
+	if r.kind.zoneRef == nil {
+		return r.kind.accountRef(obj), "", false, nil
+	}
+	zone := &cloudflarev1alpha1.Zone{}
+	key := types.NamespacedName{Name: r.kind.zoneRef(obj), Namespace: obj.GetNamespace()}
+	if err := r.Get(ctx, key, zone); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Info("Zone is gone, skipping Cloudflare deletion", "zone", key.Name)
+			return "", "", true, nil
+		}
+		return "", "", false, err
+	}
+	return zone.Spec.AccountRef.Name, *r.kind.statusZoneID(obj), false, nil
+}
+
 // setup registers the kind's controller, with rec as its reconciler. It
-// watches CloudflareAccounts, so a resource waiting for its account is
-// reconciled once the account is ready, and the deletion of the kind's
-// dependents, so a resource waiting for them is released once they are gone.
+// watches CloudflareAccounts, or Zones for a zone's kind, so a resource
+// waiting for its account or Zone is reconciled once it is ready; the kinds
+// its spec references, so a resource waiting for one is reconciled once it is
+// ready; and the deletion of the kind's dependents, so a resource waiting for
+// them is released once they are gone.
 func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconcile.Reconciler) error {
-	b := ctrl.NewControllerManagedBy(mgr).
-		For(r.kind.newObject()).
-		Watches(&cloudflarev1alpha1.CloudflareAccount{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForAccount))
+	b := ctrl.NewControllerManagedBy(mgr).For(r.kind.newObject())
+	if r.kind.zoneRef != nil {
+		b = b.Watches(&cloudflarev1alpha1.Zone{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForZone))
+	} else {
+		b = b.Watches(&cloudflarev1alpha1.CloudflareAccount{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForAccount))
+	}
+	for _, ref := range r.kind.references {
+		b = b.Watches(ref.newObject(), handler.EnqueueRequestsFromMapFunc(r.resourcesReferencing(ref)))
+	}
 	for _, dependent := range r.kind.dependents {
 		b = b.Watches(dependent.newObject(), handler.EnqueueRequestsFromMapFunc(r.deletingResourcesOf),
 			builder.WithPredicates(deletesOnly))
@@ -430,8 +653,30 @@ func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconci
 // resourcesForAccount maps a CloudflareAccount event to the kind's resources
 // that use it.
 func (r *crudResourceReconciler[O, A, R, L]) resourcesForAccount(ctx context.Context, account client.Object) []reconcile.Request {
+	return r.resourcesWhere(ctx, nil, func(obj O) bool { return r.kind.accountRef(obj) == account.GetName() })
+}
+
+// resourcesForZone maps a Zone event to the kind's resources in its zone.
+func (r *crudResourceReconciler[O, A, R, L]) resourcesForZone(ctx context.Context, zone client.Object) []reconcile.Request {
+	return r.resourcesWhere(ctx, []client.ListOption{client.InNamespace(zone.GetNamespace())},
+		func(obj O) bool { return r.kind.zoneRef(obj) == zone.GetName() })
+}
+
+// resourcesReferencing returns what maps an event of a resource of the kind
+// ref refers to to the kind's resources that reference it.
+func (r *crudResourceReconciler[O, A, R, L]) resourcesReferencing(ref crudReference[O]) handler.MapFunc {
+	return func(ctx context.Context, target client.Object) []reconcile.Request {
+		return r.resourcesWhere(ctx, []client.ListOption{client.InNamespace(target.GetNamespace())},
+			func(obj O) bool { return ref.name(obj) == target.GetName() })
+	}
+}
+
+// resourcesWhere returns a request for each of the kind's resources that opts
+// list and match accepts.
+func (r *crudResourceReconciler[O, A, R, L]) resourcesWhere(ctx context.Context, opts []client.ListOption,
+	match func(O) bool) []reconcile.Request {
 	list := r.kind.newList()
-	if err := r.List(ctx, list); err != nil {
+	if err := r.List(ctx, list, opts...); err != nil {
 		return nil
 	}
 	items, err := meta.ExtractList(list)
@@ -440,7 +685,7 @@ func (r *crudResourceReconciler[O, A, R, L]) resourcesForAccount(ctx context.Con
 	}
 	var reqs []reconcile.Request
 	for _, item := range items {
-		if obj, ok := item.(O); ok && r.kind.accountRef(obj) == account.GetName() {
+		if obj, ok := item.(O); ok && match(obj) {
 			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(obj)})
 		}
 	}

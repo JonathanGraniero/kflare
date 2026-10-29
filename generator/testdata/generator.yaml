@@ -38,6 +38,7 @@ kinds:
     sample:
       name: test_list
       kind: ip
+      description: A test list.
     fields:
       name:
         printColumn: Name
@@ -84,6 +85,32 @@ kinds:
       location:
         printColumn: Location
 
+  # A zone's objects, found in a list that is never paged, whose calls each return a type of their own, and a
+  # reference to a resource of another kind: a Worker route runs the Worker a WorkerScript uploads, or none.
+  - kind: TestWorkerRoute
+    service: workers.RouteService
+    scope: zone
+    shortName: testroute
+    noun: Worker route
+    doc: TestWorkerRoute is a Worker route, which runs a WorkerScript's Worker for a zone's matching requests.
+    id:
+      field: id
+      status: routeID
+    claimLabel: kflare.dev/test-route-id
+    adopt:
+      by: pattern
+    sample:
+      pattern: test.example.com/*
+      script: test-worker
+    fields:
+      pattern:
+        printColumn: Pattern
+      script:
+        ref:
+          kind: WorkerScript
+          field: name
+        printColumn: Worker
+
   # IPList's hand-written CRD, as kflare-gen generates it, without the items, which are not part of the list service.
   - kind: TestIPList
     service: rules.ListService
@@ -99,6 +126,7 @@ kinds:
       by: name
     sample:
       name: test_ips
+      description: Test IPs.
     fixed:
       kind: ip
     fields:

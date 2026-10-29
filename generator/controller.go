@@ -34,28 +34,46 @@ type controller struct {
 	// R2 bucket's name is: a resource reads the object by its key rather than
 	// finding it in the list.
 	byKey bool
-	// object is the type of the Cloudflare object that New, Get and Update
-	// return a pointer to, listed the type of the objects a page of List
-	// holds, and deleteResult the type Delete returns a pointer to.
+	// zoned is set for a kind whose objects are in a zone, which a resource
+	// names with its zoneRef; others are in an account (accountRef).
+	// isParent reports whether a call's param is the zone's or the account's
+	// ID.
+	zoned    bool
+	isParent func(sdkField) bool
+	// object is the type of the Cloudflare object that Get returns a pointer
+	// to, listed the type of the objects a page of List holds, and
+	// deleteResult the type Delete returns a pointer to. created and updated
+	// are the types New and Update return a pointer to, when they are not
+	// object: a Worker route's calls each return a type of their own, with
+	// the object's fields.
 	object, listed, deleteResult types.Type
+	created, updated             types.Type
+	// singlePage is set for a List that returns all of a parent's objects in
+	// one page, which takes no page params: a zone's Worker routes. Otherwise
 	// pageSize is the most objects a page of the list holds, and page and
 	// perPage are List's params that ask for a page.
+	singlePage    bool
 	pageSize      int64
 	page, perPage sdkField
-	// fields are the spec's fields that the API takes, accountRef left out;
-	// key is the one a resource adopts an object by, and address those that
-	// name the object in every call, besides the account and the ID.
-	fields  []apiField
-	key     apiField
-	address []apiField
+	// fields are the spec's fields that the API takes, accountRef or zoneRef
+	// left out; key is the one a resource adopts an object by, address those
+	// that name the object in every call, besides the parent and the ID, and
+	// references those that name a resource of another kind, whose value
+	// kflare sends.
+	fields     []apiField
+	key        apiField
+	address    []apiField
+	references []apiField
 	// fixedFields holds the values kflare always sends, as fields without a
 	// spec field.
 	fixedFields []apiField
-	// id is the object's ID and status the fields that status records, ID
-	// first. listedID and listedKey are the ID and the adoption key of the
-	// objects List returns.
+	// id is the object's ID and status the fields that status records from
+	// the object, ID first; statusZoneID, for a zone's kind, is the status
+	// field that records the zone's ID. listedID and listedKey are the ID and
+	// the adoption key of the objects List returns.
 	id                  sdkField
 	status              []statusField
+	statusZoneID        string
 	listedID, listedKey sdkField
 	// conflictReason is the reason a resource reports when another one
 	// manages the object it would adopt.
@@ -128,7 +146,9 @@ type controllerBuilder struct {
 func (b *controllerBuilder) build() (*controller, error) {
 	k, svc := b.k, b.svc
 	c := &controller{kind: k, varName: lowerCamel(k.name), svc: svc, dependents: b.entry.Dependents,
-		deletionBlockers: b.entry.DeletionBlockers, byKey: b.entry.ID.Field == b.entry.Adopt.By}
+		deletionBlockers: b.entry.DeletionBlockers, byKey: b.entry.ID.Field == b.entry.Adopt.By,
+		zoned: b.entry.Scope == scopeZone}
+	c.isParent, _ = parentParam(b.entry.Scope)
 	if err := b.calls(c); err != nil {
 		return nil, err
 	}
@@ -187,9 +207,21 @@ func (b *controllerBuilder) calls(c *controller) error {
 		if call == nil {
 			continue
 		}
-		if got := call.sig.Results().At(0).Type(); !types.Identical(got, ptr) {
-			return fmt.Errorf("%s returns %s and Get %s: the shared CRUD reconciler needs one object type yet",
-				call.name, typeName(got), typeName(ptr))
+		got := call.sig.Results().At(0).Type()
+		if types.Identical(got, ptr) {
+			continue
+		}
+		result, ok := got.(*types.Pointer)
+		if !ok {
+			return fmt.Errorf("the service's %s does not return a pointer", call.name)
+		}
+		if err := sameFields(c.object, result.Elem(), svc.object); err != nil {
+			return fmt.Errorf("%s returns %s and Get %s: %w", call.name, typeName(got), typeName(ptr), err)
+		}
+		if call == c.create {
+			c.created = result.Elem()
+		} else {
+			c.updated = result.Elem()
 		}
 	}
 	deleted, ok := c.remove.sig.Results().At(0).Type().(*types.Pointer)
@@ -197,10 +229,11 @@ func (b *controllerBuilder) calls(c *controller) error {
 		return fmt.Errorf("the service's Delete does not return a pointer")
 	}
 	c.deleteResult = deleted.Elem()
-	// Every call names the account.
+	// Every call names the parent.
+	_, parentName := parentParam(b.entry.Scope)
 	for _, call := range c.calls() {
-		if !slices.ContainsFunc(call.paramFields, isAccountID) {
-			return fmt.Errorf("%s takes no account_id", call.name)
+		if !slices.ContainsFunc(call.paramFields, c.isParent) {
+			return fmt.Errorf("%s takes no %s", call.name, parentName)
 		}
 	}
 	if c.byKey {
@@ -209,10 +242,11 @@ func (b *controllerBuilder) calls(c *controller) error {
 	}
 
 	got := c.list.sig.Results().At(0).Type()
-	listed, ok := pageElement(got)
+	listed, page, ok := pageElement(got)
 	if !ok {
-		return fmt.Errorf("the service's List returns %s: the shared CRUD reconciler can only page through a "+
-			"pagination.V4PagePaginationArray yet, or read an object by its key (adopt.by the ID)", typeName(got))
+		return fmt.Errorf("the service's List returns %s: the shared CRUD reconciler can only read a "+
+			"pagination.V4PagePaginationArray or SinglePage yet, or read an object by its key (adopt.by the ID)",
+			typeName(got))
 	}
 	if svc.listed == nil {
 		return fmt.Errorf("the service's List returns pages of %s, which kflare-gen cannot read", typeName(listed))
@@ -220,6 +254,10 @@ func (b *controllerBuilder) calls(c *controller) error {
 	c.listed = listed
 	if c.listedID, ok = listedField(svc, b.entry.ID.Field); !ok {
 		return fmt.Errorf("the objects List returns have no %s, the ID", b.entry.ID.Field)
+	}
+	if page == singlePage {
+		c.singlePage = true
+		return nil
 	}
 	for _, name := range []string{pageParam, perPageParam} {
 		i := slices.IndexFunc(c.list.paramFields, func(f sdkField) bool { return f.in == inQuery && f.apiName == name })
@@ -245,6 +283,38 @@ const (
 	perPageParam = "per_page"
 )
 
+// sameFields reports why result, the type a call returns, does not hold every
+// field of object, the type Get returns, whose fields are fields: each by its
+// Go name, of a type that converts to the object's. nil when it does, so that
+// the call's result converts to the object.
+func sameFields(object, result types.Type, fields []sdkField) error {
+	st, ok := result.Underlying().(*types.Struct)
+	if !ok {
+		return fmt.Errorf("%s is not a struct", typeName(result))
+	}
+	for _, f := range fields {
+		i := slices.IndexFunc(structFields(st), func(v *types.Var) bool { return v.Name() == f.goName })
+		if i < 0 {
+			return fmt.Errorf("it has no %s, which %s reports", f.goName, typeName(object))
+		}
+		from := st.Field(i).Type()
+		if !types.Identical(from, f.typ) && (basicClass(from) == 0 || basicClass(from) != basicClass(f.typ)) {
+			return fmt.Errorf("its %s is a %s, which kflare-gen cannot convert to the %s %s reports",
+				f.goName, typeName(from), typeName(f.typ), typeName(object))
+		}
+	}
+	return nil
+}
+
+// structFields returns the fields of st.
+func structFields(st *types.Struct) []*types.Var {
+	out := make([]*types.Var, 0, st.NumFields())
+	for i := range st.NumFields() {
+		out = append(out, st.Field(i))
+	}
+	return out
+}
+
 // calls returns the calls the shared CRUD reconciler makes, in the order the
 // narrow interface declares them.
 func (c *controller) calls() []*sdkCall {
@@ -263,13 +333,13 @@ func addressParam(call *sdkCall, af apiField) *sdkField {
 	return counterpart(call.paramFields, *af.create)
 }
 
-// sets reports whether the reconciler sets call's param p: the account, a
-// field's param, the address, or List's page.
+// sets reports whether the reconciler sets call's param p: the parent's ID,
+// a field's param, the address, or List's page.
 func (c *controller) sets(call *sdkCall, p sdkField) bool {
-	if isAccountID(p) {
+	if c.isParent(p) {
 		return true
 	}
-	if call == c.list && p.in == inQuery && (p.apiName == pageParam || p.apiName == perPageParam) {
+	if call == c.list && !c.singlePage && p.in == inQuery && (p.apiName == pageParam || p.apiName == perPageParam) {
 		return true
 	}
 	for _, af := range slices.Concat(c.fields, c.fixedFields) {
@@ -347,6 +417,9 @@ func (b *controllerBuilder) fields(c *controller) error {
 		if isAddress(b.svc, *af.create) {
 			c.address = append(c.address, af)
 		}
+		if af.ref != nil {
+			c.references = append(c.references, af)
+		}
 	}
 	if len(c.address) > 1 {
 		return fmt.Errorf("%s and %s both name the object in every call; kflare-gen takes one such param yet",
@@ -383,9 +456,14 @@ func (b *controllerBuilder) fields(c *controller) error {
 	return nil
 }
 
-// status pairs the fields of status.cloudflareMetadata with the object's.
+// status pairs the fields of status.cloudflareMetadata with the object's,
+// but for the zone's ID, which the Zone gives.
 func (b *controllerBuilder) status(c *controller) error {
 	for _, f := range c.metadata {
+		if f.zoneID {
+			c.statusZoneID = f.goName
+			continue
+		}
 		i := slices.IndexFunc(b.svc.object, func(o sdkField) bool { return o.apiName == f.apiName })
 		if i < 0 {
 			return fmt.Errorf("the object Get returns has no %s", f.apiName)
@@ -444,6 +522,18 @@ func (b *controllerBuilder) sample(c *controller) error {
 		value, set := c.sample[f.apiName]
 		if !set && !f.optional {
 			return fmt.Errorf("sample.%s: the field is required, so the sample sets it", f.apiName)
+		}
+		if f.ref != nil {
+			// The references' specs point a resource at other resources, which
+			// must exist; the CRD only checks an immutable one.
+			if f.immutable {
+				edit := specEdit{f: f.field, value: "other-" + strings.ToLower(f.ref.Kind), what: "changing " + f.jsonName}
+				if !set {
+					edit.what = "setting " + f.jsonName
+				}
+				c.immutable = append(c.immutable, edit)
+			}
+			continue
 		}
 		// A field the sample leaves unset holds its default, once the API
 		// server has applied it.
@@ -506,8 +596,16 @@ func defaultValue(f field) (any, error) {
 }
 
 // sampleValue checks a sample's value for f, as YAML gives it, against f's
-// type and validation, and returns it as a string, bool or int64.
+// type and validation, and returns it as a string, bool or int64: for a
+// reference, the referenced resource's name.
 func sampleValue(f field, raw any) (any, error) {
+	if f.ref != nil {
+		name, ok := raw.(string)
+		if !ok || !resourceName.MatchString(name) {
+			return nil, fmt.Errorf("%v is not the name of a %s", raw, f.ref.Kind)
+		}
+		return name, nil
+	}
 	var value any
 	switch base := strings.TrimPrefix(f.goType, "*"); base {
 	case typeString:
@@ -684,6 +782,10 @@ func article(name string) string {
 	}
 	return "a " + name
 }
+
+// resourceName matches the name of a Kubernetes resource (a DNS label, short
+// of the length limit).
+var resourceName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // patternMatches reports whether s matches pattern, as the API server
 // checks it, with Go's regular expressions. A pattern that does not compile
