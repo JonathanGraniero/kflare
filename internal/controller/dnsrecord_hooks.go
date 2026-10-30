@@ -179,33 +179,33 @@ func tagsEqual(a, b []string) bool {
 // other DNSRecord manages it: without one, an existing record whose content
 // differs is left as it is, a separate member of the set.
 func findDNSRecord(ctx context.Context, c client.Client, api DNSRecordAPI, record *cloudflarev1alpha1.DNSRecord,
-	zoneID string, refs map[string]string) (string, error) {
+	zoneID string, refs map[string]string) (string, *dns.RecordResponse, error) {
 	candidates, err := listDNSRecordSet(ctx, api, record, zoneID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	for i := range candidates {
 		if ownsID(record, cloudflarev1alpha1.DNSRecordIDLabel, candidates[i].ID) {
-			return candidates[i].ID, nil
+			return candidates[i].ID, nil, nil
 		}
 	}
 	for i := range candidates {
 		if dnsRecordHolds(record, &candidates[i], refs) {
-			return candidates[i].ID, nil
+			return candidates[i].ID, nil, nil
 		}
 	}
 	// An unknown policy is reported by the shared loop, by mayAdopt or mayCreate.
 	if policy, _ := adoptionPolicy(record); policy == "" || len(candidates) != 1 {
-		return "", nil
+		return "", nil, nil
 	}
 	claimed, err := claimedIDs(ctx, c, &cloudflarev1alpha1.DNSRecordList{}, cloudflarev1alpha1.DNSRecordIDLabel, record)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if _, taken := claimed[candidates[0].ID]; taken {
-		return "", nil
+		return "", nil, nil
 	}
-	return candidates[0].ID, nil
+	return candidates[0].ID, nil, nil
 }
 
 // listDNSRecordSet returns the zone's records with record's name and type.

@@ -1563,3 +1563,19 @@ hookedKinds:
       - {name: Zone ID, type: string, path: .status.cloudflareMetadata.zoneID}
       - {name: Plan, type: string, path: .status.cloudflareMetadata.plan}
       - {name: CF Status, type: string, path: .status.cloudflareMetadata.status}
+  - kind: TunnelConfiguration
+    shortName: cftunnelconfig
+    noun: tunnel configuration
+    doc: |
+      TunnelConfiguration is the Schema for the tunnelconfigurations API.
+      It owns the complete ingress configuration of one remotely-managed Tunnel.
+    id:
+      field: tunnel_id
+      status: tunnelID
+      doc: TunnelID is the Cloudflare tunnel this configuration was last written to.
+    claimLabel: kflare.dev/tunnel-configuration-id
+    specExtras: TunnelConfigurationSpecExtras
+    metadataExtras: TunnelConfigurationMetadataExtras
+    columns:
+      - {name: Tunnel, type: string, path: .spec.tunnelRef.name}
+      - {name: Version, type: integer, path: .status.cloudflareMetadata.version}

@@ -81,7 +81,7 @@ func tunnelDeleted(t *shared.CloudflareTunnel) bool {
 // spec says, among those not deleted: a deleted tunnel keeps its name, and a
 // new one may share it.
 func findTunnel(ctx context.Context, _ client.Client, api TunnelAPI, tunnel *cloudflarev1alpha1.Tunnel, accountID string,
-	_ map[string]string) (string, error) {
+	_ map[string]string) (string, *shared.CloudflareTunnel, error) {
 	found, err := findInPages(func(page int64) (*pagination.V4PagePaginationArray[shared.CloudflareTunnel], error) {
 		params := zero_trust.TunnelCloudflaredListParams{}
 		params.AccountID.Value, params.AccountID.Present = accountID, true
@@ -92,9 +92,9 @@ func findTunnel(ctx context.Context, _ client.Client, api TunnelAPI, tunnel *clo
 		return api.List(ctx, params)
 	}, func(t *shared.CloudflareTunnel) bool { return t.Name == tunnel.Spec.Name && !tunnelDeleted(t) })
 	if err != nil || found == nil {
-		return "", err
+		return "", nil, err
 	}
-	return found.ID, nil
+	return found.ID, nil, nil
 }
 
 // syncTunnelToken writes the tunnel's token to the credentials Secret. It

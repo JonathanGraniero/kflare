@@ -28,7 +28,12 @@ func emitTypes(k *kind, header string) ([]byte, error) {
 	write := func(format string, args ...any) { fmt.Fprintf(&b, format, args...) }
 
 	write("%s\n\n%s\n\npackage v1alpha1\n\n", strings.TrimRight(header, "\n"), generatedMarker)
-	write("import (\n\tcorev1 %q\n\tmetav1 %q\n)\n\n", "k8s.io/api/core/v1", "k8s.io/apimachinery/pkg/apis/meta/v1")
+	// A spec of nothing but hand-written extras names no reference of its own.
+	if len(k.spec) > 0 {
+		write("import (\n\tcorev1 %q\n\tmetav1 %q\n)\n\n", "k8s.io/api/core/v1", "k8s.io/apimachinery/pkg/apis/meta/v1")
+	} else {
+		write("import (\n\tmetav1 %q\n)\n\n", "k8s.io/apimachinery/pkg/apis/meta/v1")
+	}
 
 	comment(&b, "", wrap(fmt.Sprintf("%sIDLabel holds the ID of the Cloudflare %s %s manages. kflare sets it, "+
 		"and never adopts %s that another %s already carries in this label.", k.name, k.noun, article(k.name),

@@ -357,9 +357,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		tc := &cloudflarev1alpha1.TunnelConfiguration{
 			ObjectMeta: metav1.ObjectMeta{Name: tunnelConfigKey.Name, Namespace: e2eNamespace},
 			Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-				TunnelRef: corev1.LocalObjectReference{Name: tunnelKey.Name},
-				Ingress: []cloudflarev1alpha1.TunnelIngressRule{
-					{Hostname: hostname, Service: "http://localhost:8080"},
+				TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+					TunnelRef: corev1.LocalObjectReference{Name: tunnelKey.Name},
+					Ingress: []cloudflarev1alpha1.TunnelIngressRule{
+						{Hostname: hostname, Service: "http://localhost:8080"},
+					},
 				},
 			},
 		}

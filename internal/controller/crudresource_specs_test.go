@@ -1906,12 +1906,13 @@ var _ = Describe("SetupGeneratedReconcilers", func() {
 			names = append(names, name.String())
 		}
 		// Every generated kind's resources use a CloudflareAccount's
-		// credentials directly (account CRUD kinds), or reference a Zone (zone
-		// CRUD kinds, rule and settings kinds).
-		want := make([]string, 0, len(generatedAccountDependents)+len(generatedZoneDependents))
+		// credentials directly (account CRUD kinds), reference a Zone (zone
+		// CRUD kinds, rule and settings kinds), or reference a Tunnel, which
+		// gives their account (TunnelConfiguration).
+		want := make([]string, 0, len(generatedAccountDependents)+len(generatedZoneDependents)+1)
 		for _, d := range slices.Concat(generatedAccountDependents, generatedZoneDependents) {
 			want = append(want, strings.ToLower(d.kind))
 		}
-		Expect(names).To(ConsistOf(want))
+		Expect(names).To(ConsistOf(append(want, "tunnelconfiguration")))
 	})
 })

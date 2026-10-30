@@ -139,6 +139,7 @@ rules:
       - redirectrules
       - transformrules
       - tunnels
+      - tunnelconfigurations
       - wafcustomrules
       - workerroutes
       - zones

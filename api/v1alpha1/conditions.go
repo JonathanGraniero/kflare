@@ -18,12 +18,6 @@ func (in *CloudflareAccount) GetConditions() []metav1.Condition { return in.Stat
 // SetConditions replaces the account's status conditions.
 func (in *CloudflareAccount) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
 
-// GetConditions returns the tunnel configuration's status conditions.
-func (in *TunnelConfiguration) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the tunnel configuration's status conditions.
-func (in *TunnelConfiguration) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
 // GetConditions returns the Worker script's status conditions.
 func (in *WorkerScript) GetConditions() []metav1.Condition { return in.Status.Conditions }
 

@@ -202,27 +202,6 @@ var pausedKinds = []pausedKind{
 		},
 	},
 	{
-		name: "TunnelConfiguration",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.TunnelConfiguration{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-					TunnelRef: corev1.LocalObjectReference{Name: pausedSpecTunnel},
-					Ingress: []cloudflarev1alpha1.TunnelIngressRule{
-						{Hostname: "app." + pausedSpecDomain, Service: "http://app.default.svc:80"},
-					},
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &TunnelConfigurationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewTunnelConfigurationAPI: func(string) (TunnelConfigurationAPI, error) {
-					built()
-					return nil, errPausedSpecClient
-				}}
-		},
-	},
-	{
 		name: "WorkerScript",
 		newObject: func(name string) conditionedObject {
 			return &cloudflarev1alpha1.WorkerScript{

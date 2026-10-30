@@ -143,15 +143,20 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// use them.
 	references []crudReference[O]
 	// resolve adds to refs what the resource's calls need besides its spec,
-	// or says why the resource waits, such as a Worker's code in a ConfigMap.
+	// or says why the resource waits, such as a Worker's code in a ConfigMap:
+	// until something it watches changes, or a retry, if the error asks for
+	// one.
 	resolve func(ctx context.Context, c client.Client, obj O, refs map[string]string) *conditionError
+	// key replaces the kind's key where what names the object comes from a
+	// reference: a tunnel's configuration goes by the tunnel's ID.
+	key func(obj O, refs map[string]string) string
 	// gone reports that an object Cloudflare still returns was deleted, as a
 	// deleted tunnel stays readable. A resource then takes it for missing.
 	gone func(current *R) bool
 	// find replaces the search for the parent's object a resource adopts or
-	// finds as its own: it returns the object's ID, "" for none. refs is what
-	// the references and resolve gave.
-	find func(ctx context.Context, c client.Client, api A, obj O, parentID string, refs map[string]string) (string, error)
+	// finds as its own: it returns the object's ID, "" for none, and the object
+	// when it read it. refs is what the references and resolve gave.
+	find func(ctx context.Context, c client.Client, api A, obj O, parentID string, refs map[string]string) (string, *R, error)
 	// refuse says why a resource cannot take the object it found under its
 	// key, such as a list of another kind with the same name.
 	refuse func(found *R) *conditionError
@@ -278,6 +283,9 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 	}
 	if r.kind.hooks.resolve != nil {
 		if condErr := r.kind.hooks.resolve(ctx, r.Client, obj, refs); condErr != nil {
+			if condErr.retry {
+				return notReadyRetryAfter(ctx, r.Client, obj, condErr)
+			}
 			return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
 		}
 	}
@@ -385,6 +393,9 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 	adopting := false
 	if current == nil {
 		key := k.key(obj)
+		if k.hooks.key != nil {
+			key = k.hooks.key(obj, refs)
+		}
 		what := fmt.Sprintf("%s %q", k.noun, key)
 		id, found, err := r.find(ctx, api, obj, parentID, key, refs)
 		if err != nil {
@@ -486,8 +497,7 @@ func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, ob
 	refs map[string]string) (string, *R, error) {
 	k := r.kind
 	if k.hooks.find != nil {
-		id, err := k.hooks.find(ctx, r.Client, api, obj, parentID, refs)
-		return id, nil, err
+		return k.hooks.find(ctx, r.Client, api, obj, parentID, refs)
 	}
 	match := func(listed *L) bool { return k.listedKey(listed) == key }
 	var listed *L

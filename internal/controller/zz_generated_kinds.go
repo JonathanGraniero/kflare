@@ -62,6 +62,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&TunnelReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the Tunnel controller: %w", err)
 	}
+	if err := (&TunnelConfigurationReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the TunnelConfiguration controller: %w", err)
+	}
 	if err := (&WAFCustomRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the WAFCustomRule controller: %w", err)
 	}

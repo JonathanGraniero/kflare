@@ -180,8 +180,10 @@ var _ = Describe("Deletion protection for parents", func() {
 			create(&cloudflarev1alpha1.TunnelConfiguration{
 				ObjectMeta: metav1.ObjectMeta{Name: "prot-config", Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-					TunnelRef: corev1.LocalObjectReference{Name: tunnelName},
-					Ingress:   []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "a.prot-example.com", Service: "http://a:80"}},
+					TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+						TunnelRef: corev1.LocalObjectReference{Name: tunnelName},
+						Ingress:   []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "a.prot-example.com", Service: "http://a:80"}},
+					},
 				},
 			})
 			Expect(k8sClient.Delete(ctx, &cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: tunnelName, Namespace: ns}})).To(Succeed())
@@ -206,7 +208,11 @@ var _ = Describe("Deletion protection for parents", func() {
 		It("is re-triggered by a configuration's deletion while it is being deleted", func() {
 			tc := &cloudflarev1alpha1.TunnelConfiguration{
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
-				Spec:       cloudflarev1alpha1.TunnelConfigurationSpec{TunnelRef: corev1.LocalObjectReference{Name: tunnelName}},
+				Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
+					TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+						TunnelRef: corev1.LocalObjectReference{Name: tunnelName},
+					},
+				},
 			}
 			Expect(r.crud().deletingResourcesOf(ctx, tc)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
 		})

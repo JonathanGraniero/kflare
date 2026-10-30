@@ -24,6 +24,7 @@ resources:
 - bases/kflare.dev_redirectrules.yaml
 - bases/kflare.dev_transformrules.yaml
 - bases/kflare.dev_tunnels.yaml
+- bases/kflare.dev_tunnelconfigurations.yaml
 - bases/kflare.dev_wafcustomrules.yaml
 - bases/kflare.dev_workerroutes.yaml
 - bases/kflare.dev_zones.yaml

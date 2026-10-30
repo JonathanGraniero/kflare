@@ -45,6 +45,8 @@ type conditionedObject interface {
 type conditionError struct {
 	Reason  string
 	Message string
+	// retry asks for a check after a minute, for what nothing watches.
+	retry bool
 }
 
 func (e *conditionError) Error() string { return e.Message }
