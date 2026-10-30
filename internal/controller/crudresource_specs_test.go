@@ -1336,6 +1336,15 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					expectConflict()
 				})
 
+				It("returns a failed read of a claimant's "+parentKind+" for back-off", func() {
+					e.createParent(true)
+					claimedBy(otherParent)
+					create(key, adopt)
+					e.failGets(otherParent, errors.New("parent unavailable"))
+					_, err := reconcileIt()
+					Expect(err).To(MatchError("parent unavailable"))
+					Expect(e.store.writes).To(BeZero())
+				})
 			}
 
 			It("adopts a "+k.noun+" whose ID a resource claims in another "+cloudflareParent, func() {
@@ -1362,18 +1371,6 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				seed("existing", k.key(obj))
 				expectAdopted()
 			})
-
-			if !k.sharedObjects {
-				It("returns a failed read of a claimant's "+parentKind+" for back-off", func() {
-					e.createParent(true)
-					claimedBy(otherParent)
-					create(key, adopt)
-					e.failGets(otherParent, errors.New("parent unavailable"))
-					_, err := reconcileIt()
-					Expect(err).To(MatchError("parent unavailable"))
-					Expect(e.store.writes).To(BeZero())
-				})
-			}
 
 			if move := t.elsewhere; move != nil {
 				// createElsewhere creates the resource with the sample's spec
