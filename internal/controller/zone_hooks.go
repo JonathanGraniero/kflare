@@ -57,8 +57,9 @@ var zoneRatePlans = map[string]string{
 
 // zoneKind describes Zones to the shared CRUD reconciler. A Zone creates its
 // zone or, as its adoption policy allows, adopts the account's zone with the
-// same name, unless another Zone manages it. It changes the zone's type in
-// place, and its plan through its hooks. A zone deleted outside kflare is
+// same name, which another Zone may name too: two namespaces can each hold a
+// Zone for one Cloudflare zone. It changes the zone's type in place, and its
+// plan through its hooks. A zone deleted outside kflare is
 // created again. A Zone waits for the resources that use it before it is
 // deleted.
 var zoneKind = crudResourceKind[*cloudflarev1alpha1.Zone, ZoneAPI, zoneObject, zoneListed]{
@@ -71,6 +72,7 @@ var zoneKind = crudResourceKind[*cloudflarev1alpha1.Zone, ZoneAPI, zoneObject, z
 	key:            func(obj *cloudflarev1alpha1.Zone) string { return obj.Spec.Name },
 	claimLabel:     cloudflarev1alpha1.ZoneIDLabel,
 	conflictReason: reasonNameConflict,
+	sharedObjects:  true,
 	statusID:       func(obj *cloudflarev1alpha1.Zone) string { return obj.Status.CloudflareMetadata.ZoneID },
 	observe:        observeZone,
 

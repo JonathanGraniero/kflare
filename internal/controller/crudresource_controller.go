@@ -77,8 +77,13 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	key func(O) string
 	// claimLabel holds the ID of the object a resource manages. A resource
 	// does not adopt an object that another one claims in the same Cloudflare
-	// account: it reports conflictReason instead.
+	// account: it reports conflictReason instead, unless the kind's objects are
+	// shared (sharedObjects).
 	claimLabel, conflictReason string
+	// sharedObjects is set for a kind whose resources may name the same object:
+	// two Zones in different namespaces can point at one Cloudflare zone, and
+	// their namespaces' resources work in it side by side.
+	sharedObjects bool
 	// address returns what, besides the account and the ID, names a
 	// resource's object in every call: an R2 bucket's jurisdiction, in which
 	// another bucket may have the same name. Two resources claim the same
@@ -558,6 +563,9 @@ func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, ob
 // only from a resource whose object is in the same parent (sameParent).
 func (r *crudResourceReconciler[O, A, R, L]) claimant(ctx context.Context, obj O, parentID, id string) (string, error) {
 	k := r.kind
+	if k.sharedObjects {
+		return "", nil
+	}
 	list := k.newList()
 	if err := r.List(ctx, list, client.MatchingLabels{k.claimLabel: id}); err != nil {
 		return "", err

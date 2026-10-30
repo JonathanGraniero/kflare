@@ -1319,21 +1319,24 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			// kind, which e.createOtherParent creates.
 			otherParent, parentKind, cloudflareParent := e.otherParent, e.parentKind, e.cloudflareParent
 
-			It("reports "+k.conflictReason+" instead of taking over a "+k.noun+" another "+k.name+" manages", func() {
-				e.createParent(true)
-				claimedBy(parentName)
-				create(key, nil)
-				expectConflict()
-			})
+			if !k.sharedObjects {
+				It("reports "+k.conflictReason+" instead of taking over a "+k.noun+" another "+k.name+" manages", func() {
+					e.createParent(true)
+					claimedBy(parentName)
+					create(key, nil)
+					expectConflict()
+				})
 
-			It("reports "+k.conflictReason+" for a claim made through another "+parentKind+" for the same "+
-				cloudflareParent, func() {
-				e.createParent(true)
-				e.createOtherParent(true)
-				claimedBy(otherParent)
-				create(key, adopt)
-				expectConflict()
-			})
+				It("reports "+k.conflictReason+" for a claim made through another "+parentKind+" for the same "+
+					cloudflareParent, func() {
+					e.createParent(true)
+					e.createOtherParent(true)
+					claimedBy(otherParent)
+					create(key, adopt)
+					expectConflict()
+				})
+
+			}
 
 			It("adopts a "+k.noun+" whose ID a resource claims in another "+cloudflareParent, func() {
 				e.createParent(true)
@@ -1360,15 +1363,17 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				expectAdopted()
 			})
 
-			It("returns a failed read of a claimant's "+parentKind+" for back-off", func() {
-				e.createParent(true)
-				claimedBy(otherParent)
-				create(key, adopt)
-				e.failGets(otherParent, errors.New("parent unavailable"))
-				_, err := reconcileIt()
-				Expect(err).To(MatchError("parent unavailable"))
-				Expect(e.store.writes).To(BeZero())
-			})
+			if !k.sharedObjects {
+				It("returns a failed read of a claimant's "+parentKind+" for back-off", func() {
+					e.createParent(true)
+					claimedBy(otherParent)
+					create(key, adopt)
+					e.failGets(otherParent, errors.New("parent unavailable"))
+					_, err := reconcileIt()
+					Expect(err).To(MatchError("parent unavailable"))
+					Expect(e.store.writes).To(BeZero())
+				})
+			}
 
 			if move := t.elsewhere; move != nil {
 				// createElsewhere creates the resource with the sample's spec

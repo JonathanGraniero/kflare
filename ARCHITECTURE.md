@@ -227,10 +227,11 @@ The adoption and deletion policy annotations are modelled on those of AWS Contro
 DNSRecord stores the Cloudflare record ID it manages in the `kflare.dev/record-id` label, WorkerRoute its route ID in
 `kflare.dev/route-id`, KVNamespace its namespace ID in `kflare.dev/kv-namespace-id`, D1Database its database ID in
 `kflare.dev/d1-database-id`, IPList its list ID in `kflare.dev/ip-list-id`, Tunnel its tunnel ID in
-`kflare.dev/tunnel-id`, Zone its zone ID in `kflare.dev/zone-id`, TunnelConfiguration its tunnel's ID in
-`kflare.dev/tunnel-configuration-id` and WorkerScript its Worker's name in `kflare.dev/worker-name`; each claims the
-object before doing anything else with it (`internal/controller/ownership.go`, and `claimant` in the shared CRUD
-reconciler). A resource whose status never recorded its object still deletes it, through this label.
+`kflare.dev/tunnel-id`, TunnelConfiguration its tunnel's ID in `kflare.dev/tunnel-configuration-id` and WorkerScript its
+Worker's name in `kflare.dev/worker-name`; each claims the object before doing anything else with it
+(`internal/controller/ownership.go`, and `claimant` in the shared CRUD reconciler). A Zone records its zone in
+`kflare.dev/zone-id` too, but claims nothing by it: two Zones in different namespaces can point at one Cloudflare zone.
+A resource whose status never recorded its object still deletes it, through this label.
 Adoption skips any object another resource of the same kind already carries in its label, across all namespaces,
 because two Zone resources in different namespaces can point at the same Cloudflare zone. Cloudflare record tags would be
 a Cloudflare-side alternative, but they are only available on paid plans.

@@ -1380,6 +1380,9 @@ reconciler in one pull request, at the user's request on 2026-10-30. What was de
   shared loop. v7's `ZoneNewParams` has no `jump_start` and its `Zone` no `plan_pending`, and the dev token cannot
   create a zone, so a move of Zone's create could not be checked. Moving a Worker's upload means a multipart request
   whose bindings v7 types as a union of about 30 variants. Each of them is a later change of its own, with a live run
+- **Two Zones may name one zone.** The first live run failed on it: Zone had gained claims with the shared loop, and the
+  example's Zone reported `NameConflict` against the suite's. ARCHITECTURE.md supports that setup, so a Zone's label
+  records its zone without blocking another (`sharedObjects`)
 - **What stays as it was.** Zone's plan, a set's records, a Tunnel's token Secret and the oldest TunnelConfiguration
   owning a tunnel's rules kept their rules, in hooks. CRDs differ only in descriptions, Tunnel's `name` no longer being
   immutable, and WorkerScript's `status.cloudflareMetadata.scriptName`

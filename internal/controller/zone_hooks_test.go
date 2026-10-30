@@ -280,6 +280,32 @@ var _ = Describe("Zone hooks", func() {
 		Expect(store.objects).To(HaveLen(2))
 	})
 
+	It("lets a second Zone adopt the zone another Zone manages, and keeps it for the first", func() {
+		onPlan("free", false)
+		createZone("", adopted)
+		_, err := reconcileZone()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(condition().Reason).To(Equal("Synced"))
+		Expect(getZone().Labels).To(HaveKeyWithValue(cloudflarev1alpha1.ZoneIDLabel, "zone-1"))
+
+		other := types.NamespacedName{Name: "site", Namespace: "kube-public"}
+		create(&cloudflarev1alpha1.Zone{
+			ObjectMeta: metav1.ObjectMeta{Name: other.Name, Namespace: other.Namespace, Annotations: adopted,
+				Finalizers: []string{reconciler.Finalizer}},
+			Spec: cloudflarev1alpha1.ZoneSpec{
+				AccountRef:     corev1.LocalObjectReference{Name: accountName},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{Name: "example.com"},
+			},
+		})
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: other})
+		Expect(err).NotTo(HaveOccurred())
+		second := &cloudflarev1alpha1.Zone{}
+		Expect(k8sClient.Get(ctx, other, second)).To(Succeed())
+		Expect(second.Status.CloudflareMetadata.ZoneID).To(Equal("zone-1"))
+		cond := meta.FindStatusCondition(second.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+		Expect(cond.Reason).To(Equal("Synced"))
+	})
+
 	Describe("the plan", func() {
 		It("leaves the plan alone when spec.plan is unset", func() {
 			onPlan("pro", true)

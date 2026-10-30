@@ -25,9 +25,10 @@ Tunnel, DNSRecord, Zone, TunnelConfiguration and WorkerScript keep their spec fi
 
 They also behave as the generated kinds do:
 
-- **Tunnel, Zone, TunnelConfiguration and WorkerScript claim their objects**, in the labels `kflare.dev/tunnel-id`,
-  `kflare.dev/zone-id`, `kflare.dev/tunnel-configuration-id` and `kflare.dev/worker-name`. A resource that would take
-  over an object another one claims reports `NameConflict`, or `TunnelAlreadyConfigured`, rather than sharing it
+- **Tunnel, TunnelConfiguration and WorkerScript claim their objects**, in the labels `kflare.dev/tunnel-id`,
+  `kflare.dev/tunnel-configuration-id` and `kflare.dev/worker-name`. A resource that would take over an object another
+  one claims reports `NameConflict`, or `TunnelAlreadyConfigured`, rather than sharing it. A Zone records its zone in
+  `kflare.dev/zone-id`, but two Zones may still name one Cloudflare zone, as they could before
 - **A DNSRecord reports `NameConflict` for an identical record another DNSRecord manages**, where it used to try a
   create that Cloudflare refuses
 - **A new Tunnel sends no `tunnel_secret`.** It is the password of a locally-managed tunnel; `cloudflared` runs a
