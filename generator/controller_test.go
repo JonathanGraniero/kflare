@@ -884,6 +884,16 @@ func TestClearableField(t *testing.T) {
 	}
 }
 
+// Only an optional string Update takes can be cleared: title is required.
+func TestClearableRefuses(t *testing.T) {
+	entry := kvControllerEntry()
+	entry.Fields = map[string]fieldConfig{"title": {Clearable: true}}
+	_, err := buildKind(entry, loadTestService(t, "kv.NamespaceService"), loadTestSpec(t))
+	if err == nil || !strings.Contains(err.Error(), "clearable") {
+		t.Errorf("err = %v, want one naming clearable", err)
+	}
+}
+
 // Hooks reach the descriptor, the narrow interface, the factory and the fake,
 // and a kind without them is written as before.
 func TestEmitControllerHooks(t *testing.T) {

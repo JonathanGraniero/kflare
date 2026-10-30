@@ -182,7 +182,7 @@ func ipListItemsMatch(want []cloudflarev1alpha1.IPListItem, got []rules.ListItem
 	for _, item := range want {
 		comments[canonicalIP(item.IP)] = item.Comment
 	}
-	if len(comments) != len(want) || len(got) != len(want) {
+	if len(got) != len(want) {
 		return false
 	}
 	for _, item := range got {

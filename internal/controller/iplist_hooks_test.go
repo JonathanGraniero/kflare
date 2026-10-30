@@ -12,16 +12,21 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 
+	"github.com/cloudflare/cloudflare-go/v7/option"
 	"github.com/cloudflare/cloudflare-go/v7/rules"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -114,6 +119,21 @@ func (f fakeIPListHooksAPI) Operation(_ context.Context, _, operationID string) 
 		res.Status = rules.ListBulkOperationGetResponseStatusCompleted
 	}
 	return res, nil
+}
+
+// fakeListInUse refuses to delete a list while a rule uses it, as Cloudflare
+// does.
+type fakeListInUse struct {
+	fakeIPListAPI
+	inUse *atomic.Bool
+}
+
+func (f fakeListInUse) Delete(ctx context.Context, id string, params rules.ListDeleteParams,
+	opts ...option.RequestOption) (*rules.ListDeleteResponse, error) {
+	if f.inUse.Load() {
+		return nil, v7APIError(http.MethodDelete, "lists", http.StatusBadRequest, 10041, "the list is in use")
+	}
+	return f.fakeIPListAPI.Delete(ctx, id, params, opts...)
 }
 
 var _ = Describe("IPList hooks", func() {
@@ -364,6 +384,37 @@ var _ = Describe("IPList hooks", func() {
 		Expect(getList().Status.CloudflareMetadata.OperationID).NotTo(BeEmpty(), "the operation is checked again")
 	})
 
+	It("deletes a list as soon as the rule that used it is gone, in a running manager", func() {
+		createList(nil)
+		syncList()
+		rule := &cloudflarev1alpha1.WAFCustomRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "uses-office", Namespace: ns},
+			Spec: cloudflarev1alpha1.WAFCustomRuleSpec{
+				RulesetRuleSpec: cloudflarev1alpha1.RulesetRuleSpec{
+					ZoneRef: corev1.LocalObjectReference{Name: "zone"}, Expression: `ip.src in $office_ips`,
+				},
+				Action: "block",
+			},
+		}
+		create(rule)
+		Expect(k8sClient.Delete(ctx, getList())).To(Succeed())
+
+		inUse := &atomic.Bool{}
+		inUse.Store(true)
+		api := fakeListInUse{fakeIPListAPI{store, fakeIPListHooksAPI{items}}, inUse}
+		startManager(ctx, func(mgr manager.Manager) error {
+			return (&IPListReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+				NewIPListAPI: func(string) (IPListAPI, error) { return api, nil }}).SetupWithManager(mgr)
+		})
+		Eventually(func() string { return condition().Reason }, 10*time.Second).Should(Equal("ListInUse"))
+
+		inUse.Store(false)
+		Expect(k8sClient.Delete(ctx, rule)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, key, &cloudflarev1alpha1.IPList{}))
+		}, 10*time.Second).Should(BeTrue(), "well before the minute a retry takes")
+	})
+
 	It("reads items through the production client's services", func() {
 		service := &ipListService{ListService: rules.NewListService()}
 		_, err := service.ListItems(ctx, "", "list")
@@ -392,7 +443,9 @@ var _ = Describe("ipListItemsMatch", func() {
 			[]rules.ListItemListResponse{item("192.0.2.1", "b")}, false),
 		Entry("one address in two forms, which Cloudflare refuses",
 			[]cloudflarev1alpha1.IPListItem{{IP: "192.0.2.1"}, {IP: "192.0.2.1/32"}},
-			[]rules.ListItemListResponse{item("192.0.2.1", ""), item("192.0.2.2", "")}, false),
+			[]rules.ListItemListResponse{item("192.0.2.1", "")}, false),
+		Entry("Cloudflare's copy in another form", []cloudflarev1alpha1.IPListItem{{IP: "2001:db8::1"}},
+			[]rules.ListItemListResponse{item("2001:DB8:0::1", "")}, true),
 	)
 })
 

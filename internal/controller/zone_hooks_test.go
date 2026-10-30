@@ -41,6 +41,8 @@ type fakeZoneNew struct {
 // sent through each endpoint, the error to answer with, and the plan a zone
 // reports once it has changed.
 type fakeZonePlans struct {
+	// calls counts the changes of plan, whatever they were sent.
+	calls            int
 	created, updated string
 	err, rereadErr   error
 	after            cf.ZonePlan
@@ -118,6 +120,7 @@ func (f fakeZoneAPI) DeleteZone(_ context.Context, id string) (cf.ZoneID, error)
 
 func (f fakeZoneAPI) setPlan(id, ratePlan string, sent *string) error {
 	plans := f.plans()
+	plans.calls++
 	if plans.err != nil {
 		return plans.err
 	}
@@ -283,7 +286,7 @@ var _ = Describe("Zone hooks", func() {
 			createZone("", adopted)
 			_, err := reconcileZone()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(plans.created + plans.updated).To(BeEmpty())
+			Expect(plans.calls).To(BeZero())
 			Expect(getZone().Status.CloudflareMetadata.Plan).To(Equal("pro"))
 		})
 
@@ -292,7 +295,7 @@ var _ = Describe("Zone hooks", func() {
 			createZone("pro", adopted)
 			_, err := reconcileZone()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(plans.created + plans.updated).To(BeEmpty())
+			Expect(plans.calls).To(BeZero())
 		})
 
 		It("creates a subscription to upgrade a free zone", func() {
@@ -329,7 +332,7 @@ var _ = Describe("Zone hooks", func() {
 			createZone("pro", adopted)
 			_, err := reconcileZone()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(plans.created + plans.updated).To(BeEmpty())
+			Expect(plans.calls).To(BeZero())
 		})
 
 		It("sets TerminalError when Cloudflare refuses the plan change", func() {

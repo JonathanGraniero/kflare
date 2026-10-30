@@ -48,8 +48,8 @@ Decided 2026-10-13. kflare-gen's design and as-built notes are in
   its OpenAPI spec) and a pinned subset of that spec (`api-schemas` repo). It generates CRD types and each kind's
   controller glue for a shared reconciler. It generates no client code: v7 is the client
 - What the API description cannot express, such as behavior verified live, goes into the kind's entry: validations,
-  CEL rules, ignores with their reasons, and test specs. Go hooks, for logic an entry cannot express, are planned but
-  no kind has needed one yet
+  CEL rules, ignores with their reasons, and test specs. Logic an entry cannot express goes into Go hooks, in a
+  hand-written `<kind>_hooks.go`
 - Every kind is generated, the ones written before the generator included (the user, 2026-10-27): no kind stays
   custom. [Generate every kind](#generate-every-kind) moves them
 
@@ -180,7 +180,10 @@ why.
      ID, without a reset, as `zones.SettingService` does: a field per setting, reset by writing back its `unconfigured`
      value (`settings_byid.go`). Closest example: the test data's TestZoneSettings (`pickedBy`, `validation.integer`)
 
-   Anything else needs a kflare-gen capability first ([Next wave](#next-wave-proposed-2026-10-17) lists them). A
+   A CRUD kind's `hooks` add what an entry cannot say, in a hand-written `<kind>_hooks.go`: closest examples `IPList`
+   (a step after the sync, watches of its own), `Tunnel` (a deleted object that stays readable, a step before the
+   delete), `DNSRecord` (a search of its own, a comparison, a union body finished by hand). Anything else needs a
+   kflare-gen capability first ([Next wave](#next-wave-proposed-2026-10-17) lists them). A
    draft entry is the quickest check: `make codegen` refuses what it cannot generate, and says why.
 2. **A new capability is its own PR, merged before the kind's.** Build it on a test kind in
    `generator/testdata/generator.yaml`, with golden tests. A new runtime, with no generated kind to run its shared
@@ -320,7 +323,20 @@ them in the same PR"): R2Bucket and the capability it needs, built on it rather 
 also OK'd mapping R2's storage class then, with live Infrequent Access probes. PRs 9 and 10
 (`feat/generate-worker-route`) are one pull request the same way, the user's next pair on 2026-10-29: WorkerRoute and
 the capabilities it needs, which brought part of PR 7 along (calls that each return a type of their own) and one of the
-Next wave's (lists that are never paged). PR 7 (hooks) and PR 8 (IPList) are next.
+Next wave's (lists that are never paged).
+
+On 2026-10-30 the user asked for all the remaining kinds in one pull request (`feat/generate-remaining-kinds`, "do this
+as one bulk PR"), for the same minor version, overriding "one kind per PR" and "a capability first" for this batch. A
+draft entry showed that kflare-gen refused all six, so it took the capabilities below, and rows 7 to 20 changed:
+- **Go hooks** (row 7), the capability the rest stand on: `crudHooks` on the shared CRUD reconciler, hand-written in
+  `<kind>_hooks.go`, with fields the API does not describe in `<kind>_extras.go`, embedded inline
+- **Generated from v7:** `IPList`, `Tunnel` and `DNSRecord` (rows 8, 11 to 14). No `x-sensitive` capability was needed:
+  a remotely-managed tunnel takes no secret (verified live 2026-10-30), and a union body goes through its flat variant
+- **Hooked kinds:** `Zone`, `TunnelConfiguration` and `WorkerScript` (rows 15 to 20, not done as planned) run on the
+  shared CRUD reconciler, with generated types and wiring, but their fields and calls stay hand-written on v0.119. v7
+  has no `jump_start` or `plan_pending`, and the test account cannot create a zone to verify a move; a tunnel's
+  configuration has no `New` or `Delete`; a Worker's upload is a multipart request with 30 binding variants. This was
+  Claude's call, for the user to review: moving them is what is left of this plan
 
 **Decided (the user, 2026-10-27):**
 1. Every hand-written kind is generated: the earlier plan's line that `Zone`, `DNSRecord`, `Tunnel`,
@@ -352,25 +368,26 @@ say it, into a hook. The later capabilities are sketched only; each is planned i
 | 4 | `feat/generate-rate-limit-rule` | `RateLimitRule` generated (`ratelimit`; `cf.colo.id` and the mitigation timeout, verified live) |
 | 5 | in `feat/generate-r2-bucket` | CRUD kinds: objects identified by their key (read by it, never listed, so no list beyond `V4PagePaginationArray` was needed), header params (jurisdiction) and an object's address, deletion blockers as data |
 | 6 | `feat/generate-r2-bucket` | `R2Bucket` generated, onto v7 (gains jurisdictions and storage class) |
-| 7 | `feat/generator-hooks` | Go hooks (CRUD kinds whose New, Get and Update return different types came with PR 9) |
-| 8 | `feat/generate-ip-list` | `IPList` generated, its items' bulk operation a hook |
+| 7 | in `feat/generate-remaining-kinds` | Go hooks (CRUD kinds whose New, Get and Update return different types came with PR 9) |
+| 8 | `feat/generate-remaining-kinds` | `IPList` generated, its items' bulk operation a hook |
 | 9 | in `feat/generate-worker-route` | Zone-scoped CRUD kinds, and references to other kinds (`workerScriptRef`); also `SinglePage` lists and New, Get and Update returning types of their own with the same fields (custom lists too, now generated in the test data) |
 | 10 | `feat/generate-worker-route` | `WorkerRoute` generated, onto v7 (a pattern outside the zone becomes Cloudflare's refusal) |
-| 11 | `feat/generator-dns-records` | Unions in CRUD kinds (a DNS record's types), fields Cloudflare fills in (`computed_optional`) |
-| 12 | `feat/generate-dns-record` | `DNSRecord` generated (`tunnelRef` a reference) |
-| 13 | `feat/generator-secrets` | `x-sensitive` fields written to a Secret or read from one |
-| 14 | `feat/generate-tunnel` | `Tunnel` generated (its token in a Secret) |
-| 15 | `feat/generator-parent-settings` | Settings kinds keyed by another kind's object rather than a zone |
-| 16 | `feat/generate-tunnel-configuration` | `TunnelConfiguration` generated |
-| 17 | `feat/generator-zones` | CRUD kinds whose account is a body param, and `Zone`'s adoption and dependents |
-| 18 | `feat/generate-zone` | `Zone` generated |
-| 19 | `feat/generator-worker-scripts` | Uploads (a Worker's modules and bindings), drift by a hash in status |
-| 20 | `feat/generate-worker-script` | `WorkerScript` generated |
+| 11 | in `feat/generate-remaining-kinds` | Union bodies in CRUD kinds (a DNS record's types), through the variant that holds every field |
+| 12 | `feat/generate-remaining-kinds` | `DNSRecord` generated (`tunnelRef` a hook's reference) |
+| 13 | dropped | `x-sensitive` fields: a remotely-managed tunnel takes no secret, and its token is a hook's. Turnstile and Hyperdrive will need them |
+| 14 | `feat/generate-remaining-kinds` | `Tunnel` generated (its token in a Secret, a hook) |
+| 15 | to do | Settings kinds keyed by another kind's object rather than a zone |
+| 16 | hooked in `feat/generate-remaining-kinds` | `TunnelConfiguration` on the shared CRUD reconciler; generated from v7 to do |
+| 17 | to do | CRUD kinds whose account is a body param and whose ID is a param |
+| 18 | hooked in `feat/generate-remaining-kinds` | `Zone` on the shared CRUD reconciler; generated from v7 to do, once a zone's creation can be verified |
+| 19 | to do | Uploads (a Worker's modules and bindings) |
+| 20 | hooked in `feat/generate-remaining-kinds` | `WorkerScript` on the shared CRUD reconciler; generated from v7 to do |
 | 21 | `docs/release-v0.3.0` | v0.3.0's notes, for PRs 1 to 4: every field change, with manifests before and after |
 | 22 | a release branch per release | The notes of the releases that carry PRs 5 to 20: every field change, as in v0.3.0's |
 
 Done when: `api/v1alpha1` holds no hand-written kind but `CloudflareAccount` and the shared types, every kind's
-envtest table runs the shared specs, and the live suite passes on main.
+envtest table runs the shared specs, and the live suite passes on main. Not yet: the three hooked kinds keep
+hand-written fields, and TunnelConfiguration's and WorkerScript's specs are their own rather than the shared specs.
 
 ### Launch readiness
 **Status:** 🚧 In progress: L1 (but for one rerun) to L6 are done, v0.1.0 is released and on ArtifactHub; L7 is on
@@ -842,14 +859,12 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
 > `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule` and `OriginRule`
 > done.**
-> cloudflare-go is at v0.119, with v7.13.0 next to it for the generated kinds and the rule kinds; rule kinds share the
-> Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace, D1Database,
-> R2Bucket and WorkerRoute are generated in full on the shared CRUD reconciler, and WAFCustomRule, RateLimitRule,
-> ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule
-> controller, and ManagedTransform, the first settings kind, on the shared settings controller. Next:
-> [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on
-> hold. v0.2.1 is the latest release; v0.3.0, with every rule kind, `R2Bucket` and `WorkerRoute` generated, is
-> prepared in `release/v0.3.0`.
+> cloudflare-go is at v7.13.0, with v0.119 next to it for `Zone`, `TunnelConfiguration` and `WorkerScript`. Every kind but
+> `CloudflareAccount` runs on a shared reconciler: the shared CRUD reconciler, the shared rule controller or the shared
+> settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
+> hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:
+> [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done:
+> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.3.0 is the latest release.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero

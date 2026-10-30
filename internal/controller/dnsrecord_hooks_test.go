@@ -94,6 +94,8 @@ func fakeDNSRecordEditBody(object *dns.RecordResponse, body dns.RecordEditParams
 	// cloudflare-go v7 requires them, though a record's cannot change here.
 	ExpectWithOffset(1, body.Name.Value).To(Equal(object.Name))
 	ExpectWithOffset(1, string(body.Type.Value)).To(Equal(string(object.Type)))
+	// Unset tags are sent empty, to clear Cloudflare's, and never as null.
+	ExpectWithOffset(1, body.Tags.Value).NotTo(BeNil())
 	write := fakeDNSRecordWrite{tags: body.Tags.Value, data: body.Data.Value}
 	if body.TTL.Present {
 		write.ttl = &body.TTL.Value
@@ -330,6 +332,33 @@ var _ = Describe("DNSRecord hooks", func() {
 			sync()
 			Expect(store.writes).To(Equal(2))
 			Expect(readDNSRecord(new(current())).Tags).To(BeEmpty())
+		})
+
+		It("does not compare an SRV record's content, which Cloudflare derives", func() {
+			createRecord(key, func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Type, record.Spec.Content = "SRV", "0 443 sip.example.com"
+			})
+			sync()
+			id := getRecord().Status.CloudflareMetadata.RecordID
+			object := store.objects[id]
+			object.Content = "10 443 sip.example.com"
+			store.objects[id] = object
+			sync()
+			Expect(store.writes).To(Equal(1))
+		})
+
+		It("does not compare the content of a record that sets data, of any type", func() {
+			createRecord(key, func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Type, record.Spec.Content = "CAA", ""
+				record.Spec.Data = &apiextensionsv1.JSON{Raw: []byte(`{"tag":"issue","value":"ca.example.com"}`)}
+			})
+			sync()
+			id := getRecord().Status.CloudflareMetadata.RecordID
+			object := store.objects[id]
+			object.Content = `0 issue "ca.example.com"`
+			store.objects[id] = object
+			sync()
+			Expect(store.writes).To(Equal(1))
 		})
 
 		It("corrects data, and does not compare the content Cloudflare derives from it", func() {

@@ -65,8 +65,10 @@ unproxied CNAME to a tunnel, but it resolves to a private IPv6 address the inter
 kflare's. And a proxied record's TTL is always automatic: Cloudflare stores 1 whatever it is sent, so the CRD refuses
 another `ttl` on any proxied record, which would otherwise be written again on every reconcile.
 
-The kinds kflare-gen generates run this loop through a shared reconciler: KVNamespace, D1Database, R2Bucket and
-WorkerRoute through the shared CRUD reconciler (`internal/controller/crudresource_controller.go`), WAFCustomRule,
+Every kind but CloudflareAccount runs this loop through a shared reconciler: KVNamespace, D1Database, R2Bucket,
+WorkerRoute, IPList, Tunnel, DNSRecord, Zone, TunnelConfiguration and WorkerScript through the shared CRUD reconciler
+(`internal/controller/crudresource_controller.go`), what a kind does beyond the loop being its hooks
+(`internal/controller/<kind>_hooks.go`), WAFCustomRule,
 RateLimitRule, ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule through the
 shared rule controller (see [Rules](#rules)), and ManagedTransform through the shared settings controller (see
 [Settings](#settings)). A generated kind only describes its Cloudflare calls, its adoption key, what it compares, what
@@ -129,7 +131,7 @@ What each controller compares when it does reconcile:
 | `CloudflareAccount` | Token validity (re-validated against the account on every reconcile) |
 | `Zone` | Zone type and `spec.plan`; recreated if deleted externally |
 | `DNSRecord` | Content, TTL, proxied, priority (when set), comment, tags, structured data; recreated if deleted externally. With a `tunnelRef`, the content is the Tunnel's hostname, `<tunnel ID>.cfargotunnel.com`, and proxied is on: a Tunnel recreated with a new ID re-triggers the record, which updates its content in place |
-| `Tunnel` | Existence (recreated if deleted externally); token Secret contents |
+| `Tunnel` | Name (renamed in place); existence (recreated if deleted externally); token Secret contents |
 | `TunnelConfiguration` | The full ingress configuration |
 | `WorkerScript` | Cloudflare's `modified_on` timestamp, because its etag does not change for binding-only edits; the IDs of bound KVNamespaces, so a recreated namespace re-uploads the Worker |
 | `KVNamespace` | Title (renamed in place); recreated, empty, if deleted externally |
@@ -220,12 +222,15 @@ A conflict with another resource of the kind comes first: it is reported whateve
 
 The adoption and deletion policy annotations are modelled on those of AWS Controllers for Kubernetes.
 
-### DNSRecord, WorkerRoute, KVNamespace, D1Database, IPList and R2Bucket ownership
+### Ownership of the shared CRUD reconciler's kinds
 
 DNSRecord stores the Cloudflare record ID it manages in the `kflare.dev/record-id` label, WorkerRoute its route ID in
 `kflare.dev/route-id`, KVNamespace its namespace ID in `kflare.dev/kv-namespace-id`, D1Database its database ID in
-`kflare.dev/d1-database-id` and IPList its list ID in `kflare.dev/ip-list-id`; each claims the object before doing
-anything else with it (`internal/controller/ownership.go`, and `claimant` in the shared CRUD reconciler).
+`kflare.dev/d1-database-id`, IPList its list ID in `kflare.dev/ip-list-id`, Tunnel its tunnel ID in
+`kflare.dev/tunnel-id`, Zone its zone ID in `kflare.dev/zone-id`, TunnelConfiguration its tunnel's ID in
+`kflare.dev/tunnel-configuration-id` and WorkerScript its Worker's name in `kflare.dev/worker-name`; each claims the
+object before doing anything else with it (`internal/controller/ownership.go`, and `claimant` in the shared CRUD
+reconciler). A resource whose status never recorded its object still deletes it, through this label.
 Adoption skips any object another resource of the same kind already carries in its label, across all namespaces,
 because two Zone resources in different namespaces can point at the same Cloudflare zone. Cloudflare record tags would be
 a Cloudflare-side alternative, but they are only available on paid plans.
@@ -474,10 +479,8 @@ hang, and leaves its Cloudflare object, or the zone's settings, as they are.
   ref marks them (see [Rules](#rules)).
 - **Rule order covers kflare's rules only.** A rule created outside kflare keeps its place, so it cannot be ordered
   relative to kflare's rules.
-- **Pinned to the legacy SDK.** Most of kflare's controllers use cloudflare-go v0.119, the newest of the v0 line; the
-  generated kinds (WorkerRoute among them) and the rule kinds use the generated SDK, v7. Some limitations come from
-  v0.119: Tunnel
-  renames are impossible because `UpdateTunnel` omits the tunnel ID from the request path,
+- **Three kinds are pinned to the legacy SDK.** Zone, TunnelConfiguration and WorkerScript call cloudflare-go v0.119, the
+  newest of the v0 line; every other kind uses the generated SDK, v7. Some limitations come from v0.119:
   `originRequest` timeouts are not exposed because `TunnelDuration` does not round-trip, and a WorkerScript binds only
   R2 buckets in the default jurisdiction (`R2BucketJurisdictionUnsupported` otherwise): the SDK's Worker R2 binding has
   no jurisdiction field. R2Bucket itself, generated on v7, manages buckets in any jurisdiction.

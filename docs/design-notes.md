@@ -1365,6 +1365,25 @@ afterwards):**
   2026-10-15, see Token permissions)
 
 
+#### Branch: `feat/generate-remaining-kinds`
+
+IPList, Tunnel, DNSRecord, Zone, TunnelConfiguration and WorkerScript move onto kflare-gen and the shared CRUD
+reconciler in one pull request, at the user's request on 2026-10-30. What was decided, and what was checked live:
+
+- **A remotely-managed tunnel takes no secret.** Created with `config_src: cloudflare` and no `tunnel_secret`,
+  `GET .../cfd_tunnel/<id>/token` still returned a token of 240 characters (probe tunnel, 2026-10-30, deleted). The
+  hand-written Tunnel sent 32 random bytes that nothing read; the entry ignores the field
+- **Tunnels rename in place.** `PATCH .../cfd_tunnel/<id>` with a `name` renamed the probe tunnel, and a list by the new
+  name found it. v0.119's update left the ID out of the path, so `spec.name` was immutable until now
+- **A deleted tunnel stays readable.** `GET` after `DELETE` succeeded, with `deleted_at` set: Tunnel's `gone` hook
+- **Hooked kinds, Claude's call.** Zone, TunnelConfiguration and WorkerScript keep their fields and v0.119 calls, on the
+  shared loop. v7's `ZoneNewParams` has no `jump_start` and its `Zone` no `plan_pending`, and the dev token cannot
+  create a zone, so a move of Zone's create could not be checked. Moving a Worker's upload means a multipart request
+  whose bindings v7 types as a union of about 30 variants. Each of them is a later change of its own, with a live run
+- **What stays as it was.** Zone's plan, a set's records, a Tunnel's token Secret and the oldest TunnelConfiguration
+  owning a tunnel's rules kept their rules, in hooks. CRDs differ only in descriptions, Tunnel's `name` no longer being
+  immutable, and WorkerScript's `status.cloudflareMetadata.scriptName`
+
 #### Launch readiness, done items
 
 The finished items of CLAUDE.md's [Launch readiness](../CLAUDE.md#launch-readiness).

@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7/option"
@@ -24,9 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -38,7 +37,7 @@ import (
 type fakeTunnelTokens struct {
 	token                string
 	tokenErr, cleanupErr error
-	tokenReads           int
+	tokenReads           atomic.Int64
 	cleanups             []string
 }
 
@@ -56,7 +55,7 @@ func newFakeTunnelHooksAPI(store *fakeCRUDStore[shared.CloudflareTunnel]) fakeTu
 }
 
 func (f fakeTunnelHooksAPI) TunnelToken(context.Context, string, string) (string, error) {
-	f.tokenReads++
+	f.tokenReads.Add(1)
 	return f.token, f.tokenErr
 }
 
@@ -292,33 +291,21 @@ var _ = Describe("Tunnel hooks", func() {
 	It("restores a deleted token Secret, in a running manager", func() {
 		createTunnel(nil)
 		sync()
-		mgr, err := manager.New(cfg, manager.Options{
-			Controller: config.Controller{SkipNameValidation: new(true)},
-			Metrics:    metricsserver.Options{BindAddress: "0"},
-		})
-		Expect(err).NotTo(HaveOccurred())
+		reads := tokens.tokenReads.Load()
 		api := r.NewTunnelAPI
-		Expect((&TunnelReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), NewTunnelAPI: api}).
-			SetupWithManager(mgr)).To(Succeed())
-		mgrCtx, stop := context.WithCancel(ctx)
-		stopped := make(chan struct{})
-		go func() {
-			defer GinkgoRecover()
-			defer close(stopped)
-			Expect(mgr.Start(mgrCtx)).To(Succeed())
-		}()
-		DeferCleanup(func() {
-			stop()
-			<-stopped
+		startManager(ctx, func(mgr manager.Manager) error {
+			return (&TunnelReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), NewTunnelAPI: api}).SetupWithManager(mgr)
 		})
-		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
+		// The manager's first reconcile would restore a Secret deleted before it.
+		Eventually(tokens.tokenReads.Load, 10*time.Second).Should(BeNumerically(">", reads))
+		Consistently(tokens.tokenReads.Load, 500*time.Millisecond).Should(Equal(tokens.tokenReads.Load()))
+
 		secret := getSecret(tokenSecret)
-		uid := secret.UID
 		Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
 		Eventually(func(g Gomega) {
 			restored := &corev1.Secret{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: tokenSecret, Namespace: ns}, restored)).To(Succeed())
-			g.Expect(restored.UID).NotTo(Equal(uid))
+			g.Expect(restored.UID).NotTo(Equal(secret.UID))
 		}, 10*time.Second, 50*time.Millisecond).Should(Succeed())
 	})
 

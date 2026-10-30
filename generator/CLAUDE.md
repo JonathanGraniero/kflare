@@ -103,8 +103,8 @@ CRD defaults, so nothing is late-initialized.
   target, which excludes generated files
 - **Hooks:** optional Go functions in a hand-written `<kind>_hooks.go`, compiled and linted like any other code: adjust
   the desired params, normalize Cloudflare's copy before comparing, extra steps after a sync, extra watches. IPList's
-  bulk operation and RateLimitRule's `cf.colo.id` are this kind of logic. Not built yet: no generated kind has needed
-  one, since entry validations, CEL rules, ignores and tests covered every rule kind
+  bulk operation is this kind of logic. Built for CRUD kinds, in the notes below; no rule kind has needed one, since
+  entry validations, CEL rules, ignores and tests covered them
 
 ```yaml
 kinds:
@@ -521,6 +521,28 @@ kinds:
   and one equivalent (a mapper's early return on a failed list, which leaves the list empty anyway); 52 of kflare-gen's
   new code, all caught. The first runs left two alive: the pattern's `minLength`, which the pattern already implied
   (dropped from the entry), and the page params of a single page, which a unit test now covers
+- **Hooks, union bodies and hooked kinds as built** (`feat/generate-remaining-kinds`, 2026-10-30), for the six kinds
+  left, in one pull request at the user's request ([Generate every kind](../CLAUDE.md#generate-every-kind)):
+  - `crudHooks` on `crudResourceKind`, every one optional: `account` (a resource's account, through another resource),
+    `key`, `references`, `resolve` (values a call needs besides the spec, or why the resource waits), `gone` (an object
+    Cloudflare still reads, deleted), `find`, `refuse`, `matches`, `synced`, `beforeDelete` and `watch`. An entry's
+    `hooks` key names what they bring: `specExtras`, `metadataExtras` and `statusExtras`, hand-written structs the
+    generated types embed inline, whose CEL rules controller-gen merges into the spec's; `sampleExtras` and
+    `tableExtras`; `columns`; `api`, a hand-written `<Kind>HooksAPI` the narrow interface embeds, which a hand-written
+    `<kind>Service` serves in production and `fake<Kind>HooksAPI` in the tests; and `params`, for hand-written functions
+    that finish a union body (`<kind>NewBody`, `<kind>EditBody`) and their fakes
+  - A call whose params hold `Body` as a union is read through `<Name>`, the variant of `<Name>Union` that holds every
+    field (`sdkCall.body`, `sdkField.inUnion`), as a DNS record's `RecordNewParamsBody` does
+  - `update` picks the call that changes an object, `fields.<f>.immutable` keeps a field Update takes fixed,
+    `fields.<f>.clearable` compares and sends an optional string even when unset, and objects may come from
+    cloudflare-go's `shared` package (`shared.CloudflareTunnel`)
+  - `hookedKinds` (`hookedkind.go`) are the kinds whose fields and calls stay hand-written: kflare-gen writes their
+    types and reconciler and registers them; `<kind>_hooks.go` holds their `crudResourceKind`, `<Kind>API`, and
+    `<kind>Object` and `<kind>Listed`. They have no generated table: Zone's is hand-written on `describeCRUDKind`, and
+    TunnelConfiguration and WorkerScript kept their own specs, which pass on the shared loop with their helpers renamed
+  - A resource whose status was never written deletes its object through its claim, in any kind; a zone's kind takes
+    the zone from its Zone then. The fake serves smaller pages than it is asked for (`pageCap`), reporting the
+    `per_page` it served, as a DNS list takes five million
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

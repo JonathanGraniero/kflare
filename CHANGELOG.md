@@ -17,6 +17,29 @@ read the notes before upgrading. The chart and the controller image share one ve
   of, a CPU limit of 1, and its memory limit from 256Mi to 512Mi. Values that set `resources` replace only the keys
   they set
 
+**Every kind now runs on a shared reconciler**, and none of the six this release moves changes its manifests: IPList,
+Tunnel, DNSRecord, Zone, TunnelConfiguration and WorkerScript keep their spec fields, with these exceptions:
+
+- **A Tunnel's `spec.name` can change.** It renames the tunnel in place, which cloudflare-go v0.119 could not do
+- **Status gains `status.cloudflareMetadata.scriptName` on a WorkerScript**, set by its next upload
+
+They also behave as the generated kinds do:
+
+- **Tunnel, Zone, TunnelConfiguration and WorkerScript claim their objects**, in the labels `kflare.dev/tunnel-id`,
+  `kflare.dev/zone-id`, `kflare.dev/tunnel-configuration-id` and `kflare.dev/worker-name`. A resource that would take
+  over an object another one claims reports `NameConflict`, or `TunnelAlreadyConfigured`, rather than sharing it
+- **A DNSRecord reports `NameConflict` for an identical record another DNSRecord manages**, where it used to try a
+  create that Cloudflare refuses
+- **A new Tunnel sends no `tunnel_secret`.** It is the password of a locally-managed tunnel; `cloudflared` runs a
+  remotely-managed one with the token, which Cloudflare issues all the same (checked 2026-10-30)
+- **A resource whose status was never written still deletes its object**, through its claim, as only IPList did
+- **`ListInUse`'s message is the shared one**: the list, what to do and how to keep it. Its reason does not change
+
+Go code that builds these kinds' specs changes: their fields moved into inline structs, such as
+`DNSRecordSpecExtras`, so a composite literal names them. Reading `spec.tunnelRef` from Go does not change.
+
+The samples of IPList, Tunnel and DNSRecord are generated now, so `config/samples` names other objects.
+
 ### The Helm chart
 
 - **A HorizontalPodAutoscaler** (`autoscaling`), on by default: from 1 to 10 replicas, adding them once the pods'
