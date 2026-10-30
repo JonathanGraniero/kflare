@@ -118,12 +118,6 @@ metadata:
 rules:
   - apiGroups: ["kflare.dev"]
     resources:
-      - zones
-      - dnsrecords
-      - tunnels
-      - tunnelconfigurations
-      - workerscripts
-      - iplists
       # +kflare-gen:begin The kinds in generator/generator.yaml: make codegen keeps this block.
       - cacherules
       - configurationrules
