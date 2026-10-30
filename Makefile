@@ -94,6 +94,12 @@ test: manifests generate fmt fix vet envtest ## Run tests.
 test-e2e: kind ## Run the e2e suite against a kind cluster (and Cloudflare, when credentials are set).
 	KIND=$(KIND) go test ./test/e2e/ -v -ginkgo.v -timeout 45m
 
+# Runs the image in IMG in Docker against an envtest API server and reports its CPU and memory (hack/sizing), such
+# as after make docker-build; SIZING_ARGS adds the command's flags (go run ./hack/sizing -h lists them).
+.PHONY: sizing
+sizing: envtest ## Measure the controller image's CPU and memory, for the chart's resources.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go run ./hack/sizing -image $(IMG) $(SIZING_ARGS)
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
 	$(GOLANGCI_LINT) run
@@ -172,10 +178,15 @@ helm-lint: helm ## Lint the chart and render it with default and non-default val
 			--set crds.enabled=false,leaderElection=false,defaultDeletionPolicy=retain \
 			--set reconcileTimeout=90s,driftCheckInterval=30m \
 			--set metrics.serviceMonitor.enabled=true \
-			--set replicaCount=2,networkPolicy.enabled=true,metrics.certSecret=kflare-metrics-tls \
+			--set autoscaling.enabled=false,replicaCount=2,networkPolicy.enabled=true \
+			--set metrics.certSecret=kflare-metrics-tls \
 			--set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 > /dev/null; \
 		$(HELM) template kflare helm/kflare --kube-version $$v \
 			--set metrics.secure=false,metrics.serviceMonitor.enabled=true,replicaCount=2 > /dev/null; \
+		$(HELM) template kflare helm/kflare --kube-version $$v \
+			--set autoscaling.minReplicas=2,autoscaling.maxReplicas=4 \
+			--set autoscaling.targetCPUUtilizationPercentage=null,autoscaling.targetMemoryUtilizationPercentage=90 \
+			--set autoscaling.behavior.scaleDown.stabilizationWindowSeconds=600 > /dev/null; \
 	done
 
 .PHONY: helm-package

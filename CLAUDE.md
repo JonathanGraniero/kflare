@@ -536,7 +536,8 @@ CI below).
 **Status:** ✅ Merged 2026-10-22 for [#67](https://github.com/JonathanGraniero/kflare/issues/67) (#68), and the e2e suite
 installs the chart since #71; ships in v0.2.0 (CHANGELOG.md's v0.2.0 section says how to upgrade). Not in it: the
 issue's section 4 (no HorizontalPodAutoscaler; sizing guidance and `MaxConcurrentReconciles` are a later proposal, since
-rule kinds reconciling at once share a phase's ruleset)
+rule kinds reconciling at once share a phase's ruleset). The autoscaler and the sizing came later, in
+[Autoscaling and resources](#autoscaling-and-resources-featchart-autoscaling)
 - [x] Metrics over HTTPS with authentication and authorization **on by default** (the user's choice), `metrics.secure`.
   The filter is kflare's own, `pkg/metricsauth`, the user's choice on 2026-10-22: controller-runtime's
   `filters.WithAuthenticationAndAuthorization` pulls in `k8s.io/apiserver` (26 more modules, among them gRPC,
@@ -588,6 +589,40 @@ rule kinds reconciling at once share a phase's ruleset)
   The live specs reach Cloudflare under the policy
 - Done when: a default install answers `/metrics` only over HTTPS to a token bound to the metrics-reader role, and a
   two-replica install gets a PDB that a node drain respects. Both hold (above)
+
+#### Autoscaling and resources (`feat/chart-autoscaling`)
+**Status:** 🚧 Draft PR, 2026-10-30. The user asked for a HorizontalPodAutoscaler on 2026-10-30, from 1 to 10 replicas,
+on by default with values to tune it, and for CPU and memory limits; told first that only the leader reconciles (#67's
+section 4), so that the replicas it adds are standbys, they chose it as asked. Its targets and the resources were left
+to me, from measurements. Covers [#70](https://github.com/JonathanGraniero/kflare/issues/70)'s sizing guidance; its
+concurrent reconciles are still open
+- [x] `autoscaling` values and `templates/horizontalpodautoscaler.yaml` (autoscaling/v2): CPU at 80% of the request;
+  memory off by default, since the leader caches every Secret and the standbys nothing, so a memory target would add
+  standbys that stay; `behavior.scaleUp.stabilizationWindowSeconds: 120`, so that bursts of start-up, a takeover or a
+  batch of new resources (seconds to a minute, measured) add none. The Deployment leaves `replicas` out while it is
+  on, so Argo CD and Flux do not undo the autoscaler; the PDB is created when `maxReplicas` > 1. The chart refuses
+  `minReplicas` > `maxReplicas`, `maxReplicas` > 1 without leader election, and a target without its request
+- [x] Resources: requests 100m CPU and 64Mi, limits 1 CPU and 512Mi (were 10m, 64Mi and 256Mi with no CPU limit), in
+  the chart and `config/manager`. Go 1.25+ sets GOMAXPROCS to max(2, ceil(CPU limit)), read in go1.26.10's
+  `runtime/cgroup_linux.go`
+- [x] `hack/sizing` measures them: the image built from `97b5037` in Docker (`--network host`) against an envtest
+  1.34.1 API server, a leader and a standby, docker stats every 2 seconds (the kubelet's working set). Its resources
+  are config/samples' with no CloudflareAccount, so every reconcile ends with `AccountNotFound` and requeues after a
+  minute, without calling Cloudflare. Leader idle 4m mean, 16 MiB; standby about 1m, 9 MiB in every run. 1,000 Secrets
+  of 4 KiB and 1,000 resources: 15m mean, 234m peak, 43 MiB. 5,000 of each: 49m mean, bursts to 300m for about 30 s
+  each minute, 124 MiB; creating them 500m to 750m for 40 s; a takeover 1,100m for about 15 s. 400 Secrets of 256 KiB
+  (100 MiB; 134 MiB as `kubectl get secrets -A -o json`) and 1,000 resources: 220 MiB, of which the Go heap's room to
+  grow is a large part. Hence deploy.md's rule: 16 MiB, plus 1.5 times the Secrets' JSON, plus 15 KiB a resource.
+  With the default limits (`-cpus 1 -memory 512m`), the heaviest load (100 MiB of Secrets, 5,000 resources): 281
+  MiB, where the rule says 290, and no restart; a takeover reached the CPU limit in one sample and was done in about
+  12 s, as without the limit
+- [x] e2e: the suite installs metrics-server v0.9.0 (July 2026; v0.9.1 was a day old) unless the cluster serves the
+  metrics API, and removes only what it installed. A smoke spec checks that the autoscaler reads the controller's CPU,
+  below its target, and keeps one replica
+- Checked here: the chart's guards; a server-side dry run of the rendered chart (defaults, autoscaling options, and
+  autoscaling off with `replicaCount: 2`) against envtest's API server; `make helm-lint`. Not here: kind cannot start
+  pods in this session's container (runc cannot set `oom_score_adj`), so the e2e spec first runs in CI
+- Done when: CI's E2E passes on 1.34 and 1.37, the autoscaler reading the controller's CPU
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first

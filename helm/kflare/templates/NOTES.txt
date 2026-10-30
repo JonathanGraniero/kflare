@@ -3,6 +3,18 @@ kflare {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }
 Check that the controller is running:
 
   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "kflare.fullname" . }}
+{{- if .Values.autoscaling.enabled }}
+
+A HorizontalPodAutoscaler runs {{ .Values.autoscaling.minReplicas }} to {{ .Values.autoscaling.maxReplicas }} replicas, depending on the pods' use, which it
+reads from the metrics API (metrics-server). Without it, TARGETS shows <unknown>:
+
+  kubectl -n {{ .Release.Namespace }} get hpa {{ include "kflare.fullname" . }}
+{{- if ne (int .Values.replicaCount) 1 }}
+
+replicaCount ({{ .Values.replicaCount }}) is ignored while autoscaling is on. To keep that many
+replicas, set autoscaling.minReplicas instead.
+{{- end }}
+{{- end }}
 
 Next, connect a Cloudflare account. Store an API token in a Secret and point a
 CloudflareAccount at it:

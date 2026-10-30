@@ -48,10 +48,19 @@ const (
 	metricsCertSecret = "kflare-metrics-tls"
 	// metricsServerName is the metrics Service's name, which the certificate is for.
 	metricsServerName = releaseName + "-metrics." + managerNamespace + ".svc"
+
+	// metricsServerManifest installs metrics-server, which serves the metrics
+	// API the chart's HorizontalPodAutoscaler reads. kind does not run it.
+	metricsServerManifest = "https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/" +
+		"components.yaml"
 )
 
 // metricsCA trusts the CA that signed the metrics server's certificate.
 var metricsCA *x509.CertPool
+
+// installedMetricsServer is whether the suite installed metrics-server, and so
+// removes it afterwards; one the cluster already ran is left alone.
+var installedMetricsServer bool
 
 // externalManager reports whether KFLARE_E2E_MANAGER=external asks the suite
 // to use a manager that is already running (for example `make run` against
@@ -101,6 +110,18 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(apply)
 	Expect(err).NotTo(HaveOccurred())
 
+	if _, err := utils.Run(exec.Command("kubectl", "get", "apiservice", "v1beta1.metrics.k8s.io")); err != nil {
+		By("installing metrics-server, for the chart's HorizontalPodAutoscaler")
+		installedMetricsServer = true
+		_, err = utils.Run(exec.Command("kubectl", "apply", "-f", metricsServerManifest))
+		Expect(err).NotTo(HaveOccurred())
+		// kind's kubelets serve self-signed certificates.
+		_, err = utils.Run(exec.Command("kubectl", "patch", "deployment", "metrics-server", "-n", "kube-system",
+			"--type=json", "-p",
+			`[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]`))
+		Expect(err).NotTo(HaveOccurred())
+	}
+
 	By("installing the chart, which installs the CRDs, and waiting for the controller")
 	_, err = utils.Run(exec.Command("helm", "install", releaseName, "helm/kflare",
 		"--namespace", managerNamespace,
@@ -132,6 +153,11 @@ var _ = AfterSuite(func() {
 
 	By("removing manager namespace")
 	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", managerNamespace, "--ignore-not-found"))
+
+	if installedMetricsServer {
+		By("removing metrics-server")
+		_, _ = utils.Run(exec.Command("kubectl", "delete", "-f", metricsServerManifest, "--ignore-not-found"))
+	}
 })
 
 // newMetricsCertSecret makes a CA, trusted from then on by metricsCA, and a
