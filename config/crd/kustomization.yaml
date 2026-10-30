@@ -26,6 +26,7 @@ resources:
 - bases/kflare.dev_tunnels.yaml
 - bases/kflare.dev_wafcustomrules.yaml
 - bases/kflare.dev_workerroutes.yaml
+- bases/kflare.dev_zones.yaml
 # +kflare-gen:end
 #+kubebuilder:scaffold:crdkustomizeresource
 

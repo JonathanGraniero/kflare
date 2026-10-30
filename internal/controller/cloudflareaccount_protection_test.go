@@ -100,8 +100,12 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 	It("waits for the resources that use the account before releasing it", func() {
 		Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns},
-			Spec: cloudflarev1alpha1.ZoneSpec{Name: "protect.example.com",
-				AccountRef: corev1.LocalObjectReference{Name: acctName}},
+			Spec: cloudflarev1alpha1.ZoneSpec{
+				AccountRef: corev1.LocalObjectReference{Name: acctName},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "protect.example.com",
+				},
+			},
 		})).To(Succeed())
 		Expect(k8sClient.Delete(ctx, getAccount())).To(Succeed())
 
@@ -150,8 +154,12 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 
 		Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns},
-			Spec: cloudflarev1alpha1.ZoneSpec{Name: "protect.example.com",
-				AccountRef: corev1.LocalObjectReference{Name: acctName}},
+			Spec: cloudflarev1alpha1.ZoneSpec{
+				AccountRef: corev1.LocalObjectReference{Name: acctName},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "protect.example.com",
+				},
+			},
 		})).To(Succeed())
 		Expect(k8sClient.Delete(ctx, getAccount())).To(Succeed())
 		ref := corev1.LocalObjectReference{Name: acctName}
@@ -181,7 +189,12 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 		)
 		for _, z := range []string{"protect-z1", "protect-z2", "protect-z3", "protect-z4"} {
 			dependents = append(dependents, &cloudflarev1alpha1.Zone{ObjectMeta: metav1.ObjectMeta{Name: z, Namespace: ns},
-				Spec: cloudflarev1alpha1.ZoneSpec{Name: z + ".example.com", AccountRef: ref}})
+				Spec: cloudflarev1alpha1.ZoneSpec{
+					AccountRef: ref,
+					ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+						Name: z + ".example.com",
+					},
+				}})
 		}
 		for _, d := range dependents {
 			Expect(k8sClient.Create(ctx, d)).To(Succeed())

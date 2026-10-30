@@ -132,6 +132,11 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 // for what its entry cannot say and Cloudflare's API does not describe. Every
 // one of them is optional.
 type crudHooks[O conditionedObject, A any, R any] struct {
+	// account returns the CloudflareAccount a resource uses, for a kind whose
+	// spec names none, or says why the resource waits. gone is set when what
+	// leads to the account no longer exists, so that deleting the resource
+	// leaves its object: a tunnel's configuration, without its Tunnel.
+	account func(ctx context.Context, c client.Client, obj O) (name string, gone bool, condErr *conditionError)
 	// references are the kind's references that no field of its service
 	// holds, such as a DNSRecord's tunnelRef; their values reach the kind's
 	// calls and matches as the generated ones' do. The hooks' create and update
@@ -253,6 +258,12 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 			return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
 		}
 		accountName, whose = zone.Spec.AccountRef.Name, fmt.Sprintf("Zone %q", zone.Name)
+	} else if r.kind.hooks.account != nil {
+		name, _, condErr := r.kind.hooks.account(ctx, r.Client, obj)
+		if condErr != nil {
+			return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
+		}
+		accountName = name
 	} else {
 		accountName = r.kind.accountRef(obj)
 	}
@@ -568,7 +579,8 @@ func (r *crudResourceReconciler[O, A, R, L]) sameParent(ctx context.Context, obj
 		}
 		return zone.Status.CloudflareMetadata.ZoneID == parentID, nil
 	}
-	if k.accountRef(other) == k.accountRef(obj) {
+	// An ID that a kind's resources reach through another resource is unique.
+	if k.accountRef == nil || k.accountRef(other) == k.accountRef(obj) {
 		return true, nil
 	}
 	account := &cloudflarev1alpha1.CloudflareAccount{}
@@ -695,6 +707,13 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 // the object stays in Cloudflare and gone is set.
 func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context, obj O) (accountName, zoneID string,
 	gone bool, err error) {
+	if account := r.kind.hooks.account; account != nil {
+		name, gone, condErr := account(ctx, r.Client, obj)
+		if condErr != nil && !gone {
+			return "", "", false, condErr
+		}
+		return name, "", gone, nil
+	}
 	if r.kind.zoneRef == nil {
 		return r.kind.accountRef(obj), "", false, nil
 	}
@@ -724,9 +743,10 @@ func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context,
 // them is released once they are gone.
 func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconcile.Reconciler) error {
 	b := ctrl.NewControllerManagedBy(mgr).For(r.kind.newObject())
-	if r.kind.zoneRef != nil {
+	switch {
+	case r.kind.zoneRef != nil:
 		b = b.Watches(&cloudflarev1alpha1.Zone{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForZone))
-	} else {
+	case r.kind.accountRef != nil:
 		b = b.Watches(&cloudflarev1alpha1.CloudflareAccount{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForAccount))
 	}
 	for _, ref := range r.references() {

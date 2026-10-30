@@ -79,8 +79,6 @@ var (
 	// accountDependents use a CloudflareAccount's credentials directly: the
 	// hand-written kinds listed here, and the generated ones.
 	accountDependents = append([]dependentKind{
-		dependents("Zone", func() client.ObjectList { return &cloudflarev1alpha1.ZoneList{} },
-			func(z *cloudflarev1alpha1.Zone) []string { return []string{z.Spec.AccountRef.Name} }),
 		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
 			func(w *cloudflarev1alpha1.WorkerScript) []string { return []string{w.Spec.AccountRef.Name} }),
 	}, generatedAccountDependents...)

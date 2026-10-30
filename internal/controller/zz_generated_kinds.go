@@ -68,6 +68,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&WorkerRouteReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the WorkerRoute controller: %w", err)
 	}
+	if err := (&ZoneReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the Zone controller: %w", err)
+	}
 	return nil
 }
 
@@ -85,6 +88,8 @@ var generatedAccountDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.R2Bucket) []string { return []string{obj.Spec.AccountRef.Name} }),
 	dependents("Tunnel", func() client.ObjectList { return &cloudflarev1alpha1.TunnelList{} },
 		func(obj *cloudflarev1alpha1.Tunnel) []string { return []string{obj.Spec.AccountRef.Name} }),
+	dependents("Zone", func() client.ObjectList { return &cloudflarev1alpha1.ZoneList{} },
+		func(obj *cloudflarev1alpha1.Zone) []string { return []string{obj.Spec.AccountRef.Name} }),
 }
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule

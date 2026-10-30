@@ -203,8 +203,12 @@ var _ = Describe("DNSRecord hooks", func() {
 		setReady(account)
 		zone := &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns},
-			Spec: cloudflarev1alpha1.ZoneSpec{Name: "example.com",
-				AccountRef: corev1.LocalObjectReference{Name: accountName}},
+			Spec: cloudflarev1alpha1.ZoneSpec{
+				AccountRef: corev1.LocalObjectReference{Name: accountName},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "example.com",
+				},
+			},
 		}
 		create(zone)
 		zone.Status.CloudflareMetadata.ZoneID = zoneID

@@ -105,6 +105,7 @@ func init() {
 	zoneDependents = append(zoneDependents,
 		dependents("SettingsFixture", func() client.ObjectList { return &SettingsFixtureList{} },
 			func(obj *SettingsFixture) []string { return []string{obj.Spec.ZoneRef.Name} }))
+	zoneKind.dependents = zoneDependents
 }
 
 // SettingsFixtureAPI is the part of cloudflare-go v7's

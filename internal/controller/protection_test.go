@@ -9,6 +9,7 @@ package controller
 import (
 	"context"
 	"errors"
+	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/shared"
 	"time"
 
@@ -56,16 +57,18 @@ var _ = Describe("Deletion protection for parents", func() {
 	Describe("Zone", func() {
 		const zoneName = "prot-zone"
 		zoneKey := types.NamespacedName{Name: zoneName, Namespace: ns}
-		var fake *fakeZoneAPI
+		var store *fakeCRUDStore[cf.Zone]
 		var r *ZoneReconciler
 
 		BeforeEach(func() {
-			fake = &fakeZoneAPI{}
-			r = reconcilerWithFakeZoneAPI(fake)
+			store = newFakeCRUDStore[cf.Zone](0, "")
+			r = &ZoneReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+				NewZoneAPI: func(string) (ZoneAPI, error) { return newFakeZoneAPI(store, "prot-account"), nil }}
 			create(&cloudflarev1alpha1.Zone{
 				ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns},
 				Spec: cloudflarev1alpha1.ZoneSpec{
-					Name: "prot-example.com", AccountRef: corev1.LocalObjectReference{Name: "prot-account"},
+					AccountRef:     corev1.LocalObjectReference{Name: "prot-account"},
+					ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{Name: "prot-example.com"},
 				},
 			})
 			create(&cloudflarev1alpha1.DNSRecord{
@@ -126,7 +129,7 @@ var _ = Describe("Deletion protection for parents", func() {
 			Expect(cond.Message).To(ContainSubstring("WAFCustomRule default/prot-waf"))
 			Expect(cond.Message).To(ContainSubstring("RateLimitRule default/prot-ratelimit"))
 			Expect(cond.Message).To(ContainSubstring("ManagedRuleset default/prot-managed"))
-			Expect(fake.deleteCalled).To(BeFalse())
+			Expect(store.writes).To(BeZero())
 
 			forceDelete(ctx, &cloudflarev1alpha1.DNSRecord{}, types.NamespacedName{Name: "prot-record", Namespace: ns})
 			forceDelete(ctx, &cloudflarev1alpha1.WorkerRoute{}, types.NamespacedName{Name: "prot-route", Namespace: ns})
@@ -143,12 +146,12 @@ var _ = Describe("Deletion protection for parents", func() {
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
 				Spec:       cloudflarev1alpha1.DNSRecordSpec{ZoneRef: corev1.LocalObjectReference{Name: zoneName}},
 			}
-			Expect(r.deletingZoneOf(ctx, record)).To(ConsistOf(reconcile.Request{NamespacedName: zoneKey}))
+			Expect(r.crud().deletingResourcesOf(ctx, record)).To(ConsistOf(reconcile.Request{NamespacedName: zoneKey}))
 
 			other := record.DeepCopy()
 			other.Namespace = "kube-public"
-			Expect(r.deletingZoneOf(ctx, other)).To(BeEmpty(), "the Zone is looked up in the dependent's namespace")
-			Expect(r.deletingZoneOf(ctx, &corev1.Secret{})).To(BeEmpty())
+			Expect(r.crud().deletingResourcesOf(ctx, other)).To(BeEmpty(), "the Zone is looked up in the dependent's namespace")
+			Expect(r.crud().deletingResourcesOf(ctx, &corev1.Secret{})).To(BeEmpty())
 		})
 	})
 
@@ -298,7 +301,10 @@ var _ = Describe("Deletion protection for parents", func() {
 		create(&cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: "prot-live-zone", Namespace: ns},
 			Spec: cloudflarev1alpha1.ZoneSpec{
-				Name: "prot-live.com", AccountRef: corev1.LocalObjectReference{Name: "prot-account"},
+				AccountRef: corev1.LocalObjectReference{Name: "prot-account"},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "prot-live.com",
+				},
 			},
 		})
 		route := &cloudflarev1alpha1.WorkerRoute{
@@ -306,7 +312,7 @@ var _ = Describe("Deletion protection for parents", func() {
 			Spec:       cloudflarev1alpha1.WorkerRouteSpec{ZoneRef: corev1.LocalObjectReference{Name: "prot-live-zone"}},
 		}
 		r := &ZoneReconciler{Client: k8sClient}
-		Expect(r.deletingZoneOf(ctx, route)).To(BeEmpty())
+		Expect(r.crud().deletingResourcesOf(ctx, route)).To(BeEmpty())
 	})
 
 	It("returns the list error from dependentsOf", func() {

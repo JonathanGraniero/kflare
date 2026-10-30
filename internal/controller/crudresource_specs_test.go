@@ -479,7 +479,10 @@ func (e *crudSpecEnv[O, A, R, L]) createZone(at types.NamespacedName, id string,
 	zone := &cloudflarev1alpha1.Zone{
 		ObjectMeta: metav1.ObjectMeta{Name: at.Name, Namespace: at.Namespace},
 		Spec: cloudflarev1alpha1.ZoneSpec{
-			Name: e.base + ".example.com", AccountRef: corev1.LocalObjectReference{Name: e.accountName},
+			AccountRef: corev1.LocalObjectReference{Name: e.accountName},
+			ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+				Name: e.base + ".example.com",
+			},
 		},
 	}
 	Expect(k8sClient.Create(e.ctx, zone)).To(Succeed())

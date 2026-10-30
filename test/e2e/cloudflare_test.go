@@ -572,8 +572,10 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				Annotations: map[string]string{reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyRetain},
 			},
 			Spec: cloudflarev1alpha1.ZoneSpec{
-				Name:       zoneName,
 				AccountRef: corev1.LocalObjectReference{Name: accountKey.Name},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: zoneName,
+				},
 			},
 		}
 		By("creating the Zone without an adoption policy, which leaves the existing zone alone")

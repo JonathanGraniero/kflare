@@ -157,10 +157,19 @@ func generate(cfg *config, s sdk, spec *apiSpec, header string) (*outputs, error
 		}
 		settingsKinds = append(settingsKinds, k)
 	}
+	var hookedKinds []*hookedKind
+	for _, entry := range cfg.HookedKinds {
+		k := buildHookedKind(entry)
+		if err := out.addHookedKind(k, header); err != nil {
+			return nil, err
+		}
+		hookedKinds = append(hookedKinds, k)
+	}
+	slices.SortFunc(hookedKinds, func(a, b *hookedKind) int { return strings.Compare(a.name, b.name) })
 	slices.SortFunc(controllers, func(a, b *controller) int { return strings.Compare(a.name, b.name) })
 	slices.SortFunc(ruleKinds, func(a, b *ruleKind) int { return strings.Compare(a.name, b.name) })
 	slices.SortFunc(settingsKinds, func(a, b *settingsKind) int { return strings.Compare(a.name, b.name) })
-	src, err := emitKinds(controllers, ruleKinds, settingsKinds, header)
+	src, err := emitKinds(controllers, ruleKinds, settingsKinds, hookedKinds, header)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +182,9 @@ func generate(cfg *config, s sdk, spec *apiSpec, header string) (*outputs, error
 		plurals[k.name] = k.plural
 	}
 	for _, k := range settingsKinds {
+		plurals[k.name] = k.plural
+	}
+	for _, k := range hookedKinds {
 		plurals[k.name] = k.plural
 	}
 	for _, name := range slices.Sorted(maps.Keys(plurals)) {

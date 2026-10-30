@@ -1414,7 +1414,7 @@ func goValue(f *goFile, sf field, value any) string {
 // entries as dependents of their account, the rule kinds, which the shared
 // rule controller lists, and the rule and settings kinds as dependents of
 // their Zone.
-func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*settingsKind,
+func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*settingsKind, hookedKinds []*hookedKind,
 	header string) ([]byte, error) {
 	f := newGoFile()
 	ctrl := f.use("sigs.k8s.io/controller-runtime", "ctrl")
@@ -1432,6 +1432,9 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*sett
 	for _, k := range settingsKinds {
 		names = append(names, k.name)
 	}
+	for _, k := range hookedKinds {
+		names = append(names, k.name)
+	}
 	for _, name := range slices.Sorted(slices.Values(names)) {
 		f.printf("if err := (&%sReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); "+
 			"err != nil {\nreturn %s.Errorf(\"setting up the %s controller: %%w\", err)\n}\n", name,
@@ -1442,12 +1445,20 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*sett
 	comment(&f.Builder, "", wrap("generatedAccountDependents are the generated kinds of an account that the shared "+
 		"CRUD reconciler drives, whose resources use a CloudflareAccount's credentials directly."))
 	f.printf("var generatedAccountDependents = []dependentKind{\n")
+	var accountKinds []string
 	for _, c := range kinds {
-		if c.zoned {
-			continue
+		if !c.zoned {
+			accountKinds = append(accountKinds, c.name)
 		}
-		f.printf("dependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", c.name, client, f.api(), c.name)
-		f.printf("func(obj *%s.%s) []string { return []string{obj.Spec.AccountRef.Name} }),\n", f.api(), c.name)
+	}
+	for _, k := range hookedKinds {
+		if k.usesAccount {
+			accountKinds = append(accountKinds, k.name)
+		}
+	}
+	for _, name := range slices.Sorted(slices.Values(accountKinds)) {
+		f.printf("dependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", name, client, f.api(), name)
+		f.printf("func(obj *%s.%s) []string { return []string{obj.Spec.AccountRef.Name} }),\n", f.api(), name)
 	}
 	f.printf("}\n\n")
 

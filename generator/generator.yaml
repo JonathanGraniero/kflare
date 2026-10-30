@@ -1538,3 +1538,28 @@ settingsKinds:
       reason: >-
         Every transform is off on kflare.dev, which nobody has configured (read live on 2026-10-22 and 2026-10-23), and
         the reset turns them all off ("Disables all Managed Transforms", Cloudflare's API documentation).
+
+# The kinds whose fields and calls stay hand-written (their <kind>_hooks.go) and on cloudflare-go v0.119, while the
+# shared CRUD reconciler runs them. A Worker's upload is a multipart request whose bindings v7 types as a union of 30
+# variants. A tunnel's configuration has no New or Delete. A zone's creation cannot be verified on the test account,
+# and v7 has no jump_start or plan_pending. See CLAUDE.md, Generate every kind.
+hookedKinds:
+  - kind: Zone
+    scope: account
+    shortName: cfzone
+    noun: zone
+    doc: |
+      Zone is the Schema for the zones API.
+      It represents a DNS zone managed in Cloudflare.
+    id:
+      field: id
+      status: zoneID
+      doc: ZoneID is the Cloudflare zone identifier.
+    claimLabel: kflare.dev/zone-id
+    specExtras: ZoneSpecExtras
+    metadataExtras: ZoneMetadataExtras
+    columns:
+      - {name: Domain, type: string, path: .spec.name}
+      - {name: Zone ID, type: string, path: .status.cloudflareMetadata.zoneID}
+      - {name: Plan, type: string, path: .status.cloudflareMetadata.plan}
+      - {name: CF Status, type: string, path: .status.cloudflareMetadata.status}

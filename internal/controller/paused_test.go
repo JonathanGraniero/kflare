@@ -202,21 +202,6 @@ var pausedKinds = []pausedKind{
 		},
 	},
 	{
-		name: "Zone",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.Zone{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.ZoneSpec{
-					Name: name + ".example.com", AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &ZoneReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewZoneAPI: func(string) (ZoneAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
 		name: "TunnelConfiguration",
 		newObject: func(name string) conditionedObject {
 			return &cloudflarev1alpha1.TunnelConfiguration{
@@ -288,7 +273,10 @@ var _ = Describe("Every hand-written controller, for a paused resource", func() 
 		zone := &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: pausedSpecZone, Namespace: pausedSpecNS},
 			Spec: cloudflarev1alpha1.ZoneSpec{
-				Name: pausedSpecDomain, AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
+				AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: pausedSpecDomain,
+				},
 			},
 		}
 		create(zone, func() { zone.Status.CloudflareMetadata.ZoneID = "zone-paused" })

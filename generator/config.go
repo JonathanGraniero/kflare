@@ -28,6 +28,37 @@ type config struct {
 	// product's settings in a zone, which the shared settings controller
 	// drives.
 	SettingsKinds []settingsKindConfig `json:"settingsKinds,omitempty"`
+	// HookedKinds are the kinds the shared CRUD reconciler drives whose
+	// fields and calls are hand-written. Each is a step on the way to a
+	// kindConfig: see hookedKindConfig.
+	HookedKinds []hookedKindConfig `json:"hookedKinds,omitempty"`
+}
+
+// hookedKindConfig is a kind whose spec and calls cloudflare-go v7 cannot give
+// yet: a Worker's upload, a tunnel's configuration, and a zone, whose creation
+// the test account cannot verify. kflare-gen writes its API types around
+// hand-written extras, its reconciler on the shared CRUD one, its registration
+// and its place among the account's dependents. <kind>_hooks.go holds the rest:
+// <Kind>API, default<Kind>API, the crudResourceKind <kind>Kind, and <kind>Object
+// and <kind>Listed, the types its calls return and list.
+type hookedKindConfig struct {
+	Kind      string `json:"kind"`
+	ShortName string `json:"shortName"`
+	Noun      string `json:"noun"`
+	Doc       string `json:"doc"`
+	// Scope is account, for an accountRef the spec holds, or empty for a kind
+	// whose hooks find its account through a resource it references.
+	Scope string `json:"scope,omitempty"`
+	// ID names where status records the object's ID.
+	ID idConfig `json:"id"`
+	// ClaimLabel is the label holding the ID of the object a resource manages.
+	ClaimLabel string `json:"claimLabel"`
+	// SpecExtras, MetadataExtras and StatusExtras, and Columns, as in
+	// hooksConfig. The spec holds nothing else, but for its accountRef.
+	SpecExtras     string         `json:"specExtras"`
+	MetadataExtras string         `json:"metadataExtras,omitempty"`
+	StatusExtras   string         `json:"statusExtras,omitempty"`
+	Columns        []columnConfig `json:"columns,omitempty"`
 }
 
 // kindConfig is one kind's entry. Every field of the kind's cloudflare-go v7
@@ -309,7 +340,7 @@ func loadConfig(path string) (*config, error) {
 // validate checks what can be checked without the SDK. Field names are
 // checked against the SDK when the kind is built.
 func (c *config) validate() error {
-	if len(c.Kinds) == 0 && len(c.RuleKinds) == 0 && len(c.SettingsKinds) == 0 {
+	if len(c.Kinds) == 0 && len(c.RuleKinds) == 0 && len(c.SettingsKinds) == 0 && len(c.HookedKinds) == 0 {
 		return fmt.Errorf("no kinds")
 	}
 	seen := map[string]bool{}
@@ -328,6 +359,16 @@ func (c *config) validate() error {
 		}
 		if seen[k.Kind] {
 			return fmt.Errorf("ruleKinds[%d]: %s is listed twice", i, k.Kind)
+		}
+		seen[k.Kind] = true
+	}
+	for i := range c.HookedKinds {
+		k := &c.HookedKinds[i]
+		if err := k.validate(); err != nil {
+			return err
+		}
+		if seen[k.Kind] {
+			return fmt.Errorf("kind %s is listed twice", k.Kind)
 		}
 		seen[k.Kind] = true
 	}
@@ -989,6 +1030,26 @@ func (k *settingsKindConfig) validate() error {
 
 // settingsValuePath matches a path of API names, each list's marked by [].
 var settingsValuePath = regexp.MustCompile(`^[a-z][a-z0-9_-]*(\[\])?(\.[a-z][a-z0-9_-]*(\[\])?)*$`)
+
+// validate checks a hooked kind's entry.
+func (k *hookedKindConfig) validate() error {
+	switch {
+	case !kindName.MatchString(k.Kind):
+		return fmt.Errorf("hookedKinds: %q is not a Go type name", k.Kind)
+	case k.ShortName == "" || k.Noun == "" || k.ClaimLabel == "" || k.ID.Status == "":
+		return fmt.Errorf("hookedKinds (%s): shortName, noun, claimLabel and id.status are required", k.Kind)
+	case !strings.HasPrefix(k.Doc, k.Kind+" "):
+		return fmt.Errorf("hookedKinds (%s): doc does not start with %q", k.Kind, k.Kind+" ")
+	case k.Scope != "" && k.Scope != scopeAccount:
+		return fmt.Errorf("hookedKinds (%s): scope %q: it is account, or empty", k.Kind, k.Scope)
+	}
+	hooks := hooksConfig{SpecExtras: k.SpecExtras, MetadataExtras: k.MetadataExtras, StatusExtras: k.StatusExtras,
+		Columns: k.Columns}
+	if k.SpecExtras == "" {
+		return fmt.Errorf("hookedKinds (%s): specExtras is required", k.Kind)
+	}
+	return hooks.validate()
+}
 
 // chooseUpdate makes the call the entry names the one that changes an object.
 func (k *kindConfig) chooseUpdate(svc *service) error {

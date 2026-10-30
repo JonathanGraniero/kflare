@@ -141,6 +141,7 @@ rules:
       - tunnels
       - wafcustomrules
       - workerroutes
+      - zones
       # +kflare-gen:end
     verbs: ["create", "update", "patch", "delete", "deletecollection"]
 {{- end }}
