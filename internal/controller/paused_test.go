@@ -287,22 +287,6 @@ var pausedKinds = []pausedKind{
 				NewWorkerScriptAPI: func(string) (WorkerScriptAPI, error) { built(); return nil, errPausedSpecClient }}
 		},
 	},
-	{
-		name: "IPList",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.IPList{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.IPListSpec{
-					AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
-					Name:       strings.ReplaceAll(name, "-", "_"),
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &IPListReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewIPListAPI: func(string) (IPListAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
 }
 
 var _ = Describe("Every hand-written controller, for a paused resource", func() {

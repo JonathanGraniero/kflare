@@ -22,12 +22,12 @@ spec:
     - jsonPath: .spec.name
       name: Name
       type: string
-    - jsonPath: .status.cloudflareMetadata.numItems
-      name: Items
-      type: integer
     - jsonPath: .status.cloudflareMetadata.listID
       name: List ID
       type: string
+    - jsonPath: .status.cloudflareMetadata.numItems
+      name: Items
+      type: integer
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -39,7 +39,9 @@ spec:
       openAPIV3Schema:
         description: |-
           IPList is the Schema for the iplists API.
-          It manages a custom IP list in a Cloudflare account.
+          It manages a custom IP list in a Cloudflare account. Rule expressions in
+          the account's zones refer to it as $<name>, for example
+          `ip.src in $office_ips`.
         properties:
           apiVersion:
             description: |-
@@ -59,14 +61,11 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              IPListSpec defines the desired state of IPList: a custom IP list in a
-              Cloudflare account. Rule expressions in the account's zones refer to it as
-              $<name>, for example `ip.src in $office_ips`.
+            description: IPListSpec defines the desired state of IPList.
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns the list.
+                  AccountRef references the CloudflareAccount that owns the IP list.
                   Immutable after creation.
                 properties:
                   name:
@@ -117,8 +116,8 @@ spec:
               name:
                 description: |-
                   Name is the list's name, unique in the account among lists of every
-                  kind: lowercase letters, digits and underscores, at most 50 characters.
-                  Immutable, because Cloudflare cannot rename a list.
+                  kind: lowercase letters, digits and underscores, at most 50
+                  characters. Immutable, because Cloudflare cannot rename a list.
                 pattern: ^[a-z0-9_]{1,50}$
                 type: string
                 x-kubernetes-validations:
@@ -151,7 +150,7 @@ spec:
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the list's state.
+                  of the IP list state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

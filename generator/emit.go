@@ -39,6 +39,7 @@ func emitTypes(k *kind, header string) ([]byte, error) {
 	comment(&b, "", k.specRules)
 	write("type %sSpec struct {\n", k.name)
 	writeFields(&b, k.spec, true)
+	writeExtras(&b, k.specExtras)
 	write("}\n\n")
 
 	metadataDoc := "holds identifiers returned by the Cloudflare API."
@@ -48,6 +49,7 @@ func emitTypes(k *kind, header string) ([]byte, error) {
 	comment(&b, "", wrap(fmt.Sprintf("%sCloudflareMetadata %s", k.name, metadataDoc)))
 	write("type %sCloudflareMetadata struct {\n", k.name)
 	writeFields(&b, k.metadata, false)
+	writeExtras(&b, k.metadataExtras)
 	write("}\n\n")
 
 	comment(&b, "", []string{fmt.Sprintf("%sStatus defines the observed state of %s.", k.name, k.name)})
@@ -59,7 +61,9 @@ func emitTypes(k *kind, header string) ([]byte, error) {
 	write("\t// +listType=map\n\t// +listMapKey=type\n")
 	write("\tConditions []metav1.Condition `json:\"conditions,omitempty\"`\n\n")
 	comment(&b, "\t", []string{"CloudflareMetadata " + metadataDoc})
-	write("\tCloudflareMetadata %sCloudflareMetadata `json:\"cloudflareMetadata,omitempty\"`\n}\n\n", k.name)
+	write("\tCloudflareMetadata %sCloudflareMetadata `json:\"cloudflareMetadata,omitempty\"`\n", k.name)
+	writeExtras(&b, k.statusExtras)
+	write("}\n\n")
 
 	write("// +kubebuilder:object:root=true\n// +kubebuilder:subresource:status\n")
 	write("// +kubebuilder:resource:path=%s,scope=Namespaced,shortName=%s,categories=kflare\n", k.plural, k.shortName)
@@ -108,6 +112,14 @@ func writeFields(b *strings.Builder, fields []field, spec bool) {
 			tag += ",omitempty"
 		}
 		fmt.Fprintf(b, "\t%s %s `json:\"%s\"`\n", f.goName, f.goType, tag)
+	}
+}
+
+// writeExtras embeds the hand-written struct name inline, after a struct's
+// generated fields; name may be empty.
+func writeExtras(b *strings.Builder, name string) {
+	if name != "" {
+		fmt.Fprintf(b, "\n\t%s `json:\",inline\"`\n", name)
 	}
 }
 

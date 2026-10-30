@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"go/token"
 	"os"
 	"regexp"
 	"slices"
@@ -74,6 +75,46 @@ type kindConfig struct {
 	Fixed map[string]string `json:"fixed,omitempty"`
 	// Ignore leaves out fields, by their API name, each with the reason.
 	Ignore map[string]string `json:"ignore,omitempty"`
+	// Hooks says what the kind's hand-written hooks add, for what an entry
+	// cannot say.
+	Hooks *hooksConfig `json:"hooks,omitempty"`
+}
+
+// hooksConfig is what a kind's hooks, a crudHooks in a hand-written
+// <kind>_hooks.go in internal/controller, bring besides their functions: the
+// descriptor names that crudHooks, <kind>Hooks.
+type hooksConfig struct {
+	// API adds the hand-written interface <Kind>HooksAPI to the kind's narrow
+	// interface: the calls its hooks make besides the service's own. In
+	// production the hand-written struct <kind>Service, which embeds the
+	// service, implements them; the generated fake embeds the hand-written
+	// fake<Kind>HooksAPI that newFake<Kind>HooksAPI returns for its store.
+	API bool `json:"api,omitempty"`
+	// SpecExtras, MetadataExtras and StatusExtras name hand-written structs
+	// in api/v1alpha1 that the spec, status.cloudflareMetadata and status
+	// embed inline: fields Cloudflare's API does not describe, which the
+	// hooks act on, such as an IPList's items.
+	SpecExtras     string `json:"specExtras,omitempty"`
+	MetadataExtras string `json:"metadataExtras,omitempty"`
+	StatusExtras   string `json:"statusExtras,omitempty"`
+	// SampleExtras holds the sample's values of the spec extras, by their
+	// JSON name.
+	SampleExtras map[string]any `json:"sampleExtras,omitempty"`
+	// TableExtras replaces SampleExtras in the envtest table, when set, even
+	// to nothing: the shared specs expect a resource to be ready after one
+	// reconcile, which an IPList with items is not.
+	TableExtras map[string]any `json:"tableExtras,omitempty"`
+	// Columns are print columns of fields the extras hold.
+	Columns []columnConfig `json:"columns,omitempty"`
+}
+
+// columnConfig is one of a kind's additional print columns.
+type columnConfig struct {
+	Name string `json:"name"`
+	// Type is the column's type, such as string or integer.
+	Type string `json:"type"`
+	// Path is the column's JSONPath.
+	Path string `json:"path"`
 }
 
 // idConfig names an object's ID.
@@ -148,6 +189,10 @@ type fieldConfig struct {
 	// referenced resource's field once it is ready. A Worker route's script
 	// is a WorkerScript's name.
 	Ref *refConfig `json:"ref,omitempty"`
+	// Clearable is set for an optional string that Cloudflare does not fill
+	// in itself, so that unset means empty: it is compared, and Update sends
+	// it, even when the spec leaves it unset, which clears Cloudflare's.
+	Clearable bool `json:"clearable,omitempty"`
 }
 
 // refConfig names what a reference field refers to.
@@ -284,6 +329,9 @@ func (c *config) validate() error {
 }
 
 func (k *kindConfig) validate() error {
+	if err := k.Hooks.validate(); err != nil {
+		return err
+	}
 	switch {
 	case !kindName.MatchString(k.Kind):
 		return fmt.Errorf("kind %q is not a Go type name", k.Kind)
@@ -926,3 +974,26 @@ func (k *settingsKindConfig) validate() error {
 
 // settingsValuePath matches a path of API names, each list's marked by [].
 var settingsValuePath = regexp.MustCompile(`^[a-z][a-z0-9_-]*(\[\])?(\.[a-z][a-z0-9_-]*(\[\])?)*$`)
+
+// validate checks the names and columns of a kind's hooks; a kind may have
+// none.
+func (h *hooksConfig) validate() error {
+	if h == nil {
+		return nil
+	}
+	for what, name := range map[string]string{"specExtras": h.SpecExtras, "metadataExtras": h.MetadataExtras,
+		"statusExtras": h.StatusExtras} {
+		if name != "" && !token.IsExported(name) {
+			return fmt.Errorf("hooks.%s: %q is no exported type's name", what, name)
+		}
+	}
+	if len(h.SampleExtras) > 0 && h.SpecExtras == "" {
+		return fmt.Errorf("hooks.sampleExtras: the spec has no extras")
+	}
+	for _, c := range h.Columns {
+		if c.Name == "" || c.Type == "" || c.Path == "" {
+			return fmt.Errorf("hooks.columns: a column takes a name, a type and a path")
+		}
+	}
+	return nil
+}

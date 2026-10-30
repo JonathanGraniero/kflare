@@ -123,6 +123,46 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	// dependents use a resource of the kind, which waits for them before it is
 	// deleted.
 	dependents []dependentKind
+
+	// hooks are what the kind does beyond the shared loop.
+	hooks crudHooks[O, A, R]
+}
+
+// crudHooks are a kind's hooks: hand-written functions, in its <kind>_hooks.go,
+// for what its entry cannot say and Cloudflare's API does not describe. Every
+// one of them is optional.
+type crudHooks[O conditionedObject, A any, R any] struct {
+	// references are the kind's references that no field of its service
+	// holds, such as a DNSRecord's tunnelRef; their values reach the kind's
+	// calls and matches as the generated ones' do. The hooks' create and update
+	// use them.
+	references []crudReference[O]
+	// resolve adds to refs what the resource's calls need besides its spec,
+	// or says why the resource waits, such as a Worker's code in a ConfigMap.
+	resolve func(ctx context.Context, c client.Client, obj O, refs map[string]string) *conditionError
+	// gone reports that an object Cloudflare still returns was deleted, as a
+	// deleted tunnel stays readable. A resource then takes it for missing.
+	gone func(current *R) bool
+	// find replaces the search for the parent's object a resource adopts or
+	// finds as its own: it returns the object's ID, "" for none. refs is what
+	// the references and resolve gave.
+	find func(ctx context.Context, c client.Client, api A, obj O, parentID string, refs map[string]string) (string, error)
+	// refuse says why a resource cannot take the object it found under its
+	// key, such as a list of another kind with the same name.
+	refuse func(found *R) *conditionError
+	// matches replaces the comparison of the object with the spec.
+	matches func(obj O, current *R, refs map[string]string) bool
+	// synced runs once the object is as the spec asks and status records it.
+	// It does what the service's calls cannot, such as an IPList's items. Set
+	// stop to end the reconcile with what it returns, rather than report the
+	// resource ready.
+	synced func(ctx context.Context, c client.Client, api A, obj O, parentID string, current *R) (result ctrl.Result,
+		stop bool, err error)
+	// beforeDelete runs before the object is deleted from Cloudflare, with the
+	// retain policy unset. An object that is already gone is no failure.
+	beforeDelete func(ctx context.Context, api A, obj O, parentID, id string) error
+	// watch adds the kind's own watches.
+	watch func(b *builder.Builder, c client.Client) *builder.Builder
 }
 
 // crudReference is a spec field of a kind that references a resource of
@@ -225,6 +265,11 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
 	}
+	if r.kind.hooks.resolve != nil {
+		if condErr := r.kind.hooks.resolve(ctx, r.Client, obj, refs); condErr != nil {
+			return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
+		}
+	}
 	api, err := r.newAPI(token)
 	if err != nil {
 		return invalidToken(ctx, r.Client, obj, err)
@@ -259,7 +304,7 @@ func (r *crudResourceReconciler[O, A, R, L]) zone(ctx context.Context, obj O) (*
 func (r *crudResourceReconciler[O, A, R, L]) resolveReferences(ctx context.Context, obj O,
 	accountName, whose string) (map[string]string, *conditionError) {
 	refs := map[string]string{}
-	for _, ref := range r.kind.references {
+	for _, ref := range r.references() {
 		name := ref.name(obj)
 		if name == "" {
 			refs[ref.field] = ""
@@ -290,6 +335,11 @@ func (r *crudResourceReconciler[O, A, R, L]) resolveReferences(ctx context.Conte
 	return refs, nil
 }
 
+// references returns the kind's references, its hooks' included.
+func (r *crudResourceReconciler[O, A, R, L]) references() []crudReference[O] {
+	return slices.Concat(r.kind.references, r.kind.hooks.references)
+}
+
 // sync drives the desired→observed→delta→reconcile loop for one resource, in
 // the account or zone parentID.
 func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, parentID string,
@@ -307,6 +357,8 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 			logger.Info(k.noun+" deleted outside kflare, recreating", "id", id)
 		case err != nil:
 			return handleCloudflareError(ctx, r.Client, obj, err)
+		case k.hooks.gone != nil && k.hooks.gone(got):
+			logger.Info(k.noun+" deleted outside kflare, recreating", "id", id)
 		default:
 			current = got
 		}
@@ -323,7 +375,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 	if current == nil {
 		key := k.key(obj)
 		what := fmt.Sprintf("%s %q", k.noun, key)
-		id, found, err := r.find(ctx, api, obj, parentID, key)
+		id, found, err := r.find(ctx, api, obj, parentID, key, refs)
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
 		}
@@ -351,6 +403,11 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 					logger.Info(k.noun+" deleted since it was listed", "key", key, "id", id)
 				case err != nil:
 					return handleCloudflareError(ctx, r.Client, obj, err)
+				}
+			}
+			if found != nil && k.hooks.refuse != nil {
+				if condErr := k.hooks.refuse(found); condErr != nil {
+					return notReadyRetryAfter(ctx, r.Client, obj, condErr)
 				}
 			}
 			switch {
@@ -385,7 +442,11 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 	}
 
 	// Drift: update the object in place when it is not what the spec asks for.
-	if !k.matches(obj, current, refs) {
+	matches := k.matches
+	if k.hooks.matches != nil {
+		matches = k.hooks.matches
+	}
+	if !matches(obj, current, refs) {
 		updated, err := k.update(ctx, api, obj, parentID, k.id(current), refs)
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
@@ -398,14 +459,25 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 		*k.statusZoneID(obj) = parentID
 	}
 	k.observe(obj, current)
+	if k.hooks.synced != nil {
+		if result, stop, err := k.hooks.synced(ctx, r.Client, api, obj, parentID, current); stop {
+			return result, err
+		}
+	}
 	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
 }
 
 // find returns the ID of the parent's object with key, or "" when there is
-// none. A kind whose objects their key identifies reads the object by its key,
-// and also returns what it read; another finds the object in its list.
-func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, obj O, parentID, key string) (string, *R, error) {
+// none. A kind's find hook decides, if it has one. A kind whose objects their
+// key identifies reads the object by its key, and also returns what it read;
+// another finds the object in its list.
+func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, obj O, parentID, key string,
+	refs map[string]string) (string, *R, error) {
 	k := r.kind
+	if k.hooks.find != nil {
+		id, err := k.hooks.find(ctx, r.Client, api, obj, parentID, refs)
+		return id, nil, err
+	}
 	match := func(listed *L) bool { return k.listedKey(listed) == key }
 	var listed *L
 	switch {
@@ -552,7 +624,13 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 		return ctrl.Result{}, reportInUse(ctx, r.Client, obj, dependents)
 	}
 
-	if id := r.kind.statusID(obj); id != "" && !reconciler.RetainOnDelete(obj) {
+	// The object is the one in status, or, when a reconcile failed before it
+	// wrote status, the one its claim names.
+	id := r.kind.statusID(obj)
+	if id == "" {
+		id = obj.GetLabels()[r.kind.claimLabel]
+	}
+	if id != "" && !reconciler.RetainOnDelete(obj) {
 		accountName, zoneID, gone, err := r.deletionParent(ctx, obj)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -586,6 +664,11 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 	parentID := account.Spec.AccountID
 	if r.kind.zoneRef != nil {
 		parentID = zoneID
+	}
+	if before := r.kind.hooks.beforeDelete; before != nil {
+		if err := before(ctx, api, obj, parentID, id); err != nil && !cfpkg.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
 	}
 	err = r.kind.delete(ctx, api, obj, parentID, id)
 	for _, blocker := range r.kind.deletionBlockers {
@@ -640,12 +723,15 @@ func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconci
 	} else {
 		b = b.Watches(&cloudflarev1alpha1.CloudflareAccount{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForAccount))
 	}
-	for _, ref := range r.kind.references {
+	for _, ref := range r.references() {
 		b = b.Watches(ref.newObject(), handler.EnqueueRequestsFromMapFunc(r.resourcesReferencing(ref)))
 	}
 	for _, dependent := range r.kind.dependents {
 		b = b.Watches(dependent.newObject(), handler.EnqueueRequestsFromMapFunc(r.deletingResourcesOf),
 			builder.WithPredicates(deletesOnly))
+	}
+	if r.kind.hooks.watch != nil {
+		b = r.kind.hooks.watch(b, r.Client)
 	}
 	return b.Complete(rec)
 }

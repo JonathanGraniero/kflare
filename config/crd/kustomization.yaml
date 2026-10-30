@@ -13,6 +13,7 @@ resources:
 - bases/kflare.dev_cacherules.yaml
 - bases/kflare.dev_configurationrules.yaml
 - bases/kflare.dev_d1databases.yaml
+- bases/kflare.dev_iplists.yaml
 - bases/kflare.dev_kvnamespaces.yaml
 - bases/kflare.dev_managedrulesets.yaml
 - bases/kflare.dev_managedtransforms.yaml

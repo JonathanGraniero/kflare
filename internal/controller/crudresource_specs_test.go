@@ -73,6 +73,8 @@ type fakeCRUDStore[R any] struct {
 	writes    int
 	// sent holds the params of each New, in order.
 	sent []any
+	// extra holds what a kind's hooks' fake keeps.
+	extra any
 }
 
 func newFakeCRUDStore[R any](pageSize int64, scope string) *fakeCRUDStore[R] {
@@ -224,6 +226,16 @@ func (s *fakeCRUDStore[R]) delete(parentID, scope, id string) error {
 	}
 	delete(objects, id)
 	return nil
+}
+
+// clearedStatus returns obj without its status, as a resource whose first
+// status update failed has none.
+func clearedStatus[O conditionedObject, A any, R any, L any](k crudResourceKind[O, A, R, L], obj O) O {
+	cleared := k.newObject()
+	cleared.SetName(obj.GetName())
+	cleared.SetNamespace(obj.GetNamespace())
+	cleared.SetResourceVersion(obj.GetResourceVersion())
+	return cleared
 }
 
 // crudKindReconciler is a generated kind's reconciler.
@@ -1544,6 +1556,19 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("deletes the "+k.noun+" from Cloudflare and removes the finalizer", func() {
 				synced(nil)
+				startDeletion()
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.store.objects).To(BeEmpty())
+				expectGone()
+			})
+
+			It("deletes the "+k.noun+" its claim names when no status recorded it", func() {
+				synced(nil)
+				// A reconcile claims the object before it writes status, and may
+				// fail in between.
+				Expect(k8sClient.Status().Update(ctx, clearedStatus(k, get()))).To(Succeed())
+				Expect(k.statusID(get())).To(BeEmpty())
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())

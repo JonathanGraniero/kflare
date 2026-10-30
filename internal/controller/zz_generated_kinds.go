@@ -29,6 +29,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&D1DatabaseReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the D1Database controller: %w", err)
 	}
+	if err := (&IPListReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the IPList controller: %w", err)
+	}
 	if err := (&KVNamespaceReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the KVNamespace controller: %w", err)
 	}
@@ -68,6 +71,8 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 var generatedAccountDependents = []dependentKind{
 	dependents("D1Database", func() client.ObjectList { return &cloudflarev1alpha1.D1DatabaseList{} },
 		func(obj *cloudflarev1alpha1.D1Database) []string { return []string{obj.Spec.AccountRef.Name} }),
+	dependents("IPList", func() client.ObjectList { return &cloudflarev1alpha1.IPListList{} },
+		func(obj *cloudflarev1alpha1.IPList) []string { return []string{obj.Spec.AccountRef.Name} }),
 	dependents("KVNamespace", func() client.ObjectList { return &cloudflarev1alpha1.KVNamespaceList{} },
 		func(obj *cloudflarev1alpha1.KVNamespace) []string { return []string{obj.Spec.AccountRef.Name} }),
 	dependents("R2Bucket", func() client.ObjectList { return &cloudflarev1alpha1.R2BucketList{} },

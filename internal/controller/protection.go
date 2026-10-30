@@ -85,8 +85,6 @@ var (
 			func(t *cloudflarev1alpha1.Tunnel) []string { return []string{t.Spec.AccountRef.Name} }),
 		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
 			func(w *cloudflarev1alpha1.WorkerScript) []string { return []string{w.Spec.AccountRef.Name} }),
-		dependents("IPList", func() client.ObjectList { return &cloudflarev1alpha1.IPListList{} },
-			func(l *cloudflarev1alpha1.IPList) []string { return []string{l.Spec.AccountRef.Name} }),
 	}, generatedAccountDependents...)
 
 	// zoneDependents live in a Zone's namespace and reference it by name: the

@@ -223,6 +223,73 @@ kinds:
           exclude the pattern from a broader route, so that no Worker runs for
           it.
 
+  # Cloudflare replaces a list's items in a bulk operation of its own, which its hooks run: see iplist_hooks.go.
+  - kind: IPList
+    service: rules.ListService
+    scope: account
+    shortName: cfiplist
+    noun: IP list
+    doc: |
+      IPList is the Schema for the iplists API.
+      It manages a custom IP list in a Cloudflare account. Rule expressions in
+      the account's zones refer to it as $<name>, for example
+      `ip.src in $office_ips`.
+    id:
+      field: id
+      status: listID
+      printColumn: List ID
+      doc: ListID is the Cloudflare list identifier.
+    claimLabel: kflare.dev/ip-list-id
+    adopt:
+      by: name
+    deletionBlockers:
+      - code: 10041
+        reason: ListInUse
+        message: "is used by a rule: remove it from the rules' expressions"
+        why: >-
+          Cloudflare refuses to delete a list that a rule's expression uses (400, 10041; verified live 2026-10-13).
+    sample:
+      name: example_ips
+      description: Addresses of example.com's offices.
+    fixed:
+      kind: ip
+    fields:
+      name:
+        printColumn: Name
+        doc: |
+          Name is the list's name, unique in the account among lists of every
+          kind: lowercase letters, digits and underscores, at most 50
+          characters. Immutable, because Cloudflare cannot rename a list.
+        validation:
+          pattern: ^[a-z0-9_]{1,50}$
+          reason: >-
+            Cloudflare refuses capitals in a list name (10029; verified live 2026-10-13), which the spec's pattern
+            allows.
+      description:
+        clearable: true
+        doc: Description is shown with the list in the Cloudflare dashboard.
+    ignore:
+      created_on: Not observed by the controller.
+      modified_on: Not observed by the controller. It changes with every replacement of the items.
+      num_items: A number in the OpenAPI spec, not an integer. The hooks record the count they read, in numItems.
+      num_referencing_filters: A number in the OpenAPI spec, not an integer.
+    hooks:
+      api: true
+      specExtras: IPListSpecExtras
+      metadataExtras: IPListMetadataExtras
+      sampleExtras:
+        items:
+          - ip: 192.0.2.1
+            comment: Head office
+          - ip: 198.51.100.0/24
+            comment: Branch office
+          - ip: 2001:db8::/48
+      tableExtras: {}
+      columns:
+        - name: Items
+          type: integer
+          path: .status.cloudflareMetadata.numItems
+
 # The rule kinds kflare-gen generates: each resource manages one rule in a zone's entry point ruleset for a Rulesets
 # phase, through the shared rule controller (internal/controller/rulesetrule_controller.go). A rule kind's spec holds
 # the fields every rule kind shares (RulesetRuleSpec) and the parameters of its action, which kflare-gen builds from

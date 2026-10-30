@@ -47,9 +47,3 @@ func (in *WorkerScript) GetConditions() []metav1.Condition { return in.Status.Co
 
 // SetConditions replaces the Worker script's status conditions.
 func (in *WorkerScript) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
-// GetConditions returns the IP list's status conditions.
-func (in *IPList) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the IP list's status conditions.
-func (in *IPList) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }

@@ -33,6 +33,9 @@ type kind struct {
 	// fixed holds the values kflare sends for fields the spec leaves out, by
 	// API name.
 	fixed map[string]string
+	// specExtras, metadataExtras and statusExtras name the hand-written
+	// structs the spec, status.cloudflareMetadata and status embed inline.
+	specExtras, metadataExtras, statusExtras string
 }
 
 // field is one field of a generated struct.
@@ -53,6 +56,8 @@ type field struct {
 	// ref, for a spec field that references a resource of another kind,
 	// names what it refers to.
 	ref *refConfig
+	// clearable marks an optional string that unset clears in Cloudflare.
+	clearable bool
 	// zoneID marks the field of a zone's kind's status that records its
 	// zone's ID, which the Zone gives rather than the object.
 	zoneID bool
@@ -257,7 +262,14 @@ func (b *kindBuilder) build() (*kind, error) {
 	if err != nil {
 		return nil, err
 	}
-	k.printColumns = append(append(specColumns, statusColumns...), readyColumn, ageColumn)
+	k.printColumns = append(specColumns, statusColumns...)
+	if h := e.Hooks; h != nil {
+		k.specExtras, k.metadataExtras, k.statusExtras = h.SpecExtras, h.MetadataExtras, h.StatusExtras
+		for _, c := range h.Columns {
+			k.printColumns = append(k.printColumns, printColumn{name: c.Name, typ: c.Type, jsonPath: c.Path})
+		}
+	}
+	k.printColumns = append(k.printColumns, readyColumn, ageColumn)
 
 	sections := []struct {
 		name  string
@@ -529,6 +541,13 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 	}
 	out := field{apiName: f.apiName, goName: f.goName, jsonName: lowerCamel(f.goName), goType: goType,
 		optional: !spec || !f.required}
+	if adjust.Clearable {
+		if !spec || !out.optional || goType != typeString || !b.updatable(f) {
+			return field{}, nil, fmt.Errorf("fields.%s.clearable: only an optional string Update takes is cleared",
+				f.apiName)
+		}
+		out.clearable = true
+	}
 	doc := adjust.Doc
 	if doc == "" {
 		doc = f.doc
