@@ -184,9 +184,9 @@ func formatModifiedOn(t time.Time) string {
 // Secret is reported and picked up again by the watches on both kinds.
 //
 // Secret values go into refs, which lives for this reconcile, but not into the
-// hash: a Secret contributes its UID and resourceVersion instead, so the hash
-// (stored in status) reveals nothing about the value yet changes whenever it
-// does.
+// hash: a Secret contributes its UID, resourceVersion and the key's name
+// instead, so the hash (stored in status) reveals nothing about the value yet
+// changes whenever it does.
 func resolveWorkerUpload(ctx context.Context, c client.Client, ws *cloudflarev1alpha1.WorkerScript,
 	refs map[string]string) *conditionError {
 	script, srcErr := scriptSource(ctx, c, ws)
@@ -398,7 +398,7 @@ func boundR2Buckets(ws *cloudflarev1alpha1.WorkerScript) []string {
 }
 
 // bindingSecret returns the value of a secret binding and a version string
-// (UID and resourceVersion) that changes whenever the Secret does.
+// (UID, resourceVersion and key) that changes whenever the value can.
 func bindingSecret(ctx context.Context, c client.Client, namespace string,
 	b cloudflarev1alpha1.WorkerBinding) (string, string, *conditionError) {
 	ref := b.SecretKeyRef

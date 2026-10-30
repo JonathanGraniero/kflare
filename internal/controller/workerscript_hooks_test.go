@@ -18,7 +18,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -67,16 +69,47 @@ var _ = Describe("WorkerScript hooks", func() {
 		return secret
 	}
 
-	It("hashes a Secret's version, never its value", func() {
-		secret := createSecret()
-		ws := &cloudflarev1alpha1.WorkerScript{
+	secretBound := func(secretKey string) *cloudflarev1alpha1.WorkerScript {
+		return &cloudflarev1alpha1.WorkerScript{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: ns},
 			Spec: cloudflarev1alpha1.WorkerScriptSpec{WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
 				Name: "hashed", Script: new("export default {}"),
 				Bindings: []cloudflarev1alpha1.WorkerBinding{{Name: "API_KEY",
-					SecretKeyRef: &cloudflarev1alpha1.WorkerKeyReference{Name: secretName, Key: "api-key"}}},
+					SecretKeyRef: &cloudflarev1alpha1.WorkerKeyReference{Name: secretName, Key: secretKey}}},
 			}},
 		}
+	}
+
+	// hashOf resolves ws against one version of a Secret with the given data.
+	// The UID and resourceVersion stay fixed, as no API server would keep them
+	// across a change of data, so only what differs between two calls can move
+	// the hash.
+	hashOf := func(ws *cloudflarev1alpha1.WorkerScript, data map[string][]byte) string {
+		c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: ns, UID: "secret-uid", ResourceVersion: "7"},
+			Data:       data,
+		}).Build()
+		refs := map[string]string{}
+		Expect(resolveWorkerUpload(ctx, c, ws, refs)).To(BeNil())
+		return refs[workerHashValue]
+	}
+
+	It("uploads a Secret's value, and leaves it out of the hash", func() {
+		ws := secretBound("api-key")
+		one := map[string][]byte{"api-key": []byte("one")}
+		two := map[string][]byte{"api-key": []byte("two")}
+		Expect(hashOf(ws, one)).To(Equal(hashOf(ws, two)), "two values, in one version of the Secret")
+	})
+
+	It("hashes the key a binding reads, the Secret's version unchanged", func() {
+		data := map[string][]byte{"api-key": []byte("value"), "other-key": []byte("value")}
+		Expect(hashOf(secretBound("api-key"), data)).NotTo(Equal(hashOf(secretBound("other-key"), data)),
+			"another key can hold another value, and the Secret's version would not show it")
+	})
+
+	It("hashes a Secret's version", func() {
+		secret := createSecret()
+		ws := secretBound("api-key")
 		first := map[string]string{}
 		Expect(resolveWorkerUpload(ctx, k8sClient, ws, first)).To(BeNil())
 		Expect(workerUpload(ws, first).Bindings["API_KEY"]).To(Equal(cf.WorkerSecretTextBinding{Text: "value"}))
