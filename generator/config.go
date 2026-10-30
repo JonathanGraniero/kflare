@@ -487,6 +487,11 @@ func (f fieldConfig) validateRef(name string) error {
 const (
 	scopeAccount = "account"
 	scopeZone    = "zone"
+
+	// accountRefName and accountRefField are the Go and JSON names of the spec
+	// field an account's kind names its account with.
+	accountRefName  = "AccountRef"
+	accountRefField = "accountRef"
 )
 
 // validateDeletionBlockers checks a kind's deletion blockers.

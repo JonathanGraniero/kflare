@@ -76,12 +76,8 @@ func dependents[T any, P interface {
 }
 
 var (
-	// accountDependents use a CloudflareAccount's credentials directly: the
-	// hand-written kinds listed here, and the generated ones.
-	accountDependents = append([]dependentKind{
-		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
-			func(w *cloudflarev1alpha1.WorkerScript) []string { return []string{w.Spec.AccountRef.Name} }),
-	}, generatedAccountDependents...)
+	// accountDependents use a CloudflareAccount's credentials directly.
+	accountDependents = generatedAccountDependents
 
 	// zoneDependents live in a Zone's namespace and reference it by name: the
 	// generated kinds of a zone.

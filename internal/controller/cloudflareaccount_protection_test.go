@@ -185,7 +185,13 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 						CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "t-token"},
 					}}},
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: metav1.ObjectMeta{Name: "protect-worker", Namespace: ns},
-				Spec: cloudflarev1alpha1.WorkerScriptSpec{Name: "w", AccountRef: ref, Script: &script}},
+				Spec: cloudflarev1alpha1.WorkerScriptSpec{
+					AccountRef: ref,
+					WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+						Name:   "w",
+						Script: &script,
+					},
+				}},
 		)
 		for _, z := range []string{"protect-z1", "protect-z2", "protect-z3", "protect-z4"} {
 			dependents = append(dependents, &cloudflarev1alpha1.Zone{ObjectMeta: metav1.ObjectMeta{Name: z, Namespace: ns},

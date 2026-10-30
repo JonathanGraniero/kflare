@@ -161,16 +161,18 @@ var _ = Describe("WorkerScript Controller", func() {
 	// baseSpec is an inline module Worker with one binding of each kind.
 	baseSpec := func() cloudflarev1alpha1.WorkerScriptSpec {
 		return cloudflarev1alpha1.WorkerScriptSpec{
-			Name:               scriptName,
-			AccountRef:         corev1.LocalObjectReference{Name: accountName},
-			Script:             cf.StringPtr(inlineCode),
-			CompatibilityDate:  "2024-09-23",
-			CompatibilityFlags: []string{"nodejs_compat"},
-			Bindings: []cloudflarev1alpha1.WorkerBinding{
-				{Name: "GREETING", PlainText: new("hello")},
-				{Name: "API_KEY", SecretKeyRef: &cloudflarev1alpha1.WorkerKeyReference{Name: bindingSecret, Key: "api-key"}},
-				{Name: "CACHE", KVNamespaceID: new("kv-123")},
-				{Name: "BUCKET", R2BucketName: new("assets")},
+			AccountRef: corev1.LocalObjectReference{Name: accountName},
+			WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+				Name:               scriptName,
+				Script:             cf.StringPtr(inlineCode),
+				CompatibilityDate:  "2024-09-23",
+				CompatibilityFlags: []string{"nodejs_compat"},
+				Bindings: []cloudflarev1alpha1.WorkerBinding{
+					{Name: "GREETING", PlainText: new("hello")},
+					{Name: "API_KEY", SecretKeyRef: &cloudflarev1alpha1.WorkerKeyReference{Name: bindingSecret, Key: "api-key"}},
+					{Name: "CACHE", KVNamespaceID: new("kv-123")},
+					{Name: "BUCKET", R2BucketName: new("assets")},
+				},
 			},
 		}
 	}
@@ -450,7 +452,9 @@ var _ = Describe("WorkerScript Controller", func() {
 				fake.uploadResp = uploadResp("etag-1", uploadedAt.Add(time.Minute))
 				_, err = reconcileWorker(r)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers", "UploadWorker"}))
+				// A deleted Worker is looked for again before its upload, with one more
+				// read.
+				Expect(fake.uploads).To(HaveLen(2), "the Worker is uploaded again")
 				Expect(getWorker().Status.CloudflareMetadata.ModifiedOn).To(Equal("2026-10-03T02:14:10.984591Z"))
 			},
 			Entry("modified (for example a binding edited in the dashboard)", []cf.WorkerMetaData{
@@ -556,6 +560,16 @@ var _ = Describe("WorkerScript Controller", func() {
 			Expect(getWorker().Annotations).NotTo(HaveKey(reconciler.CreatingAnnotation))
 		})
 
+		It("goes on managing the Worker of a WorkerScript from an earlier release, without a claim or a scriptName", func() {
+			readyEnv(nil)
+			setUploadedStatus(uploadedAtStr)
+			fake := syncedFake()
+			_, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			expectReady(metav1.ConditionTrue, "Synced")
+			Expect(getWorker().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+		})
+
 		It("uploads a Worker deleted outside kflare again as its own with adopt-or-create", func() {
 			readyEnv(map[string]string{
 				reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate,
@@ -565,7 +579,7 @@ var _ = Describe("WorkerScript Controller", func() {
 			fake := syncedFake()
 			_, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker"}))
+			Expect(fake.uploads).To(HaveLen(1))
 			Expect(getWorker().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation), "kflare uploaded this one")
 		})
 

@@ -333,9 +333,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		tunnel := &cloudflarev1alpha1.Tunnel{
 			ObjectMeta: metav1.ObjectMeta{Name: tunnelKey.Name, Namespace: e2eNamespace},
 			Spec: cloudflarev1alpha1.TunnelSpec{
-				Name:             resourceName(),
-				AccountRef:       corev1.LocalObjectReference{Name: accountKey.Name},
-				TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tunnel-token"}},
+				Name:       resourceName(),
+				AccountRef: corev1.LocalObjectReference{Name: accountKey.Name},
+				TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{
+					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tunnel-token"},
+				},
 			},
 		}
 		Expect(k8s.Create(ctx, tunnel)).To(Succeed())
@@ -538,14 +540,16 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		worker := &cloudflarev1alpha1.WorkerScript{
 			ObjectMeta: metav1.ObjectMeta{Name: workerKey.Name, Namespace: e2eNamespace},
 			Spec: cloudflarev1alpha1.WorkerScriptSpec{
-				Name:              resourceName(),
-				AccountRef:        corev1.LocalObjectReference{Name: accountKey.Name},
-				Script:            &script,
-				CompatibilityDate: "2024-09-23",
-				Bindings: []cloudflarev1alpha1.WorkerBinding{
-					{Name: "GREETING", PlainText: &greeting},
-					{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvKey.Name}},
-					{Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: bucketKey.Name}},
+				AccountRef: corev1.LocalObjectReference{Name: accountKey.Name},
+				WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+					Name:              resourceName(),
+					Script:            &script,
+					CompatibilityDate: "2024-09-23",
+					Bindings: []cloudflarev1alpha1.WorkerBinding{
+						{Name: "GREETING", PlainText: &greeting},
+						{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvKey.Name}},
+						{Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: bucketKey.Name}},
+					},
 				},
 			},
 		}

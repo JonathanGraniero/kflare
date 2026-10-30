@@ -383,78 +383,13 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 		}
 	}
 
-	// No object yet: find the parent's object with this key. It is this
-	// resource's own when its claim or its creating annotation says so (an
-	// earlier reconcile did not record it in status); another resource of the
-	// kind may claim it; otherwise the resource adopts it only if its adoption
-	// policy allows. Without one, it creates the object, unless the policy is
-	// adopt. An object found in the list is read by its ID, for all that the
-	// list leaves out.
 	adopting := false
 	if current == nil {
-		key := k.key(obj)
-		if k.hooks.key != nil {
-			key = k.hooks.key(obj, refs)
+		found, adopted, done, result, err := r.findOrCreate(ctx, obj, parentID, refs, api)
+		if done {
+			return result, err
 		}
-		what := fmt.Sprintf("%s %q", k.noun, key)
-		id, found, err := r.find(ctx, api, obj, parentID, key, refs)
-		if err != nil {
-			return handleCloudflareError(ctx, r.Client, obj, err)
-		}
-		if id != "" {
-			owner, err := r.claimant(ctx, obj, parentID, id)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			if owner != "" {
-				return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
-					Reason:  k.conflictReason,
-					Message: fmt.Sprintf("%s is already managed by %s %s", what, k.name, owner),
-				})
-			}
-			own := ownsID(obj, k.claimLabel, id) || creating(obj, key)
-			if !own {
-				if condErr := mayAdopt(obj, what); condErr != nil {
-					return notReadyRetryAfter(ctx, r.Client, obj, condErr)
-				}
-			}
-			if found == nil {
-				found, err = k.get(ctx, api, obj, parentID, id)
-				switch {
-				case cfpkg.IsNotFound(err):
-					logger.Info(k.noun+" deleted since it was listed", "key", key, "id", id)
-				case err != nil:
-					return handleCloudflareError(ctx, r.Client, obj, err)
-				}
-			}
-			if found != nil && k.hooks.refuse != nil {
-				if condErr := k.hooks.refuse(found); condErr != nil {
-					return notReadyRetryAfter(ctx, r.Client, obj, condErr)
-				}
-			}
-			switch {
-			case found == nil:
-			case own:
-				current = found
-				logger.Info("Found the "+k.noun+" this resource created", "key", key, "id", id)
-			default:
-				current, adopting = found, true
-				logger.Info("Adopted existing "+k.noun, "key", key, "id", id)
-			}
-		}
-		if current == nil {
-			if condErr := mayCreate(obj, what); condErr != nil {
-				return notReadyRetryAfter(ctx, r.Client, obj, condErr)
-			}
-			if err := markCreating(ctx, r.Client, obj, key); err != nil {
-				return ctrl.Result{}, err
-			}
-			current, err = k.create(ctx, api, parentID, obj, refs)
-			if err != nil {
-				return handleCloudflareError(ctx, r.Client, obj, err)
-			}
-			logger.Info("Created "+k.noun, "key", key, "id", k.id(current))
-		}
+		current, adopting = found, adopted
 	}
 
 	// Claim the object before anything else can fail, so no other resource of
@@ -487,6 +422,87 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 		}
 	}
 	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
+}
+
+// findOrCreate returns the object of a resource whose status records none:
+// the parent's object with its key, which is the resource's own when its claim
+// or its creating annotation says so (an earlier reconcile did not record it in
+// status), or which it adopts, as its adoption policy allows, unless another
+// resource of the kind claims it. Without one, it creates the object, unless the
+// policy is adopt. An object found in the list is read by its ID, for all that
+// the list leaves out. done ends the reconcile with result and err.
+func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, obj O, parentID string,
+	refs map[string]string, api A) (current *R, adopting, done bool, result ctrl.Result, err error) {
+	logger := log.FromContext(ctx)
+	k := r.kind
+	stop := func(result ctrl.Result, err error) (*R, bool, bool, ctrl.Result, error) {
+		return nil, false, true, result, err
+	}
+
+	key := k.key(obj)
+	if k.hooks.key != nil {
+		key = k.hooks.key(obj, refs)
+	}
+	what := fmt.Sprintf("%s %q", k.noun, key)
+	id, found, err := r.find(ctx, api, obj, parentID, key, refs)
+	if err != nil {
+		return stop(handleCloudflareError(ctx, r.Client, obj, err))
+	}
+	if id != "" {
+		owner, err := r.claimant(ctx, obj, parentID, id)
+		if err != nil {
+			return stop(ctrl.Result{}, err)
+		}
+		if owner != "" {
+			return stop(notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
+				Reason:  k.conflictReason,
+				Message: fmt.Sprintf("%s is already managed by %s %s", what, k.name, owner),
+			}))
+		}
+		own := ownsID(obj, k.claimLabel, id) || creating(obj, key)
+		if !own {
+			if condErr := mayAdopt(obj, what); condErr != nil {
+				return stop(notReadyRetryAfter(ctx, r.Client, obj, condErr))
+			}
+		}
+		if found == nil {
+			found, err = k.get(ctx, api, obj, parentID, id)
+			switch {
+			case cfpkg.IsNotFound(err):
+				logger.Info(k.noun+" deleted since it was listed", "key", key, "id", id)
+			case err != nil:
+				return stop(handleCloudflareError(ctx, r.Client, obj, err))
+			}
+		}
+		if found != nil && k.hooks.refuse != nil {
+			if condErr := k.hooks.refuse(found); condErr != nil {
+				return stop(notReadyRetryAfter(ctx, r.Client, obj, condErr))
+			}
+		}
+		switch {
+		case found == nil:
+		case own:
+			current = found
+			logger.Info("Found the "+k.noun+" this resource created", "key", key, "id", id)
+		default:
+			current, adopting = found, true
+			logger.Info("Adopted existing "+k.noun, "key", key, "id", id)
+		}
+	}
+	if current == nil {
+		if condErr := mayCreate(obj, what); condErr != nil {
+			return stop(notReadyRetryAfter(ctx, r.Client, obj, condErr))
+		}
+		if err := markCreating(ctx, r.Client, obj, key); err != nil {
+			return stop(ctrl.Result{}, err)
+		}
+		current, err = k.create(ctx, api, parentID, obj, refs)
+		if err != nil {
+			return stop(handleCloudflareError(ctx, r.Client, obj, err))
+		}
+		logger.Info("Created "+k.noun, "key", key, "id", k.id(current))
+	}
+	return current, adopting, false, ctrl.Result{}, nil
 }
 
 // find returns the ID of the parent's object with key, or "" when there is

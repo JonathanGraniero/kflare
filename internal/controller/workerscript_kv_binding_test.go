@@ -100,9 +100,13 @@ var _ = Describe("WorkerScript kvNamespaceRef bindings", func() {
 		Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.WorkerScript{
 			ObjectMeta: metav1.ObjectMeta{Name: wsName, Namespace: ns, Finalizers: []string{reconciler.Finalizer}},
 			Spec: cloudflarev1alpha1.WorkerScriptSpec{
-				Name: "wskv-script", AccountRef: corev1.LocalObjectReference{Name: accountName}, Script: &script,
-				Bindings: []cloudflarev1alpha1.WorkerBinding{
-					{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvName}},
+				AccountRef: corev1.LocalObjectReference{Name: accountName},
+				WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+					Name:   "wskv-script",
+					Script: &script,
+					Bindings: []cloudflarev1alpha1.WorkerBinding{
+						{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvName}},
+					},
 				},
 			},
 		})).To(Succeed())

@@ -60,7 +60,7 @@ spec:
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns this Worker.
+                  AccountRef references the CloudflareAccount that owns the Worker.
                   Immutable after creation.
                 properties:
                   name:
@@ -239,8 +239,8 @@ spec:
                   the Secret's UID and resourceVersion, never its value.
                 type: string
               cloudflareMetadata:
-                description: CloudflareMetadata holds metadata returned by the Cloudflare
-                  API.
+                description: CloudflareMetadata holds identifiers returned by the
+                  Cloudflare API.
                 properties:
                   etag:
                     description: |-
@@ -252,6 +252,10 @@ spec:
                       ModifiedOn is the modification time Cloudflare reported for kflare's
                       last upload, kept at full precision. A different value on Cloudflare
                       means the Worker was changed outside kflare.
+                    type: string
+                  scriptName:
+                    description: ScriptName is the name of the Worker kflare last
+                      uploaded.
                     type: string
                 type: object
               conditions:

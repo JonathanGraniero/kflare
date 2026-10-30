@@ -289,9 +289,11 @@ var crudReferencedKinds = map[string]func(key types.NamespacedName, account stri
 		ws := &cloudflarev1alpha1.WorkerScript{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: cloudflarev1alpha1.WorkerScriptSpec{
-				Name:       "worker-" + key.Name,
 				AccountRef: corev1.LocalObjectReference{Name: account},
-				Script:     new("export default { fetch() { return new Response('ok') } }"),
+				WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+					Name:   "worker-" + key.Name,
+					Script: new("export default { fetch() { return new Response('ok') } }"),
+				},
 			},
 		}
 		return ws, ws.Spec.Name

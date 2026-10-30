@@ -1579,3 +1579,21 @@ hookedKinds:
     columns:
       - {name: Tunnel, type: string, path: .spec.tunnelRef.name}
       - {name: Version, type: integer, path: .status.cloudflareMetadata.version}
+  - kind: WorkerScript
+    scope: account
+    shortName: cfworker
+    noun: Worker
+    doc: |
+      WorkerScript is the Schema for the workerscripts API.
+      It represents a Cloudflare Worker script and its bindings.
+    id:
+      field: id
+      status: scriptName
+      doc: ScriptName is the name of the Worker kflare last uploaded.
+    claimLabel: kflare.dev/worker-name
+    specExtras: WorkerScriptSpecExtras
+    metadataExtras: WorkerScriptMetadataExtras
+    statusExtras: WorkerScriptStatusExtras
+    columns:
+      - {name: Script, type: string, path: .spec.name}
+      - {name: Modified, type: string, path: .status.cloudflareMetadata.modifiedOn}

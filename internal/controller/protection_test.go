@@ -9,10 +9,10 @@ package controller
 import (
 	"context"
 	"errors"
-	cf "github.com/cloudflare/cloudflare-go"
-	"github.com/cloudflare/cloudflare-go/v7/shared"
 	"time"
 
+	cf "github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"

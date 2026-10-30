@@ -327,31 +327,7 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("func (r *%sReconciler) Reconcile(ctx %s.Context, req %s.Request) (%s.Result, error) {\n", name, ctx, ctrl,
 		ctrl)
 	f.printf("return r.crud().reconcile(ctx, req)\n}\n\n")
-	clauses := []string{fmt.Sprintf("CloudflareAccounts, so %s waiting for its account is reconciled once the "+
-		"account is ready", article(name))}
-	if c.zoned {
-		clauses[0] = fmt.Sprintf("Zones, so %s waiting for its Zone is reconciled once the Zone is ready", article(name))
-	}
-	for _, af := range c.references {
-		clauses = append(clauses, fmt.Sprintf("%s, so %s waiting for the %s its %s names is reconciled once it is "+
-			"ready", pluralOf(af.ref.Kind), article(name), af.ref.Kind, af.jsonName))
-	}
-	if len(c.dependents) > 0 {
-		var kinds []string
-		for _, d := range c.dependents {
-			kinds = append(kinds, pluralOf(d.Kind))
-		}
-		clauses = append(clauses, fmt.Sprintf("deleted %s, so %s waiting for them is released", prose(kinds),
-			article(name)))
-	}
-	setupDoc := fmt.Sprintf("SetupWithManager registers %sReconciler with the manager. It watches %s", name,
-		strings.Join(clauses[:len(clauses)-1], ", "))
-	if len(clauses) > 1 {
-		setupDoc += ", and " + clauses[len(clauses)-1]
-	} else {
-		setupDoc += clauses[0]
-	}
-	comment(&f.Builder, "", wrap(setupDoc+"."))
+	comment(&f.Builder, "", wrap(setupDoc(c)))
 	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nreturn r.crud().setup(mgr, r)\n}\n\n",
 		name, ctrl)
 
@@ -372,6 +348,36 @@ func emitController(c *controller, header string) ([]byte, error) {
 	}
 	f.printf("return %s, nil\n}\n", build)
 	return f.source(header)
+}
+
+// setupDoc documents a kind's SetupWithManager: what it watches, and why.
+func setupDoc(c *controller) string {
+	name := c.name
+	clauses := []string{fmt.Sprintf("CloudflareAccounts, so %s waiting for its account is reconciled once the "+
+		"account is ready", article(name))}
+	if c.zoned {
+		clauses[0] = fmt.Sprintf("Zones, so %s waiting for its Zone is reconciled once the Zone is ready", article(name))
+	}
+	for _, af := range c.references {
+		clauses = append(clauses, fmt.Sprintf("%s, so %s waiting for the %s its %s names is reconciled once it is "+
+			"ready", pluralOf(af.ref.Kind), article(name), af.ref.Kind, af.jsonName))
+	}
+	if len(c.dependents) > 0 {
+		kinds := make([]string, 0, len(c.dependents))
+		for _, d := range c.dependents {
+			kinds = append(kinds, pluralOf(d.Kind))
+		}
+		clauses = append(clauses, fmt.Sprintf("deleted %s, so %s waiting for them is released", prose(kinds),
+			article(name)))
+	}
+	doc := fmt.Sprintf("SetupWithManager registers %sReconciler with the manager. It watches %s", name,
+		strings.Join(clauses[:len(clauses)-1], ", "))
+	if len(clauses) > 1 {
+		doc += ", and " + clauses[len(clauses)-1]
+	} else {
+		doc += clauses[0]
+	}
+	return doc + "."
 }
 
 // hooksAPI reports whether the kind's hooks make calls of their own.
@@ -811,7 +817,7 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 		f.printf("defaultAPI: default%s,\nservice: &%s{},\n", api,
 			f.typ(c.svc.pkg.Scope().Lookup(c.svc.typeName).Type()))
 	}
-	parentRef := "AccountRef"
+	parentRef := accountRefName
 	if c.zoned {
 		parentRef = "ZoneRef"
 	}
@@ -870,7 +876,7 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	}
 	edits("changes", c.changes)
 	f.printf("immutable: []crudSpecEdit[%s]{\n", obj)
-	parentField, parentName := "accountRef", "other-account"
+	parentField, parentName := accountRefField, "other-account"
 	if c.zoned {
 		parentField, parentName = zoneRefField, "other-zone"
 	}

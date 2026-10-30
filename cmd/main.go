@@ -186,13 +186,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareAccount")
 		os.Exit(1)
 	}
-	if err = (&controller.WorkerScriptReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "WorkerScript")
-		os.Exit(1)
-	}
 	// The kinds kflare-gen generates, KVNamespace among them.
 	if err = controller.SetupGeneratedReconcilers(mgr); err != nil {
 		setupLog.Error(err, "unable to create controllers")

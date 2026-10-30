@@ -207,9 +207,11 @@ var pausedKinds = []pausedKind{
 			return &cloudflarev1alpha1.WorkerScript{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
 				Spec: cloudflarev1alpha1.WorkerScriptSpec{
-					Name:       name,
 					AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
-					Script:     new("export default { fetch() { return new Response('paused') } }"),
+					WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+						Name:   name,
+						Script: new("export default { fetch() { return new Response('paused') } }"),
+					},
 				},
 			}
 		},

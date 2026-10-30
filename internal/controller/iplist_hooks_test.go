@@ -175,8 +175,9 @@ var _ = Describe("IPList hooks", func() {
 		Expect(condition().Reason).To(Equal("Synced"))
 	}
 	stored := func() []string {
-		var out []string
-		for _, item := range items.items[getList().Status.CloudflareMetadata.ListID] {
+		listed := items.items[getList().Status.CloudflareMetadata.ListID]
+		out := make([]string, 0, len(listed))
+		for _, item := range listed {
 			out = append(out, strings.TrimSpace(item.IP+" "+item.Comment))
 		}
 		return out

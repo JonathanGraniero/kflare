@@ -8,7 +8,6 @@ package controller
 
 import (
 	"context"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
@@ -18,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"

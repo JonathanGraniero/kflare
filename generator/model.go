@@ -179,13 +179,7 @@ func (b *kindBuilder) build() (*kind, error) {
 	}
 	k := &kind{name: e.Kind, shortName: e.ShortName, noun: e.Noun, plural: plural(e.Kind), doc: lines(e.Doc),
 		claimLabel: e.ClaimLabel, fixed: map[string]string{}}
-	parent := field{
-		goName: "AccountRef", jsonName: "accountRef", goType: "corev1.LocalObjectReference", immutable: true,
-		doc: []string{
-			fmt.Sprintf("AccountRef references the CloudflareAccount that owns the %s.", e.Noun),
-			"Immutable after creation.",
-		},
-	}
+	parent := accountRefSpecField(e.Noun)
 	if e.Scope == scopeZone {
 		parent.goName, parent.jsonName = "ZoneRef", zoneRefField
 		parent.doc = append(wrapIndented(fmt.Sprintf("ZoneRef references the Zone, in the same namespace, the %s "+
@@ -193,66 +187,9 @@ func (b *kindBuilder) build() (*kind, error) {
 	}
 	k.spec = append(k.spec, parent)
 
-	// reported holds the fields of the object that New's params set, by API
-	// name: status holds the object's other fields.
-	reported := map[string]bool{}
-	var specColumns []printColumn
-	for _, f := range b.svc.create {
-		if isParent(f) {
-			continue
-		}
-		object, err := b.objectCounterpart(f)
-		if err != nil {
-			return nil, err
-		}
-		// Status records the value a reference gives too: the spec holds only
-		// the referenced resource's name.
-		if object != nil && e.Fields[f.apiName].Ref == nil {
-			reported[object.apiName] = true
-		}
-		if value, ok := e.Fixed[f.apiName]; ok {
-			b.used[f.apiName] = true
-			if err := b.checkFixed(f, value); err != nil {
-				return nil, err
-			}
-			k.fixed[f.apiName] = value
-			continue
-		}
-		if b.ignored(f.apiName) {
-			if f.required && !e.Hooks.params() {
-				return nil, fmt.Errorf("%s is required to create the object, so it cannot be ignored", f.apiName)
-			}
-			continue
-		}
-		if f.in != inBody && f.in != inHeader {
-			return nil, fmt.Errorf("%s is a %s parameter, which kflare-gen cannot map yet; ignore it with a reason",
-				f.apiName, f.in)
-		}
-		out, column, err := b.field(f, true)
-		if err != nil {
-			return nil, err
-		}
-		if !b.updatable(f) {
-			out.immutable = true
-			if out.optional && out.def == "" {
-				// self == oldSelf holds only while the field is set: it must
-				// not be added or removed either. A field with a default is
-				// always set.
-				k.specRules = append(k.specRules, fmt.Sprintf(
-					`+kubebuilder:validation:XValidation:rule="has(self.%[1]s) == has(oldSelf.%[1]s)",message="%[1]s is immutable"`,
-					out.jsonName))
-			}
-		}
-		k.spec = append(k.spec, out)
-		specColumns = append(specColumns, column...)
-	}
-	for _, f := range b.svc.update {
-		if f.in != inBody && f.in != inHeader || isParent(f) || counterpart(b.svc.create, f) != nil ||
-			b.ignored(f.apiName) {
-			continue
-		}
-		return nil, fmt.Errorf("%s can be updated but not set at creation, which kflare-gen cannot map yet; "+
-			"ignore it with a reason", f.apiName)
+	reported, specColumns, err := b.specFields(k, isParent)
+	if err != nil {
+		return nil, err
 	}
 	if err := b.checkReportedAs(k); err != nil {
 		return nil, err
@@ -287,6 +224,87 @@ func (b *kindBuilder) build() (*kind, error) {
 		}
 	}
 	return k, nil
+}
+
+// specFields adds the spec's fields to k, from New's params: each is placed,
+// fixed or ignored. It returns the fields of the object those params set, by API
+// name, and the fields' print columns.
+func (b *kindBuilder) specFields(k *kind, isParent func(sdkField) bool) (map[string]bool, []printColumn, error) {
+	e := b.entry
+	// reported holds the fields of the object that New's params set, by API
+	// name: status holds the object's other fields.
+	reported := map[string]bool{}
+	var specColumns []printColumn
+	for _, f := range b.svc.create {
+		if isParent(f) {
+			continue
+		}
+		object, err := b.objectCounterpart(f)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Status records the value a reference gives too: the spec holds only
+		// the referenced resource's name.
+		if object != nil && e.Fields[f.apiName].Ref == nil {
+			reported[object.apiName] = true
+		}
+		if value, ok := e.Fixed[f.apiName]; ok {
+			b.used[f.apiName] = true
+			if err := b.checkFixed(f, value); err != nil {
+				return nil, nil, err
+			}
+			k.fixed[f.apiName] = value
+			continue
+		}
+		if b.ignored(f.apiName) {
+			if f.required && !e.Hooks.params() {
+				return nil, nil, fmt.Errorf("%s is required to create the object, so it cannot be ignored", f.apiName)
+			}
+			continue
+		}
+		if f.in != inBody && f.in != inHeader {
+			return nil, nil, fmt.Errorf("%s is a %s parameter, which kflare-gen cannot map yet; ignore it with a reason",
+				f.apiName, f.in)
+		}
+		out, column, err := b.field(f, true)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !b.updatable(f) {
+			out.immutable = true
+			if out.optional && out.def == "" {
+				// self == oldSelf holds only while the field is set: it must
+				// not be added or removed either. A field with a default is
+				// always set.
+				k.specRules = append(k.specRules, fmt.Sprintf(
+					`+kubebuilder:validation:XValidation:rule="has(self.%[1]s) == has(oldSelf.%[1]s)",message="%[1]s is immutable"`,
+					out.jsonName))
+			}
+		}
+		k.spec = append(k.spec, out)
+		specColumns = append(specColumns, column...)
+	}
+	for _, f := range b.svc.update {
+		if f.in != inBody && f.in != inHeader || isParent(f) || counterpart(b.svc.create, f) != nil ||
+			b.ignored(f.apiName) {
+			continue
+		}
+		return nil, nil, fmt.Errorf("%s can be updated but not set at creation, which kflare-gen cannot map yet; "+
+			"ignore it with a reason", f.apiName)
+	}
+	return reported, specColumns, nil
+}
+
+// accountRefSpecField is the spec field that names the CloudflareAccount of an
+// account's kind, whose objects docs and messages call noun.
+func accountRefSpecField(noun string) field {
+	return field{
+		goName: accountRefName, jsonName: accountRefField, goType: "corev1.LocalObjectReference", immutable: true,
+		doc: []string{
+			fmt.Sprintf("AccountRef references the CloudflareAccount that owns the %s.", noun),
+			"Immutable after creation.",
+		},
+	}
 }
 
 // loadSpec reads the spec's properties of the create request and of the
@@ -533,10 +551,9 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 		return field{}, nil, fmt.Errorf("%s is sensitive (x-sensitive), and kflare-gen cannot keep it in a Secret "+
 			"yet; ignore it with a reason", f.apiName)
 	}
-	integer := adjust.Validation != nil && adjust.Validation.Integer
-	if integer && (basicClass(f.typ) != types.IsNumeric || fs.typ == typeInteger) {
-		return field{}, nil, fmt.Errorf("fields.%s.validation.integer: only a number the OpenAPI spec does not say "+
-			"is an integer is made one", f.apiName)
+	integer, err := integerField(f, adjust, fs)
+	if err != nil {
+		return field{}, nil, err
 	}
 	goType, column, err := goTypeOf(f, fs.typ, integer)
 	if err != nil {
@@ -544,12 +561,8 @@ func (b *kindBuilder) field(f sdkField, spec bool) (field, []printColumn, error)
 	}
 	out := field{apiName: f.apiName, goName: f.goName, jsonName: lowerCamel(f.goName), goType: goType,
 		optional: !spec || !f.required}
-	if adjust.Clearable {
-		if !spec || !out.optional || goType != typeString || !b.updatable(f) {
-			return field{}, nil, fmt.Errorf("fields.%s.clearable: only an optional string Update takes is cleared",
-				f.apiName)
-		}
-		out.clearable = true
+	if out.clearable, err = b.clearable(f, adjust, spec, out); err != nil {
+		return field{}, nil, err
 	}
 	doc := adjust.Doc
 	if doc == "" {
@@ -615,6 +628,29 @@ func (b *kindBuilder) refField(f sdkField, adjust fieldConfig) (field, []printCo
 			jsonPath: ".spec." + out.jsonName + ".name"})
 	}
 	return out, columns, nil
+}
+
+// integerField reports whether the entry makes the number f an integer, which
+// only a number the OpenAPI spec does not say is one can be.
+func integerField(f sdkField, adjust fieldConfig, fs fieldSpec) (bool, error) {
+	integer := adjust.Validation != nil && adjust.Validation.Integer
+	if integer && (basicClass(f.typ) != types.IsNumeric || fs.typ == typeInteger) {
+		return false, fmt.Errorf("fields.%s.validation.integer: only a number the OpenAPI spec does not say "+
+			"is an integer is made one", f.apiName)
+	}
+	return integer, nil
+}
+
+// clearable reports whether the entry makes the field out clearable, which only
+// an optional string Update takes can be.
+func (b *kindBuilder) clearable(f sdkField, adjust fieldConfig, spec bool, out field) (bool, error) {
+	if !adjust.Clearable {
+		return false, nil
+	}
+	if !spec || !out.optional || out.goType != typeString || !b.updatable(f) {
+		return false, fmt.Errorf("fields.%s.clearable: only an optional string Update takes is cleared", f.apiName)
+	}
+	return true, nil
 }
 
 // specValidation sets a spec field's enum, default and validation: the

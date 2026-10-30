@@ -233,9 +233,11 @@ func TestCloudflareAccountList_DeepCopyObject_Nil(t *testing.T) {
 
 func TestZoneCloudflareMetadata_DeepCopy(t *testing.T) {
 	original := &ZoneCloudflareMetadata{
-		ZoneID:      "z1",
-		NameServers: []string{"ns1.example.com", "ns2.example.com"},
-		Status:      "active",
+		ZoneID: "z1",
+		ZoneMetadataExtras: ZoneMetadataExtras{
+			NameServers: []string{"ns1.example.com", "ns2.example.com"},
+			Status:      "active",
+		},
 	}
 	copy := original.DeepCopy()
 
@@ -273,9 +275,11 @@ func TestZoneCloudflareMetadata_DeepCopy_Nil(t *testing.T) {
 
 func TestZoneSpec_DeepCopy(t *testing.T) {
 	original := &ZoneSpec{
-		Name: "example.com",
-		Plan: "free",
-		Type: "full",
+		ZoneSpecExtras: ZoneSpecExtras{
+			Name: "example.com",
+			Plan: "free",
+			Type: "full",
+		},
 	}
 	copy := original.DeepCopy()
 
@@ -305,9 +309,11 @@ func TestZoneStatus_DeepCopy(t *testing.T) {
 			{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Synced"},
 		},
 		CloudflareMetadata: ZoneCloudflareMetadata{
-			ZoneID:      "z1",
-			NameServers: []string{"ns1.cloudflare.com"},
-			Status:      "active",
+			ZoneID: "z1",
+			ZoneMetadataExtras: ZoneMetadataExtras{
+				NameServers: []string{"ns1.cloudflare.com"},
+				Status:      "active",
+			},
 		},
 	}
 	copy := original.DeepCopy()
@@ -354,8 +360,10 @@ func TestZone_DeepCopy(t *testing.T) {
 	original := &Zone{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "default"},
 		Spec: ZoneSpec{
-			Name: "example.com",
-			Type: "full",
+			ZoneSpecExtras: ZoneSpecExtras{
+				Name: "example.com",
+				Type: "full",
+			},
 		},
 		Status: ZoneStatus{
 			Conditions: []metav1.Condition{

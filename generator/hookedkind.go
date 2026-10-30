@@ -26,13 +26,7 @@ func buildHookedKind(entry hookedKindConfig) *hookedKind {
 		doc: lines(entry.Doc), claimLabel: entry.ClaimLabel, fixed: map[string]string{},
 		specExtras: entry.SpecExtras, metadataExtras: entry.MetadataExtras, statusExtras: entry.StatusExtras}
 	if entry.Scope == scopeAccount {
-		k.spec = append(k.spec, field{
-			goName: "AccountRef", jsonName: "accountRef", goType: "corev1.LocalObjectReference", immutable: true,
-			doc: []string{
-				fmt.Sprintf("AccountRef references the CloudflareAccount that owns the %s.", entry.Noun),
-				"Immutable after creation.",
-			},
-		})
+		k.spec = append(k.spec, accountRefSpecField(entry.Noun))
 	}
 	k.metadata = append(k.metadata, field{
 		apiName: entry.ID.Field, goName: upperCamel(entry.ID.Status), jsonName: entry.ID.Status, goType: typeString,

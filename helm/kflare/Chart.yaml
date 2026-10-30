@@ -343,32 +343,33 @@ annotations:
       metadata:
         annotations:
           kflare.dev/deletion-policy: retain
-        name: www-a-record
+        name: example-dnsrecord
         namespace: default
       spec:
-        content: 1.2.3.4
+        comment: The web server.
+        content: 192.0.2.1
         name: www.example.com
-        proxied: true
-        ttl: 1
         type: A
         zoneRef:
           name: example-zone
     - apiVersion: kflare.dev/v1alpha1
       kind: IPList
       metadata:
-        name: office-ips
+        annotations:
+          kflare.dev/deletion-policy: retain
+        name: example-iplist
         namespace: default
       spec:
         accountRef:
           name: my-account
-        description: Office egress addresses
+        description: Addresses of example.com's offices.
         items:
         - comment: Head office
           ip: 192.0.2.1
         - comment: Branch office
           ip: 198.51.100.0/24
         - ip: 2001:db8::/48
-        name: office_ips
+        name: example_ips
     - apiVersion: kflare.dev/v1alpha1
       kind: KVNamespace
       metadata:

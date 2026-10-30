@@ -255,7 +255,8 @@ func TestParseRoutes(t *testing.T) {
 func TestUnionBody(t *testing.T) {
 	svc := loadTestService(t, "dns.RecordService")
 	create := svc.calls["New"]
-	if create.body == nil || create.body.goName != "Body" || !strings.HasSuffix(create.body.typ.String(), ".RecordNewParamsBody") {
+	if create.body == nil || create.body.goName != "Body" ||
+		!strings.HasSuffix(create.body.typ.String(), ".RecordNewParamsBody") {
 		t.Fatalf("New's body = %+v", create.body)
 	}
 	byName := map[string]sdkField{}
@@ -280,7 +281,8 @@ func TestUnionBodyRefuses(t *testing.T) {
 	if _, err := r.bodyVariant(types.Typ[types.String]); err == nil || !strings.Contains(err.Error(), "no named union") {
 		t.Errorf("a type without a name: err = %v", err)
 	}
-	union := types.NewNamed(types.NewTypeName(token.NoPos, svc.pkg, "NoSuchBodyUnion", nil), types.NewInterfaceType(nil, nil), nil)
+	name := types.NewTypeName(token.NoPos, svc.pkg, "NoSuchBodyUnion", nil)
+	union := types.NewNamed(name, types.NewInterfaceType(nil, nil), nil)
 	if _, err := r.bodyVariant(union); err == nil || !strings.Contains(err.Error(), "has no variant NoSuchBody") {
 		t.Errorf("a union without a variant: err = %v", err)
 	}
