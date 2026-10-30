@@ -591,7 +591,7 @@ rule kinds reconciling at once share a phase's ruleset). The autoscaler and the 
   two-replica install gets a PDB that a node drain respects. Both hold (above)
 
 #### Autoscaling and resources (`feat/chart-autoscaling`)
-**Status:** 🚧 Draft PR, 2026-10-30. The user asked for a HorizontalPodAutoscaler on 2026-10-30, from 1 to 10 replicas,
+**Status:** 🚧 Draft PR #124, 2026-10-30. The user asked for a HorizontalPodAutoscaler on 2026-10-30, from 1 to 10 replicas,
 on by default with values to tune it, and for CPU and memory limits; told first that only the leader reconciles (#67's
 section 4), so that the replicas it adds are standbys, they chose it as asked. Its targets and the resources were left
 to me, from measurements. Covers [#70](https://github.com/JonathanGraniero/kflare/issues/70)'s sizing guidance; its
