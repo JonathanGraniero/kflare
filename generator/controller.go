@@ -77,7 +77,7 @@ type controller struct {
 	listedID, listedKey sdkField
 	// conflictReason is the reason a resource reports when another one
 	// manages the object it would adopt.
-	conflictReason   string
+	conflictReason string
 	// hooks is what the kind's hand-written hooks add; nil without hooks.
 	hooks            *hooksConfig
 	dependents       []dependentConfig

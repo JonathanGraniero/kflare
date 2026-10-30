@@ -56,6 +56,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&TransformRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the TransformRule controller: %w", err)
 	}
+	if err := (&TunnelReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the Tunnel controller: %w", err)
+	}
 	if err := (&WAFCustomRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the WAFCustomRule controller: %w", err)
 	}
@@ -77,6 +80,8 @@ var generatedAccountDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.KVNamespace) []string { return []string{obj.Spec.AccountRef.Name} }),
 	dependents("R2Bucket", func() client.ObjectList { return &cloudflarev1alpha1.R2BucketList{} },
 		func(obj *cloudflarev1alpha1.R2Bucket) []string { return []string{obj.Spec.AccountRef.Name} }),
+	dependents("Tunnel", func() client.ObjectList { return &cloudflarev1alpha1.TunnelList{} },
+		func(obj *cloudflarev1alpha1.Tunnel) []string { return []string{obj.Spec.AccountRef.Name} }),
 }
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule

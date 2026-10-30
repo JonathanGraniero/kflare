@@ -22,6 +22,7 @@ resources:
 - bases/kflare.dev_ratelimitrules.yaml
 - bases/kflare.dev_redirectrules.yaml
 - bases/kflare.dev_transformrules.yaml
+- bases/kflare.dev_tunnels.yaml
 - bases/kflare.dev_wafcustomrules.yaml
 - bases/kflare.dev_workerroutes.yaml
 # +kflare-gen:end

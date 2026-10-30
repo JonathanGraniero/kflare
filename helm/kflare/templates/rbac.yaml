@@ -137,6 +137,7 @@ rules:
       - ratelimitrules
       - redirectrules
       - transformrules
+      - tunnels
       - wafcustomrules
       - workerroutes
       # +kflare-gen:end

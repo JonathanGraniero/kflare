@@ -173,7 +173,9 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 		dependents = append(dependents,
 			&cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: "protect-tunnel", Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelSpec{Name: "t", AccountRef: ref,
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "t-token"}}},
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{
+						CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "t-token"},
+					}}},
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: metav1.ObjectMeta{Name: "protect-worker", Namespace: ns},
 				Spec: cloudflarev1alpha1.WorkerScriptSpec{Name: "w", AccountRef: ref, Script: &script}},
 		)

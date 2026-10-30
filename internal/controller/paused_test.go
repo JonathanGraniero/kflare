@@ -233,23 +233,6 @@ var pausedKinds = []pausedKind{
 		},
 	},
 	{
-		name: "Tunnel",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.Tunnel{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.TunnelSpec{
-					Name:                 name,
-					AccountRef:           corev1.LocalObjectReference{Name: pausedSpecAccount},
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: name + "-token"},
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &TunnelReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewTunnelAPI: func(string) (TunnelAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
 		name: "TunnelConfiguration",
 		newObject: func(name string) conditionedObject {
 			return &cloudflarev1alpha1.TunnelConfiguration{
@@ -328,9 +311,9 @@ var _ = Describe("Every hand-written controller, for a paused resource", func() 
 		tunnel := &cloudflarev1alpha1.Tunnel{
 			ObjectMeta: metav1.ObjectMeta{Name: pausedSpecTunnel, Namespace: pausedSpecNS},
 			Spec: cloudflarev1alpha1.TunnelSpec{
-				Name:                 pausedSpecTunnel,
-				AccountRef:           corev1.LocalObjectReference{Name: pausedSpecAccount},
-				CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: pausedSpecTunnel + "-token"},
+				Name:             pausedSpecTunnel,
+				AccountRef:       corev1.LocalObjectReference{Name: pausedSpecAccount},
+				TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: pausedSpecTunnel + "-token"}},
 			},
 		}
 		create(tunnel, func() { tunnel.Status.CloudflareMetadata.TunnelID = "tunnel-paused" })

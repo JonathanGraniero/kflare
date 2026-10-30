@@ -1539,9 +1539,9 @@ var _ = Describe("DNSRecord Controller", func() {
 			Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.Tunnel{
 				ObjectMeta: metav1.ObjectMeta{Name: tunnelCRName, Namespace: dnsRecordNS},
 				Spec: cloudflarev1alpha1.TunnelSpec{
-					Name:                 "app",
-					AccountRef:           corev1.LocalObjectReference{Name: account},
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "app-tunnel-token"},
+					Name:             "app",
+					AccountRef:       corev1.LocalObjectReference{Name: account},
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "app-tunnel-token"}},
 				},
 			})).To(Succeed())
 			DeferCleanup(forceDelete, ctx, &cloudflarev1alpha1.Tunnel{}, tunnelKey)

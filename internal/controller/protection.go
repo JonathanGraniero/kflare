@@ -81,8 +81,6 @@ var (
 	accountDependents = append([]dependentKind{
 		dependents("Zone", func() client.ObjectList { return &cloudflarev1alpha1.ZoneList{} },
 			func(z *cloudflarev1alpha1.Zone) []string { return []string{z.Spec.AccountRef.Name} }),
-		dependents("Tunnel", func() client.ObjectList { return &cloudflarev1alpha1.TunnelList{} },
-			func(t *cloudflarev1alpha1.Tunnel) []string { return []string{t.Spec.AccountRef.Name} }),
 		dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
 			func(w *cloudflarev1alpha1.WorkerScript) []string { return []string{w.Spec.AccountRef.Name} }),
 	}, generatedAccountDependents...)
@@ -93,15 +91,12 @@ var (
 		dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
 			func(d *cloudflarev1alpha1.DNSRecord) []string { return []string{d.Spec.ZoneRef.Name} }),
 	}, generatedZoneDependents...)
-
-	// tunnelDependents live in a Tunnel's namespace and reference it by name.
-	tunnelDependents = []dependentKind{
-		dependents("TunnelConfiguration", func() client.ObjectList { return &cloudflarev1alpha1.TunnelConfigurationList{} },
-			func(tc *cloudflarev1alpha1.TunnelConfiguration) []string { return []string{tc.Spec.TunnelRef.Name} }),
-		dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
-			recordTunnels),
-	}
 )
+
+// configuredTunnels returns the Tunnel a TunnelConfiguration configures.
+func configuredTunnels(tc *cloudflarev1alpha1.TunnelConfiguration) []string {
+	return []string{tc.Spec.TunnelRef.Name}
+}
 
 // recordTunnels returns the Tunnel a DNSRecord points at through tunnelRef,
 // if any.

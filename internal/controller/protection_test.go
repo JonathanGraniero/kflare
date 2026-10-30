@@ -9,6 +9,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -154,21 +155,23 @@ var _ = Describe("Deletion protection for parents", func() {
 	Describe("Tunnel", func() {
 		const tunnelName = "prot-tunnel"
 		tunnelKey := types.NamespacedName{Name: tunnelName, Namespace: ns}
-		var fake *fakeTunnelAPI
+		var store *fakeCRUDStore[shared.CloudflareTunnel]
+		var hooks fakeTunnelHooksAPI
 		var r *TunnelReconciler
 
 		BeforeEach(func() {
-			fake = &fakeTunnelAPI{}
+			store = newFakeCRUDStore[shared.CloudflareTunnel](1000, "")
+			hooks = newFakeTunnelHooksAPI(store)
 			r = &TunnelReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewTunnelAPI: func(string) (TunnelAPI, error) { return fake, nil },
+				NewTunnelAPI: func(string) (TunnelAPI, error) { return fakeTunnelAPI{store, hooks}, nil },
 			}
 			create(&cloudflarev1alpha1.Tunnel{
 				ObjectMeta: metav1.ObjectMeta{Name: tunnelName, Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelSpec{
-					Name:                 "prot-cf-tunnel",
-					AccountRef:           corev1.LocalObjectReference{Name: "prot-account"},
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "prot-tunnel-token"},
+					Name:             "prot-cf-tunnel",
+					AccountRef:       corev1.LocalObjectReference{Name: "prot-account"},
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "prot-tunnel-token"}},
 				},
 			})
 			create(&cloudflarev1alpha1.TunnelConfiguration{
@@ -188,7 +191,8 @@ var _ = Describe("Deletion protection for parents", func() {
 			cond := readyReason(tunnelKey, tunnel, func() []metav1.Condition { return tunnel.Status.Conditions })
 			Expect(cond.Reason).To(Equal("InUse"))
 			Expect(cond.Message).To(ContainSubstring("TunnelConfiguration default/prot-config"))
-			Expect(fake.calls).To(BeEmpty())
+			Expect(store.parentIDs).To(BeEmpty())
+			Expect(hooks.cleanups).To(BeEmpty())
 
 			forceDelete(ctx, &cloudflarev1alpha1.TunnelConfiguration{}, types.NamespacedName{Name: "prot-config", Namespace: ns})
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: tunnelKey})
@@ -201,7 +205,7 @@ var _ = Describe("Deletion protection for parents", func() {
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
 				Spec:       cloudflarev1alpha1.TunnelConfigurationSpec{TunnelRef: corev1.LocalObjectReference{Name: tunnelName}},
 			}
-			Expect(r.deletingTunnelOf(ctx, tc)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
+			Expect(r.crud().deletingResourcesOf(ctx, tc)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
 		})
 
 		It("is re-triggered by the deletion of a DNSRecord that points at it while it is being deleted", func() {
@@ -209,8 +213,8 @@ var _ = Describe("Deletion protection for parents", func() {
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
 				Spec:       cloudflarev1alpha1.DNSRecordSpec{TunnelRef: &corev1.LocalObjectReference{Name: tunnelName}},
 			}
-			Expect(r.deletingTunnelOf(ctx, pointing)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
-			Expect(r.deletingTunnelOf(ctx, &cloudflarev1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{Namespace: ns}})).
+			Expect(r.crud().deletingResourcesOf(ctx, pointing)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
+			Expect(r.crud().deletingResourcesOf(ctx, &cloudflarev1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{Namespace: ns}})).
 				To(BeEmpty(), "a record without a tunnelRef")
 		})
 	})
@@ -224,9 +228,9 @@ var _ = Describe("Deletion protection for parents", func() {
 			create(&cloudflarev1alpha1.Tunnel{
 				ObjectMeta: metav1.ObjectMeta{Name: tunnelName, Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelSpec{
-					Name:                 "prot-dns-cf-tunnel",
-					AccountRef:           corev1.LocalObjectReference{Name: "prot-account"},
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "prot-dns-tunnel-token"},
+					Name:             "prot-dns-cf-tunnel",
+					AccountRef:       corev1.LocalObjectReference{Name: "prot-account"},
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "prot-dns-tunnel-token"}},
 				},
 			})
 			create(&cloudflarev1alpha1.DNSRecord{

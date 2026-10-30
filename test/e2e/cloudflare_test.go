@@ -333,9 +333,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		tunnel := &cloudflarev1alpha1.Tunnel{
 			ObjectMeta: metav1.ObjectMeta{Name: tunnelKey.Name, Namespace: e2eNamespace},
 			Spec: cloudflarev1alpha1.TunnelSpec{
-				Name:                 resourceName(),
-				AccountRef:           corev1.LocalObjectReference{Name: accountKey.Name},
-				CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tunnel-token"},
+				Name:             resourceName(),
+				AccountRef:       corev1.LocalObjectReference{Name: accountKey.Name},
+				TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tunnel-token"}},
 			},
 		}
 		Expect(k8s.Create(ctx, tunnel)).To(Succeed())
@@ -1407,11 +1407,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				AccountRef:  corev1.LocalObjectReference{Name: accountKey.Name},
 				Name:        listName(),
 				Description: "kflare e2e " + run,
-				Items: []cloudflarev1alpha1.IPListItem{
+				IPListSpecExtras: cloudflarev1alpha1.IPListSpecExtras{Items: []cloudflarev1alpha1.IPListItem{
 					{IP: "192.0.2.1", Comment: "documentation address"},
 					{IP: "198.51.100.0/24"},
 					{IP: "2001:DB8::/48"},
-				},
+				}},
 			},
 		}
 		Expect(k8s.Create(ctx, list)).To(Succeed())

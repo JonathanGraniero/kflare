@@ -290,6 +290,72 @@ kinds:
           type: integer
           path: .status.cloudflareMetadata.numItems
 
+  # Cloudflare keeps a deleted tunnel readable, and a tunnel's token and connections in services of their own: see
+  # tunnel_hooks.go.
+  - kind: Tunnel
+    service: zero_trust.TunnelCloudflaredService
+    scope: account
+    shortName: cftunnel
+    noun: tunnel
+    doc: |
+      Tunnel is the Schema for the tunnels API.
+      It represents a remotely-managed Cloudflare Tunnel and the Secret holding
+      the token a cloudflared connector needs to run it.
+    id:
+      field: id
+      status: tunnelID
+      printColumn: Tunnel ID
+      doc: TunnelID is the Cloudflare tunnel identifier (a UUID).
+    claimLabel: kflare.dev/tunnel-id
+    adopt:
+      by: name
+    dependents:
+      - kind: TunnelConfiguration
+        refs: configuredTunnels
+        reason: >-
+          A TunnelConfiguration resets the tunnel's ingress rules through its Tunnel when it is deleted.
+      - kind: DNSRecord
+        refs: recordTunnels
+        reason: A DNSRecord that points at the tunnel would route its hostname to nothing.
+    sample:
+      name: example-tunnel
+    fixed:
+      config_src: cloudflare
+    fields:
+      name:
+        printColumn: Tunnel
+        doc: |
+          Name is the tunnel's name in Cloudflare. Changing it renames the
+          tunnel in place.
+        validation:
+          minLength: 1
+          reason: The spec gives no minimum, and a tunnel without a name cannot be found to adopt.
+      status:
+        printColumn: CF Status
+        doc: |
+          Status is the tunnel health reported by Cloudflare at the last
+          reconcile (inactive, degraded, healthy, or down).
+    ignore:
+      account_tag: The account's ID, which accountRef already gives.
+      connections: Deprecated in cloudflare-go v7, which says the field will start returning an empty array.
+      conns_active_at: A time, which kflare-gen cannot map yet.
+      conns_inactive_at: A time, which kflare-gen cannot map yet.
+      created_at: A time, which kflare-gen cannot map yet.
+      deleted_at: A time, which kflare-gen cannot map yet. The hooks read it, to tell a deleted tunnel.
+      metadata: Free-form, which kflare-gen cannot map.
+      remote_config: Deprecated in cloudflare-go v7, in favor of config_src.
+      tun_type: Always cfd_tunnel for this service.
+      tunnel_secret: >-
+        The password of a locally-managed tunnel. kflare's tunnels are remotely managed: cloudflared authenticates with
+        the token, which the hooks write to a Secret.
+    hooks:
+      api: true
+      specExtras: TunnelSpecExtras
+      statusExtras: TunnelStatusExtras
+      sampleExtras:
+        credentialsSecretRef:
+          name: example-tunnel-token
+
 # The rule kinds kflare-gen generates: each resource manages one rule in a zone's entry point ruleset for a Rulesets
 # phase, through the shared rule controller (internal/controller/rulesetrule_controller.go). A rule kind's spec holds
 # the fields every rule kind shares (RulesetRuleSpec) and the parameters of its action, which kflare-gen builds from

@@ -960,6 +960,15 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: accountName})
 			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: otherAccountName})
 			forceDelete(ctx, &corev1.Secret{}, types.NamespacedName{Name: e.secretName, Namespace: ns})
+			// envtest runs no garbage collector, so what a kind's hooks made for
+			// a resource outlives it.
+			secrets := &corev1.SecretList{}
+			Expect(k8sClient.List(ctx, secrets, client.InNamespace(ns))).To(Succeed())
+			for i := range secrets.Items {
+				if len(secrets.Items[i].OwnerReferences) > 0 {
+					Expect(k8sClient.Delete(ctx, &secrets.Items[i])).To(Succeed())
+				}
+			}
 		})
 
 		if zoned {

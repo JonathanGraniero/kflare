@@ -218,8 +218,12 @@ func (s sdk) service(name string) (*service, error) {
 	return svc, nil
 }
 
-// paginationPackage holds cloudflare-go v7's pages of a list.
-const paginationPackage = sdkModule + "/packages/pagination"
+// paginationPackage holds cloudflare-go v7's pages of a list, and
+// sharedPackage the types several of its packages use.
+const (
+	paginationPackage = sdkModule + "/packages/pagination"
+	sharedPackage     = sdkModule + "/shared"
+)
 
 // The pages of a list that kflare-gen reads: one of a list by page number,
 // and the one page of a list that is never paged, as a zone's Worker routes
@@ -352,8 +356,9 @@ func (r *sdkReader) call(methods *types.MethodSet, name string) (*sdkCall, []sdk
 	return c, result, nil
 }
 
-// fields reads the fields of a struct type declared in the package, or of a
-// pointer to one: for params, the fields inside their param.Field.
+// fields reads the fields of a struct type declared in the package or in
+// cloudflare-go's shared one, or of a pointer to one: for params, the fields
+// inside their param.Field.
 func (r *sdkReader) fields(t types.Type, params bool) ([]sdkField, error) {
 	named, st, err := r.structType(t)
 	if err != nil {
@@ -373,14 +378,15 @@ func (r *sdkReader) fields(t types.Type, params bool) ([]sdkField, error) {
 	return out, nil
 }
 
-// structType returns the struct type t, declared in the package, or the
-// struct a pointer t points to.
+// structType returns the struct type t, declared in the package or in
+// cloudflare-go's shared one, which holds the objects several packages return
+// (a tunnel), or the struct a pointer t points to.
 func (r *sdkReader) structType(t types.Type) (*types.Named, *types.Struct, error) {
 	if ptr, ok := t.(*types.Pointer); ok {
 		t = ptr.Elem()
 	}
 	named, ok := t.(*types.Named)
-	if !ok || named.Obj().Pkg() != r.pkg.Types {
+	if !ok || named.Obj().Pkg() != r.pkg.Types && named.Obj().Pkg().Path() != sharedPackage {
 		return nil, nil, fmt.Errorf("%s is not a type of %s", t, r.pkg.PkgPath)
 	}
 	st, ok := named.Underlying().(*types.Struct)

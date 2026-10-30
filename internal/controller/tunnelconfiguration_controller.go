@@ -14,7 +14,6 @@ import (
 
 	cf "github.com/cloudflare/cloudflare-go"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -410,12 +409,6 @@ func (r *TunnelConfigurationReconciler) configurationsForTunnel(ctx context.Cont
 		}
 	}
 	return reqs
-}
-
-// isTunnelReady returns true if the Tunnel has a Ready=True condition and a tunnel ID.
-func isTunnelReady(tunnel *cloudflarev1alpha1.Tunnel) bool {
-	return tunnel.Status.CloudflareMetadata.TunnelID != "" &&
-		meta.IsStatusConditionTrue(tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady)
 }
 
 // newTunnelConfigurationAPI builds a TunnelConfigurationAPI with the injected
