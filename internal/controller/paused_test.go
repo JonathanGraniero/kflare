@@ -217,22 +217,6 @@ var pausedKinds = []pausedKind{
 		},
 	},
 	{
-		name: "DNSRecord",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.DNSRecord{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.DNSRecordSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: pausedSpecZone},
-					Name:    "www." + pausedSpecDomain, Type: "A", Content: "192.0.2.1",
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &DNSRecordReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewDNSRecordAPI: func(string) (DNSRecordAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
 		name: "TunnelConfiguration",
 		newObject: func(name string) conditionedObject {
 			return &cloudflarev1alpha1.TunnelConfiguration{

@@ -78,6 +78,8 @@ func TestLoadConfigRefuses(t *testing.T) {
 		{"a service ending in a dot", replace("service: kv.NamespaceService", "service: kv."), "not <package>.<type>"},
 		{"another scope", replace("scope: account", "scope: plan"), "it is account or zone"},
 		{"a short name in capitals", replace("shortName: cfkv", "shortName: CFKV"), "lower-case"},
+		{"a hook's name that is not exported", validConfig + "    hooks: {metadataExtras: extras}\n",
+			"no exported type's name"},
 		{"extras of a type outside the package", validConfig + "    hooks: {specExtras: extras}\n",
 			"no exported type's name"},
 		{"a sample's extras on a spec without any", validConfig + "    hooks: {sampleExtras: {items: []}}\n",

@@ -63,6 +63,9 @@ type fakeCRUDStore[R any] struct {
 	scope     string
 	nextID    int
 	pageSize  int64
+	// pageCap, when set, is the most objects a page holds, however many a list
+	// asks for: Cloudflare reports the per_page it served.
+	pageCap int64
 
 	createErr, getErr, listErr, updateErr, deleteErr error
 
@@ -158,6 +161,9 @@ func fakeList[R any, L any](s *fakeCRUDStore[R], parentID, scope string, page, p
 	if perPage > s.pageSize {
 		return nil, v7APIError(http.MethodGet, fmt.Sprintf("parents/%s/objects", parentID), http.StatusBadRequest,
 			1000, fmt.Sprintf("per_page must be no greater than %d", s.pageSize))
+	}
+	if s.pageCap > 0 {
+		perPage = min(perPage, s.pageCap)
 	}
 	objects := s.at(scope)
 	ids := slices.Sorted(maps.Keys(objects))
@@ -344,8 +350,12 @@ type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	deletionBlockers []deletionBlocker
 }
 
-// crudSpecNamespace is where the shared specs create resources.
-const crudSpecNamespace = "default"
+// crudSpecNamespace is where the shared specs create resources, and
+// crudSpecFullPage the most objects they seed to fill a page of a list.
+const (
+	crudSpecNamespace = "default"
+	crudSpecFullPage  = 1000
+)
 
 // crudSpecEnv is what the groups of a generated kind's shared specs share: its
 // table, the names its resources and their parents use, the fake store and the
@@ -417,6 +427,15 @@ func (e *crudSpecEnv[O, A, R, L]) reset() {
 	for _, ref := range e.t.references {
 		e.refs[ref.field] = ""
 	}
+}
+
+// matches reports whether current is what obj's spec asks for, as the kind
+// compares them: by its hook, if it has one.
+func (e *crudSpecEnv[O, A, R, L]) matches(obj O, current *R) bool {
+	if m := e.t.kind.hooks.matches; m != nil {
+		return m(obj, current, e.refs)
+	}
+	return e.t.kind.matches(obj, current, e.refs)
 }
 
 // seed stores an object with key, as Cloudflare would hold it, under id, or
@@ -1026,7 +1045,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				if zoned {
 					Expect(*k.statusZoneID(obj)).To(Equal(e.zoneID), "status records the zone")
 				}
-				Expect(k.matches(obj, &object, e.refs)).To(BeTrue(), "the new object is what the spec asks for")
+				Expect(e.matches(obj, &object)).To(BeTrue(), "the new object is what the spec asks for")
 				Expect(obj.GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 			})
@@ -1114,14 +1133,17 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					e.createParent(true)
 					obj := create(key, adopt)
 					// A full first page of other objects; the one to adopt sorts last.
-					for i := range t.pageSize {
+					// A page of a list that takes a very large per_page holds fewer,
+					// as Cloudflare reports.
+					e.store.pageCap = min(t.pageSize, crudSpecFullPage)
+					for i := range e.store.pageCap {
 						seed(fmt.Sprintf("a-%04d", i), fmt.Sprintf("other-%04d", i))
 					}
 					seed("z-last", k.key(obj))
 					_, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(e.store.listPages[:2]).To(Equal([]int64{1, 2}))
-					Expect(e.store.objects).To(HaveLen(int(t.pageSize)+1), "nothing is created")
+					Expect(e.store.objects).To(HaveLen(int(e.store.pageCap)+1), "nothing is created")
 					Expect(k.statusID(get())).To(Equal("z-last"))
 					Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, "z-last"))
 					Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
@@ -1451,7 +1473,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					obj = get()
 					Expect(k.statusID(obj)).To(Equal(id))
 					object := e.store.objects[id]
-					Expect(k.matches(obj, &object, e.refs)).To(BeTrue(), "the object is what the edited spec asks for")
+					Expect(e.matches(obj, &object)).To(BeTrue(), "the object is what the edited spec asks for")
 					Expect(e.store.writes).To(Equal(writes + 1))
 					Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 				})

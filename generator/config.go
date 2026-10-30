@@ -58,6 +58,10 @@ type kindConfig struct {
 	ClaimLabel string `json:"claimLabel"`
 	// Adopt says how a resource finds the existing object it adopts.
 	Adopt adoptConfig `json:"adopt"`
+	// Update names the call that changes an object, for a service with both
+	// Update and Edit: by default the first, Update. A DNS record's Edit leaves
+	// what it is not sent, as its Update does not.
+	Update string `json:"update,omitempty"`
 	// Dependents are the kinds whose resources use a resource of this kind,
 	// which waits for them before it is deleted.
 	Dependents []dependentConfig `json:"dependents,omitempty"`
@@ -106,6 +110,13 @@ type hooksConfig struct {
 	TableExtras map[string]any `json:"tableExtras,omitempty"`
 	// Columns are print columns of fields the extras hold.
 	Columns []columnConfig `json:"columns,omitempty"`
+	// Params is set when the hooks finish a call's union body: the generated
+	// calls pass it to the hand-written <kind>New<Body> and <kind><Update>Body
+	// with the resource and what its references give, and the entry may ignore
+	// a field the body requires, which those functions then set. The generated
+	// fake passes the body the same way to fake<Kind>NewBody and
+	// fake<Kind><Update>Body, in the test files.
+	Params bool `json:"params,omitempty"`
 }
 
 // columnConfig is one of a kind's additional print columns.
@@ -189,6 +200,10 @@ type fieldConfig struct {
 	// referenced resource's field once it is ready. A Worker route's script
 	// is a WorkerScript's name.
 	Ref *refConfig `json:"ref,omitempty"`
+	// Immutable keeps a field Update takes from changing: an object's identity
+	// may be fixed even though the API could change it. A DNS record's name and
+	// type tell it from the other records of its set.
+	Immutable bool `json:"immutable,omitempty"`
 	// Clearable is set for an optional string that Cloudflare does not fill
 	// in itself, so that unset means empty: it is compared, and Update sends
 	// it, even when the spec leaves it unset, which clears Cloudflare's.
@@ -974,6 +989,21 @@ func (k *settingsKindConfig) validate() error {
 
 // settingsValuePath matches a path of API names, each list's marked by [].
 var settingsValuePath = regexp.MustCompile(`^[a-z][a-z0-9_-]*(\[\])?(\.[a-z][a-z0-9_-]*(\[\])?)*$`)
+
+// chooseUpdate makes the call the entry names the one that changes an object.
+func (k *kindConfig) chooseUpdate(svc *service) error {
+	if k.Update == "" {
+		return nil
+	}
+	if svc.calls[k.Update] == nil || !slices.Contains(writeMethods, k.Update) {
+		return fmt.Errorf("%s: update: %s is not a call that changes an object of %s", k.Kind, k.Update, k.Service)
+	}
+	svc.chooseUpdate(k.Update)
+	return nil
+}
+
+// params reports whether a kind's hooks finish its calls' union bodies.
+func (h *hooksConfig) params() bool { return h != nil && h.Params }
 
 // validate checks the names and columns of a kind's hooks; a kind may have
 // none.

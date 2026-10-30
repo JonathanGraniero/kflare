@@ -211,7 +211,9 @@ var _ = Describe("Deletion protection for parents", func() {
 		It("is re-triggered by the deletion of a DNSRecord that points at it while it is being deleted", func() {
 			pointing := &cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
-				Spec:       cloudflarev1alpha1.DNSRecordSpec{TunnelRef: &corev1.LocalObjectReference{Name: tunnelName}},
+				Spec: cloudflarev1alpha1.DNSRecordSpec{
+					DNSRecordSpecExtras: cloudflarev1alpha1.DNSRecordSpecExtras{TunnelRef: &corev1.LocalObjectReference{Name: tunnelName}},
+				},
 			}
 			Expect(r.crud().deletingResourcesOf(ctx, pointing)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
 			Expect(r.crud().deletingResourcesOf(ctx, &cloudflarev1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{Namespace: ns}})).
@@ -237,7 +239,8 @@ var _ = Describe("Deletion protection for parents", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: recordKey.Name, Namespace: ns},
 				Spec: cloudflarev1alpha1.DNSRecordSpec{
 					ZoneRef: corev1.LocalObjectReference{Name: "prot-zone"}, Name: "app.prot-example.com",
-					Type: "CNAME", TunnelRef: &corev1.LocalObjectReference{Name: tunnelName},
+					Type:                "CNAME",
+					DNSRecordSpecExtras: cloudflarev1alpha1.DNSRecordSpecExtras{TunnelRef: &corev1.LocalObjectReference{Name: tunnelName}},
 				},
 			})
 			create(&cloudflarev1alpha1.DNSRecord{

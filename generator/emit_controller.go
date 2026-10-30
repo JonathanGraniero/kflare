@@ -423,7 +423,7 @@ func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 		return fmt.Errorf("%s: New: %w", name, err)
 	}
 	f.printf("create: func(ctx %s.Context, api %s, parentID string,\nobj %s, %s map[string]string) (*%s, error) {\n",
-		ctx, api, obj, refsParam(readsRefs(createParams)), object)
+		ctx, api, obj, refsParam(readsRefs(createParams) || c.hooks.params()), object)
 	ret, err := resultReturn(f, c, "api.New(ctx, params)", c.created)
 	if err != nil {
 		return fmt.Errorf("%s: New: %w", name, err)
@@ -442,7 +442,7 @@ func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 			return err
 		}
 		f.printf("update: func(ctx %s.Context, api %s, obj %s,\nparentID, id string, %s map[string]string) (*%s, "+
-			"error) {\n", ctx, api, obj, refsParam(readsRefs(updateParams)), object)
+			"error) {\n", ctx, api, obj, refsParam(readsRefs(updateParams) || c.hooks.params()), object)
 		ret, err := resultReturn(f, c, fmt.Sprintf("api.%s(ctx, id, params)", c.update.name), c.updated)
 		if err != nil {
 			return fmt.Errorf("%s: %s: %w", name, c.update.name, err)
@@ -542,6 +542,12 @@ func interfaceMethod(f *goFile, call *sdkCall) string {
 	return fmt.Sprintf("%s(%s) %s", call.name, joined, results)
 }
 
+// bodyHook names the hand-written function that finishes call's union body:
+// dnsRecordNewBody for a DNS record's New.
+func bodyHook(c *controller, call *sdkCall) string {
+	return c.varName + call.name + "Body"
+}
+
 // callBody writes the body of a descriptor's call: its params, with the
 // parent's ID and the statements given, then ret, which returns.
 func callBody(f *goFile, c *controller, call *sdkCall, statements []string, ret string) error {
@@ -553,8 +559,17 @@ func callBody(f *goFile, c *controller, call *sdkCall, statements []string, ret 
 	f.printf("var params %s\n", f.typ(call.params))
 	f.printf("params.%s.Value, params.%s.Present = %s, true\n", call.paramFields[i].goName,
 		call.paramFields[i].goName, parent)
+	if call.body != nil {
+		f.printf("var body %s\n", f.typ(call.body.typ))
+	}
 	for _, s := range statements {
 		f.printf("%s\n", s)
+	}
+	if call.body != nil {
+		if c.hooks.params() {
+			f.printf("%s(obj, refs, &body)\n", bodyHook(c, call))
+		}
+		f.printf("params.%s = body\n", call.body.goName)
 	}
 	f.printf("%s\n", ret)
 	return nil
@@ -605,7 +620,7 @@ func assignParam(f *goFile, af apiField, p *sdkField, always bool) (string, erro
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", af.apiName, err)
 		}
-		return fmt.Sprintf("params.%s.Value, params.%s.Present = %s, true", p.goName, p.goName, converted), nil
+		return fmt.Sprintf("%s.Value, %s.Present = %s, true", paramExpr(p), paramExpr(p), converted), nil
 	}
 	if af.goName == "" {
 		return set(strconv.Quote(af.fixed), types.Typ[types.String])
@@ -624,6 +639,15 @@ func assignParam(f *goFile, af apiField, p *sdkField, always bool) (string, erro
 		s, err := set(spec, specType(af.field))
 		return fmt.Sprintf("if %s != \"\" {\n%s\n}", spec, s), err
 	}
+}
+
+// paramExpr is the expression of the param p in a call's statements: a field of
+// the params, or of the union body's variant, which they fill in first.
+func paramExpr(p *sdkField) string {
+	if p.inUnion {
+		return "body." + p.goName
+	}
+	return "params." + p.goName
 }
 
 // refValue is the expression of the value the reference af gives, in refs.
@@ -955,10 +979,15 @@ func emitSeed(f *goFile, c *controller, object string) error {
 		}
 		seedFields = append(seedFields, fmt.Sprintf("%s: %s", af.object.goName, converted))
 	}
-	if len(seedFields) <= 2 {
+	switch {
+	case c.hooks.params():
+		// What Cloudflare holds beyond the entry's fields, which the hooks send.
+		f.printf("seed: func(%s, key string, %s map[string]string) %s {\nobject := %s\nfake%sSeed(&object)\n"+
+			"return object\n},\n", idParam, refs, object, compositeLiteral(object, seedFields), name)
+	case len(seedFields) <= 2:
 		f.printf("seed: func(%s, key string, %s map[string]string) %s { return %s },\n", idParam, refs, object,
 			compositeLiteral(object, seedFields))
-	} else {
+	default:
 		f.printf("seed: func(%s, key string, %s map[string]string) %s {\nreturn %s\n},\n", idParam, refs, object,
 			compositeLiteral(object, seedFields))
 	}
@@ -999,7 +1028,7 @@ func emitTableChecks(f *goFile, c *controller, obj, object string) error {
 		if af.create == nil {
 			continue
 		}
-		p := "params." + af.create.goName
+		p := paramExpr(af.create)
 		if af.goName == "" {
 			value, err := f.convert(p+".Value", af.create.typ, types.Typ[types.String])
 			if err != nil {
@@ -1028,8 +1057,12 @@ func emitTableChecks(f *goFile, c *controller, obj, object string) error {
 			sent = append(sent, fmt.Sprintf("(%s == \"\" || %s.Present && %s == %s)", spec, p, value, spec))
 		}
 	}
-	f.printf("sent: func(obj %s, %s map[string]string, sent any) bool {\nparams := sent.(%s)\nreturn %s\n},\n", obj,
-		refsParam(usesRefs), f.typ(c.create.params), strings.Join(sent, " &&\n"))
+	body := ""
+	if b := c.create.body; b != nil {
+		body = fmt.Sprintf("body := params.%s.(%s)\n", b.goName, f.typ(b.typ))
+	}
+	f.printf("sent: func(obj %s, %s map[string]string, sent any) bool {\nparams := sent.(%s)\n%sreturn %s\n},\n", obj,
+		refsParam(usesRefs), f.typ(c.create.params), body, strings.Join(sent, " &&\n"))
 
 	observed := make([]string, 0, len(c.status))
 	for _, st := range c.status {
@@ -1149,14 +1182,19 @@ func emitFake(f *goFile, c *controller) error {
 		return fmt.Sprintf("stored, err := %s\nif err != nil {\nreturn nil, err\n}\nreturn &%s, nil", call, converted),
 			f.typ(result), nil
 	}
-	ret, result, err := returned(fmt.Sprintf("f.create(%s, %s,\n%s, func(id string) %s {\nreturn %s\n})",
-		parentID(c.create), scopes[c.create], newID, object, compositeLiteral(object, fields)), c.created)
+	build := "return " + compositeLiteral(object, fields)
+	if c.hooks.params() {
+		build = fmt.Sprintf("object := %s\nfake%sNewBody(&object, body)\nreturn object", compositeLiteral(object, fields),
+			name)
+	}
+	ret, result, err := returned(fmt.Sprintf("f.create(%s, %s,\n%s, func(id string) %s {\n%s\n})",
+		parentID(c.create), scopes[c.create], newID, object, build), c.created)
 	if err != nil {
 		return fmt.Errorf("%s: the fake's New: %w", name, err)
 	}
 	f.printf("func (f %s) New(_ %s.Context, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx, params(c.create), opts,
 		result)
-	f.printf("f.sent = append(f.sent, params)\n%s\n}\n\n", ret)
+	f.printf("f.sent = append(f.sent, params)\n%s%s\n}\n\n", fakeBody(f, c.create), ret)
 
 	f.printf("func (f %s) Get(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,
 		params(c.get), opts, object)
@@ -1203,6 +1241,15 @@ func emitFake(f *goFile, c *controller) error {
 	return nil
 }
 
+// fakeBody returns the statement that reads call's union body in the fake: ""
+// for a call without one.
+func fakeBody(f *goFile, call *sdkCall) string {
+	if call.body == nil {
+		return ""
+	}
+	return fmt.Sprintf("body := params.%s.(%s)\n", call.body.goName, f.typ(call.body.typ))
+}
+
 // fakeNewFields returns the fields of the object a kind's fake creates for
 // New's params: the ID, what the params set, and a value of the new object's
 // own for each field status records that Cloudflare fills in.
@@ -1215,7 +1262,7 @@ func fakeNewFields(f *goFile, c *controller) ([]string, error) {
 		if af.create == nil || af.object == nil || af.object.goName == c.id.goName {
 			continue
 		}
-		value, err := f.convert("params."+af.create.goName+".Value", af.create.typ, af.object.typ)
+		value, err := f.convert(paramExpr(af.create)+".Value", af.create.typ, af.object.typ)
 		if err != nil {
 			return nil, fmt.Errorf("%s: the fake's New: %s: %w", name, af.apiName, err)
 		}
@@ -1265,16 +1312,19 @@ func emitFakeUpdate(f *goFile, c *controller, parentID, scope string,
 		if af.update == nil || af.object == nil {
 			continue
 		}
-		value, err := f.convert("params."+af.update.goName+".Value", af.update.typ, af.object.typ)
+		value, err := f.convert(paramExpr(af.update)+".Value", af.update.typ, af.object.typ)
 		if err != nil {
 			return fmt.Errorf("%s: the fake's %s: %s: %w", name, c.update.name, af.apiName, err)
 		}
 		if replaces {
 			fmt.Fprintf(&apply, "current.%s = %s\n", af.object.goName, value)
 		} else {
-			fmt.Fprintf(&apply, "if params.%s.Present {\ncurrent.%s = %s\n}\n", af.update.goName, af.object.goName,
+			fmt.Fprintf(&apply, "if %s.Present {\ncurrent.%s = %s\n}\n", paramExpr(af.update), af.object.goName,
 				value)
 		}
+	}
+	if c.hooks.params() {
+		fmt.Fprintf(&apply, "fake%s%sBody(current, body)\n", name, c.update.name)
 	}
 	ret, result, err := returned(fmt.Sprintf("f.update(%s, %s, id, func(current *%s) {\n%s})", parentID,
 		scope, object, apply.String()), c.updated)
@@ -1283,7 +1333,7 @@ func emitFakeUpdate(f *goFile, c *controller, parentID, scope string,
 	}
 	f.printf("func (f %s) %s(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake,
 		c.update.name, ctx, f.typ(c.update.params), opts, result)
-	f.printf("%s\n}\n\n", ret)
+	f.printf("%s%s\n}\n\n", fakeBody(f, c.update), ret)
 	return nil
 }
 

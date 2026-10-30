@@ -29,6 +29,9 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&D1DatabaseReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the D1Database controller: %w", err)
 	}
+	if err := (&DNSRecordReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the DNSRecord controller: %w", err)
+	}
 	if err := (&IPListReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the IPList controller: %w", err)
 	}
@@ -95,6 +98,8 @@ var generatedZoneDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.CacheRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ConfigurationRule", func() client.ObjectList { return &cloudflarev1alpha1.ConfigurationRuleList{} },
 		func(obj *cloudflarev1alpha1.ConfigurationRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
+	dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
+		func(obj *cloudflarev1alpha1.DNSRecord) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ManagedRuleset", func() client.ObjectList { return &cloudflarev1alpha1.ManagedRulesetList{} },
 		func(obj *cloudflarev1alpha1.ManagedRuleset) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ManagedTransform", func() client.ObjectList { return &cloudflarev1alpha1.ManagedTransformList{} },

@@ -634,11 +634,13 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		record := &cloudflarev1alpha1.DNSRecord{
 			ObjectMeta: objectMeta(tunnelRecordKey),
 			Spec: cloudflarev1alpha1.DNSRecordSpec{
-				ZoneRef:   corev1.LocalObjectReference{Name: zoneKey.Name},
-				Name:      tunnelRecordName(),
-				Type:      "CNAME",
-				TunnelRef: &corev1.LocalObjectReference{Name: tunnelKey.Name},
-				Comment:   "kflare e2e " + run,
+				ZoneRef: corev1.LocalObjectReference{Name: zoneKey.Name},
+				Name:    tunnelRecordName(),
+				Type:    "CNAME",
+				DNSRecordSpecExtras: cloudflarev1alpha1.DNSRecordSpecExtras{
+					TunnelRef: &corev1.LocalObjectReference{Name: tunnelKey.Name},
+				},
+				Comment: "kflare e2e " + run,
 			},
 		}
 		Expect(k8s.Create(ctx, record)).To(Succeed())

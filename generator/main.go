@@ -115,6 +115,9 @@ func generate(cfg *config, s sdk, spec *apiSpec, header string) (*outputs, error
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", entry.Kind, err)
 		}
+		if err := entry.chooseUpdate(svc); err != nil {
+			return nil, err
+		}
 		k, err := buildKind(entry, svc, spec)
 		if err != nil {
 			return nil, err

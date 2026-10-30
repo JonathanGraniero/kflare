@@ -707,7 +707,13 @@ func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context,
 		}
 		return "", "", false, err
 	}
-	return zone.Spec.AccountRef.Name, *r.kind.statusZoneID(obj), false, nil
+	// A reconcile that failed before it wrote status recorded no zone: the
+	// Zone still names it.
+	zoneID = *r.kind.statusZoneID(obj)
+	if zoneID == "" {
+		zoneID = zone.Status.CloudflareMetadata.ZoneID
+	}
+	return zone.Spec.AccountRef.Name, zoneID, false, nil
 }
 
 // setup registers the kind's controller, with rec as its reconciler. It

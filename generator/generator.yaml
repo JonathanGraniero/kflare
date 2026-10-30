@@ -356,6 +356,76 @@ kinds:
         credentialsSecretRef:
           name: example-tunnel-token
 
+  # A DNS record's calls take its body as a union of its types, and a set's records share a name: see
+  # dnsrecord_hooks.go. Edit, unlike Update, leaves a priority Cloudflare chose alone.
+  - kind: DNSRecord
+    service: dns.RecordService
+    scope: zone
+    shortName: cfrecord
+    noun: DNS record
+    doc: |
+      DNSRecord is the Schema for the dnsrecords API.
+      It represents a DNS record within a Cloudflare-managed zone.
+    id:
+      field: id
+      status: recordID
+      printColumn: Record ID
+      doc: RecordID is the Cloudflare DNS record identifier.
+    claimLabel: kflare.dev/record-id
+    adopt:
+      by: name
+    update: Edit
+    sample:
+      name: www.example.com
+      type: A
+      content: 192.0.2.1
+      comment: The web server.
+    fields:
+      name:
+        immutable: true
+        printColumn: Record Name
+        doc: |
+          Name is the fully-qualified DNS record name (e.g. "www.example.com").
+          Immutable after creation.
+        validation:
+          minLength: 1
+          reason: The spec's union gives no minimum, and Cloudflare refuses an empty name.
+      type:
+        immutable: true
+        printColumn: Type
+        doc: Type is the DNS record type. Immutable after creation.
+      content:
+        printColumn: Content
+        doc: |
+          Content is the DNS record content (e.g. an IP address for A records,
+          a hostname for CNAME/MX). Set exactly one of content, data and
+          tunnelRef: record types such as SRV, LOC and CAA use data instead.
+        validation:
+          minLength: 1
+          reason: The spec's union gives no minimum, and a record's content is never empty.
+      comment:
+        clearable: true
+        doc: Comment is an optional free-text annotation for the record.
+      proxiable:
+        doc: Proxiable indicates whether this record type supports Cloudflare proxying.
+    ignore:
+      ttl: In the extras, with its own rules; dnsRecordNewBody and dnsRecordEditBody send it.
+      data: Free-form in cloudflare-go v7, so it is in the extras, as JSON.
+      priority: A number in the OpenAPI spec, not an integer, so it is in the extras.
+      proxied: In the extras, since a tunnelRef implies it.
+      tags: Free-form in cloudflare-go v7, so it is in the extras.
+      private_routing: Not sent by the controller, and not verified live yet.
+      settings: Free-form in cloudflare-go v7, and not verified live yet.
+      include_shadow_metadata: A query parameter for what a response holds, which kflare does not read.
+      comment_modified_on: A time, which kflare-gen cannot map yet.
+      created_on: A time, which kflare-gen cannot map yet.
+      meta: Free-form, which kflare-gen cannot map.
+      modified_on: A time, which kflare-gen cannot map yet.
+      tags_modified_on: A time, which kflare-gen cannot map yet.
+    hooks:
+      params: true
+      specExtras: DNSRecordSpecExtras
+
 # The rule kinds kflare-gen generates: each resource manages one rule in a zone's entry point ruleset for a Rulesets
 # phase, through the shared rule controller (internal/controller/rulesetrule_controller.go). A rule kind's spec holds
 # the fields every rule kind shares (RulesetRuleSpec) and the parameters of its action, which kflare-gen builds from

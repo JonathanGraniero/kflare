@@ -399,7 +399,7 @@ func (b *controllerBuilder) fields(c *controller) error {
 			return f, nil
 		}
 		f.create = &c.create.paramFields[i]
-		if !isAddress(b.svc, *f.create) {
+		if !isAddress(b.svc, *f.create) && !b.entry.Fields[f.apiName].Immutable {
 			f.update = counterpart(update, *f.create)
 		}
 		var err error
@@ -443,7 +443,7 @@ func (b *controllerBuilder) fields(c *controller) error {
 	// optional.
 	for _, call := range c.calls() {
 		for _, f := range call.paramFields {
-			if !f.required || c.sets(call, f) {
+			if !f.required || c.sets(call, f) || f.inUnion && b.entry.Hooks.params() {
 				continue
 			}
 			// Only Update can require a body field the spec does not hold: New

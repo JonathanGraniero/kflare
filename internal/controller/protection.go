@@ -86,11 +86,8 @@ var (
 	}, generatedAccountDependents...)
 
 	// zoneDependents live in a Zone's namespace and reference it by name: the
-	// hand-written kinds listed here, and the generated kinds of a zone.
-	zoneDependents = append([]dependentKind{
-		dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
-			func(d *cloudflarev1alpha1.DNSRecord) []string { return []string{d.Spec.ZoneRef.Name} }),
-	}, generatedZoneDependents...)
+	// generated kinds of a zone.
+	zoneDependents = generatedZoneDependents
 )
 
 // configuredTunnels returns the Tunnel a TunnelConfiguration configures.

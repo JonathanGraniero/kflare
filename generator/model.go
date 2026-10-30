@@ -219,7 +219,7 @@ func (b *kindBuilder) build() (*kind, error) {
 			continue
 		}
 		if b.ignored(f.apiName) {
-			if f.required {
+			if f.required && !e.Hooks.params() {
 				return nil, fmt.Errorf("%s is required to create the object, so it cannot be ignored", f.apiName)
 			}
 			continue
@@ -450,6 +450,9 @@ func (b *kindBuilder) ignored(apiName string) bool {
 // updatable reports whether the service's update can change what the param
 // f of New sets: it takes f's counterpart, and f does not name the object.
 func (b *kindBuilder) updatable(f sdkField) bool {
+	if b.entry.Fields[f.apiName].Immutable {
+		return false
+	}
 	return !isAddress(b.svc, f) && counterpart(b.svc.update, f) != nil
 }
 
