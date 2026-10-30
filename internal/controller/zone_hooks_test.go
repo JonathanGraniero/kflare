@@ -290,6 +290,18 @@ var _ = Describe("Zone hooks", func() {
 			Expect(getZone().Status.CloudflareMetadata.Plan).To(Equal("pro"))
 		})
 
+		It("leaves a change Cloudflare has scheduled alone when spec.plan is unset", func() {
+			onPlan("business", true)
+			zone := store.objects["zone-1"]
+			zone.PlanPending = cf.ZonePlan{LegacyID: "pro"}
+			store.objects["zone-1"] = zone
+			createZone("", adopted)
+			_, err := reconcileZone()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(plans.calls).To(BeZero())
+			Expect(getZone().Status.CloudflareMetadata.PendingPlan).To(Equal("pro"))
+		})
+
 		It("does nothing when the zone is already on the plan", func() {
 			onPlan("pro", true)
 			createZone("pro", adopted)

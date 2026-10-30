@@ -64,6 +64,19 @@ func (f fakeTunnelHooksAPI) CleanupConnections(_ context.Context, _, tunnelID st
 	return f.cleanupErr
 }
 
+// secretUpdateCounter counts the updates of Secrets.
+type secretUpdateCounter struct {
+	client.Client
+	updates *int
+}
+
+func (c secretUpdateCounter) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if _, ok := obj.(*corev1.Secret); ok {
+		*c.updates++
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+
 // listRecorder records the params of the tunnel lists it serves.
 type listRecorder struct {
 	fakeTunnelAPI
@@ -184,11 +197,15 @@ var _ = Describe("Tunnel hooks", func() {
 	It("follows a token rotated outside kflare, and leaves an unchanged Secret alone", func() {
 		createTunnel(nil)
 		sync()
-		version := getSecret(tokenSecret).ResourceVersion
+		// The API server keeps a resourceVersion through an update that changes
+		// nothing, so only a count of the updates tells.
+		writes := 0
+		r.Client = secretUpdateCounter{r.Client, &writes}
 		sync()
-		Expect(getSecret(tokenSecret).ResourceVersion).To(Equal(version))
+		Expect(writes).To(BeZero())
 		tokens.token = "token-2"
 		sync()
+		Expect(writes).To(Equal(1))
 		Expect(getSecret(tokenSecret).Data).To(HaveKeyWithValue(cloudflarev1alpha1.TunnelTokenKey, []byte("token-2")))
 	})
 
