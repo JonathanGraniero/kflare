@@ -5,6 +5,40 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
+### Upgrading
+
+**The chart creates a HorizontalPodAutoscaler**, on by default, which then owns the Deployment's replica count:
+
+- **`replicaCount` is ignored while `autoscaling.enabled` is `true`.** If you set `replicaCount: 2` to keep a standby,
+  set `autoscaling.minReplicas: 2` instead, or `autoscaling.enabled: false` to go on using `replicaCount`
+- **The autoscaler needs the metrics API**, which metrics-server provides. Without it, the Deployment keeps
+  `autoscaling.minReplicas` replicas, one by default
+- **The controller's resources change**: its CPU request from 10m to 100m, which the autoscaler's target is a share
+  of, a CPU limit of 1, and its memory limit from 256Mi to 512Mi. Values that set `resources` replace only the keys
+  they set
+
+### The Helm chart
+
+- **A HorizontalPodAutoscaler** (`autoscaling`), on by default: from 1 to 10 replicas, adding them once the pods'
+  average CPU use has been above 80% of their request for 2 minutes. Only the leader reconciles, so the replicas it
+  adds are standbys, which take over sooner if the leader goes; they add no reconcile capacity. Memory is left out
+  by default, since the leader caches every Secret and the standbys nothing. The deploy guide's
+  [Scaling and resources](docs/deploy.md#scaling-and-resources) says how it behaves and how to tune it
+- **Resources from measurements**: requests of 100m CPU and 64Mi memory, limits of 1 CPU and 512Mi memory. The
+  deploy guide lists what the controller uses idle, with 1,000 and 5,000 resources, while taking over from a leader
+  and with many Secrets, and how to size its memory for a cluster's Secrets
+  ([#70](https://github.com/JonathanGraniero/kflare/issues/70), its sizing part)
+- **The PodDisruptionBudget** is created whenever the Deployment can run more than one replica: with autoscaling on,
+  when `autoscaling.maxReplicas` is above 1, so a default install gets one. With `maxUnavailable: 1` it never blocks
+  a drain of a single replica
+- The chart refuses autoscaling with `maxReplicas` above 1 and `leaderElection: false`, since every replica would
+  then reconcile, and a CPU or memory target without the matching request
+
+### Development
+
+- `hack/sizing` measures the controller's CPU and memory: it runs the image in Docker against an envtest API server,
+  as a leader and a standby, while it adds Secrets and kflare resources and stops the leader
+
 ## v0.3.0 (alpha)
 
 The fourth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. Five more kinds

@@ -89,14 +89,14 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        # TODO(user): Configure the resources accordingly based on the project requirements.
-        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        # The Helm chart's defaults, measured with hack/sizing (docs/deploy.md,
+        # Scaling and resources).
         resources:
           limits:
-            cpu: 500m
-            memory: 128Mi
+            cpu: "1"
+            memory: 512Mi
           requests:
-            cpu: 10m
+            cpu: 100m
             memory: 64Mi
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

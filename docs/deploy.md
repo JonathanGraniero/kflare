@@ -28,6 +28,9 @@ account, and covers running it in production, upgrades, uninstalling and trouble
   Argo CD or Flux.
 - One kflare installation per cluster. A second release would reconcile the same resources.
 - Outbound HTTPS from the controller to `api.cloudflare.com` (see [Network access](#network-access)).
+- For the HorizontalPodAutoscaler the chart creates, the metrics API, which metrics-server provides. Without it, the
+  autoscaler cannot scale on use, and a new install runs `autoscaling.minReplicas` replicas (see
+  [Scaling and resources](#scaling-and-resources)).
 
 ## 1. Create a Cloudflare API token
 
@@ -91,7 +94,8 @@ The chart installs:
 - the controller Deployment, ServiceAccount and a Service for metrics
 - a ClusterRole for the controller, plus a Role for leader election in the release namespace
 - a `kflare-metrics-reader` ClusterRole for whoever scrapes the metrics (see [Monitoring](#monitoring))
-- a PodDisruptionBudget, when `replicaCount` is above 1
+- a HorizontalPodAutoscaler, from 1 to 10 replicas (see [Scaling and resources](#scaling-and-resources))
+- a PodDisruptionBudget, when the Deployment can run more than one replica
 - `view`/`edit` aggregation roles (see [Security model](#security-model))
 - optionally, a ServiceMonitor and a NetworkPolicy (see [Running in production](#running-in-production))
 
@@ -124,7 +128,8 @@ spec:
     targetRevision: <version>
     helm:
       valuesObject:
-        replicaCount: 2
+        autoscaling:
+          minReplicas: 2
   destination:
     name: in-cluster
     namespace: kflare-system
@@ -167,7 +172,8 @@ spec:
   install:
     createNamespace: true
   values:
-    replicaCount: 2
+    autoscaling:
+      minReplicas: 2
 ```
 
 Things to know:
@@ -350,10 +356,12 @@ A values file for a production cluster usually sets:
 
 ```yaml
 # High availability: one replica is active, the others wait on the leader lease
-# and take over within about 15 seconds (the lease's duration) if it goes. With
-# more than one replica, a PodDisruptionBudget lets a node drain evict one pod
+# and take over within about 15 seconds (the lease's duration) if it goes. The
+# HorizontalPodAutoscaler adds standbys while the leader is busy; minReplicas: 2
+# keeps one at all times. A PodDisruptionBudget lets a node drain evict one pod
 # at a time.
-replicaCount: 2
+autoscaling:
+  minReplicas: 2
 topologySpreadConstraints:
   - maxSkew: 1
     topologyKey: kubernetes.io/hostname
@@ -375,10 +383,13 @@ logging:
   format: json              # json or console
 
 # The controller caches every Secret in the cluster (token and credential Secrets
-# are looked up by reference). Raise the limit on clusters with many Secrets.
+# are looked up by reference). On a cluster with many, size its memory from them
+# (see Scaling and resources), such as:
 resources:
+  requests:
+    memory: 256Mi
   limits:
-    memory: 512Mi
+    memory: 1Gi
 ```
 
 `defaultDeletionPolicy: retain` keeps the Cloudflare objects of deleted resources, unless a resource says
@@ -528,6 +539,66 @@ which Kyverno 1.19 deprecates, need `type: SigstoreBundle`. Sigstore's policy-co
 expressions match the issuer above and the policy's `subjectRegExp`.
 
 ## Running in production
+
+### Scaling and resources
+
+kflare runs one active controller. With leader election, the replica that holds the lease reconciles every resource,
+and the others wait to take over within about 15 seconds (the lease's duration) if it goes. The chart's
+HorizontalPodAutoscaler scales the Deployment between `autoscaling.minReplicas` (1) and `autoscaling.maxReplicas`
+(10) replicas on the pods' average CPU use, against `autoscaling.targetCPUUtilizationPercentage` (80) percent of
+`resources.requests.cpu`. A standby uses almost no CPU, so the average follows the leader's use, and the replicas
+the autoscaler adds while the leader is busy are standbys: they shorten a failover, but they add no reconcile
+capacity and do not make the leader's work go faster.
+
+- **It needs the metrics API**, which metrics-server provides. Without it, `kubectl get hpa` shows the target as
+  `<unknown>`, and the Deployment keeps `autoscaling.minReplicas` replicas.
+- **To keep a standby at all times**, set `autoscaling.minReplicas: 2`. `replicaCount` is ignored while autoscaling
+  is on; with `autoscaling.enabled: false`, it sets the replicas again.
+- **Memory is left out by default.** The leader caches every Secret in the cluster and a standby caches nothing, so
+  on a cluster with many Secrets a memory target (`autoscaling.targetMemoryUtilizationPercentage`) adds standbys that
+  stay, as the leader's memory does not go down when they start.
+- **Tune it** with `autoscaling.behavior`, a HorizontalPodAutoscaler's [scaling behavior][hpa-behavior].
+- **With Argo CD or Flux**, nothing fights the autoscaler: while it is on, the chart leaves `replicas` out of the
+  Deployment.
+
+[hpa-behavior]: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#configurable-scaling-behavior
+
+What the controller used in October 2026, measured with `hack/sizing`:
+
+| What the leader was doing | CPU, mean | CPU, peak | Memory |
+|---|---|---|---|
+| Nothing: an empty cluster | 4m | 15m | 16 MiB |
+| 1,000 Secrets of 4 KiB and 1,000 resources, each reconciled once a minute | 15m | 234m | 43 MiB |
+| 5,000 Secrets of 4 KiB and 5,000 resources, each reconciled once a minute | 49m | 298m | 124 MiB |
+| Creating those 5,000 resources at once: 500m to 750m for 40 seconds | 204m | 756m | 122 MiB |
+| Taking over those 5,000 resources from a stopped leader: 1,100m for about 15 seconds | 85m | 1,102m | 115 MiB |
+| 400 Secrets of 256 KiB (100 MiB, as Helm's release history can be) and 1,000 resources | 12m | 207m | 220 MiB |
+| Waiting as a standby, in any of these | 0 to 1m | 14m | 9 MiB |
+
+`hack/sizing` runs the controller image in Docker against an envtest API server, as a leader and a standby, and reads
+what the kubelet reports, and so what the autoscaler sees, every 2 seconds: CPU, and memory as the working set. A peak
+is the highest such sample. Its resources name a
+`CloudflareAccount` that does not exist, so that each reconcile ends with `AccountNotFound` and is retried a minute
+later, and none calls Cloudflare: Cloudflare's rate limit of 1,200 calls per five minutes keeps those to 4 a second,
+while reconciles have no such bound. A resource that is `Ready` is reconciled again only when something changes, or
+at each `driftCheckInterval`, so an installation whose resources are `Ready` uses less CPU than the table shows.
+
+The chart's defaults follow from these numbers: requests of 100m CPU and 64Mi memory, and limits of 1 CPU and 512Mi
+memory. Under those limits, the 100 MiB of Secrets with 5,000 resources took 281 MiB, and a takeover was done in
+about 12 seconds, as without them.
+
+- **CPU.** With 100m requested, an idle leader is at 4% of its request and one reconciling 5,000 resources a minute
+  at about 50%, under the autoscaler's 80%. Bursts, such as creating many resources at once or taking over from a
+  leader, last seconds to a minute, and the autoscaler waits 2 minutes above its target before it adds a replica
+  (`autoscaling.behavior`). The limit of 1 CPU is above every burst but a takeover's peak of a few seconds, which it
+  slows a little. Go sizes its threads from the limit: 2 under a limit of 1 CPU.
+- **Memory** is mostly the cache of every Secret in the cluster. The leader needs about 16 MiB, plus one and a half
+  times the size of the cluster's Secrets as `kubectl get secrets -A -o json | wc -c` counts them, plus about 15 KiB
+  for each kflare resource. Helm keeps each release's history in Secrets, often most of a cluster's. The 100 MiB of
+  Secrets above came to 134 MiB that way, and the leader used 220 MiB of the 512Mi limit, which fits about 250 MiB of
+  Secrets. For more, raise `resources.limits.memory` to at least a quarter above what the leader needs, and
+  `resources.requests.memory` to what it needs, so that the scheduler places it on a node with that much free. The
+  standbys use about 9 MiB but get the same requests.
 
 ### Monitoring
 

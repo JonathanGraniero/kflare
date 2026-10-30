@@ -1,9 +1,43 @@
 # Default values for the kflare chart. Every key is documented here; see
 # docs/deploy.md for a guided install.
 
-# -- Number of controller replicas. Leader election keeps exactly one active;
-# extra replicas only shorten failover.
+# -- Number of controller replicas while autoscaling is off; ignored while it
+# is on. Leader election keeps exactly one active; extra replicas only shorten
+# failover.
 replicaCount: 1
+
+# A HorizontalPodAutoscaler for the controller's Deployment, which owns the
+# replica count while it is on. It needs the metrics API (metrics-server).
+# Leader election keeps one replica active whatever the count: the replicas it
+# adds are standbys, which take over sooner when the leader goes but add no
+# reconcile capacity. The leader's use is what rises with load, and the pods'
+# average is what the autoscaler compares with its targets.
+autoscaling:
+  # -- Create the HorizontalPodAutoscaler.
+  enabled: true
+  # -- Fewest replicas. 2 keeps a standby at all times.
+  minReplicas: 1
+  # -- Most replicas.
+  maxReplicas: 10
+  # -- Average CPU use across the pods, as a percentage of
+  # resources.requests.cpu, above which replicas are added. Empty leaves CPU
+  # out.
+  targetCPUUtilizationPercentage: 80
+  # -- Average memory use across the pods, as a percentage of
+  # resources.requests.memory, above which replicas are added. Empty (the
+  # default) leaves memory out: the leader caches every Secret in the cluster
+  # and the standbys cache nothing, so on a cluster with many Secrets a memory
+  # target adds standbys that stay, as the leader's memory does not go down.
+  targetMemoryUtilizationPercentage:
+  # -- The autoscaler's scaling behavior (a HorizontalPodAutoscalerBehavior).
+  # Replicas are added only once the pods have been above the target for 2
+  # minutes, so that the bursts of a few seconds to a minute that start-up, a
+  # failover or a batch of new resources cause add none, and removed after 5
+  # minutes below it (Kubernetes' default). Set scaleUp to null for
+  # Kubernetes' default, which adds replicas at once.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 120
 
 image:
   # -- Controller image repository.
@@ -165,14 +199,21 @@ networkPolicy:
 # -- Container port for the /healthz and /readyz probes.
 healthPort: 8081
 
-# -- Controller resources. The controller is light; raise the memory limit
-# for clusters with many Secrets, which it caches.
+# -- Controller resources, measured with hack/sizing (docs/deploy.md, Scaling
+# and resources). The CPU request is what autoscaling's CPU target is a share
+# of: an idle leader uses about 4m, and one with 5,000 resources reconciled
+# every minute about 50m. The CPU limit is above every burst measured but
+# one of a few seconds, and Go runs 2 threads under it. The leader caches
+# every Secret in the cluster: it needs about 16Mi, plus one and a half times
+# the size of `kubectl get secrets -A -o json`, plus 15Ki per kflare resource.
+# The memory limit fits about 250Mi of Secrets; raise both for more.
 resources:
   requests:
-    cpu: 10m
+    cpu: 100m
     memory: 64Mi
   limits:
-    memory: 256Mi
+    cpu: "1"
+    memory: 512Mi
 
 # -- Pod security context (restricted Pod Security Standard).
 podSecurityContext:
