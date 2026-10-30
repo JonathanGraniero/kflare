@@ -1,6 +1,8 @@
-{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
-# Lets a node drain evict the controller pods one at a time. With a single
-# replica there is none, so that it never blocks a drain.
+{{- $replicas := ternary .Values.autoscaling.maxReplicas .Values.replicaCount .Values.autoscaling.enabled }}
+{{- if and .Values.podDisruptionBudget.enabled (gt (int $replicas) 1) }}
+# Lets a node drain evict the controller pods one at a time. It is only
+# created when the Deployment can run more than one replica (replicaCount, or
+# autoscaling.maxReplicas while autoscaling is on).
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

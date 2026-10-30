@@ -111,6 +111,16 @@ section. So run `make helm` after changing a sample too. Artifact Hub drops a wh
 it cannot read: `make helm` fails rather than write one, and the command's tests check the committed annotations, the
 hand-written ones too, as Artifact Hub does.
 
+The chart's `resources` and autoscaling targets come from `hack/sizing`, which runs the controller image in Docker
+against an envtest API server, as a leader and a standby, and reports their CPU and memory while it adds Secrets and
+kflare resources and then stops the leader. Run it again after a change that could move them, such as a new watch or
+cache, and update the table in the deploy guide's
+[Scaling and resources](docs/deploy.md#scaling-and-resources):
+
+```sh
+make docker-build sizing IMG=controller:latest SIZING_ARGS="-secrets 5000 -resources 5000 -samples /tmp/sizing.csv"
+```
+
 ## The live end-to-end suite
 
 `make test-e2e` installs the manager with the Helm chart on the kind cluster in your current context, with the

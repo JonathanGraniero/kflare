@@ -119,7 +119,8 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
   the CRDs, keeps them on uninstall, and runs under the restricted Pod Security Standard.
 - **Releases are signed** (from v0.2.1): the image and the chart with cosign, keyless, with SBOMs
   and provenance, so that cosign, an admission policy or Flux can check them; the guide has a Kyverno policy.
-- **One installation per cluster**, with leader election; two replicas give a quick failover.
+- **One installation per cluster**, with leader election. A HorizontalPodAutoscaler adds standby replicas while the
+  leader is busy, and `autoscaling.minReplicas: 2` keeps one at all times for a quick failover.
 - **kflare never takes over what it did not create**, unless a resource asks with the
   `kflare.dev/adoption-policy` annotation. Objects it adopted are kept when their resource is deleted, and
   `kflare.dev/deletion-policy: retain` keeps any object, for zones and storage that must outlive a manifest.

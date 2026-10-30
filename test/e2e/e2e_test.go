@@ -18,6 +18,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/JonathanGraniero/kflare/test/utils"
 )
@@ -86,6 +88,48 @@ var _ = Describe("controller-manager", func() {
 			}
 			return nil
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	})
+
+	It("reads the controller's CPU with its HorizontalPodAutoscaler, and keeps one replica while idle", func() {
+		// The autoscaler compares the pods' CPU use, from the metrics API, with
+		// a share of the chart's CPU request. An idle controller uses a few
+		// millicores, far below it, so the autoscaler keeps one replica.
+		Eventually(func() error {
+			out, err := utils.Run(exec.Command("kubectl", "get", "hpa", releaseName, "-n", managerNamespace,
+				"-o", "json"))
+			if err != nil {
+				return err
+			}
+			var hpa autoscalingv2.HorizontalPodAutoscaler
+			if err := json.Unmarshal(out, &hpa); err != nil {
+				return err
+			}
+			if ref := hpa.Spec.ScaleTargetRef; ref.Kind != "Deployment" || ref.Name != releaseName {
+				return fmt.Errorf("the autoscaler scales %s %s, not the chart's Deployment", ref.Kind, ref.Name)
+			}
+			active := false
+			for _, c := range hpa.Status.Conditions {
+				if c.Type == autoscalingv2.ScalingActive && c.Status == corev1.ConditionTrue {
+					active = true
+				}
+			}
+			if !active {
+				return fmt.Errorf("the autoscaler cannot scale yet: %+v", hpa.Status.Conditions)
+			}
+			target, current := cpuUtilization(hpa)
+			if target == nil || current == nil {
+				return fmt.Errorf("no CPU utilization yet: target %v, current %v", target, current)
+			}
+			if *current >= *target {
+				return fmt.Errorf("the idle controller uses %d%% of its CPU request, the target is %d%%",
+					*current, *target)
+			}
+			if hpa.Status.CurrentReplicas != 1 || hpa.Status.DesiredReplicas != 1 {
+				return fmt.Errorf("the autoscaler runs %d replicas and wants %d, not 1",
+					hpa.Status.CurrentReplicas, hpa.Status.DesiredReplicas)
+			}
+			return nil
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	It("serves metrics over HTTPS, only to a token allowed to get /metrics", func() {
@@ -230,3 +274,20 @@ var _ = Describe("controller-manager", func() {
 		Eventually(connect("api.cloudflare.com:443"), 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 })
+
+// cpuUtilization returns a HorizontalPodAutoscaler's CPU target and the pods'
+// current average, both as percentages of their CPU request, or nil for one it
+// does not have.
+func cpuUtilization(hpa autoscalingv2.HorizontalPodAutoscaler) (target, current *int32) {
+	for _, m := range hpa.Spec.Metrics {
+		if m.Resource != nil && m.Resource.Name == corev1.ResourceCPU {
+			target = m.Resource.Target.AverageUtilization
+		}
+	}
+	for _, m := range hpa.Status.CurrentMetrics {
+		if m.Resource != nil && m.Resource.Name == corev1.ResourceCPU {
+			current = m.Resource.Current.AverageUtilization
+		}
+	}
+	return target, current
+}

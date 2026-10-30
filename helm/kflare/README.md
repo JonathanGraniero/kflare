@@ -28,7 +28,8 @@ accounts, installing with Argo CD or Flux, running in production, upgrades and u
 - Optionally, ClusterRoles that add kflare's kinds to the built-in `view`, `edit` and `admin` roles
 - A Service for metrics, served over HTTPS to callers allowed by the `<release>-metrics-reader` ClusterRole, and
   optionally a Prometheus Operator ServiceMonitor
-- A PodDisruptionBudget when `replicaCount` is above 1
+- A HorizontalPodAutoscaler, from 1 to 10 replicas on CPU, which needs the metrics API (metrics-server)
+- A PodDisruptionBudget when the Deployment can run more than one replica
 - Optionally, a NetworkPolicy
 
 Before uninstalling, delete your kflare resources while the controller still runs, so it can clean up the Cloudflare
@@ -46,7 +47,13 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `image.tag` | chart `appVersion` | Image tag |
 | `image.digest` | `""` | Image digest, run instead of the tag when set: the digest whose signature you verified |
 | `imagePullSecrets` | `[]` | Secrets for pulling the image from a private registry or mirror |
-| `replicaCount` | `1` | Replicas; leader election keeps one active |
+| `replicaCount` | `1` | Replicas while `autoscaling.enabled` is `false`; leader election keeps one active |
+| `autoscaling.enabled` | `true` | Create a HorizontalPodAutoscaler, which then owns the replica count |
+| `autoscaling.minReplicas` | `1` | Fewest replicas; `2` keeps a standby at all times |
+| `autoscaling.maxReplicas` | `10` | Most replicas |
+| `autoscaling.targetCPUUtilizationPercentage` | `80` | Average CPU use, as a share of `resources.requests.cpu`, above which replicas are added |
+| `autoscaling.targetMemoryUtilizationPercentage` | unset | The same for memory, off by default |
+| `autoscaling.behavior` | scale up after 2 minutes above target | The autoscaler's scale-up and scale-down behavior |
 | `crds.enabled` | `true` | Install and upgrade the CRDs with the chart |
 | `crds.keep` | `true` | Keep the CRDs on uninstall |
 | `rbac.aggregateToDefaultRoles` | `true` | Extend the built-in `view`/`edit`/`admin` roles |
@@ -60,9 +67,9 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `metrics.secure` | `true` | HTTPS, only to tokens allowed `get` on `/metrics`; `false`: plain HTTP |
 | `metrics.certSecret` | unset | Secret with the metrics certificate (`tls.crt`, `tls.key`, `ca.crt`) |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor |
-| `podDisruptionBudget.enabled` | `true` | Create a PodDisruptionBudget (`maxUnavailable: 1`) when `replicaCount` > 1 |
+| `podDisruptionBudget.enabled` | `true` | Create a PodDisruptionBudget (`maxUnavailable: 1`) when there can be several replicas |
 | `networkPolicy.enabled` | `false` | Allow only metrics scrapes in, and DNS, the API server and port 443 out |
-| `resources` | 10m/64Mi requests, 256Mi limit | Controller resources |
+| `resources` | 100m/64Mi requests, 1/512Mi limits | Controller resources; raise memory for clusters with many Secrets |
 | `topologySpreadConstraints`, `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` | unset | Pod scheduling |
 | `extraEnv` | `[]` | Extra environment variables, such as `HTTPS_PROXY` and `NO_PROXY` |
 | `extraArgs` | `[]` | Extra controller arguments |
