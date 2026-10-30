@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
 	"github.com/cloudflare/cloudflare-go/v7/shared"
 	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
 	. "github.com/onsi/ginkgo/v2"
@@ -22,6 +24,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -58,6 +63,18 @@ func (f fakeTunnelHooksAPI) TunnelToken(context.Context, string, string) (string
 func (f fakeTunnelHooksAPI) CleanupConnections(_ context.Context, _, tunnelID string) error {
 	f.cleanups = append(f.cleanups, tunnelID)
 	return f.cleanupErr
+}
+
+// listRecorder records the params of the tunnel lists it serves.
+type listRecorder struct {
+	fakeTunnelAPI
+	sent *zero_trust.TunnelCloudflaredListParams
+}
+
+func (l listRecorder) List(ctx context.Context, params zero_trust.TunnelCloudflaredListParams,
+	opts ...option.RequestOption) (*pagination.V4PagePaginationArray[shared.CloudflareTunnel], error) {
+	*l.sent = params
+	return l.fakeTunnelAPI.List(ctx, params, opts...)
 }
 
 var _ = Describe("Tunnel hooks", func() {
@@ -119,7 +136,7 @@ var _ = Describe("Tunnel hooks", func() {
 	}
 
 	BeforeEach(func() {
-		store = newFakeCRUDStore[shared.CloudflareTunnel](1000, "")
+		store = newFakeCRUDStore[shared.CloudflareTunnel](tunnelListPageSize, "")
 		hooks := newFakeTunnelHooksAPI(store)
 		tokens = hooks.fakeTunnelTokens
 		r = &TunnelReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
@@ -258,6 +275,51 @@ var _ = Describe("Tunnel hooks", func() {
 		createTunnel(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate})
 		sync()
 		Expect(getTunnel().Status.CloudflareMetadata.TunnelID).NotTo(Equal("deleted"))
+	})
+
+	It("asks Cloudflare for the live tunnels of its name", func() {
+		createTunnel(map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate})
+		var sent zero_trust.TunnelCloudflaredListParams
+		r.NewTunnelAPI = func(string) (TunnelAPI, error) {
+			return listRecorder{fakeTunnelAPI{store, fakeTunnelHooksAPI{tokens}}, &sent}, nil
+		}
+		sync()
+		Expect(sent.Name.Value).To(Equal("edge-tunnel"))
+		Expect(sent.IsDeleted.Present).To(BeTrue())
+		Expect(sent.IsDeleted.Value).To(BeFalse())
+	})
+
+	It("restores a deleted token Secret, in a running manager", func() {
+		createTunnel(nil)
+		sync()
+		mgr, err := manager.New(cfg, manager.Options{
+			Controller: config.Controller{SkipNameValidation: new(true)},
+			Metrics:    metricsserver.Options{BindAddress: "0"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		api := r.NewTunnelAPI
+		Expect((&TunnelReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), NewTunnelAPI: api}).
+			SetupWithManager(mgr)).To(Succeed())
+		mgrCtx, stop := context.WithCancel(ctx)
+		stopped := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+			defer close(stopped)
+			Expect(mgr.Start(mgrCtx)).To(Succeed())
+		}()
+		DeferCleanup(func() {
+			stop()
+			<-stopped
+		})
+		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
+		secret := getSecret(tokenSecret)
+		uid := secret.UID
+		Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
+		Eventually(func(g Gomega) {
+			restored := &corev1.Secret{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: tokenSecret, Namespace: ns}, restored)).To(Succeed())
+			g.Expect(restored.UID).NotTo(Equal(uid))
+		}, 10*time.Second, 50*time.Millisecond).Should(Succeed())
 	})
 
 	It("disconnects the tunnel's connectors before deleting it", func() {

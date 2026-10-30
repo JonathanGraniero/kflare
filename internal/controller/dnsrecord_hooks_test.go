@@ -91,6 +91,9 @@ func fakeDNSRecordNewBody(object *dns.RecordResponse, body dns.RecordNewParamsBo
 }
 
 func fakeDNSRecordEditBody(object *dns.RecordResponse, body dns.RecordEditParamsBody) {
+	// cloudflare-go v7 requires them, though a record's cannot change here.
+	ExpectWithOffset(1, body.Name.Value).To(Equal(object.Name))
+	ExpectWithOffset(1, string(body.Type.Value)).To(Equal(string(object.Type)))
 	write := fakeDNSRecordWrite{tags: body.Tags.Value, data: body.Data.Value}
 	if body.TTL.Present {
 		write.ttl = &body.TTL.Value

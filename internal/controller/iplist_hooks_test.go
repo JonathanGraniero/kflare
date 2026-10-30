@@ -375,6 +375,27 @@ var _ = Describe("IPList hooks", func() {
 	})
 })
 
+var _ = Describe("ipListItemsMatch", func() {
+	item := func(ip, comment string) rules.ListItemListResponse {
+		return rules.ListItemListResponse{IP: ip, Comment: comment}
+	}
+	DescribeTable("compares in canonical form, in any order",
+		func(want []cloudflarev1alpha1.IPListItem, got []rules.ListItemListResponse, match bool) {
+			Expect(ipListItemsMatch(want, got)).To(Equal(match))
+		},
+		Entry("nothing", nil, nil, true),
+		Entry("another order", []cloudflarev1alpha1.IPListItem{{IP: "192.0.2.1"}, {IP: "192.0.2.2"}},
+			[]rules.ListItemListResponse{item("192.0.2.2", ""), item("192.0.2.1", "")}, true),
+		Entry("a range of one address", []cloudflarev1alpha1.IPListItem{{IP: "192.0.2.1/32"}},
+			[]rules.ListItemListResponse{item("192.0.2.1", "")}, true),
+		Entry("another comment", []cloudflarev1alpha1.IPListItem{{IP: "192.0.2.1", Comment: "a"}},
+			[]rules.ListItemListResponse{item("192.0.2.1", "b")}, false),
+		Entry("one address in two forms, which Cloudflare refuses",
+			[]cloudflarev1alpha1.IPListItem{{IP: "192.0.2.1"}, {IP: "192.0.2.1/32"}},
+			[]rules.ListItemListResponse{item("192.0.2.1", ""), item("192.0.2.2", "")}, false),
+	)
+})
+
 var _ = Describe("IPLists and the rules that use them", func() {
 	ctx := context.Background()
 
