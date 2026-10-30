@@ -158,7 +158,10 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			zone := &cloudflarev1alpha1.Zone{
 				ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns},
 				Spec: cloudflarev1alpha1.ZoneSpec{
-					Name: prefix + ".example.com", AccountRef: corev1.LocalObjectReference{Name: accountName},
+					AccountRef: corev1.LocalObjectReference{Name: accountName},
+					ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+						Name: prefix + ".example.com",
+					},
 				},
 			}
 			create(zone)

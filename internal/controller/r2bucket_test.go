@@ -49,10 +49,14 @@ var _ = Describe("R2Bucket and the WorkerScripts bound to it", func() {
 		Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.WorkerScript{
 			ObjectMeta: metav1.ObjectMeta{Name: workerName, Namespace: ns, Finalizers: []string{reconciler.Finalizer}},
 			Spec: cloudflarev1alpha1.WorkerScriptSpec{
-				Name: "r2-bound-script", AccountRef: corev1.LocalObjectReference{Name: accountName}, Script: &script,
-				Bindings: []cloudflarev1alpha1.WorkerBinding{
-					{Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: r2Name}},
-					{Name: "OTHER", R2BucketRef: &corev1.LocalObjectReference{Name: other}},
+				AccountRef: corev1.LocalObjectReference{Name: accountName},
+				WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+					Name:   "r2-bound-script",
+					Script: &script,
+					Bindings: []cloudflarev1alpha1.WorkerBinding{
+						{Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: r2Name}},
+						{Name: "OTHER", R2BucketRef: &corev1.LocalObjectReference{Name: other}},
+					},
 				},
 			},
 		})).To(Succeed())

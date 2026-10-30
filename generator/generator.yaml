@@ -223,6 +223,209 @@ kinds:
           exclude the pattern from a broader route, so that no Worker runs for
           it.
 
+  # Cloudflare replaces a list's items in a bulk operation of its own, which its hooks run: see iplist_hooks.go.
+  - kind: IPList
+    service: rules.ListService
+    scope: account
+    shortName: cfiplist
+    noun: IP list
+    doc: |
+      IPList is the Schema for the iplists API.
+      It manages a custom IP list in a Cloudflare account. Rule expressions in
+      the account's zones refer to it as $<name>, for example
+      `ip.src in $office_ips`.
+    id:
+      field: id
+      status: listID
+      printColumn: List ID
+      doc: ListID is the Cloudflare list identifier.
+    claimLabel: kflare.dev/ip-list-id
+    adopt:
+      by: name
+    deletionBlockers:
+      - code: 10041
+        reason: ListInUse
+        message: "is used by a rule: remove it from the rules' expressions"
+        why: >-
+          Cloudflare refuses to delete a list that a rule's expression uses (400, 10041; verified live 2026-10-13).
+    sample:
+      name: example_ips
+      description: Addresses of example.com's offices.
+    fixed:
+      kind: ip
+    fields:
+      name:
+        printColumn: Name
+        doc: |
+          Name is the list's name, unique in the account among lists of every
+          kind: lowercase letters, digits and underscores, at most 50
+          characters. Immutable, because Cloudflare cannot rename a list.
+        validation:
+          pattern: ^[a-z0-9_]{1,50}$
+          reason: >-
+            Cloudflare refuses capitals in a list name (10029; verified live 2026-10-13), which the spec's pattern
+            allows.
+      description:
+        clearable: true
+        doc: Description is shown with the list in the Cloudflare dashboard.
+    ignore:
+      created_on: Not observed by the controller.
+      modified_on: Not observed by the controller. It changes with every replacement of the items.
+      num_items: A number in the OpenAPI spec, not an integer. The hooks record the count they read, in numItems.
+      num_referencing_filters: A number in the OpenAPI spec, not an integer.
+    hooks:
+      api: true
+      specExtras: IPListSpecExtras
+      metadataExtras: IPListMetadataExtras
+      sampleExtras:
+        items:
+          - ip: 192.0.2.1
+            comment: Head office
+          - ip: 198.51.100.0/24
+            comment: Branch office
+          - ip: 2001:db8::/48
+      tableExtras: {}
+      columns:
+        - name: Items
+          type: integer
+          path: .status.cloudflareMetadata.numItems
+
+  # Cloudflare keeps a deleted tunnel readable, and a tunnel's token and connections in services of their own: see
+  # tunnel_hooks.go.
+  - kind: Tunnel
+    service: zero_trust.TunnelCloudflaredService
+    scope: account
+    shortName: cftunnel
+    noun: tunnel
+    doc: |
+      Tunnel is the Schema for the tunnels API.
+      It represents a remotely-managed Cloudflare Tunnel and the Secret holding
+      the token a cloudflared connector needs to run it.
+    id:
+      field: id
+      status: tunnelID
+      printColumn: Tunnel ID
+      doc: TunnelID is the Cloudflare tunnel identifier (a UUID).
+    claimLabel: kflare.dev/tunnel-id
+    adopt:
+      by: name
+    dependents:
+      - kind: TunnelConfiguration
+        refs: configuredTunnels
+        reason: >-
+          A TunnelConfiguration resets the tunnel's ingress rules through its Tunnel when it is deleted.
+      - kind: DNSRecord
+        refs: recordTunnels
+        reason: A DNSRecord that points at the tunnel would route its hostname to nothing.
+    sample:
+      name: example-tunnel
+    fixed:
+      config_src: cloudflare
+    fields:
+      name:
+        printColumn: Tunnel
+        doc: |
+          Name is the tunnel's name in Cloudflare. Changing it renames the
+          tunnel in place.
+        validation:
+          minLength: 1
+          reason: The spec gives no minimum, and a tunnel without a name cannot be found to adopt.
+      status:
+        printColumn: CF Status
+        doc: |
+          Status is the tunnel health reported by Cloudflare at the last
+          reconcile (inactive, degraded, healthy, or down).
+    ignore:
+      account_tag: The account's ID, which accountRef already gives.
+      connections: Deprecated in cloudflare-go v7, which says the field will start returning an empty array.
+      conns_active_at: A time, which kflare-gen cannot map yet.
+      conns_inactive_at: A time, which kflare-gen cannot map yet.
+      created_at: A time, which kflare-gen cannot map yet.
+      deleted_at: A time, which kflare-gen cannot map yet. The hooks read it, to tell a deleted tunnel.
+      metadata: Free-form, which kflare-gen cannot map.
+      remote_config: Deprecated in cloudflare-go v7, in favor of config_src.
+      tun_type: Always cfd_tunnel for this service.
+      tunnel_secret: >-
+        The password of a locally-managed tunnel. kflare's tunnels are remotely managed: cloudflared authenticates with
+        the token, which the hooks write to a Secret.
+    hooks:
+      api: true
+      specExtras: TunnelSpecExtras
+      statusExtras: TunnelStatusExtras
+      sampleExtras:
+        credentialsSecretRef:
+          name: example-tunnel-token
+
+  # A DNS record's calls take its body as a union of its types, and a set's records share a name: see
+  # dnsrecord_hooks.go. Edit, unlike Update, leaves a priority Cloudflare chose alone.
+  - kind: DNSRecord
+    service: dns.RecordService
+    scope: zone
+    shortName: cfrecord
+    noun: DNS record
+    doc: |
+      DNSRecord is the Schema for the dnsrecords API.
+      It represents a DNS record within a Cloudflare-managed zone.
+    id:
+      field: id
+      status: recordID
+      printColumn: Record ID
+      doc: RecordID is the Cloudflare DNS record identifier.
+    claimLabel: kflare.dev/record-id
+    adopt:
+      by: name
+    update: Edit
+    sample:
+      name: www.example.com
+      type: A
+      content: 192.0.2.1
+      comment: The web server.
+    fields:
+      name:
+        immutable: true
+        printColumn: Record Name
+        doc: |
+          Name is the fully-qualified DNS record name (e.g. "www.example.com").
+          Immutable after creation.
+        validation:
+          minLength: 1
+          reason: The spec's union gives no minimum, and Cloudflare refuses an empty name.
+      type:
+        immutable: true
+        printColumn: Type
+        doc: Type is the DNS record type. Immutable after creation.
+      content:
+        printColumn: Content
+        doc: |
+          Content is the DNS record content (e.g. an IP address for A records,
+          a hostname for CNAME/MX). Set exactly one of content, data and
+          tunnelRef: record types such as SRV, LOC and CAA use data instead.
+        validation:
+          minLength: 1
+          reason: The spec's union gives no minimum, and a record's content is never empty.
+      comment:
+        clearable: true
+        doc: Comment is an optional free-text annotation for the record.
+      proxiable:
+        doc: Proxiable indicates whether this record type supports Cloudflare proxying.
+    ignore:
+      ttl: In the extras, with its own rules; dnsRecordNewBody and dnsRecordEditBody send it.
+      data: Free-form in cloudflare-go v7, so it is in the extras, as JSON.
+      priority: A number in the OpenAPI spec, not an integer, so it is in the extras.
+      proxied: In the extras, since a tunnelRef implies it.
+      tags: Free-form in cloudflare-go v7, so it is in the extras.
+      private_routing: Not sent by the controller, and not verified live yet.
+      settings: Free-form in cloudflare-go v7, and not verified live yet.
+      include_shadow_metadata: A query parameter for what a response holds, which kflare does not read.
+      comment_modified_on: A time, which kflare-gen cannot map yet.
+      created_on: A time, which kflare-gen cannot map yet.
+      meta: Free-form, which kflare-gen cannot map.
+      modified_on: A time, which kflare-gen cannot map yet.
+      tags_modified_on: A time, which kflare-gen cannot map yet.
+    hooks:
+      params: true
+      specExtras: DNSRecordSpecExtras
+
 # The rule kinds kflare-gen generates: each resource manages one rule in a zone's entry point ruleset for a Rulesets
 # phase, through the shared rule controller (internal/controller/rulesetrule_controller.go). A rule kind's spec holds
 # the fields every rule kind shares (RulesetRuleSpec) and the parameters of its action, which kflare-gen builds from
@@ -1335,3 +1538,62 @@ settingsKinds:
       reason: >-
         Every transform is off on kflare.dev, which nobody has configured (read live on 2026-10-22 and 2026-10-23), and
         the reset turns them all off ("Disables all Managed Transforms", Cloudflare's API documentation).
+
+# The kinds whose fields and calls stay hand-written (their <kind>_hooks.go) and on cloudflare-go v0.119, while the
+# shared CRUD reconciler runs them. A Worker's upload is a multipart request whose bindings v7 types as a union of 30
+# variants. A tunnel's configuration has no New or Delete. A zone's creation cannot be verified on the test account,
+# and v7 has no jump_start or plan_pending. See CLAUDE.md, Generate every kind.
+hookedKinds:
+  - kind: Zone
+    scope: account
+    shortName: cfzone
+    noun: zone
+    doc: |
+      Zone is the Schema for the zones API.
+      It represents a DNS zone managed in Cloudflare.
+    id:
+      field: id
+      status: zoneID
+      doc: ZoneID is the Cloudflare zone identifier.
+    claimLabel: kflare.dev/zone-id
+    specExtras: ZoneSpecExtras
+    metadataExtras: ZoneMetadataExtras
+    columns:
+      - {name: Domain, type: string, path: .spec.name}
+      - {name: Zone ID, type: string, path: .status.cloudflareMetadata.zoneID}
+      - {name: Plan, type: string, path: .status.cloudflareMetadata.plan}
+      - {name: CF Status, type: string, path: .status.cloudflareMetadata.status}
+  - kind: TunnelConfiguration
+    shortName: cftunnelconfig
+    noun: tunnel configuration
+    doc: |
+      TunnelConfiguration is the Schema for the tunnelconfigurations API.
+      It owns the complete ingress configuration of one remotely-managed Tunnel.
+    id:
+      field: tunnel_id
+      status: tunnelID
+      doc: TunnelID is the Cloudflare tunnel this configuration was last written to.
+    claimLabel: kflare.dev/tunnel-configuration-id
+    specExtras: TunnelConfigurationSpecExtras
+    metadataExtras: TunnelConfigurationMetadataExtras
+    columns:
+      - {name: Tunnel, type: string, path: .spec.tunnelRef.name}
+      - {name: Version, type: integer, path: .status.cloudflareMetadata.version}
+  - kind: WorkerScript
+    scope: account
+    shortName: cfworker
+    noun: Worker
+    doc: |
+      WorkerScript is the Schema for the workerscripts API.
+      It represents a Cloudflare Worker script and its bindings.
+    id:
+      field: id
+      status: scriptName
+      doc: ScriptName is the name of the Worker kflare last uploaded.
+    claimLabel: kflare.dev/worker-name
+    specExtras: WorkerScriptSpecExtras
+    metadataExtras: WorkerScriptMetadataExtras
+    statusExtras: WorkerScriptStatusExtras
+    columns:
+      - {name: Script, type: string, path: .spec.name}
+      - {name: Modified, type: string, path: .status.cloudflareMetadata.modifiedOn}

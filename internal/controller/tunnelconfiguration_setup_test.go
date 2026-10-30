@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -36,7 +37,7 @@ var _ = Describe("defaultTunnelConfigurationAPI", func() {
 
 	It("is used when NewTunnelConfigurationAPI is nil", func() {
 		r := &TunnelConfigurationReconciler{}
-		_, err := r.newTunnelConfigurationAPI("")
+		_, err := r.crud().newAPI("")
 		Expect(err).To(HaveOccurred())
 	})
 })
@@ -64,7 +65,9 @@ var _ = Describe("desiredTunnelConfiguration", func() {
 	It("falls back to http_status:404 when defaultService is empty", func() {
 		tc := &cloudflarev1alpha1.TunnelConfiguration{
 			Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-				Ingress: []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "a.example.com", Service: "http://a:80"}},
+				TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+					Ingress: []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "a.example.com", Service: "http://a:80"}},
+				},
 			},
 		}
 		rules := desiredTunnelConfiguration(tc).Ingress
@@ -91,13 +94,20 @@ var _ = Describe("isTunnelReady", func() {
 	})
 })
 
+// mapTunnel returns what maps a Tunnel event to the TunnelConfigurations that
+// reference it.
+func mapTunnel(r *TunnelConfigurationReconciler) handler.MapFunc {
+	crud := r.crud()
+	return crud.resourcesReferencing(crud.references()[0])
+}
+
 var _ = Describe("TunnelConfigurationReconciler reconcileDelete (no finalizer)", func() {
 	It("returns no error when the configuration has no finalizer", func() {
 		tc := &cloudflarev1alpha1.TunnelConfiguration{
 			ObjectMeta: metav1.ObjectMeta{Name: "no-finalizer-config", Namespace: "default"},
 		}
 		r := &TunnelConfigurationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		result, err := r.reconcileDelete(context.Background(), tc)
+		result, err := r.crud().reconcileDelete(context.Background(), tc)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}))
 	})
@@ -121,7 +131,7 @@ var _ = Describe("TunnelConfigurationReconciler configurationsForTunnel", func()
 	It("returns nil when the list fails", func() {
 		cancelCtx, cancel := context.WithCancel(context.Background())
 		cancel()
-		Expect(r().configurationsForTunnel(cancelCtx, &cloudflarev1alpha1.Tunnel{})).To(BeNil())
+		Expect(mapTunnel(r())(cancelCtx, &cloudflarev1alpha1.Tunnel{})).To(BeNil())
 	})
 
 	Context("when configurations exist", func() {
@@ -137,9 +147,11 @@ var _ = Describe("TunnelConfigurationReconciler configurationsForTunnel", func()
 				Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.TunnelConfiguration{
 					ObjectMeta: metav1.ObjectMeta{Name: names[i], Namespace: cftNS},
 					Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-						TunnelRef: corev1.LocalObjectReference{Name: tunnelName},
-						Ingress: []cloudflarev1alpha1.TunnelIngressRule{
-							{Hostname: "cft.example.com", Service: "http://cft:80"},
+						TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+							TunnelRef: corev1.LocalObjectReference{Name: tunnelName},
+							Ingress: []cloudflarev1alpha1.TunnelIngressRule{
+								{Hostname: "cft.example.com", Service: "http://cft:80"},
+							},
 						},
 					},
 				})).To(Succeed())
@@ -157,12 +169,12 @@ var _ = Describe("TunnelConfigurationReconciler configurationsForTunnel", func()
 
 		It("returns a request only for configurations referencing the Tunnel in its namespace", func() {
 			tunnel := &cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: cftTunnel, Namespace: cftNS}}
-			reqs := r().configurationsForTunnel(ctx, tunnel)
+			reqs := mapTunnel(r())(ctx, tunnel)
 			Expect(reqs).To(HaveLen(1))
 			Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Name: "cft-config-match", Namespace: cftNS}))
 
 			elsewhere := &cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: cftTunnel, Namespace: "kube-system"}}
-			Expect(r().configurationsForTunnel(ctx, elsewhere)).To(BeEmpty())
+			Expect(mapTunnel(r())(ctx, elsewhere)).To(BeEmpty())
 		})
 	})
 })

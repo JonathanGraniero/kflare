@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"go/token"
 	"os"
 	"regexp"
 	"slices"
@@ -27,6 +28,37 @@ type config struct {
 	// product's settings in a zone, which the shared settings controller
 	// drives.
 	SettingsKinds []settingsKindConfig `json:"settingsKinds,omitempty"`
+	// HookedKinds are the kinds the shared CRUD reconciler drives whose
+	// fields and calls are hand-written. Each is a step on the way to a
+	// kindConfig: see hookedKindConfig.
+	HookedKinds []hookedKindConfig `json:"hookedKinds,omitempty"`
+}
+
+// hookedKindConfig is a kind whose spec and calls cloudflare-go v7 cannot give
+// yet: a Worker's upload, a tunnel's configuration, and a zone, whose creation
+// the test account cannot verify. kflare-gen writes its API types around
+// hand-written extras, its reconciler on the shared CRUD one, its registration
+// and its place among the account's dependents. <kind>_hooks.go holds the rest:
+// <Kind>API, default<Kind>API, the crudResourceKind <kind>Kind, and <kind>Object
+// and <kind>Listed, the types its calls return and list.
+type hookedKindConfig struct {
+	Kind      string `json:"kind"`
+	ShortName string `json:"shortName"`
+	Noun      string `json:"noun"`
+	Doc       string `json:"doc"`
+	// Scope is account, for an accountRef the spec holds, or empty for a kind
+	// whose hooks find its account through a resource it references.
+	Scope string `json:"scope,omitempty"`
+	// ID names where status records the object's ID.
+	ID idConfig `json:"id"`
+	// ClaimLabel is the label holding the ID of the object a resource manages.
+	ClaimLabel string `json:"claimLabel"`
+	// SpecExtras, MetadataExtras and StatusExtras, and Columns, as in
+	// hooksConfig. The spec holds nothing else, but for its accountRef.
+	SpecExtras     string         `json:"specExtras"`
+	MetadataExtras string         `json:"metadataExtras,omitempty"`
+	StatusExtras   string         `json:"statusExtras,omitempty"`
+	Columns        []columnConfig `json:"columns,omitempty"`
 }
 
 // kindConfig is one kind's entry. Every field of the kind's cloudflare-go v7
@@ -57,6 +89,10 @@ type kindConfig struct {
 	ClaimLabel string `json:"claimLabel"`
 	// Adopt says how a resource finds the existing object it adopts.
 	Adopt adoptConfig `json:"adopt"`
+	// Update names the call that changes an object, for a service with both
+	// Update and Edit: by default the first, Update. A DNS record's Edit leaves
+	// what it is not sent, as its Update does not.
+	Update string `json:"update,omitempty"`
 	// Dependents are the kinds whose resources use a resource of this kind,
 	// which waits for them before it is deleted.
 	Dependents []dependentConfig `json:"dependents,omitempty"`
@@ -74,6 +110,53 @@ type kindConfig struct {
 	Fixed map[string]string `json:"fixed,omitempty"`
 	// Ignore leaves out fields, by their API name, each with the reason.
 	Ignore map[string]string `json:"ignore,omitempty"`
+	// Hooks says what the kind's hand-written hooks add, for what an entry
+	// cannot say.
+	Hooks *hooksConfig `json:"hooks,omitempty"`
+}
+
+// hooksConfig is what a kind's hooks, a crudHooks in a hand-written
+// <kind>_hooks.go in internal/controller, bring besides their functions: the
+// descriptor names that crudHooks, <kind>Hooks.
+type hooksConfig struct {
+	// API adds the hand-written interface <Kind>HooksAPI to the kind's narrow
+	// interface: the calls its hooks make besides the service's own. In
+	// production the hand-written struct <kind>Service, which embeds the
+	// service, implements them; the generated fake embeds the hand-written
+	// fake<Kind>HooksAPI that newFake<Kind>HooksAPI returns for its store.
+	API bool `json:"api,omitempty"`
+	// SpecExtras, MetadataExtras and StatusExtras name hand-written structs
+	// in api/v1alpha1 that the spec, status.cloudflareMetadata and status
+	// embed inline: fields Cloudflare's API does not describe, which the
+	// hooks act on, such as an IPList's items.
+	SpecExtras     string `json:"specExtras,omitempty"`
+	MetadataExtras string `json:"metadataExtras,omitempty"`
+	StatusExtras   string `json:"statusExtras,omitempty"`
+	// SampleExtras holds the sample's values of the spec extras, by their
+	// JSON name.
+	SampleExtras map[string]any `json:"sampleExtras,omitempty"`
+	// TableExtras replaces SampleExtras in the envtest table, when set, even
+	// to nothing: the shared specs expect a resource to be ready after one
+	// reconcile, which an IPList with items is not.
+	TableExtras map[string]any `json:"tableExtras,omitempty"`
+	// Columns are print columns of fields the extras hold.
+	Columns []columnConfig `json:"columns,omitempty"`
+	// Params is set when the hooks finish a call's union body: the generated
+	// calls pass it to the hand-written <kind>New<Body> and <kind><Update>Body
+	// with the resource and what its references give, and the entry may ignore
+	// a field the body requires, which those functions then set. The generated
+	// fake passes the body the same way to fake<Kind>NewBody and
+	// fake<Kind><Update>Body, in the test files.
+	Params bool `json:"params,omitempty"`
+}
+
+// columnConfig is one of a kind's additional print columns.
+type columnConfig struct {
+	Name string `json:"name"`
+	// Type is the column's type, such as string or integer.
+	Type string `json:"type"`
+	// Path is the column's JSONPath.
+	Path string `json:"path"`
 }
 
 // idConfig names an object's ID.
@@ -148,6 +231,14 @@ type fieldConfig struct {
 	// referenced resource's field once it is ready. A Worker route's script
 	// is a WorkerScript's name.
 	Ref *refConfig `json:"ref,omitempty"`
+	// Immutable keeps a field Update takes from changing: an object's identity
+	// may be fixed even though the API could change it. A DNS record's name and
+	// type tell it from the other records of its set.
+	Immutable bool `json:"immutable,omitempty"`
+	// Clearable is set for an optional string that Cloudflare does not fill
+	// in itself, so that unset means empty: it is compared, and Update sends
+	// it, even when the spec leaves it unset, which clears Cloudflare's.
+	Clearable bool `json:"clearable,omitempty"`
 }
 
 // refConfig names what a reference field refers to.
@@ -249,7 +340,7 @@ func loadConfig(path string) (*config, error) {
 // validate checks what can be checked without the SDK. Field names are
 // checked against the SDK when the kind is built.
 func (c *config) validate() error {
-	if len(c.Kinds) == 0 && len(c.RuleKinds) == 0 && len(c.SettingsKinds) == 0 {
+	if len(c.Kinds) == 0 && len(c.RuleKinds) == 0 && len(c.SettingsKinds) == 0 && len(c.HookedKinds) == 0 {
 		return fmt.Errorf("no kinds")
 	}
 	seen := map[string]bool{}
@@ -271,6 +362,16 @@ func (c *config) validate() error {
 		}
 		seen[k.Kind] = true
 	}
+	for i := range c.HookedKinds {
+		k := &c.HookedKinds[i]
+		if err := k.validate(); err != nil {
+			return err
+		}
+		if seen[k.Kind] {
+			return fmt.Errorf("kind %s is listed twice", k.Kind)
+		}
+		seen[k.Kind] = true
+	}
 	for i, k := range c.SettingsKinds {
 		if err := k.validate(); err != nil {
 			return fmt.Errorf("settingsKinds[%d] (%s): %w", i, k.Kind, err)
@@ -284,6 +385,9 @@ func (c *config) validate() error {
 }
 
 func (k *kindConfig) validate() error {
+	if err := k.Hooks.validate(); err != nil {
+		return err
+	}
 	switch {
 	case !kindName.MatchString(k.Kind):
 		return fmt.Errorf("kind %q is not a Go type name", k.Kind)
@@ -383,6 +487,11 @@ func (f fieldConfig) validateRef(name string) error {
 const (
 	scopeAccount = "account"
 	scopeZone    = "zone"
+
+	// accountRefName and accountRefField are the Go and JSON names of the spec
+	// field an account's kind names its account with.
+	accountRefName  = "AccountRef"
+	accountRefField = "accountRef"
 )
 
 // validateDeletionBlockers checks a kind's deletion blockers.
@@ -926,3 +1035,61 @@ func (k *settingsKindConfig) validate() error {
 
 // settingsValuePath matches a path of API names, each list's marked by [].
 var settingsValuePath = regexp.MustCompile(`^[a-z][a-z0-9_-]*(\[\])?(\.[a-z][a-z0-9_-]*(\[\])?)*$`)
+
+// validate checks a hooked kind's entry.
+func (k *hookedKindConfig) validate() error {
+	switch {
+	case !kindName.MatchString(k.Kind):
+		return fmt.Errorf("hookedKinds: %q is not a Go type name", k.Kind)
+	case k.ShortName == "" || k.Noun == "" || k.ClaimLabel == "" || k.ID.Status == "":
+		return fmt.Errorf("hookedKinds (%s): shortName, noun, claimLabel and id.status are required", k.Kind)
+	case !strings.HasPrefix(k.Doc, k.Kind+" "):
+		return fmt.Errorf("hookedKinds (%s): doc does not start with %q", k.Kind, k.Kind+" ")
+	case k.Scope != "" && k.Scope != scopeAccount:
+		return fmt.Errorf("hookedKinds (%s): scope %q: it is account, or empty", k.Kind, k.Scope)
+	}
+	hooks := hooksConfig{SpecExtras: k.SpecExtras, MetadataExtras: k.MetadataExtras, StatusExtras: k.StatusExtras,
+		Columns: k.Columns}
+	if k.SpecExtras == "" {
+		return fmt.Errorf("hookedKinds (%s): specExtras is required", k.Kind)
+	}
+	return hooks.validate()
+}
+
+// chooseUpdate makes the call the entry names the one that changes an object.
+func (k *kindConfig) chooseUpdate(svc *service) error {
+	if k.Update == "" {
+		return nil
+	}
+	if svc.calls[k.Update] == nil || !slices.Contains(writeMethods, k.Update) {
+		return fmt.Errorf("%s: update: %s is not a call that changes an object of %s", k.Kind, k.Update, k.Service)
+	}
+	svc.chooseUpdate(k.Update)
+	return nil
+}
+
+// params reports whether a kind's hooks finish its calls' union bodies.
+func (h *hooksConfig) params() bool { return h != nil && h.Params }
+
+// validate checks the names and columns of a kind's hooks; a kind may have
+// none.
+func (h *hooksConfig) validate() error {
+	if h == nil {
+		return nil
+	}
+	for what, name := range map[string]string{"specExtras": h.SpecExtras, "metadataExtras": h.MetadataExtras,
+		"statusExtras": h.StatusExtras} {
+		if name != "" && !token.IsExported(name) {
+			return fmt.Errorf("hooks.%s: %q is no exported type's name", what, name)
+		}
+	}
+	if len(h.SampleExtras) > 0 && h.SpecExtras == "" {
+		return fmt.Errorf("hooks.sampleExtras: the spec has no extras")
+	}
+	for _, c := range h.Columns {
+		if c.Name == "" || c.Type == "" || c.Path == "" {
+			return fmt.Errorf("hooks.columns: a column takes a name, a type and a path")
+		}
+	}
+	return nil
+}
