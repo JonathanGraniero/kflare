@@ -479,8 +479,8 @@ hang, and leaves its Cloudflare object, or the zone's settings, as they are.
   ref marks them (see [Rules](#rules)).
 - **Rule order covers kflare's rules only.** A rule created outside kflare keeps its place, so it cannot be ordered
   relative to kflare's rules.
-- **Three kinds are pinned to the legacy SDK.** Zone, TunnelConfiguration and WorkerScript call cloudflare-go v0.119, the
-  newest of the v0 line; every other kind uses the generated SDK, v7. Some limitations come from v0.119:
+- **Three kinds are pinned to the legacy SDK.** Zone, TunnelConfiguration and WorkerScript call cloudflare-go v0.119,
+  the newest of the v0 line; every other kind uses the generated SDK, v7. Some limitations come from v0.119:
   `originRequest` timeouts are not exposed because `TunnelDuration` does not round-trip, and a WorkerScript binds only
   R2 buckets in the default jurisdiction (`R2BucketJurisdictionUnsupported` otherwise): the SDK's Worker R2 binding has
   no jurisdiction field. R2Bucket itself, generated on v7, manages buckets in any jurisdiction.
