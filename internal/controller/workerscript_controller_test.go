@@ -562,12 +562,26 @@ var _ = Describe("WorkerScript Controller", func() {
 
 		It("goes on managing the Worker of a WorkerScript from an earlier release, without a claim or a scriptName", func() {
 			readyEnv(nil)
-			setUploadedStatus(uploadedAtStr)
 			fake := syncedFake()
-			_, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			r := reconcilerWithFakeWorkerScriptAPI(fake)
+			_, err := reconcileWorker(r)
+			Expect(err).NotTo(HaveOccurred())
+
+			// What an earlier release leaves: the hash and the modification time,
+			// but no claim and no scriptName.
+			ws := getWorker()
+			delete(ws.Labels, cloudflarev1alpha1.WorkerScriptIDLabel)
+			Expect(k8sClient.Update(ctx, ws)).To(Succeed())
+			ws.Status.CloudflareMetadata.ScriptName = ""
+			Expect(k8sClient.Status().Update(ctx, ws)).To(Succeed())
+
+			_, err = reconcileWorker(r)
 			Expect(err).NotTo(HaveOccurred())
 			expectReady(metav1.ConditionTrue, "Synced")
+			Expect(fake.uploads).To(HaveLen(1), "the upgrade uploads nothing")
+			Expect(getWorker().Labels).To(HaveKeyWithValue(cloudflarev1alpha1.WorkerScriptIDLabel, scriptName))
 			Expect(getWorker().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			Expect(getWorker().Status.CloudflareMetadata.ScriptName).To(BeEmpty(), "set by its next upload")
 		})
 
 		It("uploads a Worker deleted outside kflare again as its own with adopt-or-create", func() {

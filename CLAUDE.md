@@ -349,7 +349,15 @@ draft entry showed that kflare-gen refused all six, so it took the capabilities 
    rule kinds (PRs 1 to 4), and the kinds of PRs 5 to 20 ship in later releases, whose notes list their changes.
    Changed again on 2026-10-29, when the user found v0.3.0 unreleased and asked for its notes to cover everything
    merged: v0.3.0 also carries R2Bucket and WorkerRoute (PRs 5, 6, 9 and 10, #121 and #122) and the chart's Artifact Hub
-   annotations (#119); PRs 7, 8 and 11 to 20 ship later
+   annotations (#119); PRs 7, 8 and 11 to 20 ship later. On 2026-10-30, when the user asked for v0.4.0: it carries what
+   #125 did of PRs 7 to 20 (`docs/release-v0.4.0`), and the rest of rows 15 to 20 ship later
+
+**Open, for the user (2026-10-30):** they expect v0.4.0's to be the last breaking CRD changes. Decision 2 above says
+field names follow the API, and rows 16, 18 and 20 are still to do. Zone's and TunnelConfiguration's fields already take
+v7's names (`plan` and `defaultService` are kflare's own, and would stay in their extras), but WorkerScript's bindings
+do not: `plainText`, `kvNamespaceID` and `r2BucketName` against the API's `text`, `namespace_id` and `bucket_name`, with
+a `type` that kflare infers. Row 20 as planned would break them, so it needs a decision before it starts: keep those
+names as an exception to decision 2, or ship one more breaking change
 
 `CloudflareAccount` is not a Cloudflare object: it holds the API token kflare calls Cloudflare with, as a provider
 configuration does, and no part of Cloudflare's API describes it. It is the one kind kflare-gen has nothing to generate
@@ -608,7 +616,8 @@ rule kinds reconciling at once share a phase's ruleset). The autoscaler and the 
   two-replica install gets a PDB that a node drain respects. Both hold (above)
 
 #### Autoscaling and resources (`feat/chart-autoscaling`)
-**Status:** 🚧 Draft PR #124, 2026-10-30. The user asked for a HorizontalPodAutoscaler on 2026-10-30, from 1 to 10
+**Status:** ✅ Merged 2026-10-30 (#124); ships in v0.4.0, and CI's E2E passed on 1.34 and 1.37 on its merge commit.
+The user asked for a HorizontalPodAutoscaler on 2026-10-30, from 1 to 10
 replicas, on by default with values to tune it, and for CPU and memory limits; told first that only the leader
 reconciles (#67's section 4), so that the replicas it adds are standbys, they chose it as asked. Its targets and the
 resources were left to me, from measurements. Covers [#70](https://github.com/JonathanGraniero/kflare/issues/70)'s
@@ -802,7 +811,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   approve their own pull requests, could then merge nothing: the user chose 9. Renaming a required job or changing
   E2E's Kubernetes versions means changing `protect main`'s checks too. Code-Review stays 0: a bypassed merge has
   no approval
-- [ ] v0.3.0's pre-tag checks (`docs/release-v0.3.0`), a minor release: WAFCustomRule, RateLimitRule and
+- [x] v0.3.0, released 2026-10-29: its pre-tag checks (`docs/release-v0.3.0`), a minor release: WAFCustomRule,
+  RateLimitRule and
   ManagedRuleset moved onto kflare-gen (#114 to #116), which renames fields. Done on the branch:
   - An upgrade from 0.2.1 on an envtest API server (1.34.1; no Helm in that session, so v0.2.1's CRDs and samples
     from the tag, then the branch's CRDs applied over them): v0.2.1's samples, a block rule with `blockResponse` and
@@ -811,8 +821,29 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     warnings; a spec change is refused (`spec.id: Required value`) until the new shape is applied, which then
     passes. The new samples are refused by v0.2.1's CRDs (`unknown field "spec.ratelimit"`), so CHANGELOG.md's
     upgrade steps apply them after the chart
-  - Left: the live suite on the release branch (a `/live-e2e` review comment, never alongside a local run), then the
-    tag on the release PR's merge commit, the release workflow, and #84's checks on the published release
+  - An upgrade of the chart from 0.2.1 on an envtest API server passed. The live suite was not run again: main's
+    non-Markdown tree was the one run 40915815475 passed, 27 of 27
+  - The tag is on #123's merge commit `97b5037`. `Release` run 40968424408 passed; the image (`sha256:dc3718b1…`) and
+    the chart (`sha256:9724dc23…`) verify with cosign 3.1.3 for `refs/tags/v0.3.0`, and the SBOM passes `verify-blob`
+- [ ] v0.4.0's pre-tag checks (`docs/release-v0.4.0`), a minor release: #125 moves six kinds onto the shared
+  reconciler, and #124 adds the autoscaler. Done on the branch:
+  - The CRDs against v0.3.0's, without descriptions or list order: 18 of 20 are identical. `Tunnel`'s `spec.name` can
+    change, and `WorkerScript` gains `status.cloudflareMetadata.scriptName`
+  - An upgrade from 0.3.0 on an envtest API server (1.34.1, no pods): the chart from GHCR, anonymously, with
+    `replicaCount: 2` and a memory limit, v0.3.0's samples (26 resources of 20 kinds), a Tunnel and a WorkerScript with
+    v0.3.0's status, then `helm upgrade` to the branch's chart. Every resource's spec and status read back unchanged,
+    the 5 roles' rules are the same, the autoscaler is created and the memory limit merges with the new defaults. A
+    Tunnel's rename is refused before it and accepted after it, a Zone's name stays immutable, and the branch's 24
+    samples pass a server-side dry run
+  - A WorkerScript of v0.3.0 is not uploaded again. It owns its Worker through `modifiedOn`, which v0.3.0 wrote, and
+    its hash has the same inputs in both releases (read in both). The spec "from an earlier release" did not show it:
+    its fixture had no hash and listed no Worker, so it uploaded. It now starts from a real upload and strips what
+    v0.3.0 leaves out, and fails when ownership is keyed on `scriptName`. The other kinds take the path in `sync`
+    for an ID in status, which claims without adopting (read, not run)
+  - Left, both for the user: the live suite with the CI token (a `/live-e2e` review comment, never alongside a local
+    run; none has run on #125's code, whose last live run was local, 30250c, 23 of 23), and v0.3.0's manager handing
+    real objects to the branch's. The auto mode classifier refused the second on 2026-10-30 as a change to shared
+    resources. Then the tag on the release PR's merge commit, the release workflow, and #84's checks
 - [x] Artifact Hub annotations (#90, `feat/artifacthub-annotations`). Why the page showed none, read in Artifact Hub's
   tracker (`internal/tracker/source/helm`, 2026-10-28): it finds a chart's images by a dry-run install for Kubernetes
   1.29, which `kubeVersion: ">=1.34.0-0"` refuses (Helm 4.3.1: "incompatible with Kubernetes v1.29"), and the license
@@ -864,7 +895,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
 > hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:
 > [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done:
-> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.3.0 is the latest release.
+> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.0 is the latest release.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero
