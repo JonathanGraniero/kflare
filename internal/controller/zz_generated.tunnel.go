@@ -56,6 +56,11 @@ type TunnelReconciler struct {
 	// NewTunnelAPI constructs a TunnelAPI from a raw API token. Defaults to
 	// defaultTunnelAPI; tests inject a fake.
 	NewTunnelAPI func(token string) (TunnelAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=tunnels,verbs=get;list;watch;create;update;patch;delete
@@ -163,18 +168,23 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 // the account is ready, and deleted TunnelConfigurations and DNSRecords, so a
 // Tunnel waiting for them is released.
 func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for Tunnels, with the injected
-// factory or the production one.
+// factory or the production one, and the manager's API reader or the client.
 func (r *TunnelReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.Tunnel, TunnelAPI, shared.CloudflareTunnel, shared.CloudflareTunnel] {
 	newAPI := r.NewTunnelAPI
 	if newAPI == nil {
 		newAPI = defaultTunnelAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.Tunnel, TunnelAPI, shared.CloudflareTunnel, shared.CloudflareTunnel]{
-		Client: r.Client, kind: tunnelKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: tunnelKind, newAPI: newAPI,
 	}
 }
 

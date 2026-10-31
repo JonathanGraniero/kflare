@@ -45,6 +45,11 @@ type R2BucketReconciler struct {
 	// NewR2BucketAPI constructs an R2BucketAPI from a raw API token. Defaults
 	// to defaultR2BucketAPI; tests inject a fake.
 	NewR2BucketAPI func(token string) (R2BucketAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=r2buckets,verbs=get;list;watch;create;update;patch;delete
@@ -166,18 +171,23 @@ func (r *R2BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // the account is ready, and deleted WorkerScripts, so an R2Bucket waiting for
 // them is released.
 func (r *R2BucketReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for R2Buckets, with the injected
-// factory or the production one.
+// factory or the production one, and the manager's API reader or the client.
 func (r *R2BucketReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.R2Bucket, R2BucketAPI, r2.Bucket, r2.Bucket] {
 	newAPI := r.NewR2BucketAPI
 	if newAPI == nil {
 		newAPI = defaultR2BucketAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.R2Bucket, R2BucketAPI, r2.Bucket, r2.Bucket]{
-		Client: r.Client, kind: r2BucketKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: r2BucketKind, newAPI: newAPI,
 	}
 }
 

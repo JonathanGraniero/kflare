@@ -48,6 +48,11 @@ type TestKVNamespaceReconciler struct {
 	// NewTestKVNamespaceAPI constructs a TestKVNamespaceAPI from a raw API
 	// token. Defaults to defaultTestKVNamespaceAPI; tests inject a fake.
 	NewTestKVNamespaceAPI func(token string) (TestKVNamespaceAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=testkvnamespaces,verbs=get;list;watch;create;update;patch;delete
@@ -138,18 +143,24 @@ func (r *TestKVNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // watches CloudflareAccounts, so a TestKVNamespace waiting for its account is
 // reconciled once the account is ready.
 func (r *TestKVNamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for TestKVNamespaces, with the
-// injected factory or the production one.
+// injected factory or the production one, and the manager's API reader or the
+// client.
 func (r *TestKVNamespaceReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.TestKVNamespace, TestKVNamespaceAPI, kv.Namespace, kv.Namespace] {
 	newAPI := r.NewTestKVNamespaceAPI
 	if newAPI == nil {
 		newAPI = defaultTestKVNamespaceAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.TestKVNamespace, TestKVNamespaceAPI, kv.Namespace, kv.Namespace]{
-		Client: r.Client, kind: testKVNamespaceKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: testKVNamespaceKind, newAPI: newAPI,
 	}
 }
 

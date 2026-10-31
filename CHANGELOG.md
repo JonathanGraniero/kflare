@@ -5,6 +5,15 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
+### The controller
+
+- **A resource no longer acts on a stale read of itself.** The manager's cache can lag behind the status a reconcile
+  wrote last, while that reconcile's own writes queue the next one. Reading no ID, the next reconcile found the object
+  it had just created and wrote it again, or, with `adopt-or-create`, marked it adopted, so that deleting the resource
+  would have kept it; reading a WorkerScript's previous hash, it uploaded the Worker a second time. The kinds of the
+  shared CRUD reconciler now read the resource from the API server before they find, adopt, create or update an
+  object, and wait for the cache when it is behind
+
 ## v0.4.0 (alpha)
 
 The fifth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. Every kind but

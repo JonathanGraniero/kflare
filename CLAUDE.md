@@ -844,6 +844,11 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     run; none has run on #125's code, whose last live run was local, 30250c, 23 of 23), and v0.3.0's manager handing
     real objects to the branch's. The auto mode classifier refused the second on 2026-10-30 as a change to shared
     resources. Then the tag on the release PR's merge commit, the release workflow, and #84's checks
+  - Tagged on `298c8f7` (#130's merge commit); `Release` run 41141606560 passed and drafted the release, whose notes
+    and publishing are left (cloud sessions may not edit releases). Main's CI was red there, and on #125's merge
+    commit: Test (newest Kubernetes) failed WorkerScript's spec in a running manager on every run, a race between the
+    manager's cache and the status a reconcile wrote last, not a flake (it failed locally on 1.34 too). Fixed on
+    `fix/crud-stale-cache`, for v0.4.1
 - [x] Artifact Hub annotations (#90, `feat/artifacthub-annotations`). Why the page showed none, read in Artifact Hub's
   tracker (`internal/tracker/source/helm`, 2026-10-28): it finds a chart's images by a dry-run install for Kubernetes
   1.29, which `kubeVersion: ">=1.34.0-0"` refuses (Helm 4.3.1: "incompatible with Kubernetes v1.29"), and the license

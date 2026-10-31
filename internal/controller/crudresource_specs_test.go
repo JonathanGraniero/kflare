@@ -559,6 +559,31 @@ func (e *crudSpecEnv[O, A, R, L]) createOtherParent(same bool) {
 	})).To(Succeed())
 }
 
+// reconcileStale reconciles the resource with a reconciler whose cache gives
+// stale for it, as a manager's cache can before it has seen what the last
+// reconcile wrote, and whose API reader is apiReader: the API server itself
+// when nil.
+func (e *crudSpecEnv[O, A, R, L]) reconcileStale(stale O, apiReader client.Reader) (ctrl.Result, error) {
+	base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+	Expect(err).NotTo(HaveOccurred())
+	cache := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if key == e.key {
+				reflect.ValueOf(obj).Elem().Set(reflect.ValueOf(stale.DeepCopyObject()).Elem())
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	r := e.t.newReconciler(cache, func(string) (A, error) { return e.t.newFake(e.store), nil }).crud()
+	r.apiReader = k8sClient
+	if apiReader != nil {
+		r.apiReader = apiReader
+	}
+	return r.reconcile(e.ctx, reconcile.Request{NamespacedName: e.key})
+}
+
 // failGets gives the spec a reconciler whose reads of an object named name
 // fail with err.
 func (e *crudSpecEnv[O, A, R, L]) failGets(name string, err error) {
@@ -1255,6 +1280,54 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
 			})
 
+			It("acts on no stale read of a resource whose status records no "+k.noun, func() {
+				e.createParent(true)
+				create(key, adoptOrCreate)
+				stale := get()
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				version, calls, writes := get().GetResourceVersion(), len(e.store.parentIDs), e.store.writes
+
+				By("stopping when the cache has not seen what the reconcile that created it wrote")
+				result, err := e.reconcileStale(stale, nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.IsZero()).To(BeTrue(), "the watch event that brings the cache up to date reconciles it")
+				Expect(e.store.parentIDs).To(HaveLen(calls), "Cloudflare is not called")
+				Expect(get().GetResourceVersion()).To(Equal(version), "the resource is left as it is")
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation),
+					"the "+k.noun+" it created is not taken for one to adopt")
+
+				By("reconciling as the API server has it once the cache has caught up")
+				_, err = reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.store.writes).To(Equal(writes))
+			})
+
+			It("returns a failed read of the resource from the API server for back-off", func() {
+				e.createParent(true)
+				obj := create(key, nil)
+				base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+				Expect(err).NotTo(HaveOccurred())
+				apiServer := interceptor.NewClient(base, interceptor.Funcs{
+					Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+						return errors.New("unavailable")
+					},
+				})
+				_, err = e.reconcileStale(obj, apiServer)
+				Expect(err).To(MatchError("unavailable"))
+				Expect(e.store.parentIDs).To(BeEmpty(), "Cloudflare is not called")
+			})
+
+			It("stops when the resource is gone from the API server but not yet from the cache", func() {
+				e.createParent(true)
+				stale := create(key, nil)
+				forceDelete(ctx, k.newObject(), key)
+				result, err := e.reconcileStale(stale, nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.IsZero()).To(BeTrue())
+				Expect(e.store.parentIDs).To(BeEmpty(), "Cloudflare is not called")
+			})
+
 			if !byKey {
 				It("creates the "+k.noun+" when the one it would adopt is gone before it is read", func() {
 					e.createParent(true)
@@ -1500,6 +1573,25 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					Expect(result.IsZero()).To(BeTrue())
 					Expect(ready().Reason).To(Equal("TerminalError"))
 					Expect(ready().Message).To(Equal("Terminal Cloudflare API error: refused (1000)"))
+				})
+
+				It("updates nothing on a stale read of its spec", func() {
+					id := synced(nil)
+					stale := get()
+					obj := get()
+					change.edit(obj)
+					Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					updated, version, writes := e.store.objects[id], get().GetResourceVersion(), e.store.writes
+
+					result, err := e.reconcileStale(stale, nil)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.IsZero()).To(BeTrue(), "the watch event that brings the cache up to date reconciles it")
+					Expect(e.store.writes).To(Equal(writes), "the "+k.noun+" is not taken back to the spec before "+
+						change.what)
+					Expect(e.store.objects[id]).To(Equal(updated))
+					Expect(get().GetResourceVersion()).To(Equal(version), "the resource is left as it is")
 				})
 
 				It("returns a failed update for back-off", func() {
@@ -1846,12 +1938,18 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(err).To(HaveOccurred())
 			})
 
-			It("registers with a manager", func() {
+			It("registers with a manager, whose API reader reads past its cache", func() {
 				mgr, err := manager.New(cfg, manager.Options{
 					Controller: config.Controller{SkipNameValidation: new(true)},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(t.newReconciler(mgr.GetClient(), nil).SetupWithManager(mgr)).To(Succeed())
+				r := t.newReconciler(mgr.GetClient(), nil)
+				Expect(r.SetupWithManager(mgr)).To(Succeed())
+				Expect(r.crud().apiReader).To(BeIdenticalTo(mgr.GetAPIReader()))
+			})
+
+			It("reads the API server through its client without a manager", func() {
+				Expect(t.newReconciler(k8sClient, nil).crud().apiReader).To(BeIdenticalTo(k8sClient))
 			})
 
 			if !zoned {

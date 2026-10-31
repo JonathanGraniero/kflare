@@ -52,6 +52,11 @@ type DNSRecordReconciler struct {
 	// NewDNSRecordAPI constructs a DNSRecordAPI from a raw API token. Defaults
 	// to defaultDNSRecordAPI; tests inject a fake.
 	NewDNSRecordAPI func(token string) (DNSRecordAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords,verbs=get;list;watch;create;update;patch;delete
@@ -157,18 +162,23 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // Zones, so a DNSRecord waiting for its Zone is reconciled once the Zone is
 // ready.
 func (r *DNSRecordReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for DNSRecords, with the injected
-// factory or the production one.
+// factory or the production one, and the manager's API reader or the client.
 func (r *DNSRecordReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.DNSRecord, DNSRecordAPI, dns.RecordResponse, dns.RecordResponse] {
 	newAPI := r.NewDNSRecordAPI
 	if newAPI == nil {
 		newAPI = defaultDNSRecordAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.DNSRecord, DNSRecordAPI, dns.RecordResponse, dns.RecordResponse]{
-		Client: r.Client, kind: dnsRecordKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: dnsRecordKind, newAPI: newAPI,
 	}
 }
 

@@ -203,6 +203,15 @@ annotation, and an object found with that key is the resource's own. The annotat
 object: with its claim label, in the same patch (see below), or, for kinds without one, on the next reconcile that
 finds the object by the ID in status. An object a resource's claim label names is its own too.
 
+A reconcile reads its resource from the manager's cache, which can lag behind what the previous reconcile wrote: that
+reconcile's own writes (the `creating` annotation, the claim) queue the next one, and its status may reach the cache
+last. So before the shared CRUD reconciler finds, adopts or creates an object, and before it updates one, it reads the
+resource from the API server too (`upToDate`). If that copy is newer, or the resource is gone, it stops, and the watch
+event that brings the cache up to date reconciles the resource again. Otherwise a reconcile that read no ID would find
+the object it had just created and write it again, or, with `adopt-or-create`, take it for one to adopt, and a
+WorkerScript that read its previous hash would upload its Worker a second time. A status write from a stale read fails
+on its resource version and is retried, so it needs no such check.
+
 | Resource | What counts as an existing object |
 |---|---|
 | `Zone` | A zone with `spec.name` in the referenced account. Zones in other accounts the token can reach are never adopted. |

@@ -75,12 +75,18 @@ var _ = Describe("WorkerScriptReconciler reconcileDelete (no finalizer)", func()
 })
 
 var _ = Describe("WorkerScriptReconciler SetupWithManager", func() {
-	It("registers without error", func() {
+	It("registers without error, and reads past the manager's cache with its API reader", func() {
 		mgr, err := manager.New(cfg, manager.Options{})
 		Expect(err).NotTo(HaveOccurred())
 
 		r := &WorkerScriptReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}
 		Expect(r.SetupWithManager(mgr)).To(Succeed())
+		Expect(r.crud().apiReader).To(BeIdenticalTo(mgr.GetAPIReader()))
+	})
+
+	It("reads the API server through its client without a manager", func() {
+		r := &WorkerScriptReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		Expect(r.crud().apiReader).To(BeIdenticalTo(k8sClient))
 	})
 })
 

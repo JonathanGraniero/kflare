@@ -27,6 +27,11 @@ type WorkerScriptReconciler struct {
 	// NewWorkerScriptAPI constructs a WorkerScriptAPI from a raw API token.
 	// Defaults to defaultWorkerScriptAPI; tests inject a fake.
 	NewWorkerScriptAPI func(token string) (WorkerScriptAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=workerscripts,verbs=get;list;watch;create;update;patch;delete
@@ -42,17 +47,22 @@ func (r *WorkerScriptReconciler) Reconcile(ctx context.Context, req ctrl.Request
 // SetupWithManager registers WorkerScriptReconciler with the manager, with the
 // shared CRUD reconciler's watches and those of the kind's hooks.
 func (r *WorkerScriptReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for WorkerScripts, with the injected
-// factory or the production one.
+// factory or the production one, and the manager's API reader or the client.
 func (r *WorkerScriptReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.WorkerScript, WorkerScriptAPI, workerScriptObject, workerScriptListed] {
 	newAPI := r.NewWorkerScriptAPI
 	if newAPI == nil {
 		newAPI = defaultWorkerScriptAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.WorkerScript, WorkerScriptAPI, workerScriptObject, workerScriptListed]{
-		Client: r.Client, kind: workerScriptKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: workerScriptKind, newAPI: newAPI,
 	}
 }
