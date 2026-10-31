@@ -5,6 +5,29 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
+## v0.4.1 (alpha)
+
+The sixth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It fixes a race
+in the shared CRUD reconciler that v0.4.0 shipped with, which could upload a Worker twice, or mark an object kflare
+created as adopted.
+
+```sh
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version 0.4.1 -n kflare-system \
+  --values kflare-values.yaml
+```
+
+The image is `ghcr.io/jonathangraniero/kflare:0.4.1`, for `linux/amd64` and `linux/arm64`. The deploy guide's
+[Verifying a release](docs/deploy.md#verifying-a-release) checks both signatures before you install. To install kflare
+for the first time, follow the [README's quickstart](README.md#quickstart-expose-a-service-through-a-cloudflare-tunnel).
+
+### Upgrading from v0.4.0
+
+The CRDs, the controller's permissions and the chart's defaults are v0.4.0's, so the upgrade itself needs nothing.
+
+A resource with `adopt-or-create` that v0.4.0 marked `kflare.dev/adopted` for an object it created stays marked, and
+deleting it keeps the object, as for any adopted object. To have such an object deleted with its resource, set
+`kflare.dev/deletion-policy: delete` on the resource first.
+
 ### The controller
 
 - **A resource no longer acts on a stale read of itself.** The manager's cache can lag behind the status a reconcile
@@ -12,7 +35,11 @@ read the notes before upgrading. The chart and the controller image share one ve
   it had just created and wrote it again, or, with `adopt-or-create`, marked it adopted, so that deleting the resource
   would have kept it; reading a WorkerScript's previous hash, it uploaded the Worker a second time. The kinds of the
   shared CRUD reconciler now read the resource from the API server before they find, adopt, create or update an
-  object, and wait for the cache when it is behind
+  object, and wait for the cache when it is behind ([#131](https://github.com/JonathanGraniero/kflare/pull/131))
+
+### Known limitations
+
+v0.4.0's, unchanged: [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains each.
 
 ## v0.4.0 (alpha)
 

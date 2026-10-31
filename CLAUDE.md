@@ -825,8 +825,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     non-Markdown tree was the one run 40915815475 passed, 27 of 27
   - The tag is on #123's merge commit `97b5037`. `Release` run 40968424408 passed; the image (`sha256:dc3718b1…`) and
     the chart (`sha256:9724dc23…`) verify with cosign 3.1.3 for `refs/tags/v0.3.0`, and the SBOM passes `verify-blob`
-- [ ] v0.4.0's pre-tag checks (`docs/release-v0.4.0`), a minor release: #125 moves six kinds onto the shared
-  reconciler, and #124 adds the autoscaler. Done on the branch:
+- [x] v0.4.0, released 2026-10-31: its pre-tag checks (`docs/release-v0.4.0`), a minor release: #125 moves six kinds
+  onto the shared reconciler, and #124 adds the autoscaler. Done on the branch:
   - The CRDs against v0.3.0's, without descriptions or list order: 18 of 20 are identical. `Tunnel`'s `spec.name` can
     change, and `WorkerScript` gains `status.cloudflareMetadata.scriptName`
   - An upgrade from 0.3.0 on an envtest API server (1.34.1, no pods): the chart from GHCR, anonymously, with
@@ -844,11 +844,25 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     run; none has run on #125's code, whose last live run was local, 30250c, 23 of 23), and v0.3.0's manager handing
     real objects to the branch's. The auto mode classifier refused the second on 2026-10-30 as a change to shared
     resources. Then the tag on the release PR's merge commit, the release workflow, and #84's checks
-  - Tagged on `298c8f7` (#130's merge commit); `Release` run 41141606560 passed and drafted the release, whose notes
-    and publishing are left (cloud sessions may not edit releases). Main's CI was red there, and on #125's merge
-    commit: Test (newest Kubernetes) failed WorkerScript's spec in a running manager on every run, a race between the
-    manager's cache and the status a reconcile wrote last, not a flake (it failed locally on 1.34 too). Fixed on
-    `fix/crud-stale-cache`, for v0.4.1
+  - Tagged on `298c8f7` (#130's merge commit); `Release` run 41141606560 passed and drafted the release. Main's CI was
+    red there, and on #125's merge commit: Test (newest Kubernetes) failed WorkerScript's spec in a running manager on
+    every run, a race between the manager's cache and the status a reconcile wrote last, not a flake (it failed locally
+    on 1.34 too). #131 fixed it, after the tag
+  - Published 2026-10-31 as tagged, so without #131 (the user's choice): the image and chart were already public and
+    on Artifact Hub, and moving the tag would have replaced signed digests. Its notes open with the known issue, and
+    v0.4.1 carries the fix. Neither item left for the user above was recorded as run. The image (`sha256:84623619…`)
+    and the chart (`sha256:eabd818d…`) verify with cosign 3.1.3 for `refs/tags/v0.4.0`, and the image is refused for
+    `refs/tags/v0.3.0`; the SBOMs pass `verify-blob`, and Artifact Hub lists 0.4.0 with `signed: true`. The release
+    scan, by hand (41244936180): Grype 0 matches in 78 packages, the binary clean
+- [ ] v0.4.1's pre-tag checks (`docs/release-v0.4.1`), a patch release: #131, and nothing else. Done on the branch:
+  - An upgrade from 0.4.0 needs nothing: since v0.4.0, nothing changed under `api`, `cmd`, `config` or `helm`, nor in
+    `go.mod`. The chart pulled anonymously from GHCR and the branch's render the same 32 objects with the default
+    values, and 33 with two replicas, the NetworkPolicy, the ServiceMonitor, a drift check interval and `retain`, but
+    for the version, on Kubernetes 1.34 and 1.37. A resource v0.4.0 marked adopted by mistake stays marked (read in
+    `RetainOnDelete`), so the notes say how to have its object deleted
+  - Left, for the user: the live suite with the CI token (a `/live-e2e` review comment, never alongside a local run).
+    None has run on #125's or #131's code. Then the tag on the release PR's merge commit, the release workflow, and
+    #84's checks
 - [x] Artifact Hub annotations (#90, `feat/artifacthub-annotations`). Why the page showed none, read in Artifact Hub's
   tracker (`internal/tracker/source/helm`, 2026-10-28): it finds a chart's images by a dry-run install for Kubernetes
   1.29, which `kubeVersion: ">=1.34.0-0"` refuses (Helm 4.3.1: "incompatible with Kubernetes v1.29"), and the license
@@ -900,7 +914,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
 > hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:
 > [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done:
-> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.0 is the latest release.
+> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.1 is the latest release.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero
