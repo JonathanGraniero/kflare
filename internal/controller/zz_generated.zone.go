@@ -27,6 +27,11 @@ type ZoneReconciler struct {
 	// NewZoneAPI constructs a ZoneAPI from a raw API token. Defaults to
 	// defaultZoneAPI; tests inject a fake.
 	NewZoneAPI func(token string) (ZoneAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=zones,verbs=get;list;watch;create;update;patch;delete
@@ -42,17 +47,22 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 // SetupWithManager registers ZoneReconciler with the manager, with the shared
 // CRUD reconciler's watches and those of the kind's hooks.
 func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for Zones, with the injected factory
-// or the production one.
+// or the production one, and the manager's API reader or the client.
 func (r *ZoneReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.Zone, ZoneAPI, zoneObject, zoneListed] {
 	newAPI := r.NewZoneAPI
 	if newAPI == nil {
 		newAPI = defaultZoneAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.Zone, ZoneAPI, zoneObject, zoneListed]{
-		Client: r.Client, kind: zoneKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: zoneKind, newAPI: newAPI,
 	}
 }

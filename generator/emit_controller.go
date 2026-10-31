@@ -206,13 +206,7 @@ func emitController(c *controller, header string) ([]byte, error) {
 	}
 	f.printf("}\n\nvar _ %s = (*%s)(nil)\n\n", api, production)
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles %s object, with the shared CRUD reconciler "+
-		"(crudresource_controller.go).", name, article(name))))
-	f.printf("type %sReconciler struct {\n\t%s.Client\n\tScheme *%s.Scheme\n\n", name, client,
-		f.use("k8s.io/apimachinery/pkg/runtime", "runtime"))
-	comment(&f.Builder, "\t", wrapIndented(fmt.Sprintf("New%s constructs %s from a raw API token. Defaults to "+
-		"default%s; tests inject a fake.", api, article(api), api)))
-	f.printf("\tNew%s func(token string) (%s, error)\n}\n\n", api, api)
+	emitCRUDReconcilerType(f, name, api)
 
 	for _, marker := range rbacMarkers(c) {
 		f.printf("// %s\n", marker)
@@ -327,16 +321,9 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("func (r *%sReconciler) Reconcile(ctx %s.Context, req %s.Request) (%s.Result, error) {\n", name, ctx, ctrl,
 		ctrl)
 	f.printf("return r.crud().reconcile(ctx, req)\n}\n\n")
-	comment(&f.Builder, "", wrap(setupDoc(c)))
-	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nreturn r.crud().setup(mgr, r)\n}\n\n",
-		name, ctrl)
-
 	crud := fmt.Sprintf("crudResourceReconciler[%s, %s, %s, %s]", obj, api, object, listed)
-	comment(&f.Builder, "", wrap(fmt.Sprintf("crud returns the shared CRUD reconciler for %s, with the injected "+
-		"factory or the production one.", pluralOf(name))))
-	f.printf("func (r *%sReconciler) crud() *%s {\n", name, crud)
-	f.printf("newAPI := r.New%s\nif newAPI == nil {\nnewAPI = default%s\n}\n", api, api)
-	f.printf("return &%s{\nClient: r.Client, kind: %sKind, newAPI: newAPI,\n}\n}\n\n", crud, v)
+	emitCRUDReconcilerSetup(f, name, api, v, crud, setupDoc(c))
+	f.printf("\n")
 
 	comment(&f.Builder, "", wrap(fmt.Sprintf("default%s is the production factory: cloudflare-go v7's %s, built "+
 		"from cfpkg.New's options for the token.", api, service)))
@@ -348,6 +335,40 @@ func emitController(c *controller, header string) ([]byte, error) {
 	}
 	f.printf("return %s, nil\n}\n", build)
 	return f.source(header)
+}
+
+// emitCRUDReconcilerType writes the exported reconciler of a kind the shared
+// CRUD reconciler runs, generated or hooked, whose narrow interface is api:
+// its client and scheme, the interface's factory, and the reader that reads
+// past the manager's cache.
+func emitCRUDReconcilerType(f *goFile, name, api string) {
+	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles %s object, with the shared CRUD reconciler "+
+		"(crudresource_controller.go).", name, article(name))))
+	client := f.use(clientPackage, "client")
+	f.printf("type %sReconciler struct {\n\t%s.Client\n\tScheme *%s.Scheme\n\n", name, client,
+		f.use("k8s.io/apimachinery/pkg/runtime", "runtime"))
+	comment(&f.Builder, "\t", wrapIndented(fmt.Sprintf("New%s constructs %s from a raw API token. Defaults to "+
+		"default%s; tests inject a fake.", api, article(api), api)))
+	f.printf("\tNew%s func(token string) (%s, error)\n\n", api, api)
+	comment(&f.Builder, "\t", wrapIndented("apiReader reads from the API server, past the manager's cache: "+
+		"SetupWithManager sets the manager's. Without one, Client reads, as in tests that reconcile without a "+
+		"manager."))
+	f.printf("\tapiReader %s.Reader\n}\n\n", client)
+}
+
+// emitCRUDReconcilerSetup writes the SetupWithManager (documented by doc) and
+// crud methods of the reconciler emitCRUDReconcilerType writes, for the kind
+// whose descriptor is <v>Kind and whose shared reconciler's type is crud.
+func emitCRUDReconcilerSetup(f *goFile, name, api, v, crud, doc string) {
+	comment(&f.Builder, "", wrap(doc))
+	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nr.apiReader = mgr.GetAPIReader()\n"+
+		"return r.crud().setup(mgr, r)\n}\n\n", name, f.use("sigs.k8s.io/controller-runtime", "ctrl"))
+	comment(&f.Builder, "", wrap(fmt.Sprintf("crud returns the shared CRUD reconciler for %s, with the injected "+
+		"factory or the production one, and the manager's API reader or the client.", pluralOf(name))))
+	f.printf("func (r *%sReconciler) crud() *%s {\n", name, crud)
+	f.printf("newAPI := r.New%s\nif newAPI == nil {\nnewAPI = default%s\n}\n", api, api)
+	f.printf("apiReader := r.apiReader\nif apiReader == nil {\napiReader = r.Client\n}\n")
+	f.printf("return &%s{\nClient: r.Client, apiReader: apiReader, kind: %sKind, newAPI: newAPI,\n}\n}\n", crud, v)
 }
 
 // setupDoc documents a kind's SetupWithManager: what it watches, and why.

@@ -49,13 +49,7 @@ func emitHookedController(k *hookedKind, header string) ([]byte, error) {
 	ctrl := f.use("sigs.k8s.io/controller-runtime", "ctrl")
 	crud := fmt.Sprintf("crudResourceReconciler[%s, %s, %sObject, %sListed]", obj, api, v, v)
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles %s object, with the shared CRUD reconciler "+
-		"(crudresource_controller.go).", name, article(name))))
-	f.printf("type %sReconciler struct {\n\t%s.Client\n\tScheme *%s.Scheme\n\n", name, f.use(clientPackage, "client"),
-		f.use("k8s.io/apimachinery/pkg/runtime", "runtime"))
-	comment(&f.Builder, "\t", wrapIndented(fmt.Sprintf("New%s constructs %s from a raw API token. Defaults to "+
-		"default%s; tests inject a fake.", api, article(api), api)))
-	f.printf("\tNew%s func(token string) (%s, error)\n}\n\n", api, api)
+	emitCRUDReconcilerType(f, name, api)
 
 	group := "+kubebuilder:rbac:groups=kflare.dev,resources="
 	for _, marker := range []string{
@@ -72,15 +66,8 @@ func emitHookedController(k *hookedKind, header string) ([]byte, error) {
 	f.printf("func (r *%sReconciler) Reconcile(ctx %s.Context, req %s.Request) (%s.Result, error) {\n", name, ctx, ctrl,
 		ctrl)
 	f.printf("return r.crud().reconcile(ctx, req)\n}\n\n")
-	comment(&f.Builder, "", wrap(fmt.Sprintf("SetupWithManager registers %sReconciler with the manager, with the "+
-		"shared CRUD reconciler's watches and those of the kind's hooks.", name)))
-	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nreturn r.crud().setup(mgr, r)\n}\n\n", name,
-		ctrl)
-	comment(&f.Builder, "", wrap(fmt.Sprintf("crud returns the shared CRUD reconciler for %s, with the injected "+
-		"factory or the production one.", pluralOf(name))))
-	f.printf("func (r *%sReconciler) crud() *%s {\n", name, crud)
-	f.printf("newAPI := r.New%s\nif newAPI == nil {\nnewAPI = default%s\n}\n", api, api)
-	f.printf("return &%s{\nClient: r.Client, kind: %sKind, newAPI: newAPI,\n}\n}\n", crud, v)
+	emitCRUDReconcilerSetup(f, name, api, v, crud, fmt.Sprintf("SetupWithManager registers %sReconciler with the "+
+		"manager, with the shared CRUD reconciler's watches and those of the kind's hooks.", name))
 	return f.source(header)
 }
 

@@ -543,6 +543,18 @@ kinds:
   - A resource whose status was never written deletes its object through its claim, in any kind; a zone's kind takes
     the zone from its Zone then. The fake serves smaller pages than it is asked for (`pageCap`), reporting the
     `per_page` it served, as a DNS list takes five million
+- **Reads past the cache** (`fix/crud-stale-cache`, 2026-10-31), after main's CI failed WorkerScript's spec in a
+  running manager on every run since #125: a reconcile read its resource before the cache had the status the previous
+  one wrote, found the Worker it had just created, and uploaded it again. The reconciler kflare-gen writes for a CRUD
+  or hooked kind (`emitCRUDReconcilerType`, `emitCRUDReconcilerSetup`, shared by both) holds an `apiReader`, which
+  `SetupWithManager` sets to the manager's API reader, and `crud()` hands the shared CRUD reconciler, or the client
+  when there is no manager. The shared CRUD reconciler reads the resource from the API server before it finds, adopts,
+  creates or updates an object, and stops while the cache is behind (`upToDate`). The shared specs reconcile each kind
+  from a stale copy (`reconcileStale`): before its status recorded the object (with `adopt-or-create`, which would mark
+  it adopted), and before a change of its spec (which would undo the change); a failed read, a resource gone, and the
+  reader's wiring. Mutations: 24 of the runtime, four kinds' generated glue and kflare-gen's emitters, all caught. The
+  first run left WorkerScript's glue alive, which no generated table checks: its and TunnelConfiguration's setup specs
+  now check the reader's wiring
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

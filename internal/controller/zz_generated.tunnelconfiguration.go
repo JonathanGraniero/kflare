@@ -28,6 +28,11 @@ type TunnelConfigurationReconciler struct {
 	// API token. Defaults to defaultTunnelConfigurationAPI; tests inject a
 	// fake.
 	NewTunnelConfigurationAPI func(token string) (TunnelConfigurationAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=tunnelconfigurations,verbs=get;list;watch;create;update;patch;delete
@@ -43,17 +48,23 @@ func (r *TunnelConfigurationReconciler) Reconcile(ctx context.Context, req ctrl.
 // SetupWithManager registers TunnelConfigurationReconciler with the manager,
 // with the shared CRUD reconciler's watches and those of the kind's hooks.
 func (r *TunnelConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for TunnelConfigurations, with the
-// injected factory or the production one.
+// injected factory or the production one, and the manager's API reader or the
+// client.
 func (r *TunnelConfigurationReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.TunnelConfiguration, TunnelConfigurationAPI, tunnelConfigurationObject, tunnelConfigurationListed] {
 	newAPI := r.NewTunnelConfigurationAPI
 	if newAPI == nil {
 		newAPI = defaultTunnelConfigurationAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.TunnelConfiguration, TunnelConfigurationAPI, tunnelConfigurationObject, tunnelConfigurationListed]{
-		Client: r.Client, kind: tunnelConfigurationKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: tunnelConfigurationKind, newAPI: newAPI,
 	}
 }

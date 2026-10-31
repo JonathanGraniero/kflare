@@ -223,8 +223,11 @@ type deletionBlocker struct {
 // kind's exported reconciler delegates to one.
 type crudResourceReconciler[O conditionedObject, A any, R any, L any] struct {
 	client.Client
-	kind   crudResourceKind[O, A, R, L]
-	newAPI func(token string) (A, error)
+	// apiReader reads from the API server, past the manager's cache, which
+	// Client reads from (see upToDate).
+	apiReader client.Reader
+	kind      crudResourceKind[O, A, R, L]
+	newAPI    func(token string) (A, error)
 }
 
 func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -388,8 +391,13 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 		}
 	}
 
+	// Without an object, the resource finds, adopts or creates one, unless
+	// it is a stale read (upToDate).
 	adopting := false
 	if current == nil {
+		if fresh, err := r.upToDate(ctx, obj); !fresh || err != nil {
+			return ctrl.Result{}, err
+		}
 		found, adopted, done, result, err := r.findOrCreate(ctx, obj, parentID, refs, api)
 		if done {
 			return result, err
@@ -403,12 +411,18 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 		return ctrl.Result{}, err
 	}
 
-	// Drift: update the object in place when it is not what the spec asks for.
+	// Drift: update the object in place when it is not what the spec asks
+	// for, unless the resource is a stale read: of its spec, or of what its
+	// status records, which a kind's matches hook may compare (a Worker's
+	// hash).
 	matches := k.matches
 	if k.hooks.matches != nil {
 		matches = k.hooks.matches
 	}
 	if !matches(obj, current, refs) {
+		if fresh, err := r.upToDate(ctx, obj); !fresh || err != nil {
+			return ctrl.Result{}, err
+		}
 		updated, err := k.update(ctx, api, obj, parentID, k.id(current), refs)
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
@@ -427,6 +441,31 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 		}
 	}
 	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
+}
+
+// upToDate reports whether obj, as the manager's cache gives it, is the
+// resource the API server holds. sync asks before it writes to Cloudflare on
+// what the resource says: before it finds, adopts or creates an object, and
+// before it updates one. A reconcile's own writes (the creating mark, the
+// claim) queue the next reconcile, as other events do while it runs, and the
+// status it writes last may not have reached the cache when that one reads
+// the resource. Reading no ID, or one of an object it has just recreated, the
+// next reconcile would find, adopt or create an object again; reading a
+// WorkerScript's previous hash, it would upload the Worker again. A newer
+// version, or a resource already gone, means the cache is behind: the
+// reconcile stops, and the watch event that brings the cache up to date
+// reconciles the resource again.
+func (r *crudResourceReconciler[O, A, R, L]) upToDate(ctx context.Context, obj O) (bool, error) {
+	current := r.kind.newObject()
+	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if current.GetResourceVersion() != obj.GetResourceVersion() {
+		log.FromContext(ctx).V(1).Info("Waiting for the cache, which is behind the API server",
+			"cached", obj.GetResourceVersion(), "current", current.GetResourceVersion())
+		return false, nil
+	}
+	return true, nil
 }
 
 // findOrCreate returns the object of a resource whose status records none:
