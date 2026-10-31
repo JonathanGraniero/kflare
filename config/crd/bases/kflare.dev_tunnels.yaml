@@ -64,7 +64,7 @@ spec:
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns this tunnel.
+                  AccountRef references the CloudflareAccount that owns the tunnel.
                   Immutable after creation.
                 properties:
                   name:
@@ -99,13 +99,11 @@ spec:
                 - name
                 type: object
               name:
-                description: Name is the tunnel name in Cloudflare. Immutable after
-                  creation.
+                description: |-
+                  Name is the tunnel's name in Cloudflare. Changing it renames the
+                  tunnel in place.
                 minLength: 1
                 type: string
-                x-kubernetes-validations:
-                - message: name is immutable
-                  rule: self == oldSelf
             required:
             - accountRef
             - credentialsSecretRef
@@ -120,8 +118,8 @@ spec:
                 properties:
                   status:
                     description: |-
-                      Status is the tunnel health reported by Cloudflare at the last reconcile
-                      (inactive, degraded, healthy, or down).
+                      Status is the tunnel health reported by Cloudflare at the last
+                      reconcile (inactive, degraded, healthy, or down).
                     type: string
                   tunnelID:
                     description: TunnelID is the Cloudflare tunnel identifier (a UUID).

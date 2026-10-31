@@ -100,8 +100,12 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 	It("waits for the resources that use the account before releasing it", func() {
 		Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns},
-			Spec: cloudflarev1alpha1.ZoneSpec{Name: "protect.example.com",
-				AccountRef: corev1.LocalObjectReference{Name: acctName}},
+			Spec: cloudflarev1alpha1.ZoneSpec{
+				AccountRef: corev1.LocalObjectReference{Name: acctName},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "protect.example.com",
+				},
+			},
 		})).To(Succeed())
 		Expect(k8sClient.Delete(ctx, getAccount())).To(Succeed())
 
@@ -150,8 +154,12 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 
 		Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns},
-			Spec: cloudflarev1alpha1.ZoneSpec{Name: "protect.example.com",
-				AccountRef: corev1.LocalObjectReference{Name: acctName}},
+			Spec: cloudflarev1alpha1.ZoneSpec{
+				AccountRef: corev1.LocalObjectReference{Name: acctName},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "protect.example.com",
+				},
+			},
 		})).To(Succeed())
 		Expect(k8sClient.Delete(ctx, getAccount())).To(Succeed())
 		ref := corev1.LocalObjectReference{Name: acctName}
@@ -173,13 +181,26 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 		dependents = append(dependents,
 			&cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: "protect-tunnel", Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelSpec{Name: "t", AccountRef: ref,
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "t-token"}}},
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{
+						CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "t-token"},
+					}}},
 			&cloudflarev1alpha1.WorkerScript{ObjectMeta: metav1.ObjectMeta{Name: "protect-worker", Namespace: ns},
-				Spec: cloudflarev1alpha1.WorkerScriptSpec{Name: "w", AccountRef: ref, Script: &script}},
+				Spec: cloudflarev1alpha1.WorkerScriptSpec{
+					AccountRef: ref,
+					WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+						Name:   "w",
+						Script: &script,
+					},
+				}},
 		)
 		for _, z := range []string{"protect-z1", "protect-z2", "protect-z3", "protect-z4"} {
 			dependents = append(dependents, &cloudflarev1alpha1.Zone{ObjectMeta: metav1.ObjectMeta{Name: z, Namespace: ns},
-				Spec: cloudflarev1alpha1.ZoneSpec{Name: z + ".example.com", AccountRef: ref}})
+				Spec: cloudflarev1alpha1.ZoneSpec{
+					AccountRef: ref,
+					ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+						Name: z + ".example.com",
+					},
+				}})
 		}
 		for _, d := range dependents {
 			Expect(k8sClient.Create(ctx, d)).To(Succeed())

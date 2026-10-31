@@ -8,7 +8,6 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Worker script formats.
@@ -19,18 +18,14 @@ const (
 	WorkerFormatServiceWorker = "serviceWorker"
 )
 
-// WorkerScriptSpec defines the desired state of WorkerScript.
+// WorkerScriptSpecExtras holds what a WorkerScript's spec asks for: a Worker's
+// upload is a multipart request, so its fields and calls stay hand-written.
 // +kubebuilder:validation:XValidation:rule="has(self.script) != has(self.scriptConfigMapRef)",message="exactly one of script or scriptConfigMapRef must be set"
-type WorkerScriptSpec struct {
+type WorkerScriptSpecExtras struct {
 	// Name is the Worker's script name in Cloudflare. Immutable after creation.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
-
-	// AccountRef references the CloudflareAccount that owns this Worker.
-	// Immutable after creation.
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="accountRef is immutable"
-	AccountRef corev1.LocalObjectReference `json:"accountRef"`
 
 	// Script is the Worker source code. Set either this or ScriptConfigMapRef.
 	// +kubebuilder:validation:MinLength=1
@@ -123,8 +118,8 @@ type WorkerBinding struct {
 	R2BucketName *string `json:"r2BucketName,omitempty"`
 }
 
-// WorkerScriptCloudflareMetadata holds metadata returned by the Cloudflare API.
-type WorkerScriptCloudflareMetadata struct {
+// WorkerScriptMetadataExtras holds metadata returned by the Cloudflare API.
+type WorkerScriptMetadataExtras struct {
 	// Etag is Cloudflare's hash of the uploaded code. It does not change when
 	// only bindings or compatibility settings change.
 	Etag string `json:"etag,omitempty"`
@@ -135,49 +130,10 @@ type WorkerScriptCloudflareMetadata struct {
 	ModifiedOn string `json:"modifiedOn,omitempty"`
 }
 
-// WorkerScriptStatus defines the observed state of WorkerScript.
-type WorkerScriptStatus struct {
-	// Conditions represent the latest available observations of the Worker state.
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-
-	// CloudflareMetadata holds metadata returned by the Cloudflare API.
-	CloudflareMetadata WorkerScriptCloudflareMetadata `json:"cloudflareMetadata,omitempty"`
-
+// WorkerScriptStatusExtras holds what kflare records about its last upload.
+type WorkerScriptStatusExtras struct {
 	// AppliedHash identifies the desired state last uploaded: the script,
 	// format, compatibility settings and bindings. Secret bindings contribute
 	// the Secret's UID and resourceVersion, never its value.
 	AppliedHash string `json:"appliedHash,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cfworker,categories=kflare
-// +kubebuilder:printcolumn:name="Script",type=string,JSONPath=`.spec.name`
-// +kubebuilder:printcolumn:name="Modified",type=string,JSONPath=`.status.cloudflareMetadata.modifiedOn`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-
-// WorkerScript is the Schema for the workerscripts API.
-// It represents a Cloudflare Worker script and its bindings.
-type WorkerScript struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   WorkerScriptSpec   `json:"spec,omitempty"`
-	Status WorkerScriptStatus `json:"status,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-
-// WorkerScriptList contains a list of WorkerScript.
-type WorkerScriptList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []WorkerScript `json:"items"`
-}
-
-func init() {
-	register(&WorkerScript{}, &WorkerScriptList{})
 }

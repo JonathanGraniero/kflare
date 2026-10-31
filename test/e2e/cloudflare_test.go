@@ -333,9 +333,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		tunnel := &cloudflarev1alpha1.Tunnel{
 			ObjectMeta: metav1.ObjectMeta{Name: tunnelKey.Name, Namespace: e2eNamespace},
 			Spec: cloudflarev1alpha1.TunnelSpec{
-				Name:                 resourceName(),
-				AccountRef:           corev1.LocalObjectReference{Name: accountKey.Name},
-				CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tunnel-token"},
+				Name:       resourceName(),
+				AccountRef: corev1.LocalObjectReference{Name: accountKey.Name},
+				TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{
+					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tunnel-token"},
+				},
 			},
 		}
 		Expect(k8s.Create(ctx, tunnel)).To(Succeed())
@@ -357,9 +359,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		tc := &cloudflarev1alpha1.TunnelConfiguration{
 			ObjectMeta: metav1.ObjectMeta{Name: tunnelConfigKey.Name, Namespace: e2eNamespace},
 			Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-				TunnelRef: corev1.LocalObjectReference{Name: tunnelKey.Name},
-				Ingress: []cloudflarev1alpha1.TunnelIngressRule{
-					{Hostname: hostname, Service: "http://localhost:8080"},
+				TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+					TunnelRef: corev1.LocalObjectReference{Name: tunnelKey.Name},
+					Ingress: []cloudflarev1alpha1.TunnelIngressRule{
+						{Hostname: hostname, Service: "http://localhost:8080"},
+					},
 				},
 			},
 		}
@@ -536,14 +540,16 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		worker := &cloudflarev1alpha1.WorkerScript{
 			ObjectMeta: metav1.ObjectMeta{Name: workerKey.Name, Namespace: e2eNamespace},
 			Spec: cloudflarev1alpha1.WorkerScriptSpec{
-				Name:              resourceName(),
-				AccountRef:        corev1.LocalObjectReference{Name: accountKey.Name},
-				Script:            &script,
-				CompatibilityDate: "2024-09-23",
-				Bindings: []cloudflarev1alpha1.WorkerBinding{
-					{Name: "GREETING", PlainText: &greeting},
-					{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvKey.Name}},
-					{Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: bucketKey.Name}},
+				AccountRef: corev1.LocalObjectReference{Name: accountKey.Name},
+				WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+					Name:              resourceName(),
+					Script:            &script,
+					CompatibilityDate: "2024-09-23",
+					Bindings: []cloudflarev1alpha1.WorkerBinding{
+						{Name: "GREETING", PlainText: &greeting},
+						{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvKey.Name}},
+						{Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: bucketKey.Name}},
+					},
 				},
 			},
 		}
@@ -572,8 +578,10 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				Annotations: map[string]string{reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyRetain},
 			},
 			Spec: cloudflarev1alpha1.ZoneSpec{
-				Name:       zoneName,
 				AccountRef: corev1.LocalObjectReference{Name: accountKey.Name},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: zoneName,
+				},
 			},
 		}
 		By("creating the Zone without an adoption policy, which leaves the existing zone alone")
@@ -634,11 +642,13 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		record := &cloudflarev1alpha1.DNSRecord{
 			ObjectMeta: objectMeta(tunnelRecordKey),
 			Spec: cloudflarev1alpha1.DNSRecordSpec{
-				ZoneRef:   corev1.LocalObjectReference{Name: zoneKey.Name},
-				Name:      tunnelRecordName(),
-				Type:      "CNAME",
-				TunnelRef: &corev1.LocalObjectReference{Name: tunnelKey.Name},
-				Comment:   "kflare e2e " + run,
+				ZoneRef: corev1.LocalObjectReference{Name: zoneKey.Name},
+				Name:    tunnelRecordName(),
+				Type:    "CNAME",
+				DNSRecordSpecExtras: cloudflarev1alpha1.DNSRecordSpecExtras{
+					TunnelRef: &corev1.LocalObjectReference{Name: tunnelKey.Name},
+				},
+				Comment: "kflare e2e " + run,
 			},
 		}
 		Expect(k8s.Create(ctx, record)).To(Succeed())
@@ -1407,11 +1417,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				AccountRef:  corev1.LocalObjectReference{Name: accountKey.Name},
 				Name:        listName(),
 				Description: "kflare e2e " + run,
-				Items: []cloudflarev1alpha1.IPListItem{
+				IPListSpecExtras: cloudflarev1alpha1.IPListSpecExtras{Items: []cloudflarev1alpha1.IPListItem{
 					{IP: "192.0.2.1", Comment: "documentation address"},
 					{IP: "198.51.100.0/24"},
 					{IP: "2001:DB8::/48"},
-				},
+				}},
 			},
 		}
 		Expect(k8s.Create(ctx, list)).To(Succeed())

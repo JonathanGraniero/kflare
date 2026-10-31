@@ -202,105 +202,22 @@ var pausedKinds = []pausedKind{
 		},
 	},
 	{
-		name: "Zone",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.Zone{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.ZoneSpec{
-					Name: name + ".example.com", AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &ZoneReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewZoneAPI: func(string) (ZoneAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
-		name: "DNSRecord",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.DNSRecord{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.DNSRecordSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: pausedSpecZone},
-					Name:    "www." + pausedSpecDomain, Type: "A", Content: "192.0.2.1",
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &DNSRecordReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewDNSRecordAPI: func(string) (DNSRecordAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
-		name: "Tunnel",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.Tunnel{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.TunnelSpec{
-					Name:                 name,
-					AccountRef:           corev1.LocalObjectReference{Name: pausedSpecAccount},
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: name + "-token"},
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &TunnelReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewTunnelAPI: func(string) (TunnelAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
-		name: "TunnelConfiguration",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.TunnelConfiguration{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-					TunnelRef: corev1.LocalObjectReference{Name: pausedSpecTunnel},
-					Ingress: []cloudflarev1alpha1.TunnelIngressRule{
-						{Hostname: "app." + pausedSpecDomain, Service: "http://app.default.svc:80"},
-					},
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &TunnelConfigurationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewTunnelConfigurationAPI: func(string) (TunnelConfigurationAPI, error) {
-					built()
-					return nil, errPausedSpecClient
-				}}
-		},
-	},
-	{
 		name: "WorkerScript",
 		newObject: func(name string) conditionedObject {
 			return &cloudflarev1alpha1.WorkerScript{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
 				Spec: cloudflarev1alpha1.WorkerScriptSpec{
-					Name:       name,
 					AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
-					Script:     new("export default { fetch() { return new Response('paused') } }"),
+					WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+						Name:   name,
+						Script: new("export default { fetch() { return new Response('paused') } }"),
+					},
 				},
 			}
 		},
 		newReconciler: func(built func()) reconcile.Reconciler {
 			return &WorkerScriptReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
 				NewWorkerScriptAPI: func(string) (WorkerScriptAPI, error) { built(); return nil, errPausedSpecClient }}
-		},
-	},
-	{
-		name: "IPList",
-		newObject: func(name string) conditionedObject {
-			return &cloudflarev1alpha1.IPList{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pausedSpecNS},
-				Spec: cloudflarev1alpha1.IPListSpec{
-					AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
-					Name:       strings.ReplaceAll(name, "-", "_"),
-				},
-			}
-		},
-		newReconciler: func(built func()) reconcile.Reconciler {
-			return &IPListReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewIPListAPI: func(string) (IPListAPI, error) { built(); return nil, errPausedSpecClient }}
 		},
 	},
 }
@@ -337,16 +254,19 @@ var _ = Describe("Every hand-written controller, for a paused resource", func() 
 		zone := &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: pausedSpecZone, Namespace: pausedSpecNS},
 			Spec: cloudflarev1alpha1.ZoneSpec{
-				Name: pausedSpecDomain, AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
+				AccountRef: corev1.LocalObjectReference{Name: pausedSpecAccount},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: pausedSpecDomain,
+				},
 			},
 		}
 		create(zone, func() { zone.Status.CloudflareMetadata.ZoneID = "zone-paused" })
 		tunnel := &cloudflarev1alpha1.Tunnel{
 			ObjectMeta: metav1.ObjectMeta{Name: pausedSpecTunnel, Namespace: pausedSpecNS},
 			Spec: cloudflarev1alpha1.TunnelSpec{
-				Name:                 pausedSpecTunnel,
-				AccountRef:           corev1.LocalObjectReference{Name: pausedSpecAccount},
-				CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: pausedSpecTunnel + "-token"},
+				Name:             pausedSpecTunnel,
+				AccountRef:       corev1.LocalObjectReference{Name: pausedSpecAccount},
+				TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: pausedSpecTunnel + "-token"}},
 			},
 		}
 		create(tunnel, func() { tunnel.Status.CloudflareMetadata.TunnelID = "tunnel-paused" })

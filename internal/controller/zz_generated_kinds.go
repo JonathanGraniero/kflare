@@ -29,6 +29,12 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&D1DatabaseReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the D1Database controller: %w", err)
 	}
+	if err := (&DNSRecordReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the DNSRecord controller: %w", err)
+	}
+	if err := (&IPListReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the IPList controller: %w", err)
+	}
 	if err := (&KVNamespaceReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the KVNamespace controller: %w", err)
 	}
@@ -53,11 +59,23 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 	if err := (&TransformRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the TransformRule controller: %w", err)
 	}
+	if err := (&TunnelReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the Tunnel controller: %w", err)
+	}
+	if err := (&TunnelConfigurationReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the TunnelConfiguration controller: %w", err)
+	}
 	if err := (&WAFCustomRuleReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the WAFCustomRule controller: %w", err)
 	}
 	if err := (&WorkerRouteReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the WorkerRoute controller: %w", err)
+	}
+	if err := (&WorkerScriptReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the WorkerScript controller: %w", err)
+	}
+	if err := (&ZoneReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setting up the Zone controller: %w", err)
 	}
 	return nil
 }
@@ -68,10 +86,18 @@ func SetupGeneratedReconcilers(mgr ctrl.Manager) error {
 var generatedAccountDependents = []dependentKind{
 	dependents("D1Database", func() client.ObjectList { return &cloudflarev1alpha1.D1DatabaseList{} },
 		func(obj *cloudflarev1alpha1.D1Database) []string { return []string{obj.Spec.AccountRef.Name} }),
+	dependents("IPList", func() client.ObjectList { return &cloudflarev1alpha1.IPListList{} },
+		func(obj *cloudflarev1alpha1.IPList) []string { return []string{obj.Spec.AccountRef.Name} }),
 	dependents("KVNamespace", func() client.ObjectList { return &cloudflarev1alpha1.KVNamespaceList{} },
 		func(obj *cloudflarev1alpha1.KVNamespace) []string { return []string{obj.Spec.AccountRef.Name} }),
 	dependents("R2Bucket", func() client.ObjectList { return &cloudflarev1alpha1.R2BucketList{} },
 		func(obj *cloudflarev1alpha1.R2Bucket) []string { return []string{obj.Spec.AccountRef.Name} }),
+	dependents("Tunnel", func() client.ObjectList { return &cloudflarev1alpha1.TunnelList{} },
+		func(obj *cloudflarev1alpha1.Tunnel) []string { return []string{obj.Spec.AccountRef.Name} }),
+	dependents("WorkerScript", func() client.ObjectList { return &cloudflarev1alpha1.WorkerScriptList{} },
+		func(obj *cloudflarev1alpha1.WorkerScript) []string { return []string{obj.Spec.AccountRef.Name} }),
+	dependents("Zone", func() client.ObjectList { return &cloudflarev1alpha1.ZoneList{} },
+		func(obj *cloudflarev1alpha1.Zone) []string { return []string{obj.Spec.AccountRef.Name} }),
 }
 
 // generatedRulesetRuleKinds are the generated rule kinds, which the shared rule
@@ -85,6 +111,8 @@ var generatedZoneDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.CacheRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ConfigurationRule", func() client.ObjectList { return &cloudflarev1alpha1.ConfigurationRuleList{} },
 		func(obj *cloudflarev1alpha1.ConfigurationRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
+	dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
+		func(obj *cloudflarev1alpha1.DNSRecord) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ManagedRuleset", func() client.ObjectList { return &cloudflarev1alpha1.ManagedRulesetList{} },
 		func(obj *cloudflarev1alpha1.ManagedRuleset) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ManagedTransform", func() client.ObjectList { return &cloudflarev1alpha1.ManagedTransformList{} },

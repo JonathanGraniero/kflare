@@ -10,7 +10,6 @@ import (
 	"context"
 	"time"
 
-	cf "github.com/cloudflare/cloudflare-go"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -36,7 +35,7 @@ var _ = Describe("defaultWorkerScriptAPI", func() {
 
 	It("is used when NewWorkerScriptAPI is nil", func() {
 		r := &WorkerScriptReconciler{}
-		_, err := r.newWorkerScriptAPI("")
+		_, err := r.crud().newAPI("")
 		Expect(err).To(HaveOccurred())
 	})
 })
@@ -44,13 +43,15 @@ var _ = Describe("defaultWorkerScriptAPI", func() {
 var _ = Describe("desiredUpload", func() {
 	It("uploads as an ES module when format is empty", func() {
 		ws := &cloudflarev1alpha1.WorkerScript{Spec: cloudflarev1alpha1.WorkerScriptSpec{
-			Name:   "no-format",
-			Script: new("export default {};"),
+			WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+				Name:   "no-format",
+				Script: new("export default {};"),
+			},
 		}}
-		upload, hash, srcErr := (&WorkerScriptReconciler{}).desiredUpload(context.Background(), ws)
-		Expect(srcErr).To(BeNil())
-		Expect(upload.Module).To(BeTrue())
-		Expect(hash).To(HaveLen(64))
+		refs := map[string]string{}
+		Expect(resolveWorkerUpload(context.Background(), nil, ws, refs)).To(BeNil())
+		Expect(workerUpload(ws, refs).Module).To(BeTrue())
+		Expect(refs[workerHashValue]).To(HaveLen(64))
 	})
 })
 
@@ -61,48 +62,31 @@ var _ = Describe("formatModifiedOn", func() {
 	})
 })
 
-var _ = Describe("workerDrift", func() {
-	at := time.Date(2026, 10, 3, 2, 13, 10, 984591000, time.UTC)
-	applied := formatModifiedOn(at)
-
-	It("reports nothing when the Worker still has kflare's upload", func() {
-		reason, observed := workerDrift([]cf.WorkerMetaData{{ID: "other"}, {ID: "mine", ModifiedOn: at}}, "mine", applied)
-		Expect(reason).To(BeEmpty())
-		Expect(observed).To(Equal(applied))
-	})
-
-	It("reports a modification time other than kflare's upload", func() {
-		reason, observed := workerDrift([]cf.WorkerMetaData{{ID: "mine", ModifiedOn: at.Add(time.Microsecond)}}, "mine", applied)
-		Expect(reason).To(Equal("modified outside kflare"))
-		Expect(observed).To(Equal("2026-10-03T02:13:10.984592Z"))
-	})
-
-	It("reports a missing Worker", func() {
-		reason, observed := workerDrift(nil, "mine", applied)
-		Expect(reason).To(Equal("missing from Cloudflare"))
-		Expect(observed).To(BeEmpty())
-	})
-})
-
 var _ = Describe("WorkerScriptReconciler reconcileDelete (no finalizer)", func() {
 	It("returns no error when the Worker has no finalizer", func() {
 		ws := &cloudflarev1alpha1.WorkerScript{
 			ObjectMeta: metav1.ObjectMeta{Name: "no-finalizer-worker", Namespace: "default"},
 		}
 		r := &WorkerScriptReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		result, err := r.reconcileDelete(context.Background(), ws)
+		result, err := r.crud().reconcileDelete(context.Background(), ws)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}))
 	})
 })
 
 var _ = Describe("WorkerScriptReconciler SetupWithManager", func() {
-	It("registers without error", func() {
+	It("registers without error, and reads past the manager's cache with its API reader", func() {
 		mgr, err := manager.New(cfg, manager.Options{})
 		Expect(err).NotTo(HaveOccurred())
 
 		r := &WorkerScriptReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}
 		Expect(r.SetupWithManager(mgr)).To(Succeed())
+		Expect(r.crud().apiReader).To(BeIdenticalTo(mgr.GetAPIReader()))
+	})
+
+	It("reads the API server through its client without a manager", func() {
+		r := &WorkerScriptReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		Expect(r.crud().apiReader).To(BeIdenticalTo(k8sClient))
 	})
 })
 
@@ -116,7 +100,7 @@ var _ = Describe("WorkerScriptReconciler watch mappings", func() {
 	It("returns nil when the list fails", func() {
 		cancelCtx, cancel := context.WithCancel(context.Background())
 		cancel()
-		Expect(r().workersForAccount(cancelCtx, &cloudflarev1alpha1.CloudflareAccount{})).To(BeNil())
+		Expect(r().crud().resourcesForAccount(cancelCtx, &cloudflarev1alpha1.CloudflareAccount{})).To(BeNil())
 	})
 
 	Context("with one Worker reading code from a ConfigMap and one with a secret binding", func() {
@@ -124,20 +108,24 @@ var _ = Describe("WorkerScriptReconciler watch mappings", func() {
 			Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.WorkerScript{
 				ObjectMeta: metav1.ObjectMeta{Name: "wm-from-configmap", Namespace: ns},
 				Spec: cloudflarev1alpha1.WorkerScriptSpec{
-					Name:               "wm-from-configmap",
-					AccountRef:         corev1.LocalObjectReference{Name: "wm-account-a"},
-					ScriptConfigMapRef: &cloudflarev1alpha1.WorkerKeyReference{Name: "wm-code", Key: "worker.js"},
+					AccountRef: corev1.LocalObjectReference{Name: "wm-account-a"},
+					WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+						Name:               "wm-from-configmap",
+						ScriptConfigMapRef: &cloudflarev1alpha1.WorkerKeyReference{Name: "wm-code", Key: "worker.js"},
+					},
 				},
 			})).To(Succeed())
 			Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.WorkerScript{
 				ObjectMeta: metav1.ObjectMeta{Name: "wm-with-secret", Namespace: ns},
 				Spec: cloudflarev1alpha1.WorkerScriptSpec{
-					Name:       "wm-with-secret",
 					AccountRef: corev1.LocalObjectReference{Name: "wm-account-b"},
-					Script:     new("export default {};"),
-					Bindings: []cloudflarev1alpha1.WorkerBinding{
-						{Name: "PLAIN", PlainText: new("x")},
-						{Name: "KEY", SecretKeyRef: &cloudflarev1alpha1.WorkerKeyReference{Name: "wm-secret", Key: "k"}},
+					WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+						Name:   "wm-with-secret",
+						Script: new("export default {};"),
+						Bindings: []cloudflarev1alpha1.WorkerBinding{
+							{Name: "PLAIN", PlainText: new("x")},
+							{Name: "KEY", SecretKeyRef: &cloudflarev1alpha1.WorkerKeyReference{Name: "wm-secret", Key: "k"}},
+						},
 					},
 				},
 			})).To(Succeed())
@@ -174,7 +162,7 @@ var _ = Describe("WorkerScriptReconciler watch mappings", func() {
 		})
 
 		It("maps a CloudflareAccount to the Workers that reference it", func() {
-			reqs := r().workersForAccount(ctx, &cloudflarev1alpha1.CloudflareAccount{ObjectMeta: metav1.ObjectMeta{Name: "wm-account-b"}})
+			reqs := r().crud().resourcesForAccount(ctx, &cloudflarev1alpha1.CloudflareAccount{ObjectMeta: metav1.ObjectMeta{Name: "wm-account-b"}})
 			Expect(reqs).To(HaveLen(1))
 			Expect(reqs[0].NamespacedName).To(Equal(request("wm-with-secret")))
 		})

@@ -66,7 +66,7 @@ spec:
             properties:
               accountRef:
                 description: |-
-                  AccountRef references the CloudflareAccount that owns this zone.
+                  AccountRef references the CloudflareAccount that owns the zone.
                   Immutable after creation.
                 properties:
                   name:
@@ -121,8 +121,8 @@ spec:
             description: ZoneStatus defines the observed state of Zone.
             properties:
               cloudflareMetadata:
-                description: CloudflareMetadata holds identifiers and metadata returned
-                  by the Cloudflare API.
+                description: CloudflareMetadata holds identifiers returned by the
+                  Cloudflare API.
                 properties:
                   nameServers:
                     description: NameServers are the authoritative name servers assigned

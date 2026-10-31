@@ -63,6 +63,9 @@ type fakeCRUDStore[R any] struct {
 	scope     string
 	nextID    int
 	pageSize  int64
+	// pageCap, when set, is the most objects a page holds, however many a list
+	// asks for: Cloudflare reports the per_page it served.
+	pageCap int64
 
 	createErr, getErr, listErr, updateErr, deleteErr error
 
@@ -73,6 +76,8 @@ type fakeCRUDStore[R any] struct {
 	writes    int
 	// sent holds the params of each New, in order.
 	sent []any
+	// extra holds what a kind's hooks' fake keeps.
+	extra any
 }
 
 func newFakeCRUDStore[R any](pageSize int64, scope string) *fakeCRUDStore[R] {
@@ -157,6 +162,9 @@ func fakeList[R any, L any](s *fakeCRUDStore[R], parentID, scope string, page, p
 		return nil, v7APIError(http.MethodGet, fmt.Sprintf("parents/%s/objects", parentID), http.StatusBadRequest,
 			1000, fmt.Sprintf("per_page must be no greater than %d", s.pageSize))
 	}
+	if s.pageCap > 0 {
+		perPage = min(perPage, s.pageCap)
+	}
 	objects := s.at(scope)
 	ids := slices.Sorted(maps.Keys(objects))
 	start := min(max(page-1, 0)*perPage, int64(len(ids)))
@@ -226,6 +234,16 @@ func (s *fakeCRUDStore[R]) delete(parentID, scope, id string) error {
 	return nil
 }
 
+// clearedStatus returns obj without its status, as a resource whose first
+// status update failed has none.
+func clearedStatus[O conditionedObject, A any, R any, L any](k crudResourceKind[O, A, R, L], obj O) O {
+	cleared := k.newObject()
+	cleared.SetName(obj.GetName())
+	cleared.SetNamespace(obj.GetNamespace())
+	cleared.SetResourceVersion(obj.GetResourceVersion())
+	return cleared
+}
+
 // crudKindReconciler is a generated kind's reconciler.
 type crudKindReconciler[O conditionedObject, A any, R any, L any] interface {
 	reconcile.Reconciler
@@ -271,9 +289,11 @@ var crudReferencedKinds = map[string]func(key types.NamespacedName, account stri
 		ws := &cloudflarev1alpha1.WorkerScript{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: cloudflarev1alpha1.WorkerScriptSpec{
-				Name:       "worker-" + key.Name,
 				AccountRef: corev1.LocalObjectReference{Name: account},
-				Script:     new("export default { fetch() { return new Response('ok') } }"),
+				WorkerScriptSpecExtras: cloudflarev1alpha1.WorkerScriptSpecExtras{
+					Name:   "worker-" + key.Name,
+					Script: new("export default { fetch() { return new Response('ok') } }"),
+				},
 			},
 		}
 		return ws, ws.Spec.Name
@@ -332,8 +352,12 @@ type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	deletionBlockers []deletionBlocker
 }
 
-// crudSpecNamespace is where the shared specs create resources.
-const crudSpecNamespace = "default"
+// crudSpecNamespace is where the shared specs create resources, and
+// crudSpecFullPage the most objects they seed to fill a page of a list.
+const (
+	crudSpecNamespace = "default"
+	crudSpecFullPage  = 1000
+)
 
 // crudSpecEnv is what the groups of a generated kind's shared specs share: its
 // table, the names its resources and their parents use, the fake store and the
@@ -407,6 +431,15 @@ func (e *crudSpecEnv[O, A, R, L]) reset() {
 	}
 }
 
+// matches reports whether current is what obj's spec asks for, as the kind
+// compares them: by its hook, if it has one.
+func (e *crudSpecEnv[O, A, R, L]) matches(obj O, current *R) bool {
+	if m := e.t.kind.hooks.matches; m != nil {
+		return m(obj, current, e.refs)
+	}
+	return e.t.kind.matches(obj, current, e.refs)
+}
+
 // seed stores an object with key, as Cloudflare would hold it, under id, or
 // under its key for a kind whose objects their key identifies, and returns
 // the ID it is stored under.
@@ -448,7 +481,10 @@ func (e *crudSpecEnv[O, A, R, L]) createZone(at types.NamespacedName, id string,
 	zone := &cloudflarev1alpha1.Zone{
 		ObjectMeta: metav1.ObjectMeta{Name: at.Name, Namespace: at.Namespace},
 		Spec: cloudflarev1alpha1.ZoneSpec{
-			Name: e.base + ".example.com", AccountRef: corev1.LocalObjectReference{Name: e.accountName},
+			AccountRef: corev1.LocalObjectReference{Name: e.accountName},
+			ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+				Name: e.base + ".example.com",
+			},
 		},
 	}
 	Expect(k8sClient.Create(e.ctx, zone)).To(Succeed())
@@ -521,6 +557,31 @@ func (e *crudSpecEnv[O, A, R, L]) createOtherParent(same bool) {
 				Key: "CF_API_TOKEN"},
 		},
 	})).To(Succeed())
+}
+
+// reconcileStale reconciles the resource with a reconciler whose cache gives
+// stale for it, as a manager's cache can before it has seen what the last
+// reconcile wrote, and whose API reader is apiReader: the API server itself
+// when nil.
+func (e *crudSpecEnv[O, A, R, L]) reconcileStale(stale O, apiReader client.Reader) (ctrl.Result, error) {
+	base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+	Expect(err).NotTo(HaveOccurred())
+	cache := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if key == e.key {
+				reflect.ValueOf(obj).Elem().Set(reflect.ValueOf(stale.DeepCopyObject()).Elem())
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	r := e.t.newReconciler(cache, func(string) (A, error) { return e.t.newFake(e.store), nil }).crud()
+	r.apiReader = k8sClient
+	if apiReader != nil {
+		r.apiReader = apiReader
+	}
+	return r.reconcile(e.ctx, reconcile.Request{NamespacedName: e.key})
 }
 
 // failGets gives the spec a reconciler whose reads of an object named name
@@ -948,6 +1009,15 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: accountName})
 			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: otherAccountName})
 			forceDelete(ctx, &corev1.Secret{}, types.NamespacedName{Name: e.secretName, Namespace: ns})
+			// envtest runs no garbage collector, so what a kind's hooks made for
+			// a resource outlives it.
+			secrets := &corev1.SecretList{}
+			Expect(k8sClient.List(ctx, secrets, client.InNamespace(ns))).To(Succeed())
+			for i := range secrets.Items {
+				if len(secrets.Items[i].OwnerReferences) > 0 {
+					Expect(k8sClient.Delete(ctx, &secrets.Items[i])).To(Succeed())
+				}
+			}
 		})
 
 		if zoned {
@@ -1005,7 +1075,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				if zoned {
 					Expect(*k.statusZoneID(obj)).To(Equal(e.zoneID), "status records the zone")
 				}
-				Expect(k.matches(obj, &object, e.refs)).To(BeTrue(), "the new object is what the spec asks for")
+				Expect(e.matches(obj, &object)).To(BeTrue(), "the new object is what the spec asks for")
 				Expect(obj.GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
 				Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 			})
@@ -1093,14 +1163,17 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					e.createParent(true)
 					obj := create(key, adopt)
 					// A full first page of other objects; the one to adopt sorts last.
-					for i := range t.pageSize {
+					// A page of a list that takes a very large per_page holds fewer,
+					// as Cloudflare reports.
+					e.store.pageCap = min(t.pageSize, crudSpecFullPage)
+					for i := range e.store.pageCap {
 						seed(fmt.Sprintf("a-%04d", i), fmt.Sprintf("other-%04d", i))
 					}
 					seed("z-last", k.key(obj))
 					_, err := reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(e.store.listPages[:2]).To(Equal([]int64{1, 2}))
-					Expect(e.store.objects).To(HaveLen(int(t.pageSize)+1), "nothing is created")
+					Expect(e.store.objects).To(HaveLen(int(e.store.pageCap)+1), "nothing is created")
 					Expect(k.statusID(get())).To(Equal("z-last"))
 					Expect(get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, "z-last"))
 					Expect(get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
@@ -1207,6 +1280,54 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
 			})
 
+			It("acts on no stale read of a resource whose status records no "+k.noun, func() {
+				e.createParent(true)
+				create(key, adoptOrCreate)
+				stale := get()
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				version, calls, writes := get().GetResourceVersion(), len(e.store.parentIDs), e.store.writes
+
+				By("stopping when the cache has not seen what the reconcile that created it wrote")
+				result, err := e.reconcileStale(stale, nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.IsZero()).To(BeTrue(), "the watch event that brings the cache up to date reconciles it")
+				Expect(e.store.parentIDs).To(HaveLen(calls), "Cloudflare is not called")
+				Expect(get().GetResourceVersion()).To(Equal(version), "the resource is left as it is")
+				Expect(get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation),
+					"the "+k.noun+" it created is not taken for one to adopt")
+
+				By("reconciling as the API server has it once the cache has caught up")
+				_, err = reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.store.writes).To(Equal(writes))
+			})
+
+			It("returns a failed read of the resource from the API server for back-off", func() {
+				e.createParent(true)
+				obj := create(key, nil)
+				base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+				Expect(err).NotTo(HaveOccurred())
+				apiServer := interceptor.NewClient(base, interceptor.Funcs{
+					Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+						return errors.New("unavailable")
+					},
+				})
+				_, err = e.reconcileStale(obj, apiServer)
+				Expect(err).To(MatchError("unavailable"))
+				Expect(e.store.parentIDs).To(BeEmpty(), "Cloudflare is not called")
+			})
+
+			It("stops when the resource is gone from the API server but not yet from the cache", func() {
+				e.createParent(true)
+				stale := create(key, nil)
+				forceDelete(ctx, k.newObject(), key)
+				result, err := e.reconcileStale(stale, nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.IsZero()).To(BeTrue())
+				Expect(e.store.parentIDs).To(BeEmpty(), "Cloudflare is not called")
+			})
+
 			if !byKey {
 				It("creates the "+k.noun+" when the one it would adopt is gone before it is read", func() {
 					e.createParent(true)
@@ -1271,21 +1392,33 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			// kind, which e.createOtherParent creates.
 			otherParent, parentKind, cloudflareParent := e.otherParent, e.parentKind, e.cloudflareParent
 
-			It("reports "+k.conflictReason+" instead of taking over a "+k.noun+" another "+k.name+" manages", func() {
-				e.createParent(true)
-				claimedBy(parentName)
-				create(key, nil)
-				expectConflict()
-			})
+			if !k.sharedObjects {
+				It("reports "+k.conflictReason+" instead of taking over a "+k.noun+" another "+k.name+" manages", func() {
+					e.createParent(true)
+					claimedBy(parentName)
+					create(key, nil)
+					expectConflict()
+				})
 
-			It("reports "+k.conflictReason+" for a claim made through another "+parentKind+" for the same "+
-				cloudflareParent, func() {
-				e.createParent(true)
-				e.createOtherParent(true)
-				claimedBy(otherParent)
-				create(key, adopt)
-				expectConflict()
-			})
+				It("reports "+k.conflictReason+" for a claim made through another "+parentKind+" for the same "+
+					cloudflareParent, func() {
+					e.createParent(true)
+					e.createOtherParent(true)
+					claimedBy(otherParent)
+					create(key, adopt)
+					expectConflict()
+				})
+
+				It("returns a failed read of a claimant's "+parentKind+" for back-off", func() {
+					e.createParent(true)
+					claimedBy(otherParent)
+					create(key, adopt)
+					e.failGets(otherParent, errors.New("parent unavailable"))
+					_, err := reconcileIt()
+					Expect(err).To(MatchError("parent unavailable"))
+					Expect(e.store.writes).To(BeZero())
+				})
+			}
 
 			It("adopts a "+k.noun+" whose ID a resource claims in another "+cloudflareParent, func() {
 				e.createParent(true)
@@ -1310,16 +1443,6 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				obj := create(key, adopt)
 				seed("existing", k.key(obj))
 				expectAdopted()
-			})
-
-			It("returns a failed read of a claimant's "+parentKind+" for back-off", func() {
-				e.createParent(true)
-				claimedBy(otherParent)
-				create(key, adopt)
-				e.failGets(otherParent, errors.New("parent unavailable"))
-				_, err := reconcileIt()
-				Expect(err).To(MatchError("parent unavailable"))
-				Expect(e.store.writes).To(BeZero())
 			})
 
 			if move := t.elsewhere; move != nil {
@@ -1430,7 +1553,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					obj = get()
 					Expect(k.statusID(obj)).To(Equal(id))
 					object := e.store.objects[id]
-					Expect(k.matches(obj, &object, e.refs)).To(BeTrue(), "the object is what the edited spec asks for")
+					Expect(e.matches(obj, &object)).To(BeTrue(), "the object is what the edited spec asks for")
 					Expect(e.store.writes).To(Equal(writes + 1))
 					Expect(ready().Status).To(Equal(metav1.ConditionTrue))
 				})
@@ -1450,6 +1573,25 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					Expect(result.IsZero()).To(BeTrue())
 					Expect(ready().Reason).To(Equal("TerminalError"))
 					Expect(ready().Message).To(Equal("Terminal Cloudflare API error: refused (1000)"))
+				})
+
+				It("updates nothing on a stale read of its spec", func() {
+					id := synced(nil)
+					stale := get()
+					obj := get()
+					change.edit(obj)
+					Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					updated, version, writes := e.store.objects[id], get().GetResourceVersion(), e.store.writes
+
+					result, err := e.reconcileStale(stale, nil)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.IsZero()).To(BeTrue(), "the watch event that brings the cache up to date reconciles it")
+					Expect(e.store.writes).To(Equal(writes), "the "+k.noun+" is not taken back to the spec before "+
+						change.what)
+					Expect(e.store.objects[id]).To(Equal(updated))
+					Expect(get().GetResourceVersion()).To(Equal(version), "the resource is left as it is")
 				})
 
 				It("returns a failed update for back-off", func() {
@@ -1544,6 +1686,19 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("deletes the "+k.noun+" from Cloudflare and removes the finalizer", func() {
 				synced(nil)
+				startDeletion()
+				_, err := reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.store.objects).To(BeEmpty())
+				expectGone()
+			})
+
+			It("deletes the "+k.noun+" its claim names when no status recorded it", func() {
+				synced(nil)
+				// A reconcile claims the object before it writes status, and may
+				// fail in between.
+				Expect(k8sClient.Status().Update(ctx, clearedStatus(k, get()))).To(Succeed())
+				Expect(k.statusID(get())).To(BeEmpty())
 				startDeletion()
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
@@ -1783,12 +1938,18 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(err).To(HaveOccurred())
 			})
 
-			It("registers with a manager", func() {
+			It("registers with a manager, whose API reader reads past its cache", func() {
 				mgr, err := manager.New(cfg, manager.Options{
 					Controller: config.Controller{SkipNameValidation: new(true)},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(t.newReconciler(mgr.GetClient(), nil).SetupWithManager(mgr)).To(Succeed())
+				r := t.newReconciler(mgr.GetClient(), nil)
+				Expect(r.SetupWithManager(mgr)).To(Succeed())
+				Expect(r.crud().apiReader).To(BeIdenticalTo(mgr.GetAPIReader()))
+			})
+
+			It("reads the API server through its client without a manager", func() {
+				Expect(t.newReconciler(k8sClient, nil).crud().apiReader).To(BeIdenticalTo(k8sClient))
 			})
 
 			if !zoned {
@@ -1847,12 +2008,13 @@ var _ = Describe("SetupGeneratedReconcilers", func() {
 			names = append(names, name.String())
 		}
 		// Every generated kind's resources use a CloudflareAccount's
-		// credentials directly (account CRUD kinds), or reference a Zone (zone
-		// CRUD kinds, rule and settings kinds).
-		want := make([]string, 0, len(generatedAccountDependents)+len(generatedZoneDependents))
+		// credentials directly (account CRUD kinds), reference a Zone (zone
+		// CRUD kinds, rule and settings kinds), or reference a Tunnel, which
+		// gives their account (TunnelConfiguration).
+		want := make([]string, 0, len(generatedAccountDependents)+len(generatedZoneDependents)+1)
 		for _, d := range slices.Concat(generatedAccountDependents, generatedZoneDependents) {
 			want = append(want, strings.ToLower(d.kind))
 		}
-		Expect(names).To(ConsistOf(want))
+		Expect(names).To(ConsistOf(append(want, "tunnelconfiguration")))
 	})
 })
