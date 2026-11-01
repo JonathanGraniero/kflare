@@ -1620,10 +1620,44 @@ Decisions behind the deploy guide's health checks (#83), and what was checked, o
   of the script, the expressions and the evaluators (each reason dropped from a list, each branch and message
   changed), and the tests caught all of them once `TestDegradedNeedsReadyFalse` pinned that only `Ready=False` is
   Degraded
-- **Not checked yet**: an Argo CD and a Flux on kind. The cloud session that wrote this could neither run kind's pods
-  (runc cannot start them in its container) nor build Argo CD from source (refused there as running outside code), so
-  the issue's trial (an application turning Degraded for a `TerminalError`, a wave waiting for its `Zone`) is left for
-  a machine that can
+- **Tried on kind on 2026-11-01**, on the dev cluster, with Argo CD v3.5.6, Flux v2.10.0, the manager on the host and a
+  local stand-in for Cloudflare's API: `HTTPS_PROXY` and `SSL_CERT_FILE` on an unchanged manager, a dummy token, and
+  every host but `api.cloudflare.com` refused, so nothing reached Cloudflare. It refused routes as the live API did
+  (10022). The cluster is Kubernetes 1.29.2, below the 1.34 floor, as a third cluster hits the inotify limit; the chart
+  needs 1.34, so neither tool installed it:
+  - Stock Argo CD kept an application Healthy with a `WorkerRoute` at `TerminalError`. deploy.md's block turned it
+    Degraded with no restart, at the next refresh, 3 min 39 s later
+  - deploy.md's sync-wave example held wave 1 for 1 min 45 s while the Zone got 503s, and created the DNSRecord in the
+    second the Zone turned Ready, then the Deployment. Without the check, both were applied at once
+  - A spec changed with the manager stopped was Progressing ("Waiting for kflare to reconcile generation 2"), with the
+    sync held, and Healthy once the manager went on. A paused Zone held its wave as Suspended
+  - The released `argocd` binary (`argocd admin settings resource-overrides health`), with the script from deploy.md,
+    gave `health_test.yaml`'s status and message for its 16 cases, and what `test/gitopshealth` gives for 548 inputs:
+    each reason by status and generation, and edge cases. Argo CD's own `TestLuaHealthScript` was not run: running its
+    source was refused here too
+  - The manager drove 23 resources of 8 kinds to 17 reasons, each of which took the health `readyReasons` gives it.
+    They include `CloudflareAccount`, `TunnelConfiguration` and `WorkerScript`, whose specs are not the shared ones
+  - Stock Flux took a resource kflare had never seen for ready in 2 seconds (a HelmRelease in 1), and a `Ready` from an
+    older generation too, and waited out its timeout on a refusal. With the expressions, a refusal failed a
+    Kustomization in 5 seconds and a HelmRelease in 7, both waited for a resource without a status, a Kustomization
+    waited on an older generation, and `dependsOn` held the next one until the Zone was ready. kustomize-controller
+    gave the status `test/gitopshealth` gives for every row of `readyReasons`, an object each, Failed for the 19
+    reasons of `health.lua`'s list. Each release's CRDs confirm the versions above: `kind` required from 2.5 to 2.8,
+    optional from 2.9, and `healthCheckExprs` on a HelmRelease from 2.8
+- **`argocd-cm` is patched, not applied.** Over an `argocd-cm` last applied client-side, `kubectl apply` of a block
+  without its labels removed them and its other 8 keys. Argo CD reads only ConfigMaps labelled
+  `app.kubernetes.io/part-of: argocd`, so it logged `configmap "argocd-cm" not found` and reported applications Unknown.
+  A server-side install kept both, and `kubectl patch --patch-file` kept both in either case
+- **Degraded fails a sync only before the last wave.** In the last one, or in an application without waves, the sync
+  Succeeded and the application was Degraded, and with a later wave the sync failed and held that wave back
+- **A held wave has no time limit**, as `controller.sync.timeout.seconds` defaults to 0 and Argo CD's `autoSync` starts
+  nothing while an operation runs: a commit fixing a typo'd `zoneRef` or a pause stayed unapplied, and the sync pinned
+  to the old revision, until someone ended it. `argocd app terminate-op` and unpausing on the live object both did. A
+  resource at `TerminalError` does not get stuck like this: its sync fails, and a fix in git landed by itself in 61
+  seconds. Missing parents stay Progressing, as #83 proposes: one may be on its way, in an earlier wave or another
+  application. So for them nothing is Degraded, and the guide says how to get out
+- **Not checked yet**: a run against Cloudflare itself, so the test inputs' statuses are not from a live run as #83
+  proposes, and Kubernetes 1.34 or newer
 - **Not contributed to Argo CD**, the maintainer's call. The files follow Argo CD's layout for a wildcard check
   (`resource_customizations/kflare.dev/_/`), and built-in checks get the standard libraries, so the script would work
   there unchanged
