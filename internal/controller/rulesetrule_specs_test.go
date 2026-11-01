@@ -455,6 +455,60 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			return *condition
 		}
 
+		It("calls Cloudflare for nothing from a namespace its account leaves out, and writes the rule once allowed",
+			func() {
+				sample := specs.samples[0]
+				obj := object("denied", sample.spec)
+				obj.SetFinalizers([]string{reconciler.Finalizer})
+				create(obj)
+				allowOnlyNamespace(ctx, accountName, "some-other-namespace")
+
+				calls := 0
+				fake.before = func(string) { calls++ }
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("denied")})
+				fake.before = nil
+				Expect(err).NotTo(HaveOccurred())
+				Expect(calls).To(BeZero(), "a namespace the account leaves out reached Cloudflare")
+				Expect(readyOf("denied").Status).To(Equal(metav1.ConditionFalse))
+				Expect(readyOf("denied").Reason).To(Equal(reasonAccountNotAllowed))
+
+				By("writing it once the account allows the namespace")
+				allowOnlyNamespace(ctx, accountName, ns)
+				_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key("denied")})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(holdsRule(sample.phase, "denied")).To(BeTrue())
+				Expect(readyOf("denied").Reason).To(Equal("Synced"))
+			})
+
+		It("deletes the rule of a resource in a namespace its account allows", func() {
+			sample := specs.samples[0]
+			createSynced("allowed-deleted", sample.spec)
+			allowOnlyNamespace(ctx, accountName, ns)
+			Expect(k8sClient.Delete(ctx, get("allowed-deleted"))).To(Succeed())
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("allowed-deleted")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(holdsRule(sample.phase, "allowed-deleted")).To(BeFalse(),
+				"a delete from an allowed namespace left the rule")
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("allowed-deleted"), specs.newObject()))).To(BeTrue())
+		})
+
+		It("deletes a rule's resource in a namespace no longer allowed, and leaves the rule", func() {
+			sample := specs.samples[0]
+			createSynced("denied-deleted", sample.spec)
+			allowOnlyNamespace(ctx, accountName, "some-other-namespace")
+			Expect(k8sClient.Delete(ctx, get("denied-deleted"))).To(Succeed())
+
+			calls := 0
+			fake.before = func(string) { calls++ }
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("denied-deleted")})
+			fake.before = nil
+			Expect(err).NotTo(HaveOccurred())
+			Expect(calls).To(BeZero(), "a namespace the account leaves out reached Cloudflare")
+			Expect(holdsRule(sample.phase, "denied-deleted")).To(BeTrue())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("denied-deleted"), specs.newObject()))).To(BeTrue(),
+				"the resource kept its finalizer")
+		})
+
 		It("calls Cloudflare for nothing while paused, and writes the changed rule once unpaused", func() {
 			sample, spec, rule := specs.samples[0], specs.samples[0].spec, specs.samples[0].rule
 			if len(specs.changes) > 0 {

@@ -13,3 +13,10 @@ spec:
   tokenSecretRef:
     name: cloudflare-token
     namespace: kflare-system
+  # Which namespaces' resources may use this account. Unset, every namespace's
+  # may. Set it on a shared cluster, or when the cluster serves several accounts.
+  # allowedNamespaces:
+  #   from: Selector
+  #   selector:
+  #     matchLabels:
+  #       kubernetes.io/metadata.name: my-team

@@ -31,7 +31,9 @@ Since v0.3.0 every rule kind is generated from Cloudflare's API description, and
 jurisdiction and storage class, and `WorkerRoute` follows, its manifests unchanged. Since v0.4.0 every kind but
 `CloudflareAccount` runs on a shared reconciler, so they all report conflicts, adopt objects and delete them the same
 way: `IPList`, `Tunnel` and `DNSRecord` are generated too, and a Tunnel can be renamed. `Zone`, `TunnelConfiguration`
-and `WorkerScript` keep hand-written fields on the older SDK.
+and `WorkerScript` keep hand-written fields on the older SDK. A `CloudflareAccount` can limit which
+namespaces may use it (see
+[Limiting which namespaces may use an account](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
 
 ## Next
 

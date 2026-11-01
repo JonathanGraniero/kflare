@@ -5,6 +5,21 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
+### Upgrading
+
+Nothing changes until you set the new field. The manager's ClusterRole gains `get`, `list` and `watch` on Namespaces,
+and `CloudflareAccount`'s CRD gains an optional field: if you manage the CRDs yourself (`crds.enabled=false`), apply
+`config/crd/bases` first.
+
+### The controller
+
+- **A `CloudflareAccount` can limit which namespaces may use it.** With `spec.allowedNamespaces`, a label selector picks
+  the namespaces, the way a Gateway API listener's `allowedRoutes` does. A resource in any other namespace reports
+  reason `AccountNotAllowed`, and kflare makes no Cloudflare call for it, so a team that can edit its own namespace can
+  no longer use another team's token
+  ([deploy guide](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
+  ([#77](https://github.com/JonathanGraniero/kflare/issues/77))
+
 ## v0.4.1 (alpha)
 
 The sixth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It fixes a race

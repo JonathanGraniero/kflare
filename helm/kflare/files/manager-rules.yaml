@@ -3,6 +3,7 @@
   - ""
   resources:
   - configmaps
+  - namespaces
   verbs:
   - get
   - list
