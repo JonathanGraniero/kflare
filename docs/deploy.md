@@ -430,6 +430,55 @@ resources take about N calls per interval, so an interval of at least N seconds 
 10 minutes for 600 resources, 30 minutes for 1,800. That leaves room for kflare's own changes and for anything else
 using the token's budget. `0s`, or leaving the value empty, turns the checks off.
 
+### Cloudflare's API rate limit
+
+kflare keeps each API token to 900 requests per five minutes, three quarters of the limit above, across all its
+controllers. A handful of changes goes out at once. A large one, or a restart, which reconciles every resource, is
+paced, and `kubectl get` shows the resources catching up. 900 requests take five minutes, so count on that many minutes
+per 900 resources for a restart with `Ready` resources, whose reconciles make one or two calls each.
+
+```yaml
+cloudflareRateLimit: 900    # 0 turns the pacing off
+```
+
+If Cloudflare still answers 429, kflare stops calling with that token for as long as Cloudflare asks, five minutes if
+it does not say. kflare also stops for a moment when Cloudflare reports that a limit has a tenth of its quota left, so
+that the dashboard and other tools using the token keep working. In both cases, resources that were `Ready` stay
+`Ready`, and any others report reason `RateLimited` until kflare gets to them.
+
+#### Several Cloudflare accounts
+
+One installation can manage many Cloudflare accounts, such as those of a
+[Cloudflare Organization](https://developers.cloudflare.com/fundamentals/organizations/), with a `CloudflareAccount`
+for each. A rate limit on one account does not stop the others: its resources wait out of the way, and the controller
+goes on to the next resource. What the accounts share depends on their tokens, since budgets are per token:
+
+| Tokens | Budget |
+|---|---|
+| An [account API token](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/) for each account | One each, so one account's work never slows another's. Recommended |
+| One user token reaching several accounts | One, shared: Cloudflare counts a user's calls together, so kflare does too |
+| Several tokens of one user | One each in kflare, but one at Cloudflare. Share `cloudflareRateLimit` between them, or use account API tokens |
+
+An Enterprise customer can ask Cloudflare to raise a limit. kflare does not assume that, so set it on the account:
+
+```yaml
+apiVersion: kflare.dev/v1alpha1
+kind: CloudflareAccount
+metadata:
+  name: my-account
+spec:
+  accountID: <your account ID>
+  tokenSecretRef:
+    name: cloudflare-token
+    namespace: kflare-system
+  rateLimit:
+    requestsPerFiveMinutes: 4500    # with a limit raised to 6,000
+```
+
+`CloudflareAccount`s sharing a token share its budget, so the lowest `requestsPerFiveMinutes` among them applies. Each
+kind reconciles one resource at a time however many accounts it serves, so with many busy accounts, that is the ceiling
+to watch rather than Cloudflare's limits (`workqueue_depth`, by `name`).
+
 ## Security model
 
 - **The controller can read every Secret in the cluster.** It needs to read token Secrets wherever
@@ -654,7 +703,12 @@ The controller serves controller-runtime's standard Prometheus metrics: `control
 `controller_runtime_reconcile_errors_total` and `controller_runtime_reconcile_timeouts_total` (reconciles that ran
 longer than `reconcileTimeout`), labelled by `controller`, `controller_runtime_reconcile_time_seconds`,
 `workqueue_depth`, and the Go runtime's. Turn on `metrics.serviceMonitor.enabled` to have the Prometheus Operator scrape
-them.
+them. It also serves two of its own, about [Cloudflare's API rate limit](#cloudflares-api-rate-limit):
+
+| Metric | What it counts |
+|---|---|
+| `kflare_cloudflare_api_rate_limited_total{account}` | 429s from Cloudflare, for each `CloudflareAccount` using the token |
+| `kflare_cloudflare_reconciles_deferred_total{account,reason}` | Reconciles put off because Cloudflare asked kflare to stop (`reason="hold"`), or because the token's budget was used up (`reason="budget"`) |
 
 The endpoint answers over HTTPS only, and to a bearer token allowed to `get` `/metrics`: a request gets 401 without a
 token the API server accepts, and 403 with one that lacks the permission. The ServiceMonitor scrapes with Prometheus'
@@ -706,17 +760,27 @@ spec:
 The controller reloads the certificate when it is renewed. `metrics.serviceMonitor.tlsConfig` replaces the
 ServiceMonitor's TLS settings, for a CA kept elsewhere.
 
-Two things to alert on:
+Three things to alert on:
 
-- **Errors from Cloudflare that kflare retries** (5xx, rate limiting, network failures, timeouts) count as reconcile
-  errors.
-  A rate that stays above zero means kflare cannot reach Cloudflare or is being rate limited:
+- **Errors from Cloudflare that kflare retries** (5xx, network failures, timeouts) count as reconcile errors.
+  A rate that stays above zero means kflare cannot reach Cloudflare:
 
   ```yaml
   - alert: KflareReconcileErrors
     expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{namespace="kflare-system"}[15m])) > 0
     for: 30m
   ```
+
+- **429s from Cloudflare.** A rate limit counts as no error, since kflare waits it out, so it needs its own alert. One
+  means that something spent the token's quota, kflare or another tool, and every call with it was refused for a while:
+
+  ```yaml
+  - alert: KflareRateLimited
+    expr: sum by (account) (increase(kflare_cloudflare_api_rate_limited_total{namespace="kflare-system"}[15m])) > 0
+  ```
+
+  Reconciles deferred with `reason="budget"` are expected during a large change or after a restart. If they go on for
+  hours, the account has more work than its budget: raise `cloudflareRateLimit` or lengthen `driftCheckInterval`.
 
 - **Resources that are not `Ready`.** Errors kflare does not retry, such as a spec Cloudflare refuses or a missing
   token permission (`TerminalError`), and waits such as `AlreadyExists` or a parent that is not ready, do not count as
@@ -928,7 +992,8 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `Synced`, `Validated` | In sync with Cloudflare | Nothing |
 | `Paused` | The resource is annotated `kflare.dev/paused: "true"`: kflare leaves it and its Cloudflare object alone, and a deleted one keeps its finalizer. `Ready` keeps the status it had | Remove the annotation to resume (see [Pausing a resource](#pausing-a-resource)) |
 | `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change |
-| `APIError` | Transient failure (5xx, rate limit, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout` |
+| `APIError` | Transient failure (5xx, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout` |
+| `RateLimited` | The resource has work to do, but its API token's budget is used up, or Cloudflare asked kflare to stop | Nothing: kflare carries on by itself. If it lasts, see [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
 | `AccountNotAllowed` | The `CloudflareAccount`'s `spec.allowedNamespaces` leaves out the resource's namespace | Move the resource, or have a cluster administrator [allow the namespace](#limiting-which-namespaces-may-use-an-account) |
 | `InvalidAllowedNamespaces` | A `CloudflareAccount`'s `spec.allowedNamespaces.selector` is invalid, such as `In` with no values. Until it is fixed, it allows no namespace | Fix the selector |

@@ -97,6 +97,10 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, account, credErr.Reason, credErr.Message)
 	}
 
+	if wait := admit(account, token, account); wait > 0 {
+		return rateLimited(ctx, r.Client, account, wait)
+	}
+
 	// Build the Cloudflare client.
 	newClient := r.NewCFClient
 	if newClient == nil {

@@ -366,7 +366,8 @@ and kflare-gen generates them from cloudflare-go v7's service for the product: t
 | 401, 403, other 4xx | Terminal | `Ready=False` with reason `TerminalError`; no retry. A spec or credential change re-triggers the reconcile. |
 | 404 on a known resource ID | Handled first | The resource was deleted externally; kflare recreates it, or adopts another with its key, as the adoption policy allows. |
 | 404 elsewhere | Terminal | As above. |
-| 429, 5xx, network errors, timeouts | Retryable | `Ready=False` with reason `APIError`; the error is returned so controller-runtime retries with exponential back-off (5 ms doubling up to about 16 minutes per resource). |
+| 429, and a call kflare kept back for a rate limit | Waited out | The resource comes back after the wait, with no error. One that was `Ready` stays so, and any other reports reason `RateLimited` (see [Rate limits](#rate-limits)). |
+| 5xx, network errors, timeouts | Retryable | `Ready=False` with reason `APIError`; the error is returned so controller-runtime retries with exponential back-off (5 ms doubling up to about 16 minutes per resource). |
 
 cloudflare-go names its 401 error `AuthorizationError` and its 403 error `AuthenticationError`, the reverse of what the
 names suggest; `pkg/cloudflare/errors.go` documents the mapping. The generated SDK, cloudflare-go v7, returns one
@@ -408,6 +409,50 @@ that `kubectl describe` and `kubectl get events` show the resource's history: `N
 resource is paused, `Warning` when it turns False, with the condition's reason, and its message as the note (shortened
 to the 1 kB an Event holds). A reconcile that leaves the condition's status and reason as they were records none, and
 neither does a status write that fails. The manager's ClusterRole may create and patch Events (`events.k8s.io`).
+
+## Rate limits
+
+Cloudflare counts API calls per user, across the dashboard, API keys and the user's tokens, or per account-owned token:
+1,200 per five minutes
+([Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/)). Past that it refuses
+every call for five minutes. One manager may serve many Cloudflare accounts, whose resources of a kind share that
+kind's one worker, so `pkg/cloudflare/ratelimit.go` has two jobs: keep kflare under the limit, and keep one account's
+limit from holding up the others.
+
+- **One budget per API token.** Both SDKs send through one HTTP client, whose transport finds each request's token in
+  its `Authorization` header and keeps a budget by a hash of it, so no caller has to pass anything and a Client needs
+  no cache. `CloudflareAccount`s sharing a token share its budget. That follows what Cloudflare counts: a budget per
+  account would send N times the limit with a user's token that reaches N accounts. A rotated token gets a new budget,
+  and a budget unused for an hour is dropped.
+- **Pacing.** A budget is a token bucket of `--cloudflare-rate-limit` requests per five minutes (900; the chart's
+  `cloudflareRateLimit`), or the `CloudflareAccount`'s `spec.rateLimit`, the lowest if several share the token. It
+  starts full, with a thirtieth of the limit, so a handful of changes never waits. A request waits in the transport for
+  its turn, up to 10 seconds, which holds its kind's worker only briefly. A longer wait fails it unsent.
+- **Holds.** A 429 stops the token's calls for its `Retry-After`, or five minutes without one, and at most an hour. A
+  response whose `Ratelimit` header shows a limit with a tenth of its quota or less left does the same for the header's
+  `t` seconds, so that kflare gives way to whatever else spends the quota. Over 10 seconds, requests fail unsent rather
+  than wait: a block is longer than a request's 2-minute timeout, and a waiting request would keep its worker from every
+  other account's resources. For the same reason a 429 is passed on marked `x-should-retry: false`, since v7 otherwise
+  sleeps for all of `Retry-After` inside the reconcile. v0 ignores `Retry-After` and retries after 1, 2 and 4 seconds:
+  the hold fails those unsent, but such a call still takes 7 seconds, so reconciles ask first.
+- **Asking first.** Each reconcile calls `cfpkg.Admit` once it has its token, before any SDK (`admit`). During a hold,
+  or with the budget spent, it returns with `RequeueAfter`, and the worker goes on to the next resource, which may be
+  of another account. Each such reconcile gets a turn of its own, one per request the budget can pay for, so a backlog
+  costs little CPU and does not all return when a hold ends. Whether it goes ahead is decided again when it returns.
+- **Changes before checks.** A resource in sync (`Ready=True` at its current generation) only needs checking, so it
+  takes turns apart from resources with a change to make, and goes ahead only when no change is waiting. The workqueue's
+  priorities cannot do this: an item that waits for a rate limit leaves the queue at once and returns at its turn, so
+  a restart's thousands of items would otherwise draw on the budget level with a change made meanwhile.
+- **Status.** A rate limit says nothing about a resource and may touch thousands at once, so a resource that was `Ready`
+  stays `Ready`, with no Event, and what depends on it carries on. That includes a `CloudflareAccount`: if it turned
+  `Ready=False`, every resource using it would stop. Any other resource reports `Ready=False` with reason `RateLimited`,
+  once: the message holds no time, and the status is not written again while it waits.
+
+Cloudflare sends `Ratelimit` on most responses but not all: KV's carried none when checked. Its limits are named
+`default` or for an operation, such as `list_zones`, and `r` stays near the quota over calls in a row, so a quota
+refills as it is spent rather than in fixed windows. So the header only ever slows kflare down, and pacing does not
+depend on it. A raised limit has to be set by hand, since the Free plan kflare is tested on cannot show one
+(`docs/design-notes.md`, [Rate limits](docs/design-notes.md#rate-limits)).
 
 ## Deletion
 
@@ -497,6 +542,13 @@ the namespace has lost.
   out-of-band changes wait for the next trigger, at worst the 10-hour resync. With it, they wait about the interval,
   and every resource's checks cost Cloudflare API calls, which count against Cloudflare's rate limit (see
   [When drift is detected](#when-drift-is-detected)).
+- **A budget is one manager's.** Budgets live in memory, and only the leader calls Cloudflare, so one manager is exact.
+  A new leader starts with full budgets, two installations sharing a token each spend their own, and two of a user's
+  tokens have a budget each though Cloudflare counts them as one. All of these learn otherwise from `Ratelimit` and
+  429s, or take a lower `--cloudflare-rate-limit`.
+- **One worker per kind.** A held account gives its worker back, but each kind still reconciles one resource at a time,
+  so many busy accounts together reach that ceiling before they reach Cloudflare's limits
+  ([#70](https://github.com/JonathanGraniero/kflare/issues/70)).
 - **Adoption goes by key only.** A resource adopts the object with its key (a name, a title, a pattern), and there is
   no way to name an object by its ID. Tunnel names are not unique: a Tunnel adopts the first one listed with its name.
 - **No ownership marker on the Cloudflare side, except for rules.** kflare tracks what it owns only in Kubernetes, so if

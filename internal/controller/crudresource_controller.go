@@ -291,6 +291,9 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
 	}
+	if wait := admit(account, token, obj); wait > 0 {
+		return rateLimited(ctx, r.Client, obj, wait)
+	}
 	if r.kind.hooks.resolve != nil {
 		if condErr := r.kind.hooks.resolve(ctx, r.Client, obj, refs); condErr != nil {
 			if condErr.retry {
@@ -744,6 +747,9 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 	if credErr != nil {
 		return ctrl.Result{}, leaveCloudflareObject(ctx, obj, credErr)
 	}
+	if wait := admit(account, token, obj); wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
 	api, err := r.newAPI(token)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -754,7 +760,7 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 	}
 	if before := r.kind.hooks.beforeDelete; before != nil {
 		if err := before(ctx, api, obj, parentID, id); err != nil && !cfpkg.IsNotFound(err) {
-			return ctrl.Result{}, err
+			return retryCleanup(err)
 		}
 	}
 	err = r.kind.delete(ctx, api, obj, parentID, id)
@@ -769,7 +775,7 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 		}
 	}
 	if err != nil && !cfpkg.IsNotFound(err) {
-		return ctrl.Result{}, err
+		return retryCleanup(err)
 	}
 	return ctrl.Result{}, nil
 }

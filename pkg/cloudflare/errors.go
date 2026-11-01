@@ -89,10 +89,15 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &notFoundErr)
 }
 
-// IsRateLimit returns true if err is a Cloudflare 429 rate-limit response.
-// Controllers can inspect this to apply custom back-off logic, though
-// controller-runtime's default exponential back-off is usually sufficient.
+// IsRateLimit returns true if err is a Cloudflare 429 rate-limit response, or
+// a call kflare did not send because of its token's rate limit. A rate limit
+// says nothing about the resource being reconciled, so controllers wait for
+// it rather than report a failure.
 func IsRateLimit(err error) bool {
+	var limited *rateLimitedError
+	if errors.As(err, &limited) {
+		return true
+	}
 	if v7Err, ok := asV7Error(err); ok {
 		return v7Err.StatusCode == http.StatusTooManyRequests
 	}

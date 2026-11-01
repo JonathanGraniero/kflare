@@ -348,6 +348,19 @@ var _ = Describe("Tunnel hooks", func() {
 		Expect(getTunnel().Finalizers).To(ContainElement(reconciler.Finalizer))
 	})
 
+	It("waits out a rate limit on disconnecting the connectors, with no error", func() {
+		createTunnel(nil)
+		sync()
+		Expect(k8sClient.Delete(ctx, getTunnel())).To(Succeed())
+		tokens.cleanupErr = v7APIError(http.MethodDelete, "tunnels/connections", http.StatusTooManyRequests, 10000,
+			"rate limited")
+		result, err := reconcileTunnel()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(rateLimitRetryInterval))
+		Expect(store.objects).To(HaveLen(1), "the tunnel is not deleted")
+		Expect(getTunnel().Finalizers).To(ContainElement(reconciler.Finalizer))
+	})
+
 	It("deletes a tunnel whose connections are already gone", func() {
 		createTunnel(nil)
 		sync()

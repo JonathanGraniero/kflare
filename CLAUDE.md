@@ -77,7 +77,7 @@ With:
 ├── cmd/main.go            # Manager entrypoint; registers every controller
 ├── internal/controller/   # One reconciler per CRD (+ credentials.go), envtest suites alongside
 ├── pkg/
-│   ├── cloudflare/        # Client wrapper and error classification
+│   ├── cloudflare/        # Client wrapper, error classification and each API token's rate limit
 │   ├── metricsauth/       # Authenticates and authorizes metrics requests (TokenReview, SubjectAccessReview)
 │   └── reconciler/        # Conditions, finalizer and deletion-policy helpers
 ├── config/
@@ -108,7 +108,8 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
 
 1. **Conditions** — every resource has a single `Ready` condition. Reasons: `Synced`/`Validated` (True);
    `TerminalError` (Cloudflare 4xx, not requeued until something changes); `APIError` (retryable, the error
-   is returned so controller-runtime backs off); credential reasons from `credentials.go`
+   is returned so controller-runtime backs off); `RateLimited` (waiting for the token's budget, and only on a resource
+   that was not `Ready`: see `internal/controller/ratelimit.go`); credential reasons from `credentials.go`
    (`AccountNotFound`, `AccountNotAllowed`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a
    minute); `Paused`
    (the status kept, see convention 11)
@@ -137,6 +138,10 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
     `Reconcile` checks `reconciler.Paused` right after reading its resource, before deletion and the finalizer, and
     returns `updatePaused`. The shared reconcilers do it for the generated kinds; a new hand-written controller does
     it itself, and gets an entry in `pausedKinds` (`internal/controller/paused_test.go`)
+12. **Rate limits** — a hand-written path to Cloudflare calls `admit` once it has its token, before any SDK, and
+    returns `rateLimited` when told to wait (`cleanupDeferred` in a deletion's cleanup), so that it gives its worker
+    back. Every call goes through the transport regardless (`pkg/cloudflare/ratelimit.go`; ARCHITECTURE.md's Rate
+    limits)
 
 ---
 

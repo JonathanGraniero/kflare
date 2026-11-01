@@ -264,10 +264,11 @@ func invalidToken(ctx context.Context, c client.StatusClient, obj conditionedObj
 		fmt.Sprintf("Failed to create Cloudflare client: %v", err))
 }
 
-// handleCloudflareError reports a failed Cloudflare API call on obj. Terminal
-// errors (4xx) are not requeued: they need a change to the spec or the
-// credentials, which re-triggers the reconcile. Anything else is returned so
-// controller-runtime retries with back-off. The condition shows Cloudflare's
+// handleCloudflareError reports a failed Cloudflare API call on obj. A rate
+// limit is waited out (rateLimited). Terminal errors (4xx) are not requeued:
+// they need a change to the spec or the credentials, which re-triggers the
+// reconcile. Anything else is returned so controller-runtime retries with
+// back-off. The condition shows Cloudflare's
 // messages and codes (cfpkg.ErrorMessage); the returned error, which
 // controller-runtime logs, keeps everything. A call cut short because the
 // reconcile ran out of time fails with the context's error alone, so the
@@ -280,6 +281,9 @@ func handleCloudflareError(ctx context.Context, c client.StatusClient, obj condi
 	}
 	statusCtx, cancel := statusContext(ctx)
 	defer cancel()
+	if cfpkg.IsRateLimit(err) {
+		return rateLimited(statusCtx, c, obj, rateLimitRetryInterval)
+	}
 	if cfpkg.IsTerminalError(err) {
 		return ctrl.Result{}, updateNotReady(statusCtx, c, obj, "TerminalError",
 			fmt.Sprintf("Terminal Cloudflare API error: %s", message))
