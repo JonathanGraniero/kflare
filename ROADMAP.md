@@ -33,7 +33,9 @@ jurisdiction and storage class, and `WorkerRoute` follows, its manifests unchang
 way: `IPList`, `Tunnel` and `DNSRecord` are generated too, and a Tunnel can be renamed. `Zone`, `TunnelConfiguration`
 and `WorkerScript` keep hand-written fields on the older SDK. kflare keeps each API token within Cloudflare's rate
 limit, and one account past its limit holds up no other (see
-[Cloudflare's API rate limit](docs/deploy.md#cloudflares-api-rate-limit)).
+[Cloudflare's API rate limit](docs/deploy.md#cloudflares-api-rate-limit)). A `CloudflareAccount` can limit which
+namespaces may use it (see
+[Limiting which namespaces may use an account](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
 
 ## Next
 

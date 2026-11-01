@@ -171,7 +171,7 @@ func (r *settingsReconciler[A]) reconcile(ctx context.Context, req ctrl.Request)
 				owner.GetNamespace(), owner.GetName(), r.kind.noun, zoneID))
 	}
 
-	account, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), zone.Spec.AccountRef.Name, true)
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
 	}
@@ -401,9 +401,9 @@ func (r *settingsReconciler[A]) resetSettings(ctx context.Context, obj settingsO
 		return nil
 	}
 
-	account, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, false)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), zone.Spec.AccountRef.Name, false)
 	if credErr != nil {
-		return credErr
+		return leaveCloudflareObject(ctx, obj, credErr)
 	}
 	if wait := admit(account, token, obj); wait > 0 {
 		return &cleanupDeferred{wait: wait}

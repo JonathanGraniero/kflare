@@ -1559,3 +1559,24 @@ Decided against:
 - **Relying on workqueue priorities to put changes first.** Items that wait out a rate limit leave the queue at once, so
   a change draws on the budget level with a restart's backlog. In a 5,000-item backlog it would wait about as long as
   the backlog does
+
+## Allowed namespaces
+
+Decisions behind `spec.allowedNamespaces` (#77), for one kflare serving several Cloudflare accounts in a shared or
+management cluster:
+
+- **Unset means every namespace.** Denying by default would be safer, and would break every install on upgrade, so the
+  deploy guide recommends a selector instead
+- **A selector without `from: Selector` is refused**, by a CEL rule on the type. `from` defaults to `All`, so a manifest
+  with only a selector would otherwise look restricted and be open to every namespace
+- **The check is in `resolveAccountToken`**, the one way to a token, not in each controller. It comes before the
+  account's readiness and its Secret, so a refused namespace learns nothing of either
+- **It fails closed.** A selector kflare cannot read, or a namespace it cannot read, allows nothing. Only an explicit
+  `All`, or no field, opens an account up, so an unknown `from` from a stale client allows nothing either
+- **Deleting from a namespace that lost access leaves the object**, as the issue's safe side. Keeping the finalizer
+  until the namespace is allowed again would leave the namespace stuck terminating
+- **No ValidatingAdmissionPolicy.** It cannot look up the account a resource names, so the controller's check would stay
+  the one that enforces, and it would add a second thing to install and explain
+- **Namespaces are watched only by kinds that name an account.** A zone's kind follows its Zone, and a relabelling that
+  no account's selector concerns reconciles nothing, so it costs no Cloudflare calls
+

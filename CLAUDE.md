@@ -110,7 +110,8 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    `TerminalError` (Cloudflare 4xx, not requeued until something changes); `APIError` (retryable, the error
    is returned so controller-runtime backs off); `RateLimited` (waiting for the token's budget, and only on a resource
    that was not `Ready`: see `internal/controller/ratelimit.go`); credential reasons from `credentials.go`
-   (`AccountNotFound`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a minute); `Paused`
+   (`AccountNotFound`, `AccountNotAllowed`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a
+   minute); `Paused`
    (the status kept, see convention 11)
 2. **Status fields** — every CRD status has `conditions []metav1.Condition` and a `cloudflareMetadata` block
 3. **References** — foreign-key relationships use `*Ref` fields (e.g., `zoneRef`, `tunnelRef`) not raw IDs

@@ -992,6 +992,51 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(ready(name).Reason).To(Equal(reasonPaused))
 		}
 
+		It("calls Cloudflare for nothing from a namespace its account leaves out, and writes its settings once allowed",
+			func() {
+				withFinalizer("denied", specs.samples[0].spec, nil)
+				allowOnlyNamespace(ctx, accountName, "some-other-namespace")
+
+				calls := len(fake.zoneIDs)
+				_, err := reconcileOnce("denied")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.zoneIDs).To(HaveLen(calls), "a namespace the account leaves out reached Cloudflare")
+				Expect(ready("denied").Status).To(Equal(metav1.ConditionFalse))
+				Expect(ready("denied").Reason).To(Equal(reasonAccountNotAllowed))
+
+				By("writing them once the account allows the namespace")
+				allowOnlyNamespace(ctx, accountName, ns)
+				_, err = reconcileOnce("denied")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready("denied").Reason).To(Equal("Synced"))
+				deleteAndReconcile("denied")
+			})
+
+		It("resets the settings of a resource in a namespace its account allows", func() {
+			createSynced("allowed-deleted", specs.samples[0].spec)
+			allowOnlyNamespace(ctx, accountName, ns)
+			Expect(k8sClient.Delete(ctx, get("allowed-deleted"))).To(Succeed())
+
+			calls := len(fake.zoneIDs)
+			_, err := reconcileOnce("allowed-deleted")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(fake.zoneIDs)).To(BeNumerically(">", calls), "a delete from an allowed namespace left the settings")
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("allowed-deleted"), specs.newObject()))).To(BeTrue())
+		})
+
+		It("deletes a resource in a namespace no longer allowed, and leaves its settings", func() {
+			createSynced("denied-deleted", specs.samples[0].spec)
+			allowOnlyNamespace(ctx, accountName, "some-other-namespace")
+			Expect(k8sClient.Delete(ctx, get("denied-deleted"))).To(Succeed())
+
+			calls := len(fake.zoneIDs)
+			_, err := reconcileOnce("denied-deleted")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.zoneIDs).To(HaveLen(calls), "a namespace the account leaves out reached Cloudflare")
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("denied-deleted"), specs.newObject()))).To(BeTrue(),
+				"the resource kept its finalizer")
+		})
+
 		// reconcileHeld reconciles the resource name, and checks that it made
 		// no Cloudflare call, which the fake records the zone of, and comes
 		// back later.

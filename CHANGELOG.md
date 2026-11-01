@@ -12,8 +12,11 @@ or a restart takes longer than before on an installation with more than a few hu
 Cloudflare's limit. If Cloudflare raised your limit, set the chart's `cloudflareRateLimit`, or `spec.rateLimit` on the
 `CloudflareAccount`. A 429 no longer shows as `APIError` or counts as a reconcile error: alert on the new
 `kflare_cloudflare_api_rate_limited_total` instead. The deploy guide has
-[an example](docs/deploy.md#monitoring). No manifest changes, and `CloudflareAccount`'s CRD only gains the optional
-field: if you manage the CRDs yourself (`crds.enabled=false`), apply `config/crd/bases` first.
+[an example](docs/deploy.md#monitoring).
+
+No manifest changes. `spec.allowedNamespaces` changes nothing until you set it. The manager's ClusterRole gains `get`,
+`list` and `watch` on Namespaces, and `CloudflareAccount`'s CRD gains two optional fields: if you manage the CRDs
+yourself (`crds.enabled=false`), apply `config/crd/bases` first.
 
 ### The controller
 
@@ -31,6 +34,12 @@ field: if you manage the CRDs yourself (`crds.enabled=false`), apply `config/crd
   `CloudflareAccount` included, whose going not-ready used to stop everything using it. Any other reports the new reason
   `RateLimited`
 - Two metrics: `kflare_cloudflare_api_rate_limited_total` and `kflare_cloudflare_reconciles_deferred_total`, by account
+- **A `CloudflareAccount` can limit which namespaces may use it.** With `spec.allowedNamespaces`, a label selector picks
+  the namespaces, the way a Gateway API listener's `allowedRoutes` does. A resource in any other namespace reports
+  reason `AccountNotAllowed`, and kflare makes no Cloudflare call for it, so a team that can edit its own namespace can
+  no longer use another team's token
+  ([deploy guide](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
+  ([#77](https://github.com/JonathanGraniero/kflare/issues/77))
 
 ## v0.4.1 (alpha)
 

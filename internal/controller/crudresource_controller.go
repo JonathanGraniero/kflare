@@ -12,6 +12,7 @@ import (
 	"slices"
 
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -285,7 +287,7 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
 	}
 
-	account, token, credErr := resolveAccountToken(ctx, r.Client, accountName, true)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), accountName, true)
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
 	}
@@ -741,9 +743,9 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 // the object, it reports why and returns a retry.
 func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, obj O, accountName, zoneID,
 	id string) (ctrl.Result, error) {
-	account, token, credErr := resolveAccountToken(ctx, r.Client, accountName, false)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), accountName, false)
 	if credErr != nil {
-		return ctrl.Result{}, credErr
+		return ctrl.Result{}, leaveCloudflareObject(ctx, obj, credErr)
 	}
 	if wait := admit(account, token, obj); wait > 0 {
 		return ctrl.Result{RequeueAfter: wait}, nil
@@ -816,10 +818,12 @@ func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context,
 
 // setup registers the kind's controller, with rec as its reconciler. It
 // watches CloudflareAccounts, or Zones for a zone's kind, so a resource
-// waiting for its account or Zone is reconciled once it is ready; the kinds
-// its spec references, so a resource waiting for one is reconciled once it is
-// ready; and the deletion of the kind's dependents, so a resource waiting for
-// them is released once they are gone.
+// waiting for its account or Zone is reconciled once it is ready; the labels
+// of Namespaces, so a kind that names its account follows what the account's
+// spec.allowedNamespaces says of them (a zone's kind follows its Zone); the
+// kinds its spec references, so a resource waiting for one is reconciled once
+// it is ready; and the deletion of the kind's dependents, so a resource
+// waiting for them is released once they are gone.
 func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconcile.Reconciler) error {
 	b := ctrl.NewControllerManagedBy(mgr).For(r.kind.newObject())
 	switch {
@@ -827,6 +831,8 @@ func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconci
 		b = b.Watches(&cloudflarev1alpha1.Zone{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForZone))
 	case r.kind.accountRef != nil:
 		b = b.Watches(&cloudflarev1alpha1.CloudflareAccount{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForAccount))
+		b = b.Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.resourcesInNamespace),
+			builder.WithPredicates(predicate.LabelChangedPredicate{}))
 	}
 	for _, ref := range r.references() {
 		b = b.Watches(ref.newObject(), handler.EnqueueRequestsFromMapFunc(r.resourcesReferencing(ref)))
@@ -845,6 +851,23 @@ func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconci
 // that use it.
 func (r *crudResourceReconciler[O, A, R, L]) resourcesForAccount(ctx context.Context, account client.Object) []reconcile.Request {
 	return r.resourcesWhere(ctx, nil, func(obj O) bool { return r.kind.accountRef(obj) == account.GetName() })
+}
+
+// resourcesInNamespace maps a change to a Namespace's labels to the kind's
+// resources there whose account's spec.allowedNamespaces could care. Without
+// such an account, relabelling a namespace costs no Cloudflare call.
+func (r *crudResourceReconciler[O, A, R, L]) resourcesInNamespace(ctx context.Context,
+	namespace client.Object) []reconcile.Request {
+	accounts := &cloudflarev1alpha1.CloudflareAccountList{}
+	if err := r.List(ctx, accounts); err != nil {
+		return nil
+	}
+	restricted := map[string]bool{}
+	for i := range accounts.Items {
+		restricted[accounts.Items[i].Name] = restrictsNamespaces(&accounts.Items[i])
+	}
+	return r.resourcesWhere(ctx, []client.ListOption{client.InNamespace(namespace.GetName())},
+		func(obj O) bool { return restricted[r.kind.accountRef(obj)] })
 }
 
 // resourcesForZone maps a Zone event to the kind's resources in its zone.
