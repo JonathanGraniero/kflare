@@ -1516,3 +1516,67 @@ should not need an ID copied from status to do the same: manifests must be writa
   `pull_request` event instead: from the pull request's own copy of the workflow, on the merge commit as of the review,
   and without secrets for a fork (the job then fails, naming the missing secrets, instead of skipping every spec). It
   sits in a `concurrency` group that never runs two at once or cancels one halfway
+
+## Rate limits
+
+Why the rate limit works as it does (ARCHITECTURE.md's [Rate limits](../ARCHITECTURE.md#rate-limits)), from 11 read-only
+calls with the dev token on 2026-10-31, on the Free plan, and measurements of both SDKs against a fake server. A real
+429 was never provoked: it would have blocked the account's real Workers and dashboard for five minutes, so what a 429
+carries, `Retry-After` included, comes from Cloudflare's docs.
+
+- Public and unauthenticated calls carry no `Ratelimit` header. Authenticated ones do, but not all: `GET /zones`,
+  `/accounts/{id}`, `/zones/{id}/dns_records`, `/zones/{id}/rulesets` and `/accounts/{id}/workers/scripts` did, and
+  `/accounts/{id}/storage/kv/namespaces` did not
+- Limits have names. `GET /zones` sent `"list_zones";r=1200;t=1` with `"list_zones";q=1201;w=300`; the others
+  `"default";r=1199;t=1` with `"default";q=1200;w=300`. So one response may not show the limit that matters next
+- `r` is not a count down a fixed window. Five `GET /zones` in a row, three back to back and two after pauses, all read
+  1200, and `default` read 1199, 1199, 1197, 1199 over four calls. `t` read 1 throughout, near a full quota, so what it
+  means low down is not known. This is why a hold lasts `t` seconds and the next response decides, whichever `t` is
+- Whether `list_zones` draws on `default` as well is not known. A budget paces all of a token's calls as one, which is
+  safe either way
+
+Measured against a server answering every call with 429 and `Retry-After: 3` (cloudflare-go v0.119, v7.13):
+
+| SDK | Requests | Took |
+|---|---|---|
+| v7 | 3 | 6 s: it sleeps for `Retry-After`, with no upper bound |
+| v7, with `x-should-retry: false` on the response | 1 | none |
+| v0 | 4 | 7 s: 1, 2 and 4 seconds, whatever `Retry-After` says |
+| v7, the transport refusing with an error | 3 | 1.3 s; the error's type survives |
+| v0, the transport refusing with an error | 4 | 7 s; the error's type survives |
+
+Decided against:
+
+- **Holding requests in the transport until a block ends**, as #73 proposed. A block outlasts the 2-minute request
+  timeout, and the waiting request keeps its kind's only worker from every other account
+- **A cache of Clients per token**, also from #73. It would keep what a Client carries between reconciles, and since
+  #72 that is nothing: one HTTP client is shared already, and the transport reads the token from each request
+- **A budget per Cloudflare account.** One user token can reach many accounts, as in an Organization, and Cloudflare
+  counts it once
+- **Learning a raised limit from `Ratelimit-Policy`.** The Free plan cannot show a raised quota, and a limit named for
+  one operation says nothing certain about the rest, so that would raise the pace on a guess. `spec.rateLimit` says it
+  outright
+- **Relying on workqueue priorities to put changes first.** Items that wait out a rate limit leave the queue at once, so
+  a change draws on the budget level with a restart's backlog. In a 5,000-item backlog it would wait about as long as
+  the backlog does
+
+## Allowed namespaces
+
+Decisions behind `spec.allowedNamespaces` (#77), for one kflare serving several Cloudflare accounts in a shared or
+management cluster:
+
+- **Unset means every namespace.** Denying by default would be safer, and would break every install on upgrade, so the
+  deploy guide recommends a selector instead
+- **A selector without `from: Selector` is refused**, by a CEL rule on the type. `from` defaults to `All`, so a manifest
+  with only a selector would otherwise look restricted and be open to every namespace
+- **The check is in `resolveAccountToken`**, the one way to a token, not in each controller. It comes before the
+  account's readiness and its Secret, so a refused namespace learns nothing of either
+- **It fails closed.** A selector kflare cannot read, or a namespace it cannot read, allows nothing. Only an explicit
+  `All`, or no field, opens an account up, so an unknown `from` from a stale client allows nothing either
+- **Deleting from a namespace that lost access leaves the object**, as the issue's safe side. Keeping the finalizer
+  until the namespace is allowed again would leave the namespace stuck terminating
+- **No ValidatingAdmissionPolicy.** It cannot look up the account a resource names, so the controller's check would stay
+  the one that enforces, and it would add a second thing to install and explain
+- **Namespaces are watched only by kinds that name an account.** A zone's kind follows its Zone, and a relabelling that
+  no account's selector concerns reconciles nothing, so it costs no Cloudflare calls
+

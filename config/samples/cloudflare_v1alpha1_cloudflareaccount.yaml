@@ -13,3 +13,14 @@ spec:
   tokenSecretRef:
     name: cloudflare-token
     namespace: kflare-system
+  # How fast kflare calls Cloudflare with this token, in place of the manager's
+  # --cloudflare-rate-limit. Set it when Cloudflare raised this account's limit.
+  # rateLimit:
+  #   requestsPerFiveMinutes: 900
+  # Which namespaces' resources may use this account. Unset, every namespace's
+  # may. Set it on a shared cluster, or when the cluster serves several accounts.
+  # allowedNamespaces:
+  #   from: Selector
+  #   selector:
+  #     matchLabels:
+  #       kubernetes.io/metadata.name: my-team

@@ -5,6 +5,42 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
+### Upgrading
+
+**kflare now paces its calls to Cloudflare**, to 900 requests per five minutes per API token by default. A large change
+or a restart takes longer than before on an installation with more than a few hundred resources, and stays within
+Cloudflare's limit. If Cloudflare raised your limit, set the chart's `cloudflareRateLimit`, or `spec.rateLimit` on the
+`CloudflareAccount`. A 429 no longer shows as `APIError` or counts as a reconcile error: alert on the new
+`kflare_cloudflare_api_rate_limited_total` instead. The deploy guide has
+[an example](docs/deploy.md#monitoring).
+
+No manifest changes. `spec.allowedNamespaces` changes nothing until you set it. The manager's ClusterRole gains `get`,
+`list` and `watch` on Namespaces, and `CloudflareAccount`'s CRD gains two optional fields: if you manage the CRDs
+yourself (`crds.enabled=false`), apply `config/crd/bases` first.
+
+### The controller
+
+- **kflare keeps to Cloudflare's API rate limit, per API token.** All of a token's calls share one budget, across both
+  Cloudflare SDKs and every controller, where before each reconcile had a limiter of its own, on one SDK only. Set it
+  with the chart's new `cloudflareRateLimit`, or `spec.rateLimit` on a `CloudflareAccount`, for an account whose limit
+  Cloudflare raised ([deploy guide](docs/deploy.md#cloudflares-api-rate-limit)).
+  ([#73](https://github.com/JonathanGraniero/kflare/issues/73))
+- **An account past its limit no longer holds up the others.** A 429 could keep a kind's only worker asleep inside a
+  reconcile for the length of Cloudflare's block, up to the 5-minute reconcile timeout, for every account the manager
+  serves. kflare now stops calling with that token and moves on, and also gives way when Cloudflare reports that a
+  limit is nearly spent. Reconciles that wait take turns, with resources that have a change to make ahead of those
+  only being checked, so a restart's backlog does not delay a change
+- **A rate limit no longer turns resources `Ready=False`.** A resource that was `Ready` stays so, a
+  `CloudflareAccount` included, whose going not-ready used to stop everything using it. Any other reports the new reason
+  `RateLimited`
+- Two metrics: `kflare_cloudflare_api_rate_limited_total` and `kflare_cloudflare_reconciles_deferred_total`, by account
+- **A `CloudflareAccount` can limit which namespaces may use it.** With `spec.allowedNamespaces`, a label selector picks
+  the namespaces, the way a Gateway API listener's `allowedRoutes` does. A resource in any other namespace reports
+  reason `AccountNotAllowed`, and kflare makes no Cloudflare call for it, so a team that can edit its own namespace can
+  no longer use another team's token
+  ([deploy guide](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
+  ([#77](https://github.com/JonathanGraniero/kflare/issues/77))
+
 ## v0.4.1 (alpha)
 
 The sixth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It fixes a race

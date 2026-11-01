@@ -51,6 +51,7 @@ spec:
             {{- with .Values.driftCheckInterval }}
             - --drift-check-interval={{ . }}
             {{- end }}
+            - --cloudflare-rate-limit={{ int .Values.cloudflareRateLimit }}
             - --health-probe-bind-address=:{{ .Values.healthPort }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}

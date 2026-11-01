@@ -992,6 +992,102 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(ready(name).Reason).To(Equal(reasonPaused))
 		}
 
+		It("calls Cloudflare for nothing from a namespace its account leaves out, and writes its settings once allowed",
+			func() {
+				withFinalizer("denied", specs.samples[0].spec, nil)
+				allowOnlyNamespace(ctx, accountName, "some-other-namespace")
+
+				calls := len(fake.zoneIDs)
+				_, err := reconcileOnce("denied")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.zoneIDs).To(HaveLen(calls), "a namespace the account leaves out reached Cloudflare")
+				Expect(ready("denied").Status).To(Equal(metav1.ConditionFalse))
+				Expect(ready("denied").Reason).To(Equal(reasonAccountNotAllowed))
+
+				By("writing them once the account allows the namespace")
+				allowOnlyNamespace(ctx, accountName, ns)
+				_, err = reconcileOnce("denied")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ready("denied").Reason).To(Equal("Synced"))
+				deleteAndReconcile("denied")
+			})
+
+		It("resets the settings of a resource in a namespace its account allows", func() {
+			createSynced("allowed-deleted", specs.samples[0].spec)
+			allowOnlyNamespace(ctx, accountName, ns)
+			Expect(k8sClient.Delete(ctx, get("allowed-deleted"))).To(Succeed())
+
+			calls := len(fake.zoneIDs)
+			_, err := reconcileOnce("allowed-deleted")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(fake.zoneIDs)).To(BeNumerically(">", calls), "a delete from an allowed namespace left the settings")
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("allowed-deleted"), specs.newObject()))).To(BeTrue())
+		})
+
+		It("deletes a resource in a namespace no longer allowed, and leaves its settings", func() {
+			createSynced("denied-deleted", specs.samples[0].spec)
+			allowOnlyNamespace(ctx, accountName, "some-other-namespace")
+			Expect(k8sClient.Delete(ctx, get("denied-deleted"))).To(Succeed())
+
+			calls := len(fake.zoneIDs)
+			_, err := reconcileOnce("denied-deleted")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.zoneIDs).To(HaveLen(calls), "a namespace the account leaves out reached Cloudflare")
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("denied-deleted"), specs.newObject()))).To(BeTrue(),
+				"the resource kept its finalizer")
+		})
+
+		// reconcileHeld reconciles the resource name, and checks that it made
+		// no Cloudflare call, which the fake records the zone of, and comes
+		// back later.
+		reconcileHeld := func(name string) {
+			GinkgoHelper()
+			calls := len(fake.zoneIDs)
+			result, err := reconcileOnce(name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(fake.zoneIDs).To(HaveLen(calls), "a reconcile held by a rate limit called Cloudflare")
+		}
+
+		It("keeps a Ready resource Ready while held", func() {
+			createSynced("held", specs.samples[0].spec)
+			holdToken(ctx, key(secretName))
+			reconcileHeld("held")
+			Expect(ready("held").Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready("held").Reason).To(Equal("Synced"))
+			releaseToken(ctx, key(secretName))
+			deleteAndReconcile("held")
+		})
+
+		It("reports a resource not in sync yet as RateLimited, then writes its settings", func() {
+			withFinalizer("held-new", specs.samples[0].spec, nil)
+			holdToken(ctx, key(secretName))
+			reconcileHeld("held-new")
+			Expect(ready("held-new").Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready("held-new").Reason).To(Equal(reasonRateLimited))
+
+			By("writing them once the limit lifts")
+			releaseToken(ctx, key(secretName))
+			_, err := reconcileOnce("held-new")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ready("held-new").Reason).To(Equal("Synced"))
+			deleteAndReconcile("held-new")
+		})
+
+		It("keeps a resource's settings and finalizer while held, and resets them afterwards", func() {
+			createSynced("held-deleted", specs.samples[0].spec)
+			holdToken(ctx, key(secretName))
+			Expect(k8sClient.Delete(ctx, get("held-deleted"))).To(Succeed())
+			reconcileHeld("held-deleted")
+			Expect(get("held-deleted").GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+
+			By("resetting them once the limit lifts")
+			releaseToken(ctx, key(secretName))
+			_, err := reconcileOnce("held-deleted")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("held-deleted"), specs.newObject()))).To(BeTrue())
+		})
+
 		It("calls Cloudflare for nothing while paused, and writes its changed settings once unpaused", func() {
 			sample, spec, settings := specs.samples[0], specs.samples[0].spec, specs.samples[0].settings
 			if len(specs.changes) > 0 {

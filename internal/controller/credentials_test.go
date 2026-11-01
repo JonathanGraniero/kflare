@@ -62,7 +62,7 @@ var _ = Describe("resolveAccountToken", func() {
 
 	It("returns the account and the token stored under the configured key", func() {
 		c := newReader(account("MY_KEY", true), secret(map[string][]byte{"MY_KEY": []byte("tok")}))
-		acct, token, err := resolveAccountToken(ctx, c, accountName, true)
+		acct, token, err := resolveAccountToken(ctx, c, "app-ns", accountName, true)
 		Expect(err).To(BeNil())
 		Expect(acct.Spec.AccountID).To(Equal("acct-creds"))
 		Expect(token).To(Equal("tok"))
@@ -70,13 +70,13 @@ var _ = Describe("resolveAccountToken", func() {
 
 	It("reads CF_API_TOKEN when the key is empty", func() {
 		c := newReader(account("", true), secret(map[string][]byte{"CF_API_TOKEN": []byte("default-tok")}))
-		_, token, err := resolveAccountToken(ctx, c, accountName, true)
+		_, token, err := resolveAccountToken(ctx, c, "app-ns", accountName, true)
 		Expect(err).To(BeNil())
 		Expect(token).To(Equal("default-tok"))
 	})
 
 	It("reports AccountNotFound when the account does not exist", func() {
-		_, _, err := resolveAccountToken(ctx, newReader(), accountName, true)
+		_, _, err := resolveAccountToken(ctx, newReader(), "app-ns", accountName, true)
 		Expect(err).NotTo(BeNil())
 		Expect(err.Reason).To(Equal("AccountNotFound"))
 		Expect(err.Error()).To(ContainSubstring(accountName))
@@ -85,17 +85,17 @@ var _ = Describe("resolveAccountToken", func() {
 	It("reports AccountNotReady only when readiness is required", func() {
 		c := newReader(account("CF_API_TOKEN", false), secret(map[string][]byte{"CF_API_TOKEN": []byte("tok")}))
 
-		_, _, err := resolveAccountToken(ctx, c, accountName, true)
+		_, _, err := resolveAccountToken(ctx, c, "app-ns", accountName, true)
 		Expect(err).NotTo(BeNil())
 		Expect(err.Reason).To(Equal("AccountNotReady"))
 
-		_, token, err := resolveAccountToken(ctx, c, accountName, false)
+		_, token, err := resolveAccountToken(ctx, c, "app-ns", accountName, false)
 		Expect(err).To(BeNil())
 		Expect(token).To(Equal("tok"))
 	})
 
 	It("reports SecretNotFound when the referenced Secret does not exist", func() {
-		_, _, err := resolveAccountToken(ctx, newReader(account("CF_API_TOKEN", true)), accountName, true)
+		_, _, err := resolveAccountToken(ctx, newReader(account("CF_API_TOKEN", true)), "app-ns", accountName, true)
 		Expect(err).NotTo(BeNil())
 		Expect(err.Reason).To(Equal("SecretNotFound"))
 		Expect(err.Message).To(ContainSubstring(secretNS + "/" + secretName))
@@ -103,7 +103,7 @@ var _ = Describe("resolveAccountToken", func() {
 
 	It("reports TokenKeyMissing when the Secret lacks the key", func() {
 		c := newReader(account("CF_API_TOKEN", true), secret(map[string][]byte{"OTHER": []byte("x")}))
-		_, _, err := resolveAccountToken(ctx, c, accountName, true)
+		_, _, err := resolveAccountToken(ctx, c, "app-ns", accountName, true)
 		Expect(err).NotTo(BeNil())
 		Expect(err.Reason).To(Equal("TokenKeyMissing"))
 		Expect(err.Message).To(ContainSubstring(`"CF_API_TOKEN"`))

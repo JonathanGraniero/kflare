@@ -149,9 +149,12 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 			fmt.Sprintf("Zone %q is not ready", zoneKey.Name))
 	}
 
-	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), zone.Spec.AccountRef.Name, true)
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
+	}
+	if wait := admit(account, token, obj); wait > 0 {
+		return rateLimited(ctx, r.Client, obj, wait)
 	}
 	cfAPI, err := r.newAPI(token)
 	if err != nil {
@@ -265,7 +268,7 @@ func (r *rulesetRuleReconciler) reconcileDelete(ctx context.Context, obj ruleset
 
 	if !reconciler.RetainOnDelete(obj) {
 		if err := r.deleteCloudflareRule(ctx, obj); err != nil {
-			return ctrl.Result{}, err
+			return retryCleanup(err)
 		}
 	}
 
@@ -302,9 +305,12 @@ func (r *rulesetRuleReconciler) deleteCloudflareRule(ctx context.Context, obj ru
 		return nil
 	}
 
-	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, false)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), zone.Spec.AccountRef.Name, false)
 	if credErr != nil {
-		return credErr
+		return leaveCloudflareObject(ctx, obj, credErr)
+	}
+	if wait := admit(account, token, obj); wait > 0 {
+		return &cleanupDeferred{wait: wait}
 	}
 	cfAPI, err := r.newAPI(token)
 	if err != nil {

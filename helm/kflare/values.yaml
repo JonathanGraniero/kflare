@@ -109,6 +109,12 @@ reconcileTimeout: 5m
 # against Cloudflare's rate limit: the deploy guide's Configuration says how
 # to pick an interval for the number of resources.
 driftCheckInterval: ""
+# -- How many requests per five minutes kflare sends with one Cloudflare API
+# token, unless the token's CloudflareAccount sets spec.rateLimit. Cloudflare's
+# global limit is 1,200, shared with the dashboard and everything else using
+# the token; past it, Cloudflare blocks every call for five minutes. 0 turns
+# the pacing off, though kflare still stops when Cloudflare asks it to.
+cloudflareRateLimit: 900
 
 logging:
   # -- Log level: debug, info or error.

@@ -61,6 +61,94 @@ spec:
               accountID:
                 description: AccountID is the Cloudflare account ID.
                 type: string
+              allowedNamespaces:
+                description: |-
+                  AllowedNamespaces says which namespaces' resources may use this
+                  account. Unset, every namespace's may. A resource in any other namespace
+                  reports reason AccountNotAllowed, and kflare makes no Cloudflare call
+                  for it.
+                properties:
+                  from:
+                    default: All
+                    description: |-
+                      From is All, for every namespace, or Selector, for those Selector
+                      matches.
+                    enum:
+                    - All
+                    - Selector
+                    type: string
+                  selector:
+                    description: |-
+                      Selector picks the namespaces by their labels, with from: Selector.
+                      To name namespaces, match their kubernetes.io/metadata.name label, which
+                      the API server sets and nobody can change. For other labels, this trusts
+                      whoever may label namespaces.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
+                x-kubernetes-validations:
+                - message: 'selector goes with from: Selector, and only with it'
+                  rule: (self.from == 'Selector') == has(self.selector)
+              rateLimit:
+                description: |-
+                  RateLimit sets how fast kflare calls Cloudflare with this account's
+                  token, in place of the manager's --cloudflare-rate-limit. Set it when
+                  Cloudflare raised this account's limit, or when other tools use most of
+                  it. CloudflareAccounts that share a token share its budget, so the
+                  lowest rate among them applies.
+                properties:
+                  requestsPerFiveMinutes:
+                    description: |-
+                      RequestsPerFiveMinutes is how many requests kflare sends per five
+                      minutes. Cloudflare's global limit is 1,200.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - requestsPerFiveMinutes
+                type: object
               tokenSecretRef:
                 description: TokenSecretRef references a Secret containing the CF_API_TOKEN
                   key.
