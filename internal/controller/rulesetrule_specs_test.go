@@ -37,6 +37,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
+	"github.com/JonathanGraniero/kflare/test/gitopshealth"
 )
 
 // The specs every generated rule kind runs. kflare-gen writes a table per rule
@@ -255,6 +256,7 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				ready := meta.FindStatusCondition(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
 				Expect(ready).NotTo(BeNil())
 				Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+				expectGitOpsHealth(obj, gitopshealth.ArgoCDHealthy, gitopshealth.FluxCurrent)
 				Expect(obj.GetRulesetRuleStatus().CloudflareMetadata).To(Equal(cloudflarev1alpha1.RulesetRuleCloudflareMetadata{
 					ZoneID:    rulesTestZone,
 					RulesetID: fake.entrypointIn(sample.phase).id,
@@ -310,8 +312,10 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				ruleID := storedRule(sample.phase, name).id()
 
 				Expect(replaceSpec(name, change.spec)).To(Succeed())
+				expectGitOpsHealth(get(name), gitopshealth.ArgoCDProgressing, gitopshealth.FluxInProgress)
 				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key(name)})
 				Expect(err).NotTo(HaveOccurred())
+				expectGitOpsHealth(get(name), gitopshealth.ArgoCDHealthy, gitopshealth.FluxCurrent)
 				rule := storedRule(sample.phase, name)
 				Expect(rule.id()).To(Equal(ruleID))
 				Expect(comparableStoredRule(rule)).To(Equal(comparableJSONRule(change.rule)))
@@ -712,6 +716,7 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				Expect(ready.Reason).To(Equal(reason))
 				Expect(ready.Message).To(Equal(fmt.Sprintf("Cloudflare refused the rule: refused by the fake (%d)", code)))
 				Expect(holdsRule(sample.phase, name)).To(BeFalse())
+				expectGitOpsHealth(get(name), gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
 
 				By("writing the rule once the conflict is gone")
 				delete(fake.errs, "Rulesets.New")
@@ -720,6 +725,20 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(holdsRule(sample.phase, name)).To(BeTrue())
 			}
+		})
+
+		It("is Degraded in Argo CD and Failed in Flux when Cloudflare refuses its rule", func() {
+			refusal := v7APIError(http.MethodPost, "zones/"+rulesTestZone+"/rulesets", http.StatusBadRequest, 1,
+				"refused by the fake")
+			fake.errs["Rulesets.New"], fake.errs["Rules.New"] = refusal, refusal
+			obj := object("refused", specs.samples[0].spec)
+			obj.SetFinalizers([]string{reconciler.Finalizer})
+			create(obj)
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("refused")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(meta.FindStatusCondition(get("refused").GetConditions(), cloudflarev1alpha1.ConditionReady).Reason).
+				To(Equal("TerminalError"))
+			expectGitOpsHealth(get("refused"), gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
 		})
 
 		It("refuses the specs its validation does not allow", func() {

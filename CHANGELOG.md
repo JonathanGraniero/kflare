@@ -41,6 +41,17 @@ yourself (`crds.enabled=false`), apply `config/crd/bases` first.
   ([deploy guide](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
   ([#77](https://github.com/JonathanGraniero/kflare/issues/77))
 
+### GitOps
+
+- **Health checks for Argo CD and Flux.** Argo CD judged no kflare resource, and Flux's default check took one for
+  ready before kflare had reconciled it. The deploy guide now has a health check for every kflare kind in Argo CD (a
+  Lua script for `argocd-cm`) and in Flux (`healthCheckExprs`, Flux 2.9 or newer for one entry): a resource is Healthy
+  once `Ready` is `True` for its current spec, Degraded when Cloudflare refused it or a conflict or setting needs a
+  person, Suspended while paused, and Progressing otherwise. So an application turns Degraded when Cloudflare refuses a
+  record, and sync waves and `dependsOn` wait for a `Zone` to be ready
+  ([deploy guide](docs/deploy.md#health-checks-in-argo-cd-and-flux),
+  [#83](https://github.com/JonathanGraniero/kflare/issues/83))
+
 ## v0.4.1 (alpha)
 
 The sixth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. It fixes a race

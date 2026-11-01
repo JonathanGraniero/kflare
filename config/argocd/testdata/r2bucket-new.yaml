@@ -1,0 +1,13 @@
+apiVersion: kflare.dev/v1alpha1
+kind: R2Bucket
+metadata:
+  creationTimestamp: "2026-10-31T12:40:02Z"
+  generation: 1
+  name: assets
+  namespace: web
+  resourceVersion: "59017"
+  uid: 6c8e0a2c-4e1f-4c7e-9a1c-8e0a2c4e6b9d
+spec:
+  accountRef:
+    name: my-account
+  name: example-assets

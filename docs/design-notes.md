@@ -1580,3 +1580,50 @@ management cluster:
 - **Namespaces are watched only by kinds that name an account.** A zone's kind follows its Zone, and a relabelling that
   no account's selector concerns reconciles nothing, so it costs no Cloudflare calls
 
+## Health checks in Argo CD and Flux
+
+Decisions behind the deploy guide's health checks (#83), and what was checked, on 2026-11-01:
+
+- **One script for every kind**, under `resource.customizations`' `kflare.dev/*` key, the only kind of key Argo CD
+  takes a wildcard in (its v3.5.6 `util/lua` falls back to a wildcard match on the overrides when no exact key matches,
+  and `argocd admin settings resource-overrides health` goes through the same lookup). Every kind reports the same
+  `Ready` condition through `internal/controller/status.go`, so one script fits them all
+- **No string library.** Argo CD opens only `package`, `base` and `table` (and a safe part of `os`) for a script in
+  `argocd-cm` unless `useOpenLibs` is set, which loosens its sandbox: so no suffix match on `Conflict`, and the reasons
+  a person must act on are listed one by one
+- **The generation is the condition's.** kflare sets `observedGeneration` on `Ready`, not `status.observedGeneration`.
+  A resource whose spec changed is Progressing until kflare reconciles it, so an application does not turn Healthy on
+  the old spec's result, and a fixed spec stops being Degraded at once
+- **Degraded is for what waits on a person**: Cloudflare's refusals, conflicts with another resource, adoption, and
+  settings that do not fit. Everything kflare retries or waits out (`APIError`, `RateLimited`, a parent missing or not
+  ready, a Secret or ConfigMap not there yet) is Progressing, which is also what a reason the script does not know
+  gets. A key missing from a Secret or ConfigMap that exists is Degraded, as no tool fills one in later
+- **Paused is Suspended**, as Argo CD reports a paused Deployment or a suspended CronJob. A sync wave waits for a
+  Suspended resource as it does for a Progressing one (gitops-engine's sync settles a running task only on Healthy or
+  Degraded)
+- **Deletion is not judged.** Argo CD v3.5 reports a resource with a deletion timestamp as Progressing ("Pending
+  deletion") before running any check; a `deletionMessage`, which would let a check say why kflare holds a deletion
+  back, is only on Argo CD's main branch
+- **Flux needs its own check.** kstatus reads `status.observedGeneration` and the `Ready` condition's status only: it
+  takes a resource without any condition, or one whose `Ready` is `True` from an older generation, for Current, and a
+  `Ready=False` for InProgress until the timeout. `healthCheckExprs` (Flux 2.5 for a Kustomization, 2.8 for a
+  HelmRelease, and an entry without a kind from 2.9, read in the controllers' docs at their release tags) give it the
+  script's rules. Until kflare writes a resource's first status, the expressions cannot read `status`, and Flux reports
+  the resource Unknown and waits (the status reader's error path in `fluxcd/cli-utils`). Flux has no Suspended, so a
+  paused resource is Current while the pause keeps it `Ready` for its current generation
+- **Tested the way the tools run them.** `test/gitopshealth` runs the script with gopher-lua v1.1.2 (Argo CD v3.5.6's
+  version) as `util/lua`'s `ExecuteHealthLua` does, and the expressions with cel-go in the environment of
+  `fluxcd/pkg/runtime/cel`, both read at those versions. The cases follow Argo CD's `health_test.yaml` format, and the
+  API server (envtest) accepts each input, which caught an `IPList` field that does not exist. The shared specs of
+  every generated kind check both on what the controllers write: synced, a changed spec, a refusal, an API error, an
+  existing object without a policy, an account not ready, a conflict, and a pause. `hack/mutate.sh` made 48 mutations
+  of the script, the expressions and the evaluators (each reason dropped from a list, each branch and message
+  changed), and the tests caught all of them once `TestDegradedNeedsReadyFalse` pinned that only `Ready=False` is
+  Degraded
+- **Not checked yet**: an Argo CD and a Flux on kind. The cloud session that wrote this could neither run kind's pods
+  (runc cannot start them in its container) nor build Argo CD from source (refused there as running outside code), so
+  the issue's trial (an application turning Degraded for a `TerminalError`, a wave waiting for its `Zone`) is left for
+  a machine that can
+- **Not contributed to Argo CD**, the maintainer's call. The files follow Argo CD's layout for a wildcard check
+  (`resource_customizations/kflare.dev/_/`), and built-in checks get the standard libraries, so the script would work
+  there unchanged

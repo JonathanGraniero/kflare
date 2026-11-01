@@ -1,0 +1,24 @@
+apiVersion: kflare.dev/v1alpha1
+kind: CloudflareAccount
+metadata:
+  creationTimestamp: "2026-10-31T08:55:40Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 1
+  name: my-account
+  resourceVersion: "46120"
+  uid: 2d4f6a8c-0e1b-4d3f-9a5c-7e9b1d3f5a7c
+spec:
+  accountID: 0123456789abcdef0123456789abcdef
+  tokenSecretRef:
+    name: cloudflare-token
+    namespace: kflare-system
+status:
+  accountName: Example Account
+  conditions:
+  - lastTransitionTime: "2026-10-31T08:55:41Z"
+    message: Credentials are valid and account is reachable
+    observedGeneration: 1
+    reason: Validated
+    status: "True"
+    type: Ready

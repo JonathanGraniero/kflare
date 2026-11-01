@@ -7,6 +7,7 @@ account, and covers running it in production, upgrades, uninstalling and trouble
 - [1. Create a Cloudflare API token](#1-create-a-cloudflare-api-token)
 - [2. Install the chart](#2-install-the-chart)
   - [With Argo CD or Flux](#with-argo-cd-or-flux)
+  - [Health checks in Argo CD and Flux](#health-checks-in-argo-cd-and-flux)
 - [3. Connect your Cloudflare account](#3-connect-your-cloudflare-account)
 - [4. Manage Cloudflare resources](#4-manage-cloudflare-resources)
 - [Configuration](#configuration)
@@ -190,6 +191,273 @@ Things to know:
   fails its first sync until the CRDs exist; `syncPolicy.retry` lets it try again. In Flux, put the `HelmRelease` in
   a `Kustomization` that the ones holding kflare resources list under `dependsOn`.
 - **Upgrade by changing the version in git**, after reading the release notes (see [Upgrading](#upgrading)).
+
+### Health checks in Argo CD and Flux
+
+kflare reports each resource's state in its `Ready` condition, for the generation of the spec it last reconciled (the
+condition's `observedGeneration`). Neither tool reads it unaided. Argo CD gives a custom resource no health without a
+health check for its kind, so an application stays Healthy while Cloudflare refuses its records, and a sync wave does
+not wait for a `Zone`. Flux's default check, [kstatus][kstatus], reads a `status.observedGeneration` that kflare does
+not set: it takes a resource kflare has not reconciled yet, or has not reconciled since its spec changed, for ready,
+and waits until its timeout for one Cloudflare refused. The checks below read `Ready` for the current generation:
+
+| `Ready` | Argo CD | Flux |
+|---|---|---|
+| `True`, for the current generation | Healthy | Current |
+| `False`, for the current generation, for a reason a person must act on (below) | Degraded | Failed |
+| Reason `Paused` | Suspended | Current if `Ready` is `True` for the current generation, else InProgress |
+| Anything else, such as no `Ready` yet, an older generation, `APIError` or a parent not ready | Progressing | InProgress |
+
+The reasons a person must act on, which [Troubleshooting](#troubleshooting) explains: Cloudflare refused the request
+(`TerminalError`, `InvalidToken`); another resource manages the Cloudflare object or configures the same settings
+(`NameConflict`, `TitleConflict`, `PatternConflict`, `RulesetConflict`, `CredentialsSecretConflict`,
+`AlreadyConfigured`, `TunnelAlreadyConfigured`); the object exists, or is missing, against the adoption policy
+(`AlreadyExists`, `NotFound`, `InvalidAdoptionPolicy`); a setting is wrong (`AccountNotAllowed`, `AccountMismatch`,
+`InvalidAllowedNamespaces`, `R2BucketJurisdictionUnsupported`, `TokenKeyMissing`, `ScriptKeyMissing`,
+`BindingSecretKeyMissing`). kflare retries any other reason, or waits for what it names to appear or become ready.
+
+[kstatus]: https://github.com/kubernetes-sigs/cli-utils/tree/master/pkg/kstatus
+
+#### Argo CD
+
+Add the health check to `argocd-cm`. One entry covers every kflare kind, as Argo CD takes a wildcard in the key of
+`resource.customizations` (and not in the `resource.customizations.health.<group>_<kind>` keys):
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  resource.customizations: |
+    kflare.dev/*:
+      health.lua: |
+        -- Argo CD health check for every kflare kind (kflare.dev/*), from kflare's Ready condition.
+        --
+        -- kflare reports each resource's state in one condition, Ready, set for the generation it last reconciled
+        -- (its observedGeneration; kflare sets no status.observedGeneration). docs/deploy.md, "Health checks in
+        -- Argo CD and Flux", explains it:
+        --   Healthy      Ready is True for the current generation
+        --   Degraded     Ready is False for the current generation, for a reason a person must act on
+        --   Suspended    the kflare.dev/paused annotation stops kflare from reconciling the resource
+        --   Progressing  anything else: kflare has not reconciled the current spec yet, or waits for
+        --                Cloudflare, for a rate limit, or for another resource
+        --
+        -- Argo CD opens only Lua's base, table and package libraries for a script in argocd-cm, so this one uses
+        -- no string function. config/argocd/health_test.yaml holds its tests, in Argo CD's format.
+
+        -- The reasons of Ready=False that wait for a person rather than for time: Cloudflare refused the spec,
+        -- another resource holds the object, the object exists or is missing against the adoption policy, or a
+        -- setting is wrong. Every other reason clears up by itself: an API error or a rate limit is retried, and
+        -- a missing or unready parent is waited for.
+        local needsPerson = {
+          -- Cloudflare refused the request (4xx), or kflare cannot build a client from the token
+          TerminalError = true,
+          InvalidToken = true,
+          -- The CloudflareAccount, or a reference, does not fit
+          AccountNotAllowed = true,
+          AccountMismatch = true,
+          InvalidAllowedNamespaces = true,
+          R2BucketJurisdictionUnsupported = true,
+          -- A Secret or ConfigMap exists but lacks the key the spec names
+          TokenKeyMissing = true,
+          ScriptKeyMissing = true,
+          BindingSecretKeyMissing = true,
+          -- Adoption (the kflare.dev/adoption-policy annotation)
+          AlreadyExists = true,
+          NotFound = true,
+          InvalidAdoptionPolicy = true,
+          -- Another resource manages the Cloudflare object, or configures the same settings
+          NameConflict = true,
+          TitleConflict = true,
+          PatternConflict = true,
+          RulesetConflict = true,
+          CredentialsSecretConflict = true,
+          AlreadyConfigured = true,
+          TunnelAlreadyConfigured = true,
+        }
+
+        local hs = {}
+
+        local ready = nil
+        if obj.status ~= nil and obj.status.conditions ~= nil then
+          for _, condition in ipairs(obj.status.conditions) do
+            if condition.type == "Ready" then
+              ready = condition
+            end
+          end
+        end
+
+        if ready == nil then
+          hs.status = "Progressing"
+          hs.message = "Waiting for kflare to reconcile the resource"
+          return hs
+        end
+
+        -- A paused resource keeps the status and generation of its last reconcile.
+        if ready.reason == "Paused" then
+          hs.status = "Suspended"
+          hs.message = ready.message
+          return hs
+        end
+
+        if ready.observedGeneration ~= obj.metadata.generation then
+          hs.status = "Progressing"
+          hs.message = "Waiting for kflare to reconcile generation " .. tostring(obj.metadata.generation) ..
+            " (last reconciled: " .. tostring(ready.observedGeneration) .. ")"
+          return hs
+        end
+
+        if ready.status == "True" then
+          hs.status = "Healthy"
+        elseif ready.status == "False" and needsPerson[ready.reason] then
+          hs.status = "Degraded"
+        else
+          hs.status = "Progressing"
+        end
+        hs.message = ready.message
+        return hs
+```
+
+- If `argocd-cm` already has `resource.customizations`, add the `kflare.dev/*` entry to it: the key holds one YAML
+  document for every group. With Argo CD's Helm chart, set the key under `configs.cm`.
+- The script uses only the Lua libraries Argo CD opens for any health check, so it needs no `useOpenLibs`. The script
+  is [`config/argocd/health.lua`](../config/argocd/health.lua), with its tests in Argo CD's format next to it.
+- `argocd admin settings resource-overrides health <resource.yaml> --argocd-cm-path argocd-cm.yaml` shows the health
+  the check gives a resource saved with `kubectl get -o yaml`.
+- An application's health is the worst of its resources': a resource Cloudflare refused makes it Degraded, and a paused
+  one Suspended. Argo CD reports a resource being deleted as Progressing, whatever the check says, so a deletion kflare
+  holds back (`InUse`, `ListInUse`, `BucketNotEmpty`) shows as Progressing.
+
+With the health check, sync waves wait for kflare resources: Argo CD applies a wave once every resource of the waves
+before it is Healthy. A resource that turns Degraded fails the sync (which `syncPolicy.retry` retries), and a
+Progressing or Suspended one holds the next wave back. kflare does not need waves for its own resources: a DNSRecord
+waits for its Zone by itself, reporting `ZoneNotReady`. They help to hold back what depends on Cloudflare, such as a
+workload that should start only once its hostname resolves:
+
+```yaml
+apiVersion: kflare.dev/v1alpha1
+kind: Zone
+metadata:
+  name: example
+  namespace: web
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    kflare.dev/adoption-policy: adopt
+    kflare.dev/deletion-policy: retain
+spec:
+  accountRef:
+    name: my-account
+  name: example.com
+---
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: www
+  namespace: web
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  zoneRef:
+    name: example
+  name: www.example.com
+  type: A
+  content: 192.0.2.1
+  proxied: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: web
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.29
+```
+
+The `CloudflareAccount` comes with the kflare installation, in its own application: until it exists and is `Ready`,
+the `Zone` reports `AccountNotFound` or `AccountNotReady`, Progressing, and the sync waits for it.
+
+#### Flux
+
+Add the expressions to each Kustomization or HelmRelease that holds kflare resources and waits for them. One entry
+without a `kind` covers every kflare kind, which needs Flux 2.9 or newer; on Flux 2.5 to 2.8, repeat the entry once per
+kind, with its `kind` (a HelmRelease takes `healthCheckExprs` from Flux 2.8). The entry is
+[`config/flux/health-check-exprs.yaml`](../config/flux/health-check-exprs.yaml), with its tests next to it.
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: web
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./apps/web
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: platform
+  wait: true
+  timeout: 5m
+  healthCheckExprs:
+    - apiVersion: kflare.dev/v1alpha1
+      failed: >-
+        status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
+        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'AccountMismatch',
+        'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
+        'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
+        'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',
+        'TunnelAlreadyConfigured'])
+      current: >-
+        status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
+        metadata.generation)
+```
+
+A HelmRelease waits for its resources unless `disableWait` is set, with the `poller` wait strategy, the default:
+
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: web
+  namespace: web
+spec:
+  interval: 10m
+  chartRef:
+    kind: OCIRepository
+    name: web
+  healthCheckExprs:
+    - apiVersion: kflare.dev/v1alpha1
+      failed: >-
+        status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
+        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'AccountMismatch',
+        'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
+        'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
+        'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',
+        'TunnelAlreadyConfigured'])
+      current: >-
+        status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
+        metadata.generation)
+```
+
+Flux then marks the Kustomization or HelmRelease ready once every kflare resource in it is Current, and fails it as
+soon as one is Failed. A Kustomization that lists it under `dependsOn` waits until then, which orders kflare resources
+and what depends on them as Argo CD's sync waves do. Until kflare writes a resource's first status, the expressions
+cannot read it, and Flux reports the resource Unknown and goes on waiting.
 
 ## 3. Connect your Cloudflare account
 

@@ -2102,6 +2102,8 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 		describeCRUDAllowedNamespaces(e)
 
+		describeCRUDGitOpsHealth(e)
+
 		Describe("validation", func() {
 			for _, change := range t.immutable {
 				It("refuses "+change.what, func() {

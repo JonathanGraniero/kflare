@@ -1,0 +1,20 @@
+# Flux health check for every kflare kind (kflare.dev), from kflare's Ready condition: the entry to add to the
+# spec.healthCheckExprs of a Kustomization or HelmRelease that waits for kflare resources. It needs Flux 2.9 or newer
+# for an entry without a kind; docs/deploy.md, "Health checks in Argo CD and Flux", explains it and older releases.
+#
+# It reads the Ready condition as config/argocd/health.lua does: Current when Ready is True for the current
+# generation, Failed when Ready is False for the current generation for a reason a person must act on (the script's
+# needsPerson), and InProgress otherwise, which Flux waits on. Until kflare writes a resource's first status, the
+# expressions cannot read status, and Flux reports the resource Unknown and goes on waiting.
+- apiVersion: kflare.dev/v1alpha1
+  failed: >-
+    status.conditions.exists(c, c.type == 'Ready' && c.status == 'False'
+    && c.observedGeneration == metadata.generation
+    && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'AccountMismatch',
+    'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
+    'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
+    'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',
+    'TunnelAlreadyConfigured'])
+  current: >-
+    status.conditions.exists(c, c.type == 'Ready' && c.status == 'True'
+    && c.observedGeneration == metadata.generation)

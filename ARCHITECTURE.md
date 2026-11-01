@@ -410,6 +410,15 @@ resource is paused, `Warning` when it turns False, with the condition's reason, 
 to the 1 kB an Event holds). A reconcile that leaves the condition's status and reason as they were records none, and
 neither does a status write that fails. The manager's ClusterRole may create and patch Events (`events.k8s.io`).
 
+GitOps tools read the same condition through the health checks the deploy guide gives them
+([Health checks in Argo CD and Flux](docs/deploy.md#health-checks-in-argo-cd-and-flux)): `config/argocd/health.lua`
+for Argo CD and `config/flux/health-check-exprs.yaml` for Flux. Each judges `Ready` for the resource's current
+generation, by the condition's `observedGeneration`: `True` is healthy, `False` with a reason a person must act on
+(a terminal error, a conflict, an adoption or a setting that does not fit) is failed, `Paused` is suspended for Argo
+CD, and anything else is in progress. Both list the reasons a person must act on, so a new reason is classified there
+and in `test/gitopshealth`'s `readyReasons`, whose test reads the controllers for the reasons they set and fails on one
+it does not hold. The shared specs check both on the conditions the controllers write.
+
 ## Rate limits
 
 Cloudflare counts API calls per user, across the dashboard, API keys and the user's tokens, or per account-owned token:

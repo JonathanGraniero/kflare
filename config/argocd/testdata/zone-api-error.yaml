@@ -1,0 +1,26 @@
+apiVersion: kflare.dev/v1alpha1
+kind: Zone
+metadata:
+  annotations:
+    kflare.dev/adoption-policy: adopt
+    kflare.dev/deletion-policy: retain
+  creationTimestamp: "2026-10-31T09:10:12Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 1
+  name: example
+  namespace: web
+  resourceVersion: "47812"
+  uid: 4e6a8c0e-2a3b-4e5d-8f7a-9b1d3f5a7c9e
+spec:
+  accountRef:
+    name: my-account
+  name: example.com
+status:
+  conditions:
+  - lastTransitionTime: "2026-10-31T09:10:14Z"
+    message: 'Cloudflare API error: HTTP 503 Service Unavailable'
+    observedGeneration: 1
+    reason: APIError
+    status: "False"
+    type: Ready
