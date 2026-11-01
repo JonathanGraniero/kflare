@@ -149,7 +149,7 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 			fmt.Sprintf("Zone %q is not ready", zoneKey.Name))
 	}
 
-	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
+	_, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), zone.Spec.AccountRef.Name, true)
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
 	}
@@ -302,9 +302,9 @@ func (r *rulesetRuleReconciler) deleteCloudflareRule(ctx context.Context, obj ru
 		return nil
 	}
 
-	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, false)
+	_, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), zone.Spec.AccountRef.Name, false)
 	if credErr != nil {
-		return credErr
+		return leaveCloudflareObject(ctx, obj, credErr)
 	}
 	cfAPI, err := r.newAPI(token)
 	if err != nil {

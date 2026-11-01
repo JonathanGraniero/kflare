@@ -127,8 +127,9 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 - **Any resource can be paused** with `kflare.dev/paused: "true"`, during an incident or a migration done by hand:
   kflare leaves its Cloudflare object alone until the annotation is removed (from v0.2.1).
 - **Credentials stay in Secrets** that you can manage with External Secrets Operator or Sealed Secrets. A rotated token
-  is picked up straight away. Only cluster administrators can create a `CloudflareAccount`; the namespaced kinds are
-  added to the built-in `edit` and `admin` roles, so teams manage their own records and rules.
+  is picked up straight away. Only cluster administrators can create a `CloudflareAccount`, and each can
+  [limit the namespaces that may use it](docs/deploy.md#limiting-which-namespaces-may-use-an-account); the namespaced
+  kinds are added to the built-in `edit` and `admin` roles, so teams manage their own records and rules.
 - **Every resource reports a single `Ready` condition** with a reason, and the controller serves Prometheus metrics.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how kflare finds, owns, corrects and deletes Cloudflare objects, and its

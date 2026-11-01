@@ -20,6 +20,42 @@ type CloudflareAccountSpec struct {
 	// TokenSecretRef references a Secret containing the CF_API_TOKEN key.
 	// +kubebuilder:validation:Required
 	TokenSecretRef SecretReference `json:"tokenSecretRef"`
+
+	// AllowedNamespaces says which namespaces' resources may use this
+	// account. Unset, every namespace's may. A resource in any other namespace
+	// reports reason AccountNotAllowed, and kflare makes no Cloudflare call
+	// for it.
+	// +optional
+	AllowedNamespaces *AllowedNamespaces `json:"allowedNamespaces,omitempty"`
+}
+
+// NamespacesFrom says where the namespaces allowed to use a CloudflareAccount
+// come from.
+// +kubebuilder:validation:Enum=All;Selector
+type NamespacesFrom string
+
+const (
+	// NamespacesFromAll allows every namespace.
+	NamespacesFromAll NamespacesFrom = "All"
+	// NamespacesFromSelector allows the namespaces a selector matches.
+	NamespacesFromSelector NamespacesFrom = "Selector"
+)
+
+// AllowedNamespaces is which namespaces' resources may use a CloudflareAccount.
+// +kubebuilder:validation:XValidation:rule="(self.from == 'Selector') == has(self.selector)",message="selector goes with from: Selector, and only with it"
+type AllowedNamespaces struct {
+	// From is All, for every namespace, or Selector, for those Selector
+	// matches.
+	// +kubebuilder:default=All
+	// +optional
+	From NamespacesFrom `json:"from,omitempty"`
+
+	// Selector picks the namespaces by their labels, with from: Selector.
+	// To name namespaces, match their kubernetes.io/metadata.name label, which
+	// the API server sets and nobody can change. For other labels, this trusts
+	// whoever may label namespaces.
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 }
 
 // SecretReference points to a key within a Kubernetes Secret.

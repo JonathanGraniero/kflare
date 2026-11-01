@@ -35,6 +35,16 @@ Every namespaced resource resolves its credentials through this chain at reconci
 Zone's CloudflareAccount, and the account's token Secret. Nothing caches a token between reconciles, so rotating the
 Secret takes effect on the next reconcile.
 
+A `CloudflareAccount` is cluster-scoped, so by default a resource in any namespace can name it. Its
+`spec.allowedNamespaces` limits that to the namespaces a label selector picks. `resolveAccountToken` is the one way a
+resource reaches a token, and it checks the namespace first, before the account's readiness or its Secret, so a
+resource elsewhere reports `AccountNotAllowed` and kflare makes no Cloudflare call for it. The resources that reach an
+account through a parent, a Zone or a Tunnel, use one in their own namespace, so the namespace asking is theirs either
+way. It fails closed: a selector kflare cannot read, or a namespace it cannot read, allows nothing, and an invalid
+selector also turns the account `Ready=False` with reason `InvalidAllowedNamespaces`, since the CRD's schema cannot
+check one. A kind that names its account follows the account and the labels of its namespace through watches. A zone's
+kind follows its Zone, which does the same. Without a selector, relabelling a namespace reconciles nothing.
+
 Each controller declares a narrow interface over the Cloudflare SDK (for example `DNSRecordAPI`) holding only the calls it
 makes. The production client (`pkg/cloudflare.Client`) embeds cloudflare-go v0 and satisfies all of them, except those of
 the generated kinds, such as `KVNamespaceAPI`, and of the rule kinds (`RulesetRuleAPI`): each is part of a cloudflare-go
@@ -475,6 +485,11 @@ everything in one pass and checks Cloudflare afterwards.
 A DNSRecord, WorkerRoute, rule, ManagedTransform or TunnelConfiguration whose parent is nevertheless gone (its
 finalizer was removed by hand) cannot resolve credentials. It skips the Cloudflare call so its own deletion does not
 hang, and leaves its Cloudflare object, or the zone's settings, as they are.
+
+A resource in a namespace its account no longer allows ends the same way: no Cloudflare call, and its finalizer goes, so
+its Cloudflare object stays. A Warning Event with reason `AccountNotAllowed` says so. Keeping the finalizer until
+someone allows the namespace again would leave the namespace stuck terminating, and calling Cloudflare would use a token
+the namespace has lost.
 
 ## Known limitations
 

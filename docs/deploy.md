@@ -434,9 +434,10 @@ using the token's budget. `0s`, or leaving the value empty, turns the checks off
 
 - **The controller can read every Secret in the cluster.** It needs to read token Secrets wherever
   `CloudflareAccount`s point, `WorkerScript` secret bindings, and to manage Tunnel credential Secrets.
-- **CloudflareAccounts are cluster-wide credentials.** Any namespaced resource can reference any
-  `CloudflareAccount` by name. Treat permission to create kflare resources as permission to use every
-  account's token, and give tenants their own cluster or Cloudflare account if they must be isolated.
+- **A CloudflareAccount is open to every namespace until it says otherwise.** Any namespaced resource can reference any
+  `CloudflareAccount` by name, unless the account sets `spec.allowedNamespaces`. Without it, treat permission to create
+  kflare resources as permission to use every account's token. See
+  [Limiting which namespaces may use an account](#limiting-which-namespaces-may-use-an-account).
 - **Aggregated roles.** With `rbac.aggregateToDefaultRoles` (default), the built-in `view` role can read all
   kflare kinds, and `edit`/`admin` can manage the namespaced ones. `CloudflareAccount` is never added to
   `edit`: an account can point the controller at a token Secret in any namespace, so only cluster
@@ -446,6 +447,48 @@ using the token's budget. `0s`, or leaving the value empty, turns the checks off
   which the `kflare-metrics-reader` ClusterRole grants. The controller checks a token with a TokenReview and a
   SubjectAccessReview, which its ClusterRole may create, and trusts an allowed token for a minute.
   `metrics.secure: false` serves plain HTTP to anyone who can reach the port instead.
+
+### Limiting which namespaces may use an account
+
+On a shared cluster, or a management cluster serving several Cloudflare accounts, set `spec.allowedNamespaces` on each
+`CloudflareAccount`. With the chart's default `rbac.aggregateToDefaultRoles`, anyone with the built-in `edit` role in a
+namespace can create kflare resources there. Without this, one team could name another team's account, and then adopt
+and delete that account's objects with its token.
+
+```yaml
+apiVersion: kflare.dev/v1alpha1
+kind: CloudflareAccount
+metadata:
+  name: payments
+spec:
+  accountID: <your account ID>
+  tokenSecretRef:
+    name: payments-token
+    namespace: kflare-system
+  allowedNamespaces:
+    from: Selector
+    selector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [payments, payments-staging]
+```
+
+`from` is `All`, the default, or `Selector`. A `selector` only goes with `from: Selector`, and the API server refuses
+one without it, since an account that looks restricted would otherwise be open to every namespace.
+
+- **A resource in any other namespace reports reason `AccountNotAllowed`, and kflare makes no Cloudflare call for it.**
+  That covers every kind: a `DNSRecord` or a rule reaches its account through a `Zone` in its own namespace.
+- **A change takes effect straight away, both ways**, whether to the selector or to a namespace's labels.
+- **A namespace that loses access stops managing its objects, and they stay in Cloudflare.** Deleting a resource there
+  removes the resource and leaves its object, with a Warning Event that says so. Clean the object up from a namespace
+  the account allows, or in Cloudflare.
+- **The selector trusts whoever may label namespaces.** The built-in `edit` role cannot, but anyone who can `patch`
+  namespaces can move one into a selector. To name namespaces, as above, match `kubernetes.io/metadata.name`, which the
+  API server sets and nobody can change. An empty selector (`selector: {}`) matches every namespace.
+- **It limits who may use a token, not what the controller can reach.** The controller still reads every Secret, and
+  namespaces an account allows can adopt each other's objects in it. Give each team its own account where that matters.
+  For a tenant that must not share a controller at all, use a cluster of its own.
 
 ## Verifying a release
 
@@ -887,6 +930,8 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change |
 | `APIError` | Transient failure (5xx, rate limit, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout` |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
+| `AccountNotAllowed` | The `CloudflareAccount`'s `spec.allowedNamespaces` leaves out the resource's namespace | Move the resource, or have a cluster administrator [allow the namespace](#limiting-which-namespaces-may-use-an-account) |
+| `InvalidAllowedNamespaces` | A `CloudflareAccount`'s `spec.allowedNamespaces.selector` is invalid, such as `In` with no values. Until it is fixed, it allows no namespace | Fix the selector |
 | `SecretNotFound`, `TokenKeyMissing`, `InvalidToken` | The token Secret is missing, lacks the key, or is empty | Fix the Secret; the account re-validates immediately |
 | `ZoneNotFound`, `ZoneNotReady`, `TunnelNotFound`, `TunnelNotReady` | The referenced parent is missing or not ready | Check the parent resource |
 | `TunnelAlreadyConfigured` | Another `TunnelConfiguration` owns this tunnel | Keep one configuration per tunnel |

@@ -8,8 +8,10 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -76,6 +78,16 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	if err := r.protectTokenSecret(ctx, account); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// A selector the CRD's schema cannot check allows no namespace, which the
+	// account says here, where its owner looks, rather than only in each
+	// resource that uses it. A change to the spec re-triggers this reconcile.
+	if allowed := account.Spec.AllowedNamespaces; allowed != nil {
+		if _, err := metav1.LabelSelectorAsSelector(allowed.Selector); err != nil {
+			return ctrl.Result{}, updateNotReady(ctx, r.Client, account, "InvalidAllowedNamespaces",
+				fmt.Sprintf("spec.allowedNamespaces.selector is invalid: %v", err))
+		}
 	}
 
 	// Fetch the API token from the referenced Secret. The Secret watch

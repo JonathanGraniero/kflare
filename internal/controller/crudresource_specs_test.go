@@ -924,6 +924,98 @@ func describeCRUDReferences[O conditionedObject, A any, R any, L any](e *crudSpe
 	})
 }
 
+// describeCRUDAllowedNamespaces adds the specs of a generated kind's resources
+// in a namespace their CloudflareAccount's spec.allowedNamespaces leaves out.
+func describeCRUDAllowedNamespaces[O conditionedObject, A any, R any, L any](e *crudSpecEnv[O, A, R, L]) {
+	ctx, k, key := e.ctx, e.t.kind, e.key
+	get, ready, reconcileIt, synced, create := e.get, e.ready, e.reconcileIt, e.synced, e.create
+
+	Describe("allowed namespaces", func() {
+		// reconcileDenied reconciles the resource, and checks that it made no
+		// Cloudflare call, which the fake records the parent's ID of.
+		reconcileDenied := func() {
+			GinkgoHelper()
+			calls := len(e.store.parentIDs)
+			_, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.store.parentIDs).To(HaveLen(calls), "a namespace the account leaves out reached Cloudflare")
+		}
+
+		It("calls Cloudflare for nothing from a namespace its account leaves out, and carries on once allowed", func() {
+			e.createParent(true)
+			create(key, nil)
+			allowOnlyNamespace(ctx, e.accountName, "some-other-namespace")
+			reconcileDenied()
+			Expect(ready().Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready().Reason).To(Equal(reasonAccountNotAllowed))
+			Expect(e.store.objects).To(BeEmpty())
+
+			By("creating the " + k.noun + " once the account allows the namespace")
+			allowOnlyNamespace(ctx, e.accountName, key.Namespace)
+			_, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.store.objects).To(HaveLen(1))
+			Expect(ready().Reason).To(Equal("Synced"))
+		})
+
+		It("stops at a namespace the account no longer allows", func() {
+			id := synced(nil)
+			before := e.store.objects[id]
+			allowOnlyNamespace(ctx, e.accountName, "some-other-namespace")
+			reconcileDenied()
+			Expect(ready().Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready().Reason).To(Equal(reasonAccountNotAllowed))
+			Expect(e.store.objects[id]).To(Equal(before))
+		})
+
+		It("deletes the "+k.noun+" of a resource in a namespace its account allows", func() {
+			id := synced(nil)
+			allowOnlyNamespace(ctx, e.accountName, key.Namespace)
+			Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+			_, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.store.objects).NotTo(HaveKey(id), "a delete from an allowed namespace left the object")
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue())
+		})
+
+		It("deletes a resource in a namespace no longer allowed, and leaves its "+k.noun+", with a Warning Event",
+			func() {
+				recorder := events.NewFakeRecorder(10)
+				SetEventRecorder(recorder)
+				DeferCleanup(func() { SetEventRecorder(nil) })
+
+				id := synced(nil)
+				for len(recorder.Events) > 0 {
+					<-recorder.Events
+				}
+				allowOnlyNamespace(ctx, e.accountName, "some-other-namespace")
+				Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+				reconcileDenied()
+
+				Expect(e.store.objects).To(HaveKey(id), "a namespace the account leaves out deleted an object")
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue(),
+					"the resource kept its finalizer")
+				Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+reasonAccountNotAllowed),
+					ContainSubstring("stays in Cloudflare"))))
+			})
+
+		if k.accountRef != nil {
+			It("is reconciled when its namespace's labels change, if its account picks namespaces by them", func() {
+				e.createParent(true)
+				create(key, nil)
+				namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: key.Namespace}}
+
+				Expect(e.r.crud().resourcesInNamespace(ctx, namespace)).To(BeEmpty(),
+					"relabelling a namespace reconciled resources no selector concerns")
+				allowOnlyNamespace(ctx, e.accountName, key.Namespace)
+				Expect(e.r.crud().resourcesInNamespace(ctx, namespace)).To(ConsistOf(reconcile.Request{NamespacedName: key}))
+				other := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "some-other-namespace"}}
+				Expect(e.r.crud().resourcesInNamespace(ctx, other)).To(BeEmpty())
+			})
+		}
+	})
+}
+
 // describeCRUDKind runs the shared specs on a generated kind's table.
 func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[O, A, R, L]) bool {
 	return Describe(t.kind.name+" (generated specs)", func() {
@@ -1900,6 +1992,8 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(ready().Status).To(Equal(metav1.ConditionUnknown))
 			})
 		})
+
+		describeCRUDAllowedNamespaces(e)
 
 		Describe("validation", func() {
 			for _, change := range t.immutable {
