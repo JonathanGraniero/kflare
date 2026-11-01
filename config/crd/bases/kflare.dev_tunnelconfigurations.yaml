@@ -150,8 +150,8 @@ spec:
             description: TunnelConfigurationStatus defines the observed state of TunnelConfiguration.
             properties:
               cloudflareMetadata:
-                description: CloudflareMetadata holds identifiers and metadata returned
-                  by the Cloudflare API.
+                description: CloudflareMetadata holds identifiers returned by the
+                  Cloudflare API.
                 properties:
                   tunnelID:
                     description: TunnelID is the Cloudflare tunnel this configuration
@@ -165,7 +165,7 @@ spec:
                 type: object
               conditions:
                 description: Conditions represent the latest available observations
-                  of the configuration state.
+                  of the tunnel configuration state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

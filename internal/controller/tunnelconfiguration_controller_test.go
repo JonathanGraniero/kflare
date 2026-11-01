@@ -130,9 +130,9 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		tunnel := &cloudflarev1alpha1.Tunnel{
 			ObjectMeta: metav1.ObjectMeta{Name: tunnelCRName, Namespace: ns},
 			Spec: cloudflarev1alpha1.TunnelSpec{
-				Name:                 "tc-cf-tunnel",
-				AccountRef:           corev1.LocalObjectReference{Name: accountName},
-				CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tc-test-tunnel-token"},
+				Name:             "tc-cf-tunnel",
+				AccountRef:       corev1.LocalObjectReference{Name: accountName},
+				TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tc-test-tunnel-token"}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, tunnel)).To(Succeed())
@@ -161,17 +161,19 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		tc := &cloudflarev1alpha1.TunnelConfiguration{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Annotations: annotations},
 			Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-				TunnelRef: corev1.LocalObjectReference{Name: tunnelCRName},
-				Ingress: []cloudflarev1alpha1.TunnelIngressRule{
-					{
-						Hostname: "app.example.com",
-						Service:  "http://app.default:80",
-						OriginRequest: &cloudflarev1alpha1.TunnelOriginRequest{
-							HTTPHostHeader: new("app.internal"),
-							NoTLSVerify:    new(true),
+				TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+					TunnelRef: corev1.LocalObjectReference{Name: tunnelCRName},
+					Ingress: []cloudflarev1alpha1.TunnelIngressRule{
+						{
+							Hostname: "app.example.com",
+							Service:  "http://app.default:80",
+							OriginRequest: &cloudflarev1alpha1.TunnelOriginRequest{
+								HTTPHostHeader: new("app.internal"),
+								NoTLSVerify:    new(true),
+							},
 						},
+						{Hostname: "api.example.com", Path: "^/v1/", Service: "https://api.default:443"},
 					},
-					{Hostname: "api.example.com", Path: "^/v1/", Service: "https://api.default:443"},
 				},
 			},
 		}
@@ -566,7 +568,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			fake := &fakeTunnelConfigurationAPI{}
 			result, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), otherKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(tunnelConflictRetryInterval))
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
 			Expect(fake.calls).To(BeEmpty())
 			expectReady(otherKey, metav1.ConditionFalse, "TunnelAlreadyConfigured")
 
@@ -582,8 +584,10 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.TunnelConfiguration{
 			ObjectMeta: metav1.ObjectMeta{Name: otherConfig, Namespace: ns},
 			Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-				TunnelRef: corev1.LocalObjectReference{Name: "some-other-tunnel"},
-				Ingress:   []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "o.example.com", Service: "http://o:80"}},
+				TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+					TunnelRef: corev1.LocalObjectReference{Name: "some-other-tunnel"},
+					Ingress:   []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "o.example.com", Service: "http://o:80"}},
+				},
 			},
 		})).To(Succeed())
 

@@ -800,7 +800,7 @@ func syntheticController() *controller {
 func TestParamStatements(t *testing.T) {
 	c := syntheticController()
 	f := newGoFile()
-	create, err := paramStatements(f, c, func(af apiField) *sdkField { return af.create })
+	create, err := paramStatements(f, c, func(af apiField) *sdkField { return af.create }, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,7 +835,7 @@ func TestParamStatements(t *testing.T) {
 	}
 
 	c.fields[0].create.typ = types.Typ[types.Bool]
-	if _, err := paramStatements(newGoFile(), c, func(af apiField) *sdkField { return af.create }); err == nil ||
+	if _, err := paramStatements(newGoFile(), c, func(af apiField) *sdkField { return af.create }, false); err == nil ||
 		!strings.Contains(err.Error(), "name: kflare-gen cannot convert a string to a bool") {
 		t.Errorf("a param of another kind: err = %v", err)
 	}
@@ -845,11 +845,99 @@ func TestParamStatements(t *testing.T) {
 	}
 	c.fixedFields[0].create.typ = types.Typ[types.Int]
 	c.fields = nil
-	if _, err := paramStatements(newGoFile(), c, func(af apiField) *sdkField { return af.create }); err == nil {
+	if _, err := paramStatements(newGoFile(), c, func(af apiField) *sdkField { return af.create }, false); err == nil {
 		t.Error("a fixed value of another kind: err = nil")
 	}
 	if matches, _, err := matchesExpr(newGoFile(), c, true); err != nil || matches != "" {
 		t.Errorf("no field Update takes: matches = %q, %v", matches, err)
+	}
+}
+
+// A clearable field is sent on Update and compared even when unset; at
+// creation an unset one sends nothing, as any optional field.
+func TestClearableField(t *testing.T) {
+	c := syntheticController()
+	i := slices.IndexFunc(c.fields, func(af apiField) bool { return af.goName == "Note" })
+	c.fields[i].clearable = true
+	create := func(af apiField) *sdkField { return af.create }
+	f := newGoFile()
+	sent, err := paramStatements(f, c, create, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guarded := "if obj.Spec.Note != \"\" {\nparams.Note.Value, params.Note.Present = obj.Spec.Note, true\n}"
+	if !slices.Contains(sent, guarded) {
+		t.Errorf("creating sends an unset field: %q", sent)
+	}
+	if sent, err = paramStatements(f, c, create, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(sent, "params.Note.Value, params.Note.Present = obj.Spec.Note, true") {
+		t.Errorf("updating does not send an unset clearable field: %q", sent)
+	}
+	matches, _, err := matchesExpr(f, c, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(matches, "current.Note == obj.Spec.Note") || strings.Contains(matches, `obj.Spec.Note == ""`) {
+		t.Errorf("an unset clearable field is not compared: %s", matches)
+	}
+}
+
+// Only an optional string Update takes can be cleared: title is required.
+func TestClearableRefuses(t *testing.T) {
+	entry := kvControllerEntry()
+	entry.Fields = map[string]fieldConfig{"title": {Clearable: true}}
+	_, err := buildKind(entry, loadTestService(t, "kv.NamespaceService"), loadTestSpec(t))
+	if err == nil || !strings.Contains(err.Error(), "clearable") {
+		t.Errorf("err = %v, want one naming clearable", err)
+	}
+}
+
+// Hooks reach the descriptor, the narrow interface, the factory and the fake,
+// and a kind without them is written as before.
+func TestEmitControllerHooks(t *testing.T) {
+	emit := func(hooks *hooksConfig) (string, string) {
+		t.Helper()
+		c := kvController(t)
+		c.hooks = hooks
+		source, err := emitController(c, testHeader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		table, err := emitControllerTest(c, testHeader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(source), string(table)
+	}
+	source, table := emit(nil)
+	for _, unwanted := range []string{"Hooks", "testKVService"} {
+		if strings.Contains(source, unwanted) || strings.Contains(table, unwanted) {
+			t.Errorf("a kind without hooks mentions %s", unwanted)
+		}
+	}
+	source, table = emit(&hooksConfig{API: true, SampleExtras: map[string]any{"items": []any{"a"}},
+		TableExtras: map[string]any{}})
+	for _, want := range []string{"hooks: testKVHooks,", "\tTestKVHooksAPI\n",
+		"var _ TestKVAPI = (*testKVService)(nil)",
+		"return &testKVService{NamespaceService: kv.NewNamespaceService(client.V7Options()...)}, nil"} {
+		if !strings.Contains(source, want) {
+			t.Errorf("the controller lacks %q:\n%s", want, source)
+		}
+	}
+	for _, want := range []string{"\tfakeTestKVHooksAPI\n",
+		"return fakeTestKVAPI{store, newFakeTestKVHooksAPI(store)}", "&testKVService{}"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("the table lacks %q:\n%s", want, table)
+		}
+	}
+	if strings.Contains(table, "Unmarshal") {
+		t.Errorf("tableExtras, set and empty, leaves the table without extras:\n%s", table)
+	}
+	_, table = emit(&hooksConfig{SampleExtras: map[string]any{"items": []any{"a"}}})
+	if !strings.Contains(table, `{\"items\":[\"a\"]}`) {
+		t.Errorf("the table lacks the sample's extras:\n%s", table)
 	}
 }
 

@@ -8,11 +8,12 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TunnelConfigurationSpec defines the desired state of TunnelConfiguration.
-type TunnelConfigurationSpec struct {
+// TunnelConfigurationSpecExtras holds what a TunnelConfiguration's spec asks
+// for: a tunnel's configuration is not an object of its own, so its fields and
+// calls stay hand-written.
+type TunnelConfigurationSpecExtras struct {
 	// TunnelRef references the Tunnel, in the same namespace, whose ingress
 	// rules this resource manages. Immutable after creation.
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="tunnelRef is immutable"
@@ -79,55 +80,10 @@ type TunnelOriginRequest struct {
 	DisableChunkedEncoding *bool `json:"disableChunkedEncoding,omitempty"`
 }
 
-// TunnelConfigurationCloudflareMetadata holds identifiers and metadata
-// returned by the Cloudflare API.
-type TunnelConfigurationCloudflareMetadata struct {
-	// TunnelID is the Cloudflare tunnel this configuration was last written to.
-	TunnelID string `json:"tunnelID,omitempty"`
-
+// TunnelConfigurationMetadataExtras holds what Cloudflare reports about a
+// configuration.
+type TunnelConfigurationMetadataExtras struct {
 	// Version is the configuration version Cloudflare reported after the last
 	// sync. cloudflared picks up each new version automatically.
 	Version int `json:"version,omitempty"`
-}
-
-// TunnelConfigurationStatus defines the observed state of TunnelConfiguration.
-type TunnelConfigurationStatus struct {
-	// Conditions represent the latest available observations of the configuration state.
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-
-	// CloudflareMetadata holds identifiers and metadata returned by the Cloudflare API.
-	CloudflareMetadata TunnelConfigurationCloudflareMetadata `json:"cloudflareMetadata,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=cftunnelconfig,categories=kflare
-// +kubebuilder:printcolumn:name="Tunnel",type=string,JSONPath=`.spec.tunnelRef.name`
-// +kubebuilder:printcolumn:name="Version",type=integer,JSONPath=`.status.cloudflareMetadata.version`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-
-// TunnelConfiguration is the Schema for the tunnelconfigurations API.
-// It owns the complete ingress configuration of one remotely-managed Tunnel.
-type TunnelConfiguration struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   TunnelConfigurationSpec   `json:"spec,omitempty"`
-	Status TunnelConfigurationStatus `json:"status,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-
-// TunnelConfigurationList contains a list of TunnelConfiguration.
-type TunnelConfigurationList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []TunnelConfiguration `json:"items"`
-}
-
-func init() {
-	register(&TunnelConfiguration{}, &TunnelConfigurationList{})
 }

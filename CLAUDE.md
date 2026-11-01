@@ -48,8 +48,8 @@ Decided 2026-10-13. kflare-gen's design and as-built notes are in
   its OpenAPI spec) and a pinned subset of that spec (`api-schemas` repo). It generates CRD types and each kind's
   controller glue for a shared reconciler. It generates no client code: v7 is the client
 - What the API description cannot express, such as behavior verified live, goes into the kind's entry: validations,
-  CEL rules, ignores with their reasons, and test specs. Go hooks, for logic an entry cannot express, are planned but
-  no kind has needed one yet
+  CEL rules, ignores with their reasons, and test specs. Logic an entry cannot express goes into Go hooks, in a
+  hand-written `<kind>_hooks.go`
 - Every kind is generated, the ones written before the generator included (the user, 2026-10-27): no kind stays
   custom. [Generate every kind](#generate-every-kind) moves them
 
@@ -180,7 +180,10 @@ why.
      ID, without a reset, as `zones.SettingService` does: a field per setting, reset by writing back its `unconfigured`
      value (`settings_byid.go`). Closest example: the test data's TestZoneSettings (`pickedBy`, `validation.integer`)
 
-   Anything else needs a kflare-gen capability first ([Next wave](#next-wave-proposed-2026-10-17) lists them). A
+   A CRUD kind's `hooks` add what an entry cannot say, in a hand-written `<kind>_hooks.go`: closest examples `IPList`
+   (a step after the sync, watches of its own), `Tunnel` (a deleted object that stays readable, a step before the
+   delete), `DNSRecord` (a search of its own, a comparison, a union body finished by hand). Anything else needs a
+   kflare-gen capability first ([Next wave](#next-wave-proposed-2026-10-17) lists them). A
    draft entry is the quickest check: `make codegen` refuses what it cannot generate, and says why.
 2. **A new capability is its own PR, merged before the kind's.** Build it on a test kind in
    `generator/testdata/generator.yaml`, with golden tests. A new runtime, with no generated kind to run its shared
@@ -320,7 +323,20 @@ them in the same PR"): R2Bucket and the capability it needs, built on it rather 
 also OK'd mapping R2's storage class then, with live Infrequent Access probes. PRs 9 and 10
 (`feat/generate-worker-route`) are one pull request the same way, the user's next pair on 2026-10-29: WorkerRoute and
 the capabilities it needs, which brought part of PR 7 along (calls that each return a type of their own) and one of the
-Next wave's (lists that are never paged). PR 7 (hooks) and PR 8 (IPList) are next.
+Next wave's (lists that are never paged).
+
+On 2026-10-30 the user asked for all the remaining kinds in one pull request (`feat/generate-remaining-kinds`, "do this
+as one bulk PR"), for the same minor version, overriding "one kind per PR" and "a capability first" for this batch. A
+draft entry showed that kflare-gen refused all six, so it took the capabilities below, and rows 7 to 20 changed:
+- **Go hooks** (row 7), the capability the rest stand on: `crudHooks` on the shared CRUD reconciler, hand-written in
+  `<kind>_hooks.go`, with fields the API does not describe in `<kind>_extras.go`, embedded inline
+- **Generated from v7:** `IPList`, `Tunnel` and `DNSRecord` (rows 8, 11 to 14). No `x-sensitive` capability was needed:
+  a remotely-managed tunnel takes no secret (verified live 2026-10-30), and a union body goes through its flat variant
+- **Hooked kinds:** `Zone`, `TunnelConfiguration` and `WorkerScript` (rows 15 to 20, not done as planned) run on the
+  shared CRUD reconciler, with generated types and wiring, but their fields and calls stay hand-written on v0.119. v7
+  has no `jump_start` or `plan_pending`, and the test account cannot create a zone to verify a move; a tunnel's
+  configuration has no `New` or `Delete`; a Worker's upload is a multipart request with 30 binding variants. This was
+  Claude's call, for the user to review: moving them is what is left of this plan
 
 **Decided (the user, 2026-10-27):**
 1. Every hand-written kind is generated: the earlier plan's line that `Zone`, `DNSRecord`, `Tunnel`,
@@ -333,7 +349,15 @@ Next wave's (lists that are never paged). PR 7 (hooks) and PR 8 (IPList) are nex
    rule kinds (PRs 1 to 4), and the kinds of PRs 5 to 20 ship in later releases, whose notes list their changes.
    Changed again on 2026-10-29, when the user found v0.3.0 unreleased and asked for its notes to cover everything
    merged: v0.3.0 also carries R2Bucket and WorkerRoute (PRs 5, 6, 9 and 10, #121 and #122) and the chart's Artifact Hub
-   annotations (#119); PRs 7, 8 and 11 to 20 ship later
+   annotations (#119); PRs 7, 8 and 11 to 20 ship later. On 2026-10-30, when the user asked for v0.4.0: it carries what
+   #125 did of PRs 7 to 20 (`docs/release-v0.4.0`), and the rest of rows 15 to 20 ship later
+
+**Open, for the user (2026-10-30):** they expect v0.4.0's to be the last breaking CRD changes. Decision 2 above says
+field names follow the API, and rows 16, 18 and 20 are still to do. Zone's and TunnelConfiguration's fields already take
+v7's names (`plan` and `defaultService` are kflare's own, and would stay in their extras), but WorkerScript's bindings
+do not: `plainText`, `kvNamespaceID` and `r2BucketName` against the API's `text`, `namespace_id` and `bucket_name`, with
+a `type` that kflare infers. Row 20 as planned would break them, so it needs a decision before it starts: keep those
+names as an exception to decision 2, or ship one more breaking change
 
 `CloudflareAccount` is not a Cloudflare object: it holds the API token kflare calls Cloudflare with, as a provider
 configuration does, and no part of Cloudflare's API describes it. It is the one kind kflare-gen has nothing to generate
@@ -352,25 +376,26 @@ say it, into a hook. The later capabilities are sketched only; each is planned i
 | 4 | `feat/generate-rate-limit-rule` | `RateLimitRule` generated (`ratelimit`; `cf.colo.id` and the mitigation timeout, verified live) |
 | 5 | in `feat/generate-r2-bucket` | CRUD kinds: objects identified by their key (read by it, never listed, so no list beyond `V4PagePaginationArray` was needed), header params (jurisdiction) and an object's address, deletion blockers as data |
 | 6 | `feat/generate-r2-bucket` | `R2Bucket` generated, onto v7 (gains jurisdictions and storage class) |
-| 7 | `feat/generator-hooks` | Go hooks (CRUD kinds whose New, Get and Update return different types came with PR 9) |
-| 8 | `feat/generate-ip-list` | `IPList` generated, its items' bulk operation a hook |
+| 7 | in `feat/generate-remaining-kinds` | Go hooks (CRUD kinds whose New, Get and Update return different types came with PR 9) |
+| 8 | `feat/generate-remaining-kinds` | `IPList` generated, its items' bulk operation a hook |
 | 9 | in `feat/generate-worker-route` | Zone-scoped CRUD kinds, and references to other kinds (`workerScriptRef`); also `SinglePage` lists and New, Get and Update returning types of their own with the same fields (custom lists too, now generated in the test data) |
 | 10 | `feat/generate-worker-route` | `WorkerRoute` generated, onto v7 (a pattern outside the zone becomes Cloudflare's refusal) |
-| 11 | `feat/generator-dns-records` | Unions in CRUD kinds (a DNS record's types), fields Cloudflare fills in (`computed_optional`) |
-| 12 | `feat/generate-dns-record` | `DNSRecord` generated (`tunnelRef` a reference) |
-| 13 | `feat/generator-secrets` | `x-sensitive` fields written to a Secret or read from one |
-| 14 | `feat/generate-tunnel` | `Tunnel` generated (its token in a Secret) |
-| 15 | `feat/generator-parent-settings` | Settings kinds keyed by another kind's object rather than a zone |
-| 16 | `feat/generate-tunnel-configuration` | `TunnelConfiguration` generated |
-| 17 | `feat/generator-zones` | CRUD kinds whose account is a body param, and `Zone`'s adoption and dependents |
-| 18 | `feat/generate-zone` | `Zone` generated |
-| 19 | `feat/generator-worker-scripts` | Uploads (a Worker's modules and bindings), drift by a hash in status |
-| 20 | `feat/generate-worker-script` | `WorkerScript` generated |
+| 11 | in `feat/generate-remaining-kinds` | Union bodies in CRUD kinds (a DNS record's types), through the variant that holds every field |
+| 12 | `feat/generate-remaining-kinds` | `DNSRecord` generated (`tunnelRef` a hook's reference) |
+| 13 | dropped | `x-sensitive` fields: a remotely-managed tunnel takes no secret, and its token is a hook's. Turnstile and Hyperdrive will need them |
+| 14 | `feat/generate-remaining-kinds` | `Tunnel` generated (its token in a Secret, a hook) |
+| 15 | to do | Settings kinds keyed by another kind's object rather than a zone |
+| 16 | hooked in `feat/generate-remaining-kinds` | `TunnelConfiguration` on the shared CRUD reconciler; generated from v7 to do |
+| 17 | to do | CRUD kinds whose account is a body param and whose ID is a param |
+| 18 | hooked in `feat/generate-remaining-kinds` | `Zone` on the shared CRUD reconciler; generated from v7 to do, once a zone's creation can be verified |
+| 19 | to do | Uploads (a Worker's modules and bindings) |
+| 20 | hooked in `feat/generate-remaining-kinds` | `WorkerScript` on the shared CRUD reconciler; generated from v7 to do |
 | 21 | `docs/release-v0.3.0` | v0.3.0's notes, for PRs 1 to 4: every field change, with manifests before and after |
 | 22 | a release branch per release | The notes of the releases that carry PRs 5 to 20: every field change, as in v0.3.0's |
 
 Done when: `api/v1alpha1` holds no hand-written kind but `CloudflareAccount` and the shared types, every kind's
-envtest table runs the shared specs, and the live suite passes on main.
+envtest table runs the shared specs, and the live suite passes on main. Not yet: the three hooked kinds keep
+hand-written fields, and TunnelConfiguration's and WorkerScript's specs are their own rather than the shared specs.
 
 ### Launch readiness
 **Status:** 🚧 In progress: L1 (but for one rerun) to L6 are done, v0.1.0 is released and on ArtifactHub; L7 is on
@@ -591,7 +616,8 @@ rule kinds reconciling at once share a phase's ruleset). The autoscaler and the 
   two-replica install gets a PDB that a node drain respects. Both hold (above)
 
 #### Autoscaling and resources (`feat/chart-autoscaling`)
-**Status:** 🚧 Draft PR #124, 2026-10-30. The user asked for a HorizontalPodAutoscaler on 2026-10-30, from 1 to 10
+**Status:** ✅ Merged 2026-10-30 (#124); ships in v0.4.0, and CI's E2E passed on 1.34 and 1.37 on its merge commit.
+The user asked for a HorizontalPodAutoscaler on 2026-10-30, from 1 to 10
 replicas, on by default with values to tune it, and for CPU and memory limits; told first that only the leader
 reconciles (#67's section 4), so that the replicas it adds are standbys, they chose it as asked. Its targets and the
 resources were left to me, from measurements. Covers [#70](https://github.com/JonathanGraniero/kflare/issues/70)'s
@@ -785,7 +811,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   approve their own pull requests, could then merge nothing: the user chose 9. Renaming a required job or changing
   E2E's Kubernetes versions means changing `protect main`'s checks too. Code-Review stays 0: a bypassed merge has
   no approval
-- [ ] v0.3.0's pre-tag checks (`docs/release-v0.3.0`), a minor release: WAFCustomRule, RateLimitRule and
+- [x] v0.3.0, released 2026-10-29: its pre-tag checks (`docs/release-v0.3.0`), a minor release: WAFCustomRule,
+  RateLimitRule and
   ManagedRuleset moved onto kflare-gen (#114 to #116), which renames fields. Done on the branch:
   - An upgrade from 0.2.1 on an envtest API server (1.34.1; no Helm in that session, so v0.2.1's CRDs and samples
     from the tag, then the branch's CRDs applied over them): v0.2.1's samples, a block rule with `blockResponse` and
@@ -794,8 +821,48 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     warnings; a spec change is refused (`spec.id: Required value`) until the new shape is applied, which then
     passes. The new samples are refused by v0.2.1's CRDs (`unknown field "spec.ratelimit"`), so CHANGELOG.md's
     upgrade steps apply them after the chart
-  - Left: the live suite on the release branch (a `/live-e2e` review comment, never alongside a local run), then the
-    tag on the release PR's merge commit, the release workflow, and #84's checks on the published release
+  - An upgrade of the chart from 0.2.1 on an envtest API server passed. The live suite was not run again: main's
+    non-Markdown tree was the one run 40915815475 passed, 27 of 27
+  - The tag is on #123's merge commit `97b5037`. `Release` run 40968424408 passed; the image (`sha256:dc3718b1…`) and
+    the chart (`sha256:9724dc23…`) verify with cosign 3.1.3 for `refs/tags/v0.3.0`, and the SBOM passes `verify-blob`
+- [x] v0.4.0, released 2026-10-31: its pre-tag checks (`docs/release-v0.4.0`), a minor release: #125 moves six kinds
+  onto the shared reconciler, and #124 adds the autoscaler. Done on the branch:
+  - The CRDs against v0.3.0's, without descriptions or list order: 18 of 20 are identical. `Tunnel`'s `spec.name` can
+    change, and `WorkerScript` gains `status.cloudflareMetadata.scriptName`
+  - An upgrade from 0.3.0 on an envtest API server (1.34.1, no pods): the chart from GHCR, anonymously, with
+    `replicaCount: 2` and a memory limit, v0.3.0's samples (26 resources of 20 kinds), a Tunnel and a WorkerScript with
+    v0.3.0's status, then `helm upgrade` to the branch's chart. Every resource's spec and status read back unchanged,
+    the 5 roles' rules are the same, the autoscaler is created and the memory limit merges with the new defaults. A
+    Tunnel's rename is refused before it and accepted after it, a Zone's name stays immutable, and the branch's 24
+    samples pass a server-side dry run
+  - A WorkerScript of v0.3.0 is not uploaded again. It owns its Worker through `modifiedOn`, which v0.3.0 wrote, and
+    its hash has the same inputs in both releases (read in both). The spec "from an earlier release" did not show it:
+    its fixture had no hash and listed no Worker, so it uploaded. It now starts from a real upload and strips what
+    v0.3.0 leaves out, and fails when ownership is keyed on `scriptName`. The other kinds take the path in `sync`
+    for an ID in status, which claims without adopting (read, not run)
+  - Left, both for the user: the live suite with the CI token (a `/live-e2e` review comment, never alongside a local
+    run; none has run on #125's code, whose last live run was local, 30250c, 23 of 23), and v0.3.0's manager handing
+    real objects to the branch's. The auto mode classifier refused the second on 2026-10-30 as a change to shared
+    resources. Then the tag on the release PR's merge commit, the release workflow, and #84's checks
+  - Tagged on `298c8f7` (#130's merge commit); `Release` run 41141606560 passed and drafted the release. Main's CI was
+    red there, and on #125's merge commit: Test (newest Kubernetes) failed WorkerScript's spec in a running manager on
+    every run, a race between the manager's cache and the status a reconcile wrote last, not a flake (it failed locally
+    on 1.34 too). #131 fixed it, after the tag
+  - Published 2026-10-31 as tagged, so without #131 (the user's choice): the image and chart were already public and
+    on Artifact Hub, and moving the tag would have replaced signed digests. Its notes open with the known issue, and
+    v0.4.1 carries the fix. Neither item left for the user above was recorded as run. The image (`sha256:84623619…`)
+    and the chart (`sha256:eabd818d…`) verify with cosign 3.1.3 for `refs/tags/v0.4.0`, and the image is refused for
+    `refs/tags/v0.3.0`; the SBOMs pass `verify-blob`, and Artifact Hub lists 0.4.0 with `signed: true`. The release
+    scan, by hand (41244936180): Grype 0 matches in 78 packages, the binary clean
+- [ ] v0.4.1's pre-tag checks (`docs/release-v0.4.1`), a patch release: #131, and nothing else. Done on the branch:
+  - An upgrade from 0.4.0 needs nothing: since v0.4.0, nothing changed under `api`, `cmd`, `config` or `helm`, nor in
+    `go.mod`. The chart pulled anonymously from GHCR and the branch's render the same 32 objects with the default
+    values, and 33 with two replicas, the NetworkPolicy, the ServiceMonitor, a drift check interval and `retain`, but
+    for the version, on Kubernetes 1.34 and 1.37. A resource v0.4.0 marked adopted by mistake stays marked (read in
+    `RetainOnDelete`), so the notes say how to have its object deleted
+  - Left, for the user: the live suite with the CI token (a `/live-e2e` review comment, never alongside a local run).
+    None has run on #125's or #131's code. Then the tag on the release PR's merge commit, the release workflow, and
+    #84's checks
 - [x] Artifact Hub annotations (#90, `feat/artifacthub-annotations`). Why the page showed none, read in Artifact Hub's
   tracker (`internal/tracker/source/helm`, 2026-10-28): it finds a chart's images by a dry-run install for Kubernetes
   1.29, which `kubeVersion: ">=1.34.0-0"` refuses (Helm 4.3.1: "incompatible with Kubernetes v1.29"), and the license
@@ -842,14 +909,12 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
 > `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule` and `OriginRule`
 > done.**
-> cloudflare-go is at v0.119, with v7.13.0 next to it for the generated kinds and the rule kinds; rule kinds share the
-> Rulesets foundation and controller. The code generator, `kflare-gen`, is complete: KVNamespace, D1Database,
-> R2Bucket and WorkerRoute are generated in full on the shared CRUD reconciler, and WAFCustomRule, RateLimitRule,
-> ManagedRuleset, TransformRule, RedirectRule, CacheRule, ConfigurationRule and OriginRule on the shared rule
-> controller, and ManagedTransform, the first settings kind, on the shared settings controller. Next:
-> [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done: v0.1.0 is released and on ArtifactHub; L7 is on
-> hold. v0.2.1 is the latest release; v0.3.0, with every rule kind, `R2Bucket` and `WorkerRoute` generated, is
-> prepared in `release/v0.3.0`.
+> cloudflare-go is at v7.13.0, with v0.119 next to it for `Zone`, `TunnelConfiguration` and `WorkerScript`. Every kind
+> but `CloudflareAccount` runs on a shared reconciler: the shared CRUD reconciler, the shared rule controller or the shared
+> settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
+> hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:
+> [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done:
+> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.1 is the latest release.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero

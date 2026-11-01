@@ -78,6 +78,14 @@ func TestLoadConfigRefuses(t *testing.T) {
 		{"a service ending in a dot", replace("service: kv.NamespaceService", "service: kv."), "not <package>.<type>"},
 		{"another scope", replace("scope: account", "scope: plan"), "it is account or zone"},
 		{"a short name in capitals", replace("shortName: cfkv", "shortName: CFKV"), "lower-case"},
+		{"a hook's name that is not exported", validConfig + "    hooks: {metadataExtras: extras}\n",
+			"no exported type's name"},
+		{"extras of a type outside the package", validConfig + "    hooks: {specExtras: extras}\n",
+			"no exported type's name"},
+		{"a sample's extras on a spec without any", validConfig + "    hooks: {sampleExtras: {items: []}}\n",
+			"the spec has no extras"},
+		{"a column without a path", validConfig + "    hooks: {columns: [{name: Items, type: integer}]}\n",
+			"a name, a type and a path"},
 		{"no noun", replace("noun: KV namespace", `noun: ""`), "noun is empty"},
 		{"a doc not starting with the kind", replace("doc: KVNamespace is", "doc: It is"), "does not start with"},
 		{"no ID field", replace("{field: id,", `{field: "",`), "id.field is empty"},
@@ -310,5 +318,49 @@ func TestLoadConfigRefusesRuleKinds(t *testing.T) {
 		if _, err := loadConfig(writeConfig(t, tc.config)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want one containing %q", tc.name, err, tc.want)
 		}
+	}
+}
+
+// validHookedKind is a configuration with one hooked kind that loadConfig accepts.
+const validHookedKind = `hookedKinds:
+  - kind: Zone
+    scope: account
+    shortName: cfzone
+    noun: zone
+    doc: Zone is a zone.
+    id: {field: id, status: zoneID}
+    claimLabel: kflare.dev/zone-id
+    specExtras: ZoneSpecExtras
+`
+
+func TestLoadConfigHookedKinds(t *testing.T) {
+	load := func(content string) error {
+		path := filepath.Join(t.TempDir(), "generator.yaml")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := loadConfig(path)
+		return err
+	}
+	if err := load(validHookedKind); err != nil {
+		t.Fatal(err)
+	}
+	replace := func(old, new string) string { return strings.Replace(validHookedKind, old, new, 1) }
+	for name, tc := range map[string]struct{ config, want string }{
+		"a name that is no Go type": {replace("kind: Zone", "kind: zone"), "not a Go type name"},
+		"no short name":             {replace("shortName: cfzone", "shortName: ''"), "are required"},
+		"no claim label":            {replace("claimLabel: kflare.dev/zone-id", "claimLabel: ''"), "are required"},
+		"another doc":               {replace("doc: Zone is", "doc: A zone is"), "doc does not start"},
+		"another scope":             {replace("scope: account", "scope: zone"), "it is account, or empty"},
+		"no extras":                 {replace("specExtras: ZoneSpecExtras", "specExtras: ''"), "specExtras is required"},
+		"extras outside the package": {replace("specExtras: ZoneSpecExtras", "specExtras: extras"),
+			"no exported type's name"},
+		"listed twice": {validHookedKind + strings.TrimPrefix(validHookedKind, "hookedKinds:\n"), "listed twice"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := load(tc.config); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want one containing %q", err, tc.want)
+			}
+		})
 	}
 }

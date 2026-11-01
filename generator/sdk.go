@@ -64,6 +64,8 @@ type service struct {
 	// method the service does not have is missing.
 	calls        map[string]*sdkCall
 	updateMethod string
+	// writeRoutes holds the route of each of writeMethods the service has.
+	writeRoutes map[string]route
 }
 
 // sdkCall is one method of a service, shaped (ctx, [id,] params, opts...)
@@ -71,9 +73,19 @@ type service struct {
 type sdkCall struct {
 	name string
 	sig  *types.Signature
-	// params is the type of its params, and paramFields their fields.
+	// params is the type of its params, and paramFields their fields. body,
+	// for a call whose body is a union, is the variant that holds every other
+	// variant's fields, which paramFields then list.
 	params      types.Type
 	paramFields []sdkField
+	body        *sdkBody
+}
+
+// sdkBody is the body of a call whose params hold it as a union: goName is the
+// field of the params that takes it, and typ the variant kflare-gen sends.
+type sdkBody struct {
+	goName string
+	typ    types.Type
 }
 
 // route is the HTTP verb and path of an SDK call, as its package's api.md
@@ -103,6 +115,9 @@ type sdkField struct {
 	// enum holds, for a named string type, its constants' values in the order
 	// the SDK declares them.
 	enum []string
+	// inUnion is set for a param of a call's union body (sdkCall.body), which
+	// the body's variant holds rather than the params themselves.
+	inUnion bool
 }
 
 // sdk loads cloudflare-go v7's packages.
@@ -162,7 +177,8 @@ func (s sdk) service(name string) (*service, error) {
 
 	r := newSDKReader(pkg)
 	methods := types.NewMethodSet(types.NewPointer(typ.Type()))
-	svc := &service{name: name, pkg: pkg.Types, typeName: typeName, calls: map[string]*sdkCall{}}
+	svc := &service{name: name, pkg: pkg.Types, typeName: typeName, calls: map[string]*sdkCall{},
+		writeRoutes: map[string]route{}}
 	newCall, _, err := r.call(methods, "New")
 	if err != nil {
 		return nil, err
@@ -187,11 +203,15 @@ func (s sdk) service(name string) (*service, error) {
 		if err != nil {
 			return nil, err
 		}
-		svc.calls[method], svc.update, svc.updateMethod = c, c.paramFields, method
-		if svc.updateRoute, err = routeOf(method); err != nil {
+		route, err := routeOf(method)
+		if err != nil {
 			return nil, err
 		}
-		break
+		svc.calls[method] = c
+		svc.writeRoutes[method] = route
+		if svc.updateMethod == "" {
+			svc.chooseUpdate(method)
+		}
 	}
 	// What List returns is a page of objects, and what Delete returns goes
 	// unread: only their params are read.
@@ -218,8 +238,18 @@ func (s sdk) service(name string) (*service, error) {
 	return svc, nil
 }
 
-// paginationPackage holds cloudflare-go v7's pages of a list.
-const paginationPackage = sdkModule + "/packages/pagination"
+// chooseUpdate makes method, one of writeMethods the service has, the call
+// that changes an object.
+func (svc *service) chooseUpdate(method string) {
+	svc.updateMethod, svc.update, svc.updateRoute = method, svc.calls[method].paramFields, svc.writeRoutes[method]
+}
+
+// paginationPackage holds cloudflare-go v7's pages of a list, and
+// sharedPackage the types several of its packages use.
+const (
+	paginationPackage = sdkModule + "/packages/pagination"
+	sharedPackage     = sdkModule + "/shared"
+)
 
 // The pages of a list that kflare-gen reads: one of a list by page number,
 // and the one page of a list that is never paged, as a zone's Worker routes
@@ -332,11 +362,74 @@ func (r *sdkReader) method(methods *types.MethodSet, name string) (*sdkCall, err
 		return nil, fmt.Errorf("%s is not shaped (ctx, [id,] params, opts...) (*result, error)", name)
 	}
 	c := &sdkCall{name: name, sig: sig, params: sig.Params().At(sig.Params().Len() - 2).Type()}
-	var err error
+	named, st, err := r.structType(c.params)
+	if err != nil {
+		return nil, fmt.Errorf("%s's params: %w", name, err)
+	}
+	if i := unionBodyField(st); i >= 0 {
+		variant, err := r.bodyVariant(st.Field(i).Type())
+		if err != nil {
+			return nil, fmt.Errorf("%s's params: %w", name, err)
+		}
+		c.body = &sdkBody{goName: st.Field(i).Name(), typ: variant}
+		body, err := r.fields(variant, true)
+		if err != nil {
+			return nil, fmt.Errorf("%s's body: %w", name, err)
+		}
+		for i := range body {
+			body[i].inUnion = true
+		}
+		c.paramFields = append(c.paramFields, body...)
+		// The params' other fields.
+		docs := r.fieldDocs(named.Obj().Name())
+		for j := range st.NumFields() {
+			if j == i {
+				continue
+			}
+			f, ok, err := r.field(named, st.Field(j), reflect.StructTag(st.Tag(j)), docs, true)
+			if err != nil {
+				return nil, fmt.Errorf("%s's params: %w", name, err)
+			}
+			if ok {
+				c.paramFields = append(c.paramFields, f)
+			}
+		}
+		return c, nil
+	}
 	if c.paramFields, err = r.fields(c.params, true); err != nil {
 		return nil, fmt.Errorf("%s's params: %w", name, err)
 	}
 	return c, nil
+}
+
+// unionBodyField returns the index of the field of a call's params that holds
+// its body as a union, or -1: a field Body of an interface type, tagged as the
+// body in JSON, as a DNS record's calls have.
+func unionBodyField(st *types.Struct) int {
+	for i := range st.NumFields() {
+		v := st.Field(i)
+		if _, isInterface := v.Type().Underlying().(*types.Interface); isInterface && v.Name() == "Body" {
+			return i
+		}
+	}
+	return -1
+}
+
+// bodyVariant returns the variant of the union t that holds the fields of every
+// other: <name>, for a union <name>Union, which Stainless generates for a body
+// whose variants differ only in their constraints.
+func (r *sdkReader) bodyVariant(t types.Type) (types.Type, error) {
+	named, ok := t.(*types.Named)
+	if !ok {
+		return nil, fmt.Errorf("%s is no named union: kflare-gen cannot map it", t)
+	}
+	name := strings.TrimSuffix(named.Obj().Name(), "Union")
+	variant, ok := r.pkg.Types.Scope().Lookup(name).(*types.TypeName)
+	if !ok || name == named.Obj().Name() {
+		return nil, fmt.Errorf("%s has no variant %s that holds every field: kflare-gen cannot map it",
+			named.Obj().Name(), name)
+	}
+	return variant.Type(), nil
 }
 
 // call reads a method as method does, and the fields of its result.
@@ -352,8 +445,9 @@ func (r *sdkReader) call(methods *types.MethodSet, name string) (*sdkCall, []sdk
 	return c, result, nil
 }
 
-// fields reads the fields of a struct type declared in the package, or of a
-// pointer to one: for params, the fields inside their param.Field.
+// fields reads the fields of a struct type declared in the package or in
+// cloudflare-go's shared one, or of a pointer to one: for params, the fields
+// inside their param.Field.
 func (r *sdkReader) fields(t types.Type, params bool) ([]sdkField, error) {
 	named, st, err := r.structType(t)
 	if err != nil {
@@ -373,14 +467,15 @@ func (r *sdkReader) fields(t types.Type, params bool) ([]sdkField, error) {
 	return out, nil
 }
 
-// structType returns the struct type t, declared in the package, or the
-// struct a pointer t points to.
+// structType returns the struct type t, declared in the package or in
+// cloudflare-go's shared one, which holds the objects several packages return
+// (a tunnel), or the struct a pointer t points to.
 func (r *sdkReader) structType(t types.Type) (*types.Named, *types.Struct, error) {
 	if ptr, ok := t.(*types.Pointer); ok {
 		t = ptr.Elem()
 	}
 	named, ok := t.(*types.Named)
-	if !ok || named.Obj().Pkg() != r.pkg.Types {
+	if !ok || named.Obj().Pkg() != r.pkg.Types && named.Obj().Pkg().Path() != sharedPackage {
 		return nil, nil, fmt.Errorf("%s is not a type of %s", t, r.pkg.PkgPath)
 	}
 	st, ok := named.Underlying().(*types.Struct)

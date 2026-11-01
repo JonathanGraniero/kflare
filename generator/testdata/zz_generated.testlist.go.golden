@@ -45,6 +45,11 @@ type TestListReconciler struct {
 	// NewTestListAPI constructs a TestListAPI from a raw API token. Defaults to
 	// defaultTestListAPI; tests inject a fake.
 	NewTestListAPI func(token string) (TestListAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=testlists,verbs=get;list;watch;create;update;patch;delete
@@ -159,18 +164,23 @@ func (r *TestListReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // CloudflareAccounts, so a TestList waiting for its account is reconciled once
 // the account is ready.
 func (r *TestListReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for TestLists, with the injected
-// factory or the production one.
+// factory or the production one, and the manager's API reader or the client.
 func (r *TestListReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.TestList, TestListAPI, rules.ListGetResponse, rules.ListsList] {
 	newAPI := r.NewTestListAPI
 	if newAPI == nil {
 		newAPI = defaultTestListAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.TestList, TestListAPI, rules.ListGetResponse, rules.ListsList]{
-		Client: r.Client, kind: testListKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: testListKind, newAPI: newAPI,
 	}
 }
 
