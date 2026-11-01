@@ -99,6 +99,8 @@ With:
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
 ├── CHANGELOG.md           # Release notes; a release's section is its GitHub release's notes
+├── GOVERNANCE.md          # Roles, decision making, becoming a maintainer; MAINTAINERS.md lists them
+├── CODE_OF_CONDUCT.md     # Contributor Covenant 2.1; reports to conduct@kflare.dev
 ├── CLAUDE.md              # This file
 └── Makefile
 ```
