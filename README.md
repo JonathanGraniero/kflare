@@ -116,7 +116,9 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 
 - **Install it like any other platform component.** Pin the chart version, keep your values in git, and let Argo CD or
   Flux install it; the guide has an `Application` and a `HelmRelease` to start from. The chart installs and upgrades
-  the CRDs, keeps them on uninstall, and runs under the restricted Pod Security Standard.
+  the CRDs, keeps them on uninstall, and runs under the restricted Pod Security Standard. The guide also has health
+  checks for Argo CD and Flux, so that an application turns Degraded when Cloudflare refuses a resource, and sync
+  waves wait for one to be ready.
 - **Releases are signed** (from v0.2.1): the image and the chart with cosign, keyless, with SBOMs
   and provenance, so that cosign, an admission policy or Flux can check them; the guide has a Kyverno policy.
 - **One installation per cluster**, with leader election. A HorizontalPodAutoscaler adds standby replicas while the

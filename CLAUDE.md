@@ -84,8 +84,10 @@ With:
 │   ├── crd/               # Generated CRDs (make manifests) + kustomization
 │   ├── rbac/              # Generated role.yaml + kustomize RBAC
 │   ├── default/           # Kustomize base used by make deploy
+│   ├── argocd/, flux/     # Health checks for Argo CD (health.lua) and Flux (healthCheckExprs), with their tests
 │   └── samples/           # Example CRs
 ├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e)
+├── test/gitopshealth/     # Runs the Argo CD and Flux health checks as those tools do, for their tests and the specs
 ├── local/                 # kind cluster setup for running the controller with make run
 ├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
 ├── helm/artifacthub-repo.yml  # Artifact Hub metadata; the Artifact Hub workflow pushes it (verified publisher)
@@ -112,7 +114,10 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    that was not `Ready`: see `internal/controller/ratelimit.go`); credential reasons from `credentials.go`
    (`AccountNotFound`, `AccountNotAllowed`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a
    minute); `Paused`
-   (the status kept, see convention 11)
+   (the status kept, see convention 11). A new reason goes into `readyReasons` (`test/gitopshealth`), and, if a person
+   must act on it, into the Argo CD and Flux health checks' lists (`config/argocd/health.lua`,
+   `config/flux/health-check-exprs.yaml`, and deploy.md's copies); its test finds a reason the controllers set that
+   the table lacks
 2. **Status fields** — every CRD status has `conditions []metav1.Condition` and a `cloudflareMetadata` block
 3. **References** — foreign-key relationships use `*Ref` fields (e.g., `zoneRef`, `tunnelRef`) not raw IDs
 4. **Adoption** — a resource creates its Cloudflare object, and takes over an existing one with its key only when its
@@ -897,6 +902,11 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - Verified by installing on kind with a live token: account Ready, Secret protection finalizer, upgrade,
     uninstall keeping CRDs
 - [x] Chart listed on ArtifactHub (L6, 2026-10-21; verified publisher)
+- [ ] Argo CD and Flux health checks (#83, `feat/argocd-health-checks`): deploy.md's Lua script for `argocd-cm` and
+  `healthCheckExprs` for Flux, tested in CI in Argo CD's format and on the conditions the shared specs' controllers
+  write. Tried on an Argo CD and a Flux on kind on 2026-11-01, against a stand-in for Cloudflare's API
+  ([design notes](docs/design-notes.md#health-checks-in-argo-cd-and-flux)). Left: a run against Cloudflare itself, one
+  on Kubernetes 1.34 or newer, and, the maintainer's call, contributing the script to Argo CD
 - [ ] Kustomize component overlays for common patterns (tunnel + DNS combo, zero-trust stack)
 - [ ] Docusaurus documentation site
   - Getting Started

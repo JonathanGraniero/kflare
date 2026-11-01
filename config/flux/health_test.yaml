@@ -1,0 +1,37 @@
+# The tests of health-check-exprs.yaml: each case's input, one of config/argocd/health_test.yaml's, and the status Flux
+# gives it. Flux has no Suspended: a paused resource is Current while its last reconcile left it Ready for its current
+# generation, as that one did, and InProgress otherwise. A resource without a status yet is Unknown, as the
+# expressions cannot read it, and Flux goes on waiting.
+tests:
+- status: Current
+  inputPath: ../argocd/testdata/dnsrecord-synced.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/dnsrecord-spec-changed.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/dnsrecord-zone-not-ready.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/dnsrecord-rate-limited.yaml
+- status: Failed
+  inputPath: ../argocd/testdata/workerroute-terminal-error.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/workerroute-terminal-error-fixed.yaml
+- status: Failed
+  inputPath: ../argocd/testdata/kvnamespace-title-conflict.yaml
+- status: Failed
+  inputPath: ../argocd/testdata/managedtransform-already-configured.yaml
+- status: Current
+  inputPath: ../argocd/testdata/cloudflareaccount-validated.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/cloudflareaccount-secret-not-found.yaml
+- status: Current
+  inputPath: ../argocd/testdata/wafcustomrule-paused.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/r2bucket-created-paused.yaml
+- status: Unknown
+  inputPath: ../argocd/testdata/r2bucket-new.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/zone-api-error.yaml
+- status: Failed
+  inputPath: ../argocd/testdata/tunnel-already-exists.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/iplist-replacing-items.yaml

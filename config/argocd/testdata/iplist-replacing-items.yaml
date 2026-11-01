@@ -1,0 +1,30 @@
+apiVersion: kflare.dev/v1alpha1
+kind: IPList
+metadata:
+  creationTimestamp: "2026-10-31T13:20:09Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 2
+  name: office
+  namespace: web
+  resourceVersion: "61208"
+  uid: 0c2e4a6c-8e5f-4c1d-9b3a-2e4a6c8e0a3b
+spec:
+  accountRef:
+    name: my-account
+  description: The office's addresses
+  items:
+  - ip: 192.0.2.0/24
+  - ip: 198.51.100.7
+  name: office
+status:
+  cloudflareMetadata:
+    listID: 2e4a6c8e0a2c4e6a8c0e2a4c6e8a0c2e
+    operationID: 4a6c8e0a2c4e6a8c0e2a4c6e8a0c2e4a
+  conditions:
+  - lastTransitionTime: "2026-10-31T13:24:51Z"
+    message: Cloudflare is replacing the list's items
+    observedGeneration: 2
+    reason: ReplacingItems
+    status: "False"
+    type: Ready

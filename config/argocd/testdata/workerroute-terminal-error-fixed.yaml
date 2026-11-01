@@ -1,0 +1,25 @@
+apiVersion: kflare.dev/v1alpha1
+kind: WorkerRoute
+metadata:
+  creationTimestamp: "2026-10-31T10:02:51Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 2
+  name: api
+  namespace: web
+  resourceVersion: "51840"
+  uid: 9a1d3c5e-7f2b-4d6a-8c0e-2b4d6f8a0c3e
+spec:
+  pattern: api.example.com/*
+  workerScriptRef:
+    name: api
+  zoneRef:
+    name: example
+status:
+  conditions:
+  - lastTransitionTime: "2026-10-31T10:02:53Z"
+    message: 'Terminal Cloudflare API error: Route pattern must include zone name: example.com (10022)'
+    observedGeneration: 1
+    reason: TerminalError
+    status: "False"
+    type: Ready

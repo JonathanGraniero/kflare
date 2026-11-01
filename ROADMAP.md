@@ -35,7 +35,10 @@ and `WorkerScript` keep hand-written fields on the older SDK. kflare keeps each 
 limit, and one account past its limit holds up no other (see
 [Cloudflare's API rate limit](docs/deploy.md#cloudflares-api-rate-limit)). A `CloudflareAccount` can limit which
 namespaces may use it (see
-[Limiting which namespaces may use an account](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
+[Limiting which namespaces may use an account](docs/deploy.md#limiting-which-namespaces-may-use-an-account)). Argo CD
+and Flux judge kflare resources by their `Ready` condition with the health checks the deploy guide gives them, so sync
+waves and `dependsOn` wait for them (see
+[Health checks in Argo CD and Flux](docs/deploy.md#health-checks-in-argo-cd-and-flux)).
 
 ## Next
 

@@ -1,0 +1,35 @@
+apiVersion: kflare.dev/v1alpha1
+kind: WAFCustomRule
+metadata:
+  annotations:
+    kflare.dev/paused: "true"
+  creationTimestamp: "2026-10-31T12:05:22Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 1
+  name: block-admin
+  namespace: web
+  resourceVersion: "58340"
+  uid: 5b7d9f1a-3c2e-4b6d-8f0a-6c8e0a2c4f7b
+spec:
+  action: block
+  description: Block the admin pages from outside the office
+  expression: http.request.uri.path wildcard "/admin*" and not ip.src in {192.0.2.0/24}
+  priority: 10
+  zoneRef:
+    name: example
+status:
+  cloudflareMetadata:
+    ref: kflare-wafcustomrule-web-block-admin
+    ruleID: 8c0e2a4c6e8a4c0e2a4c6e8a0c2e4a6c
+    rulesetID: 4a6c8e0a2c4e4a6c8e0a2c4e6a8c0e2a
+    version: "3"
+    zoneID: 5d2e7f9a1c3b4e6d8f0a2c4e6b8d0f1a
+  conditions:
+  - lastTransitionTime: "2026-10-31T12:31:48Z"
+    message: 'Reconciling is paused by the kflare.dev/paused annotation: kflare changes nothing in Cloudflare until the
+      annotation is removed'
+    observedGeneration: 1
+    reason: Paused
+    status: "True"
+    type: Ready

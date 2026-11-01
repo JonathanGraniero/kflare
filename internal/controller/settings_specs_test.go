@@ -36,6 +36,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
+	"github.com/JonathanGraniero/kflare/test/gitopshealth"
 )
 
 // The specs every settings kind runs. kflare-gen writes a table per settings
@@ -695,10 +696,13 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 				By(change.what)
 				name := fmt.Sprintf("change-%d", i)
 				createSynced(name, specs.samples[change.sample].spec)
+				expectGitOpsHealth(get(name), gitopshealth.ArgoCDHealthy, gitopshealth.FluxCurrent)
 				Expect(replaceSpec(name, change.spec)).To(Succeed())
+				expectGitOpsHealth(get(name), gitopshealth.ArgoCDProgressing, gitopshealth.FluxInProgress)
 				writes, before := len(fake.writes), fake.snapshot(zoneID)
 				_, err := reconcileOnce(name)
 				Expect(err).NotTo(HaveOccurred())
+				expectGitOpsHealth(get(name), gitopshealth.ArgoCDHealthy, gitopshealth.FluxCurrent)
 				fake.expectWritten(specs.kind.byID, writes, before, change.settings)
 				Expect(holds(change.settings)).To(BeTrue())
 				deleteAndReconcile(name)
@@ -836,6 +840,8 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			condition := ready("a-younger")
 			Expect(condition.Reason).To(Equal("AlreadyConfigured"))
 			Expect(condition.Message).To(ContainSubstring(ns + "/oldest"))
+			expectGitOpsHealth(get("a-younger"), gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
+			expectGitOpsHealth(get("oldest"), gitopshealth.ArgoCDHealthy, gitopshealth.FluxCurrent)
 			Expect(get("a-younger").GetSettingsStatus().CloudflareMetadata.ZoneID).To(BeEmpty())
 			Expect(fake.writes).To(HaveLen(writes))
 
@@ -1267,6 +1273,11 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 					Expect(err).To(HaveOccurred())
 				}
 				Expect(ready("errors").Reason).To(Equal(reason))
+				if c.terminal {
+					expectGitOpsHealth(get("errors"), gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
+				} else {
+					expectGitOpsHealth(get("errors"), gitopshealth.ArgoCDProgressing, gitopshealth.FluxInProgress)
+				}
 			}
 		})
 
