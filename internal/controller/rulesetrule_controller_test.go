@@ -78,7 +78,10 @@ var _ = Describe("Rule controller", func() {
 		zone := &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: zoneCRName, Namespace: namespace},
 			Spec: cloudflarev1alpha1.ZoneSpec{
-				Name: "waf-example.com", AccountRef: corev1.LocalObjectReference{Name: accountName},
+				AccountRef: corev1.LocalObjectReference{Name: accountName},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "waf-example.com",
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, zone)).To(Succeed())
@@ -477,7 +480,10 @@ var _ = Describe("Rule controller peers", func() {
 		zone := &cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: cloudflarev1alpha1.ZoneSpec{
-				Name: "peers-example.com", AccountRef: corev1.LocalObjectReference{Name: "peers-account"},
+				AccountRef: corev1.LocalObjectReference{Name: "peers-account"},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "peers-example.com",
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, zone)).To(Succeed())

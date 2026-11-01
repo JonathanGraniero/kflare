@@ -77,7 +77,9 @@ type controller struct {
 	listedID, listedKey sdkField
 	// conflictReason is the reason a resource reports when another one
 	// manages the object it would adopt.
-	conflictReason   string
+	conflictReason string
+	// hooks is what the kind's hand-written hooks add; nil without hooks.
+	hooks            *hooksConfig
 	dependents       []dependentConfig
 	deletionBlockers []deletionBlockerConfig
 	// sample holds the sample's value of each spec field it sets, by API
@@ -147,7 +149,7 @@ func (b *controllerBuilder) build() (*controller, error) {
 	k, svc := b.k, b.svc
 	c := &controller{kind: k, varName: lowerCamel(k.name), svc: svc, dependents: b.entry.Dependents,
 		deletionBlockers: b.entry.DeletionBlockers, byKey: b.entry.ID.Field == b.entry.Adopt.By,
-		zoned: b.entry.Scope == scopeZone}
+		zoned: b.entry.Scope == scopeZone, hooks: b.entry.Hooks}
 	c.isParent, _ = parentParam(b.entry.Scope)
 	if err := b.calls(c); err != nil {
 		return nil, err
@@ -397,7 +399,7 @@ func (b *controllerBuilder) fields(c *controller) error {
 			return f, nil
 		}
 		f.create = &c.create.paramFields[i]
-		if !isAddress(b.svc, *f.create) {
+		if !isAddress(b.svc, *f.create) && !b.entry.Fields[f.apiName].Immutable {
 			f.update = counterpart(update, *f.create)
 		}
 		var err error
@@ -441,7 +443,7 @@ func (b *controllerBuilder) fields(c *controller) error {
 	// optional.
 	for _, call := range c.calls() {
 		for _, f := range call.paramFields {
-			if !f.required || c.sets(call, f) {
+			if !f.required || c.sets(call, f) || f.inUnion && b.entry.Hooks.params() {
 				continue
 			}
 			// Only Update can require a body field the spec does not hold: New
@@ -553,6 +555,9 @@ func (b *controllerBuilder) sample(c *controller) error {
 		edit := specEdit{f: f.field, value: other, what: "changing " + f.jsonName}
 		if value == nil {
 			edit.what = "setting " + f.jsonName
+		}
+		if f.clearable && set {
+			c.changes = append(c.changes, specEdit{f: f.field, value: "", what: "clearing " + f.jsonName})
 		}
 		if f.immutable {
 			c.immutable = append(c.immutable, edit)

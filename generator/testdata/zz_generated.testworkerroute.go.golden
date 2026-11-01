@@ -45,6 +45,11 @@ type TestWorkerRouteReconciler struct {
 	// NewTestWorkerRouteAPI constructs a TestWorkerRouteAPI from a raw API
 	// token. Defaults to defaultTestWorkerRouteAPI; tests inject a fake.
 	NewTestWorkerRouteAPI func(token string) (TestWorkerRouteAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=testworkerroutes,verbs=get;list;watch;create;update;patch;delete
@@ -167,18 +172,24 @@ func (r *TestWorkerRouteReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // the Zone is ready, and WorkerScripts, so a TestWorkerRoute waiting for the
 // WorkerScript its workerScriptRef names is reconciled once it is ready.
 func (r *TestWorkerRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for TestWorkerRoutes, with the
-// injected factory or the production one.
+// injected factory or the production one, and the manager's API reader or the
+// client.
 func (r *TestWorkerRouteReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.TestWorkerRoute, TestWorkerRouteAPI, workers.RouteGetResponse, workers.RouteListResponse] {
 	newAPI := r.NewTestWorkerRouteAPI
 	if newAPI == nil {
 		newAPI = defaultTestWorkerRouteAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.TestWorkerRoute, TestWorkerRouteAPI, workers.RouteGetResponse, workers.RouteListResponse]{
-		Client: r.Client, kind: testWorkerRouteKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: testWorkerRouteKind, newAPI: newAPI,
 	}
 }
 

@@ -9,6 +9,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"go/token"
 	"go/types"
 	"slices"
 	"strings"
@@ -152,7 +153,6 @@ func TestServiceRefuses(t *testing.T) {
 		"kv.":                   "not <package>.<type>",
 		"kv.NoSuchService":      "has no type NoSuchService",
 		"nosuchpackage.Service": "loading " + sdkModule + "/nosuchpackage",
-		"dns.RecordService":     "kflare-gen cannot map unions yet",
 	} {
 		_, err := sdk{dir: "."}.service(name)
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -247,5 +247,69 @@ func TestParseRoutes(t *testing.T) {
 	got := parseRoutes(apiMD, sdkModule+"/things")
 	if len(got) != 1 || got["ThingService.New"] != (route{verb: "post", path: "/accounts/{account_id}/things"}) {
 		t.Errorf("parseRoutes = %v, want only the package's own call", got)
+	}
+}
+
+// A DNS record's calls take their body as a union: kflare-gen reads the variant
+// that holds every field, and the params' own fields.
+func TestUnionBody(t *testing.T) {
+	svc := loadTestService(t, "dns.RecordService")
+	create := svc.calls["New"]
+	if create.body == nil || create.body.goName != "Body" ||
+		!strings.HasSuffix(create.body.typ.String(), ".RecordNewParamsBody") {
+		t.Fatalf("New's body = %+v", create.body)
+	}
+	byName := map[string]sdkField{}
+	for _, f := range create.paramFields {
+		byName[f.apiName] = f
+	}
+	if f := byName["name"]; !f.inUnion || !f.required {
+		t.Errorf("name = %+v, want a required field of the union", f)
+	}
+	if f := byName["zone_id"]; f.inUnion || f.in != inPath {
+		t.Errorf("zone_id = %+v, want a path param of the call", f)
+	}
+	if f := byName["include_shadow_metadata"]; f.inUnion || f.in != inQuery {
+		t.Errorf("include_shadow_metadata = %+v, want a query param of the call", f)
+	}
+}
+
+// A union without a variant that holds every field cannot be sent.
+func TestUnionBodyRefuses(t *testing.T) {
+	svc := loadTestService(t, "dns.RecordService")
+	r := &sdkReader{pkg: &packages.Package{Types: svc.pkg}}
+	if _, err := r.bodyVariant(types.Typ[types.String]); err == nil || !strings.Contains(err.Error(), "no named union") {
+		t.Errorf("a type without a name: err = %v", err)
+	}
+	name := types.NewTypeName(token.NoPos, svc.pkg, "NoSuchBodyUnion", nil)
+	union := types.NewNamed(name, types.NewInterfaceType(nil, nil), nil)
+	if _, err := r.bodyVariant(union); err == nil || !strings.Contains(err.Error(), "has no variant NoSuchBody") {
+		t.Errorf("a union without a variant: err = %v", err)
+	}
+}
+
+// An entry picks the call that changes an object; by default it is Update.
+func TestChooseUpdate(t *testing.T) {
+	svc := loadTestService(t, "dns.RecordService")
+	if svc.updateMethod != "Update" {
+		t.Fatalf("the default is %s", svc.updateMethod)
+	}
+	entry := kindConfig{Kind: "DNSRecord", Service: "dns.RecordService", Update: "Edit"}
+	if err := entry.chooseUpdate(svc); err != nil {
+		t.Fatal(err)
+	}
+	if svc.updateMethod != "Edit" || svc.updateRoute.verb != "patch" {
+		t.Errorf("chose %s, %s", svc.updateMethod, svc.updateRoute)
+	}
+	if svc.update[0].goName == "" || !slices.ContainsFunc(svc.update, func(f sdkField) bool { return f.inUnion }) {
+		t.Errorf("Edit's fields = %+v", svc.update)
+	}
+	entry.Update = "Delete"
+	if err := entry.chooseUpdate(svc); err == nil || !strings.Contains(err.Error(), "not a call that changes") {
+		t.Errorf("Delete: err = %v", err)
+	}
+	entry.Update = "Edit"
+	if err := entry.chooseUpdate(loadTestService(t, "kv.NamespaceService")); err == nil {
+		t.Error("a service without Edit: err = nil")
 	}
 }

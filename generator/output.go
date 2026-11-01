@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -231,6 +232,13 @@ func replaceBlock(src []byte, lines []string) ([]byte, error) {
 		return nil, fmt.Errorf("no block: a line holding %s, then one holding %s", blockBegin, blockEnd)
 	}
 	indent := all[begin][:len(all[begin])-len(strings.TrimLeft(all[begin], " \t"))]
+	// A line the block holds must not stand above it too: kustomize refuses a
+	// resource listed twice.
+	for _, line := range all[:begin] {
+		if slices.Contains(lines, strings.TrimSpace(line)) {
+			return nil, fmt.Errorf("%q stands outside the block that holds it: remove it", strings.TrimSpace(line))
+		}
+	}
 	var b strings.Builder
 	for _, line := range all[:begin+1] {
 		b.WriteString(line)

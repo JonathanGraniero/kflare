@@ -186,48 +186,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareAccount")
 		os.Exit(1)
 	}
-	if err = (&controller.ZoneReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Zone")
-		os.Exit(1)
-	}
-	if err = (&controller.DNSRecordReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "DNSRecord")
-		os.Exit(1)
-	}
-	if err = (&controller.TunnelReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Tunnel")
-		os.Exit(1)
-	}
-	if err = (&controller.TunnelConfigurationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "TunnelConfiguration")
-		os.Exit(1)
-	}
-	if err = (&controller.WorkerScriptReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "WorkerScript")
-		os.Exit(1)
-	}
-	if err = (&controller.IPListReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "IPList")
-		os.Exit(1)
-	}
 	// The kinds kflare-gen generates, KVNamespace among them.
 	if err = controller.SetupGeneratedReconcilers(mgr); err != nil {
 		setupLog.Error(err, "unable to create controllers")

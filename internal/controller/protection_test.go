@@ -11,6 +11,8 @@ import (
 	"errors"
 	"time"
 
+	cf "github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -55,16 +57,18 @@ var _ = Describe("Deletion protection for parents", func() {
 	Describe("Zone", func() {
 		const zoneName = "prot-zone"
 		zoneKey := types.NamespacedName{Name: zoneName, Namespace: ns}
-		var fake *fakeZoneAPI
+		var store *fakeCRUDStore[cf.Zone]
 		var r *ZoneReconciler
 
 		BeforeEach(func() {
-			fake = &fakeZoneAPI{}
-			r = reconcilerWithFakeZoneAPI(fake)
+			store = newFakeCRUDStore[cf.Zone](0, "")
+			r = &ZoneReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+				NewZoneAPI: func(string) (ZoneAPI, error) { return newFakeZoneAPI(store, "prot-account"), nil }}
 			create(&cloudflarev1alpha1.Zone{
 				ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns},
 				Spec: cloudflarev1alpha1.ZoneSpec{
-					Name: "prot-example.com", AccountRef: corev1.LocalObjectReference{Name: "prot-account"},
+					AccountRef:     corev1.LocalObjectReference{Name: "prot-account"},
+					ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{Name: "prot-example.com"},
 				},
 			})
 			create(&cloudflarev1alpha1.DNSRecord{
@@ -125,7 +129,7 @@ var _ = Describe("Deletion protection for parents", func() {
 			Expect(cond.Message).To(ContainSubstring("WAFCustomRule default/prot-waf"))
 			Expect(cond.Message).To(ContainSubstring("RateLimitRule default/prot-ratelimit"))
 			Expect(cond.Message).To(ContainSubstring("ManagedRuleset default/prot-managed"))
-			Expect(fake.deleteCalled).To(BeFalse())
+			Expect(store.writes).To(BeZero())
 
 			forceDelete(ctx, &cloudflarev1alpha1.DNSRecord{}, types.NamespacedName{Name: "prot-record", Namespace: ns})
 			forceDelete(ctx, &cloudflarev1alpha1.WorkerRoute{}, types.NamespacedName{Name: "prot-route", Namespace: ns})
@@ -142,40 +146,44 @@ var _ = Describe("Deletion protection for parents", func() {
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
 				Spec:       cloudflarev1alpha1.DNSRecordSpec{ZoneRef: corev1.LocalObjectReference{Name: zoneName}},
 			}
-			Expect(r.deletingZoneOf(ctx, record)).To(ConsistOf(reconcile.Request{NamespacedName: zoneKey}))
+			Expect(r.crud().deletingResourcesOf(ctx, record)).To(ConsistOf(reconcile.Request{NamespacedName: zoneKey}))
 
 			other := record.DeepCopy()
 			other.Namespace = "kube-public"
-			Expect(r.deletingZoneOf(ctx, other)).To(BeEmpty(), "the Zone is looked up in the dependent's namespace")
-			Expect(r.deletingZoneOf(ctx, &corev1.Secret{})).To(BeEmpty())
+			Expect(r.crud().deletingResourcesOf(ctx, other)).To(BeEmpty(), "the Zone is looked up in the dependent's namespace")
+			Expect(r.crud().deletingResourcesOf(ctx, &corev1.Secret{})).To(BeEmpty())
 		})
 	})
 
 	Describe("Tunnel", func() {
 		const tunnelName = "prot-tunnel"
 		tunnelKey := types.NamespacedName{Name: tunnelName, Namespace: ns}
-		var fake *fakeTunnelAPI
+		var store *fakeCRUDStore[shared.CloudflareTunnel]
+		var hooks fakeTunnelHooksAPI
 		var r *TunnelReconciler
 
 		BeforeEach(func() {
-			fake = &fakeTunnelAPI{}
+			store = newFakeCRUDStore[shared.CloudflareTunnel](1000, "")
+			hooks = newFakeTunnelHooksAPI(store)
 			r = &TunnelReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
-				NewTunnelAPI: func(string) (TunnelAPI, error) { return fake, nil },
+				NewTunnelAPI: func(string) (TunnelAPI, error) { return fakeTunnelAPI{store, hooks}, nil },
 			}
 			create(&cloudflarev1alpha1.Tunnel{
 				ObjectMeta: metav1.ObjectMeta{Name: tunnelName, Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelSpec{
-					Name:                 "prot-cf-tunnel",
-					AccountRef:           corev1.LocalObjectReference{Name: "prot-account"},
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "prot-tunnel-token"},
+					Name:             "prot-cf-tunnel",
+					AccountRef:       corev1.LocalObjectReference{Name: "prot-account"},
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "prot-tunnel-token"}},
 				},
 			})
 			create(&cloudflarev1alpha1.TunnelConfiguration{
 				ObjectMeta: metav1.ObjectMeta{Name: "prot-config", Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
-					TunnelRef: corev1.LocalObjectReference{Name: tunnelName},
-					Ingress:   []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "a.prot-example.com", Service: "http://a:80"}},
+					TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+						TunnelRef: corev1.LocalObjectReference{Name: tunnelName},
+						Ingress:   []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "a.prot-example.com", Service: "http://a:80"}},
+					},
 				},
 			})
 			Expect(k8sClient.Delete(ctx, &cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: tunnelName, Namespace: ns}})).To(Succeed())
@@ -188,7 +196,8 @@ var _ = Describe("Deletion protection for parents", func() {
 			cond := readyReason(tunnelKey, tunnel, func() []metav1.Condition { return tunnel.Status.Conditions })
 			Expect(cond.Reason).To(Equal("InUse"))
 			Expect(cond.Message).To(ContainSubstring("TunnelConfiguration default/prot-config"))
-			Expect(fake.calls).To(BeEmpty())
+			Expect(store.parentIDs).To(BeEmpty())
+			Expect(hooks.cleanups).To(BeEmpty())
 
 			forceDelete(ctx, &cloudflarev1alpha1.TunnelConfiguration{}, types.NamespacedName{Name: "prot-config", Namespace: ns})
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: tunnelKey})
@@ -199,18 +208,24 @@ var _ = Describe("Deletion protection for parents", func() {
 		It("is re-triggered by a configuration's deletion while it is being deleted", func() {
 			tc := &cloudflarev1alpha1.TunnelConfiguration{
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
-				Spec:       cloudflarev1alpha1.TunnelConfigurationSpec{TunnelRef: corev1.LocalObjectReference{Name: tunnelName}},
+				Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
+					TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+						TunnelRef: corev1.LocalObjectReference{Name: tunnelName},
+					},
+				},
 			}
-			Expect(r.deletingTunnelOf(ctx, tc)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
+			Expect(r.crud().deletingResourcesOf(ctx, tc)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
 		})
 
 		It("is re-triggered by the deletion of a DNSRecord that points at it while it is being deleted", func() {
 			pointing := &cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
-				Spec:       cloudflarev1alpha1.DNSRecordSpec{TunnelRef: &corev1.LocalObjectReference{Name: tunnelName}},
+				Spec: cloudflarev1alpha1.DNSRecordSpec{
+					DNSRecordSpecExtras: cloudflarev1alpha1.DNSRecordSpecExtras{TunnelRef: &corev1.LocalObjectReference{Name: tunnelName}},
+				},
 			}
-			Expect(r.deletingTunnelOf(ctx, pointing)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
-			Expect(r.deletingTunnelOf(ctx, &cloudflarev1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{Namespace: ns}})).
+			Expect(r.crud().deletingResourcesOf(ctx, pointing)).To(ConsistOf(reconcile.Request{NamespacedName: tunnelKey}))
+			Expect(r.crud().deletingResourcesOf(ctx, &cloudflarev1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{Namespace: ns}})).
 				To(BeEmpty(), "a record without a tunnelRef")
 		})
 	})
@@ -224,16 +239,17 @@ var _ = Describe("Deletion protection for parents", func() {
 			create(&cloudflarev1alpha1.Tunnel{
 				ObjectMeta: metav1.ObjectMeta{Name: tunnelName, Namespace: ns},
 				Spec: cloudflarev1alpha1.TunnelSpec{
-					Name:                 "prot-dns-cf-tunnel",
-					AccountRef:           corev1.LocalObjectReference{Name: "prot-account"},
-					CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "prot-dns-tunnel-token"},
+					Name:             "prot-dns-cf-tunnel",
+					AccountRef:       corev1.LocalObjectReference{Name: "prot-account"},
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "prot-dns-tunnel-token"}},
 				},
 			})
 			create(&cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Name: recordKey.Name, Namespace: ns},
 				Spec: cloudflarev1alpha1.DNSRecordSpec{
 					ZoneRef: corev1.LocalObjectReference{Name: "prot-zone"}, Name: "app.prot-example.com",
-					Type: "CNAME", TunnelRef: &corev1.LocalObjectReference{Name: tunnelName},
+					Type:                "CNAME",
+					DNSRecordSpecExtras: cloudflarev1alpha1.DNSRecordSpecExtras{TunnelRef: &corev1.LocalObjectReference{Name: tunnelName}},
 				},
 			})
 			create(&cloudflarev1alpha1.DNSRecord{
@@ -291,7 +307,10 @@ var _ = Describe("Deletion protection for parents", func() {
 		create(&cloudflarev1alpha1.Zone{
 			ObjectMeta: metav1.ObjectMeta{Name: "prot-live-zone", Namespace: ns},
 			Spec: cloudflarev1alpha1.ZoneSpec{
-				Name: "prot-live.com", AccountRef: corev1.LocalObjectReference{Name: "prot-account"},
+				AccountRef: corev1.LocalObjectReference{Name: "prot-account"},
+				ZoneSpecExtras: cloudflarev1alpha1.ZoneSpecExtras{
+					Name: "prot-live.com",
+				},
 			},
 		})
 		route := &cloudflarev1alpha1.WorkerRoute{
@@ -299,7 +318,7 @@ var _ = Describe("Deletion protection for parents", func() {
 			Spec:       cloudflarev1alpha1.WorkerRouteSpec{ZoneRef: corev1.LocalObjectReference{Name: "prot-live-zone"}},
 		}
 		r := &ZoneReconciler{Client: k8sClient}
-		Expect(r.deletingZoneOf(ctx, route)).To(BeEmpty())
+		Expect(r.crud().deletingResourcesOf(ctx, route)).To(BeEmpty())
 	})
 
 	It("returns the list error from dependentsOf", func() {

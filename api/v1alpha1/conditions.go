@@ -17,39 +17,3 @@ func (in *CloudflareAccount) GetConditions() []metav1.Condition { return in.Stat
 
 // SetConditions replaces the account's status conditions.
 func (in *CloudflareAccount) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
-// GetConditions returns the zone's status conditions.
-func (in *Zone) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the zone's status conditions.
-func (in *Zone) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
-// GetConditions returns the DNS record's status conditions.
-func (in *DNSRecord) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the DNS record's status conditions.
-func (in *DNSRecord) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
-// GetConditions returns the tunnel's status conditions.
-func (in *Tunnel) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the tunnel's status conditions.
-func (in *Tunnel) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
-// GetConditions returns the tunnel configuration's status conditions.
-func (in *TunnelConfiguration) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the tunnel configuration's status conditions.
-func (in *TunnelConfiguration) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
-// GetConditions returns the Worker script's status conditions.
-func (in *WorkerScript) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the Worker script's status conditions.
-func (in *WorkerScript) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }
-
-// GetConditions returns the IP list's status conditions.
-func (in *IPList) GetConditions() []metav1.Condition { return in.Status.Conditions }
-
-// SetConditions replaces the IP list's status conditions.
-func (in *IPList) SetConditions(c []metav1.Condition) { in.Status.Conditions = c }

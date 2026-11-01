@@ -58,3 +58,16 @@ func TestLines(t *testing.T) {
 		t.Errorf("lines of blank text = %q, want nil", got)
 	}
 }
+
+// A line the block will hold cannot stand above it too: kustomize refuses a
+// resource listed twice, as a kind moved onto kflare-gen could leave one.
+func TestReplaceBlockRefusesALineListedTwice(t *testing.T) {
+	src := []byte("resources:\n- a.yaml\n# +kflare-gen:begin\n# +kflare-gen:end\n")
+	if _, err := replaceBlock(src, []string{"- b.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := replaceBlock(src, []string{"- a.yaml"})
+	if err == nil || !strings.Contains(err.Error(), "stands outside the block") {
+		t.Errorf("err = %v, want one naming the line", err)
+	}
+}

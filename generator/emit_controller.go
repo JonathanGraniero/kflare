@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/format"
 	"go/types"
@@ -197,15 +198,15 @@ func emitController(c *controller, header string) ([]byte, error) {
 	for _, call := range c.calls() {
 		f.printf("\t%s\n", interfaceMethod(f, call))
 	}
-	f.printf("}\n\nvar _ %s = (*%s)(nil)\n\n", api, service)
+	production := service
+	if c.hooksAPI() {
+		comment(&f.Builder, "\t", []string{"The calls the kind's hooks make."})
+		f.printf("\t%sHooksAPI\n", name)
+		production = v + "Service"
+	}
+	f.printf("}\n\nvar _ %s = (*%s)(nil)\n\n", api, production)
 
-	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles %s object, with the shared CRUD reconciler "+
-		"(crudresource_controller.go).", name, article(name))))
-	f.printf("type %sReconciler struct {\n\t%s.Client\n\tScheme *%s.Scheme\n\n", name, client,
-		f.use("k8s.io/apimachinery/pkg/runtime", "runtime"))
-	comment(&f.Builder, "\t", wrapIndented(fmt.Sprintf("New%s constructs %s from a raw API token. Defaults to "+
-		"default%s; tests inject a fake.", api, article(api), api)))
-	f.printf("\tNew%s func(token string) (%s, error)\n}\n\n", api, api)
+	emitCRUDReconcilerType(f, name, api)
 
 	for _, marker := range rbacMarkers(c) {
 		f.printf("// %s\n", marker)
@@ -299,6 +300,9 @@ func emitController(c *controller, header string) ([]byte, error) {
 	if len(c.dependents) > 0 {
 		f.printf("\ndependents: %sDependents,\n", v)
 	}
+	if c.hooks != nil {
+		f.printf("\nhooks: %sHooks,\n", v)
+	}
 	f.printf("}\n\n")
 
 	if len(c.dependents) > 0 {
@@ -317,6 +321,59 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("func (r *%sReconciler) Reconcile(ctx %s.Context, req %s.Request) (%s.Result, error) {\n", name, ctx, ctrl,
 		ctrl)
 	f.printf("return r.crud().reconcile(ctx, req)\n}\n\n")
+	crud := fmt.Sprintf("crudResourceReconciler[%s, %s, %s, %s]", obj, api, object, listed)
+	emitCRUDReconcilerSetup(f, name, api, v, crud, setupDoc(c))
+	f.printf("\n")
+
+	comment(&f.Builder, "", wrap(fmt.Sprintf("default%s is the production factory: cloudflare-go v7's %s, built "+
+		"from cfpkg.New's options for the token.", api, service)))
+	f.printf("func default%s(token string) (%s, error) {\n", api, api)
+	f.printf("client, err := %s.New(token)\nif err != nil {\nreturn nil, err\n}\n", f.use(cfPackage, "cfpkg"))
+	build := fmt.Sprintf("%s.New%s(client.V7Options()...)", svcPkg, c.svc.typeName)
+	if c.hooksAPI() {
+		build = fmt.Sprintf("&%sService{%s: %s}", v, c.svc.typeName, build)
+	}
+	f.printf("return %s, nil\n}\n", build)
+	return f.source(header)
+}
+
+// emitCRUDReconcilerType writes the exported reconciler of a kind the shared
+// CRUD reconciler runs, generated or hooked, whose narrow interface is api:
+// its client and scheme, the interface's factory, and the reader that reads
+// past the manager's cache.
+func emitCRUDReconcilerType(f *goFile, name, api string) {
+	comment(&f.Builder, "", wrap(fmt.Sprintf("%sReconciler reconciles %s object, with the shared CRUD reconciler "+
+		"(crudresource_controller.go).", name, article(name))))
+	client := f.use(clientPackage, "client")
+	f.printf("type %sReconciler struct {\n\t%s.Client\n\tScheme *%s.Scheme\n\n", name, client,
+		f.use("k8s.io/apimachinery/pkg/runtime", "runtime"))
+	comment(&f.Builder, "\t", wrapIndented(fmt.Sprintf("New%s constructs %s from a raw API token. Defaults to "+
+		"default%s; tests inject a fake.", api, article(api), api)))
+	f.printf("\tNew%s func(token string) (%s, error)\n\n", api, api)
+	comment(&f.Builder, "\t", wrapIndented("apiReader reads from the API server, past the manager's cache: "+
+		"SetupWithManager sets the manager's. Without one, Client reads, as in tests that reconcile without a "+
+		"manager."))
+	f.printf("\tapiReader %s.Reader\n}\n\n", client)
+}
+
+// emitCRUDReconcilerSetup writes the SetupWithManager (documented by doc) and
+// crud methods of the reconciler emitCRUDReconcilerType writes, for the kind
+// whose descriptor is <v>Kind and whose shared reconciler's type is crud.
+func emitCRUDReconcilerSetup(f *goFile, name, api, v, crud, doc string) {
+	comment(&f.Builder, "", wrap(doc))
+	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nr.apiReader = mgr.GetAPIReader()\n"+
+		"return r.crud().setup(mgr, r)\n}\n\n", name, f.use("sigs.k8s.io/controller-runtime", "ctrl"))
+	comment(&f.Builder, "", wrap(fmt.Sprintf("crud returns the shared CRUD reconciler for %s, with the injected "+
+		"factory or the production one, and the manager's API reader or the client.", pluralOf(name))))
+	f.printf("func (r *%sReconciler) crud() *%s {\n", name, crud)
+	f.printf("newAPI := r.New%s\nif newAPI == nil {\nnewAPI = default%s\n}\n", api, api)
+	f.printf("apiReader := r.apiReader\nif apiReader == nil {\napiReader = r.Client\n}\n")
+	f.printf("return &%s{\nClient: r.Client, apiReader: apiReader, kind: %sKind, newAPI: newAPI,\n}\n}\n", crud, v)
+}
+
+// setupDoc documents a kind's SetupWithManager: what it watches, and why.
+func setupDoc(c *controller) string {
+	name := c.name
 	clauses := []string{fmt.Sprintf("CloudflareAccounts, so %s waiting for its account is reconciled once the "+
 		"account is ready", article(name))}
 	if c.zoned {
@@ -327,38 +384,25 @@ func emitController(c *controller, header string) ([]byte, error) {
 			"ready", pluralOf(af.ref.Kind), article(name), af.ref.Kind, af.jsonName))
 	}
 	if len(c.dependents) > 0 {
-		var kinds []string
+		kinds := make([]string, 0, len(c.dependents))
 		for _, d := range c.dependents {
 			kinds = append(kinds, pluralOf(d.Kind))
 		}
 		clauses = append(clauses, fmt.Sprintf("deleted %s, so %s waiting for them is released", prose(kinds),
 			article(name)))
 	}
-	setupDoc := fmt.Sprintf("SetupWithManager registers %sReconciler with the manager. It watches %s", name,
+	doc := fmt.Sprintf("SetupWithManager registers %sReconciler with the manager. It watches %s", name,
 		strings.Join(clauses[:len(clauses)-1], ", "))
 	if len(clauses) > 1 {
-		setupDoc += ", and " + clauses[len(clauses)-1]
+		doc += ", and " + clauses[len(clauses)-1]
 	} else {
-		setupDoc += clauses[0]
+		doc += clauses[0]
 	}
-	comment(&f.Builder, "", wrap(setupDoc+"."))
-	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nreturn r.crud().setup(mgr, r)\n}\n\n",
-		name, ctrl)
-
-	crud := fmt.Sprintf("crudResourceReconciler[%s, %s, %s, %s]", obj, api, object, listed)
-	comment(&f.Builder, "", wrap(fmt.Sprintf("crud returns the shared CRUD reconciler for %s, with the injected "+
-		"factory or the production one.", pluralOf(name))))
-	f.printf("func (r *%sReconciler) crud() *%s {\n", name, crud)
-	f.printf("newAPI := r.New%s\nif newAPI == nil {\nnewAPI = default%s\n}\n", api, api)
-	f.printf("return &%s{\nClient: r.Client, kind: %sKind, newAPI: newAPI,\n}\n}\n\n", crud, v)
-
-	comment(&f.Builder, "", wrap(fmt.Sprintf("default%s is the production factory: cloudflare-go v7's %s, built "+
-		"from cfpkg.New's options for the token.", api, service)))
-	f.printf("func default%s(token string) (%s, error) {\n", api, api)
-	f.printf("client, err := %s.New(token)\nif err != nil {\nreturn nil, err\n}\n", f.use(cfPackage, "cfpkg"))
-	f.printf("return %s.New%s(client.V7Options()...), nil\n}\n", svcPkg, c.svc.typeName)
-	return f.source(header)
+	return doc + "."
 }
+
+// hooksAPI reports whether the kind's hooks make calls of their own.
+func (c *controller) hooksAPI() bool { return c.hooks != nil && c.hooks.API }
 
 // emitCalls writes the descriptor's calls to Cloudflare: each builds its
 // params from the parent's ID, the resource, the address and the values its
@@ -401,12 +445,12 @@ func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 		}
 		f.printf("},\n")
 	}
-	createParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.create })
+	createParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.create }, false)
 	if err != nil {
 		return fmt.Errorf("%s: New: %w", name, err)
 	}
 	f.printf("create: func(ctx %s.Context, api %s, parentID string,\nobj %s, %s map[string]string) (*%s, error) {\n",
-		ctx, api, obj, refsParam(readsRefs(createParams)), object)
+		ctx, api, obj, refsParam(readsRefs(createParams) || c.hooks.params()), object)
 	ret, err := resultReturn(f, c, "api.New(ctx, params)", c.created)
 	if err != nil {
 		return fmt.Errorf("%s: New: %w", name, err)
@@ -416,7 +460,7 @@ func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 	}
 	f.printf("},\n")
 	if c.update != nil {
-		updateParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.update })
+		updateParams, err := paramStatements(f, c, func(af apiField) *sdkField { return af.update }, true)
 		if err != nil {
 			return fmt.Errorf("%s: %s: %w", name, c.update.name, err)
 		}
@@ -425,7 +469,7 @@ func emitCalls(f *goFile, c *controller, api, obj, object string) error {
 			return err
 		}
 		f.printf("update: func(ctx %s.Context, api %s, obj %s,\nparentID, id string, %s map[string]string) (*%s, "+
-			"error) {\n", ctx, api, obj, refsParam(readsRefs(updateParams)), object)
+			"error) {\n", ctx, api, obj, refsParam(readsRefs(updateParams) || c.hooks.params()), object)
 		ret, err := resultReturn(f, c, fmt.Sprintf("api.%s(ctx, id, params)", c.update.name), c.updated)
 		if err != nil {
 			return fmt.Errorf("%s: %s: %w", name, c.update.name, err)
@@ -525,6 +569,12 @@ func interfaceMethod(f *goFile, call *sdkCall) string {
 	return fmt.Sprintf("%s(%s) %s", call.name, joined, results)
 }
 
+// bodyHook names the hand-written function that finishes call's union body:
+// dnsRecordNewBody for a DNS record's New.
+func bodyHook(c *controller, call *sdkCall) string {
+	return c.varName + call.name + "Body"
+}
+
 // callBody writes the body of a descriptor's call: its params, with the
 // parent's ID and the statements given, then ret, which returns.
 func callBody(f *goFile, c *controller, call *sdkCall, statements []string, ret string) error {
@@ -536,8 +586,17 @@ func callBody(f *goFile, c *controller, call *sdkCall, statements []string, ret 
 	f.printf("var params %s\n", f.typ(call.params))
 	f.printf("params.%s.Value, params.%s.Present = %s, true\n", call.paramFields[i].goName,
 		call.paramFields[i].goName, parent)
+	if call.body != nil {
+		f.printf("var body %s\n", f.typ(call.body.typ))
+	}
 	for _, s := range statements {
 		f.printf("%s\n", s)
+	}
+	if call.body != nil {
+		if c.hooks.params() {
+			f.printf("%s(obj, refs, &body)\n", bodyHook(c, call))
+		}
+		f.printf("params.%s = body\n", call.body.goName)
 	}
 	f.printf("%s\n", ret)
 	return nil
@@ -545,14 +604,14 @@ func callBody(f *goFile, c *controller, call *sdkCall, statements []string, ret 
 
 // paramStatements returns the statements that set a call's params from the
 // spec and the fixed values; param picks each field's param in the call.
-func paramStatements(f *goFile, c *controller, param func(apiField) *sdkField) ([]string, error) {
+func paramStatements(f *goFile, c *controller, param func(apiField) *sdkField, update bool) ([]string, error) {
 	var out []string
 	for _, af := range append(slices.Clone(c.fields), c.fixedFields...) {
 		p := param(af)
 		if p == nil {
 			continue
 		}
-		s, err := assignParam(f, af, p)
+		s, err := assignParam(f, af, p, update && af.clearable)
 		if err != nil {
 			return nil, err
 		}
@@ -570,7 +629,7 @@ func addressStatements(f *goFile, c *controller, call *sdkCall) ([]string, error
 		if p == nil {
 			continue
 		}
-		s, err := assignParam(f, af, p)
+		s, err := assignParam(f, af, p, false)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %s: %w", c.name, call.name, err)
 		}
@@ -580,15 +639,15 @@ func addressStatements(f *goFile, c *controller, call *sdkCall) ([]string, error
 }
 
 // assignParam returns the statement that sets the param p from the spec
-// field or fixed value af: an optional field's only when the spec sets it. A
-// reference's value is the one it gives, in refs.
-func assignParam(f *goFile, af apiField, p *sdkField) (string, error) {
+// field or fixed value af: an optional field's only when the spec sets it,
+// unless always is set. A reference's value is the one it gives, in refs.
+func assignParam(f *goFile, af apiField, p *sdkField, always bool) (string, error) {
 	set := func(value string, from types.Type) (string, error) {
 		converted, err := f.convert(value, from, p.typ)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", af.apiName, err)
 		}
-		return fmt.Sprintf("params.%s.Value, params.%s.Present = %s, true", p.goName, p.goName, converted), nil
+		return fmt.Sprintf("%s.Value, %s.Present = %s, true", paramExpr(p), paramExpr(p), converted), nil
 	}
 	if af.goName == "" {
 		return set(strconv.Quote(af.fixed), types.Typ[types.String])
@@ -598,7 +657,7 @@ func assignParam(f *goFile, af apiField, p *sdkField) (string, error) {
 		spec = refValue(af)
 	}
 	switch {
-	case !af.optional:
+	case !af.optional || always:
 		return set(spec, specType(af.field))
 	case strings.HasPrefix(af.goType, "*") && af.ref == nil:
 		s, err := set("*"+spec, specType(af.field))
@@ -607,6 +666,15 @@ func assignParam(f *goFile, af apiField, p *sdkField) (string, error) {
 		s, err := set(spec, specType(af.field))
 		return fmt.Sprintf("if %s != \"\" {\n%s\n}", spec, s), err
 	}
+}
+
+// paramExpr is the expression of the param p in a call's statements: a field of
+// the params, or of the union body's variant, which they fill in first.
+func paramExpr(p *sdkField) string {
+	if p.inUnion {
+		return "body." + p.goName
+	}
+	return "params." + p.goName
 }
 
 // refValue is the expression of the value the reference af gives, in refs.
@@ -626,7 +694,7 @@ func objParam(statements []string) string {
 // matchesExpr returns the expression that reports whether the object current
 // is what obj's spec asks for: every field Update can change matches, or with
 // all set, every field the object reports. A field the spec leaves unset is
-// not compared: Cloudflare keeps its value. A reference is always compared
+// not compared, Cloudflare keeping its value, unless it is clearable. A reference is always compared
 // with the value it gives, in refs: an unset one gives none. "" when no field
 // is compared. It also reports whether the expression reads refs.
 func matchesExpr(f *goFile, c *controller, all bool) (string, bool, error) {
@@ -645,7 +713,7 @@ func matchesExpr(f *goFile, c *controller, all bool) (string, bool, error) {
 		case af.ref != nil:
 			terms = append(terms, fmt.Sprintf("%s == %s", current, refValue(af)))
 			usesRefs = true
-		case !af.optional:
+		case !af.optional || af.clearable:
 			terms = append(terms, fmt.Sprintf("%s == %s", current, spec))
 		case strings.HasPrefix(af.goType, "*"):
 			terms = append(terms, fmt.Sprintf("(%s == nil || %s == *%s)", spec, current, spec))
@@ -761,14 +829,29 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	f.printf("newReconciler: func(c %s.Client,\nnewAPI func(string) (%s, error)) crudKindReconciler[%s, %s, %s, %s] {\n",
 		client, api, obj, api, object, listed)
 	f.printf("return &%sReconciler{Client: c, Scheme: c.Scheme(), New%s: newAPI}\n},\n", name, api)
-	f.printf("newFake: func(store *fakeCRUDStore[%s]) %s { return %s{store} },\n", object, api, fake)
-	f.printf("defaultAPI: default%s,\nservice: &%s{},\n", api, f.typ(c.svc.pkg.Scope().Lookup(c.svc.typeName).Type()))
-	parentRef := "AccountRef"
+	if c.hooksAPI() {
+		f.printf("newFake: func(store *fakeCRUDStore[%s]) %s {\nreturn %s{store, newFake%sHooksAPI(store)}\n},\n", object,
+			api, fake, name)
+		f.printf("defaultAPI: default%s,\nservice: &%sService{},\n", api, v)
+	} else {
+		f.printf("newFake: func(store *fakeCRUDStore[%s]) %s { return %s{store} },\n", object, api, fake)
+		f.printf("defaultAPI: default%s,\nservice: &%s{},\n", api,
+			f.typ(c.svc.pkg.Scope().Lookup(c.svc.typeName).Type()))
+	}
+	parentRef := accountRefName
 	if c.zoned {
 		parentRef = "ZoneRef"
 	}
 	f.printf("newResource: func(key %s.NamespacedName, parent string) %s {\n", k8stypes, obj)
-	f.printf("return &%s.%s{\nObjectMeta: %s.ObjectMeta{Name: key.Name, Namespace: key.Namespace},\n", f.api(), name,
+	extras, err := tableExtras(c)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	build := "return"
+	if extras != "" {
+		build = "resource :="
+	}
+	f.printf("%s &%s.%s{\nObjectMeta: %s.ObjectMeta{Name: key.Name, Namespace: key.Namespace},\n", build, f.api(), name,
 		f.use("k8s.io/apimachinery/pkg/apis/meta/v1", "metav1"))
 	f.printf("Spec: %s.%sSpec{\n%s: %s.LocalObjectReference{Name: parent},\n", f.api(), name, parentRef,
 		f.use("k8s.io/api/core/v1", "corev1"))
@@ -777,7 +860,14 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 			f.printf("%s: %s,\n", af.goName, goValue(f, af.field, value))
 		}
 	}
-	f.printf("},\n}\n},\n")
+	f.printf("},\n}\n")
+	if extras != "" {
+		// The extras are hand-written types: their values go in as the sample's
+		// JSON, which a resource decodes as the API server would.
+		f.printf("if err := %s.Unmarshal([]byte(%q), &resource.Spec); err != nil {\npanic(err)\n}\nreturn resource\n",
+			f.use("encoding/json", "json"), extras)
+	}
+	f.printf("},\n")
 	if err := emitSeed(f, c, object); err != nil {
 		return nil, err
 	}
@@ -807,7 +897,7 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	}
 	edits("changes", c.changes)
 	f.printf("immutable: []crudSpecEdit[%s]{\n", obj)
-	parentField, parentName := "accountRef", "other-account"
+	parentField, parentName := accountRefField, "other-account"
 	if c.zoned {
 		parentField, parentName = zoneRefField, "other-zone"
 	}
@@ -838,6 +928,26 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	}
 	f.printf("})\n")
 	return f.source(header)
+}
+
+// tableExtras returns the spec extras of the resources in the kind's table as
+// JSON: "" when they have none.
+func tableExtras(c *controller) (string, error) {
+	if c.hooks == nil {
+		return "", nil
+	}
+	extras := c.hooks.TableExtras
+	if extras == nil {
+		extras = c.hooks.SampleExtras
+	}
+	if len(extras) == 0 {
+		return "", nil
+	}
+	encoded, err := json.Marshal(extras)
+	if err != nil {
+		return "", fmt.Errorf("the table's extras: %w", err)
+	}
+	return string(encoded), nil
 }
 
 // emitSeed writes the table's seed: an object with an ID and a key, as
@@ -896,10 +1006,15 @@ func emitSeed(f *goFile, c *controller, object string) error {
 		}
 		seedFields = append(seedFields, fmt.Sprintf("%s: %s", af.object.goName, converted))
 	}
-	if len(seedFields) <= 2 {
+	switch {
+	case c.hooks.params():
+		// What Cloudflare holds beyond the entry's fields, which the hooks send.
+		f.printf("seed: func(%s, key string, %s map[string]string) %s {\nobject := %s\nfake%sSeed(&object)\n"+
+			"return object\n},\n", idParam, refs, object, compositeLiteral(object, seedFields), name)
+	case len(seedFields) <= 2:
 		f.printf("seed: func(%s, key string, %s map[string]string) %s { return %s },\n", idParam, refs, object,
 			compositeLiteral(object, seedFields))
-	} else {
+	default:
 		f.printf("seed: func(%s, key string, %s map[string]string) %s {\nreturn %s\n},\n", idParam, refs, object,
 			compositeLiteral(object, seedFields))
 	}
@@ -940,7 +1055,7 @@ func emitTableChecks(f *goFile, c *controller, obj, object string) error {
 		if af.create == nil {
 			continue
 		}
-		p := "params." + af.create.goName
+		p := paramExpr(af.create)
 		if af.goName == "" {
 			value, err := f.convert(p+".Value", af.create.typ, types.Typ[types.String])
 			if err != nil {
@@ -969,8 +1084,12 @@ func emitTableChecks(f *goFile, c *controller, obj, object string) error {
 			sent = append(sent, fmt.Sprintf("(%s == \"\" || %s.Present && %s == %s)", spec, p, value, spec))
 		}
 	}
-	f.printf("sent: func(obj %s, %s map[string]string, sent any) bool {\nparams := sent.(%s)\nreturn %s\n},\n", obj,
-		refsParam(usesRefs), f.typ(c.create.params), strings.Join(sent, " &&\n"))
+	body := ""
+	if b := c.create.body; b != nil {
+		body = fmt.Sprintf("body := params.%s.(%s)\n", b.goName, f.typ(b.typ))
+	}
+	f.printf("sent: func(obj %s, %s map[string]string, sent any) bool {\nparams := sent.(%s)\n%sreturn %s\n},\n", obj,
+		refsParam(usesRefs), f.typ(c.create.params), body, strings.Join(sent, " &&\n"))
 
 	observed := make([]string, 0, len(c.status))
 	for _, st := range c.status {
@@ -1034,7 +1153,11 @@ func emitFake(f *goFile, c *controller) error {
 		doc += fmt.Sprintf(", apart by their %s", prose(names))
 	}
 	comment(&f.Builder, "", wrap(doc+"."))
-	f.printf("type %s struct {\n*fakeCRUDStore[%s]\n}\n\nvar _ %s = %s{}\n\n", fake, object, api, fake)
+	hooksFake := ""
+	if c.hooksAPI() {
+		hooksFake = fmt.Sprintf("fake%sHooksAPI\n", name)
+	}
+	f.printf("type %s struct {\n*fakeCRUDStore[%s]\n%s}\n\nvar _ %s = %s{}\n\n", fake, object, hooksFake, api, fake)
 	// scope writes the address a call's params give, as the fake keeps
 	// objects apart by it.
 	scope := func(call *sdkCall) (string, error) {
@@ -1086,14 +1209,19 @@ func emitFake(f *goFile, c *controller) error {
 		return fmt.Sprintf("stored, err := %s\nif err != nil {\nreturn nil, err\n}\nreturn &%s, nil", call, converted),
 			f.typ(result), nil
 	}
-	ret, result, err := returned(fmt.Sprintf("f.create(%s, %s,\n%s, func(id string) %s {\nreturn %s\n})",
-		parentID(c.create), scopes[c.create], newID, object, compositeLiteral(object, fields)), c.created)
+	build := "return " + compositeLiteral(object, fields)
+	if c.hooks.params() {
+		build = fmt.Sprintf("object := %s\nfake%sNewBody(&object, body)\nreturn object", compositeLiteral(object, fields),
+			name)
+	}
+	ret, result, err := returned(fmt.Sprintf("f.create(%s, %s,\n%s, func(id string) %s {\n%s\n})",
+		parentID(c.create), scopes[c.create], newID, object, build), c.created)
 	if err != nil {
 		return fmt.Errorf("%s: the fake's New: %w", name, err)
 	}
 	f.printf("func (f %s) New(_ %s.Context, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx, params(c.create), opts,
 		result)
-	f.printf("f.sent = append(f.sent, params)\n%s\n}\n\n", ret)
+	f.printf("f.sent = append(f.sent, params)\n%s%s\n}\n\n", fakeBody(f, c.create), ret)
 
 	f.printf("func (f %s) Get(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake, ctx,
 		params(c.get), opts, object)
@@ -1140,6 +1268,15 @@ func emitFake(f *goFile, c *controller) error {
 	return nil
 }
 
+// fakeBody returns the statement that reads call's union body in the fake: ""
+// for a call without one.
+func fakeBody(f *goFile, call *sdkCall) string {
+	if call.body == nil {
+		return ""
+	}
+	return fmt.Sprintf("body := params.%s.(%s)\n", call.body.goName, f.typ(call.body.typ))
+}
+
 // fakeNewFields returns the fields of the object a kind's fake creates for
 // New's params: the ID, what the params set, and a value of the new object's
 // own for each field status records that Cloudflare fills in.
@@ -1152,7 +1289,7 @@ func fakeNewFields(f *goFile, c *controller) ([]string, error) {
 		if af.create == nil || af.object == nil || af.object.goName == c.id.goName {
 			continue
 		}
-		value, err := f.convert("params."+af.create.goName+".Value", af.create.typ, af.object.typ)
+		value, err := f.convert(paramExpr(af.create)+".Value", af.create.typ, af.object.typ)
 		if err != nil {
 			return nil, fmt.Errorf("%s: the fake's New: %s: %w", name, af.apiName, err)
 		}
@@ -1202,16 +1339,19 @@ func emitFakeUpdate(f *goFile, c *controller, parentID, scope string,
 		if af.update == nil || af.object == nil {
 			continue
 		}
-		value, err := f.convert("params."+af.update.goName+".Value", af.update.typ, af.object.typ)
+		value, err := f.convert(paramExpr(af.update)+".Value", af.update.typ, af.object.typ)
 		if err != nil {
 			return fmt.Errorf("%s: the fake's %s: %s: %w", name, c.update.name, af.apiName, err)
 		}
 		if replaces {
 			fmt.Fprintf(&apply, "current.%s = %s\n", af.object.goName, value)
 		} else {
-			fmt.Fprintf(&apply, "if params.%s.Present {\ncurrent.%s = %s\n}\n", af.update.goName, af.object.goName,
+			fmt.Fprintf(&apply, "if %s.Present {\ncurrent.%s = %s\n}\n", paramExpr(af.update), af.object.goName,
 				value)
 		}
+	}
+	if c.hooks.params() {
+		fmt.Fprintf(&apply, "fake%s%sBody(current, body)\n", name, c.update.name)
 	}
 	ret, result, err := returned(fmt.Sprintf("f.update(%s, %s, id, func(current *%s) {\n%s})", parentID,
 		scope, object, apply.String()), c.updated)
@@ -1220,7 +1360,7 @@ func emitFakeUpdate(f *goFile, c *controller, parentID, scope string,
 	}
 	f.printf("func (f %s) %s(_ %s.Context, id string, params %s,\n_ ...%s) (*%s, error) {\n", fake,
 		c.update.name, ctx, f.typ(c.update.params), opts, result)
-	f.printf("%s\n}\n\n", ret)
+	f.printf("%s%s\n}\n\n", fakeBody(f, c.update), ret)
 	return nil
 }
 
@@ -1301,7 +1441,7 @@ func goValue(f *goFile, sf field, value any) string {
 // entries as dependents of their account, the rule kinds, which the shared
 // rule controller lists, and the rule and settings kinds as dependents of
 // their Zone.
-func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*settingsKind,
+func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*settingsKind, hookedKinds []*hookedKind,
 	header string) ([]byte, error) {
 	f := newGoFile()
 	ctrl := f.use("sigs.k8s.io/controller-runtime", "ctrl")
@@ -1319,6 +1459,9 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*sett
 	for _, k := range settingsKinds {
 		names = append(names, k.name)
 	}
+	for _, k := range hookedKinds {
+		names = append(names, k.name)
+	}
 	for _, name := range slices.Sorted(slices.Values(names)) {
 		f.printf("if err := (&%sReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); "+
 			"err != nil {\nreturn %s.Errorf(\"setting up the %s controller: %%w\", err)\n}\n", name,
@@ -1329,12 +1472,20 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*sett
 	comment(&f.Builder, "", wrap("generatedAccountDependents are the generated kinds of an account that the shared "+
 		"CRUD reconciler drives, whose resources use a CloudflareAccount's credentials directly."))
 	f.printf("var generatedAccountDependents = []dependentKind{\n")
+	var accountKinds []string
 	for _, c := range kinds {
-		if c.zoned {
-			continue
+		if !c.zoned {
+			accountKinds = append(accountKinds, c.name)
 		}
-		f.printf("dependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", c.name, client, f.api(), c.name)
-		f.printf("func(obj *%s.%s) []string { return []string{obj.Spec.AccountRef.Name} }),\n", f.api(), c.name)
+	}
+	for _, k := range hookedKinds {
+		if k.usesAccount {
+			accountKinds = append(accountKinds, k.name)
+		}
+	}
+	for _, name := range slices.Sorted(slices.Values(accountKinds)) {
+		f.printf("dependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", name, client, f.api(), name)
+		f.printf("func(obj *%s.%s) []string { return []string{obj.Spec.AccountRef.Name} }),\n", f.api(), name)
 	}
 	f.printf("}\n\n")
 
@@ -1408,6 +1559,15 @@ func emitSample(c *controller) ([]byte, error) {
 			return nil, err
 		}
 		fmt.Fprintf(&b, "  %s: %s", af.jsonName, encoded)
+	}
+	if c.hooks != nil && len(c.hooks.SampleExtras) > 0 {
+		encoded, err := yaml.Marshal(c.hooks.SampleExtras)
+		if err != nil {
+			return nil, err
+		}
+		for line := range strings.Lines(string(encoded)) {
+			b.WriteString("  " + line)
+		}
 	}
 	return []byte(b.String()), nil
 }

@@ -50,6 +50,11 @@ type D1DatabaseReconciler struct {
 	// NewD1DatabaseAPI constructs a D1DatabaseAPI from a raw API token.
 	// Defaults to defaultD1DatabaseAPI; tests inject a fake.
 	NewD1DatabaseAPI func(token string) (D1DatabaseAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=d1databases,verbs=get;list;watch;create;update;patch;delete
@@ -131,18 +136,23 @@ func (r *D1DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // CloudflareAccounts, so a D1Database waiting for its account is reconciled
 // once the account is ready.
 func (r *D1DatabaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.crud().setup(mgr, r)
 }
 
 // crud returns the shared CRUD reconciler for D1Databases, with the injected
-// factory or the production one.
+// factory or the production one, and the manager's API reader or the client.
 func (r *D1DatabaseReconciler) crud() *crudResourceReconciler[*cloudflarev1alpha1.D1Database, D1DatabaseAPI, d1.D1, d1.DatabaseListResponse] {
 	newAPI := r.NewD1DatabaseAPI
 	if newAPI == nil {
 		newAPI = defaultD1DatabaseAPI
 	}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
 	return &crudResourceReconciler[*cloudflarev1alpha1.D1Database, D1DatabaseAPI, d1.D1, d1.DatabaseListResponse]{
-		Client: r.Client, kind: d1DatabaseKind, newAPI: newAPI,
+		Client: r.Client, apiReader: apiReader, kind: d1DatabaseKind, newAPI: newAPI,
 	}
 }
 

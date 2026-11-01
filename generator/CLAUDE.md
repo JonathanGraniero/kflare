@@ -103,8 +103,8 @@ CRD defaults, so nothing is late-initialized.
   target, which excludes generated files
 - **Hooks:** optional Go functions in a hand-written `<kind>_hooks.go`, compiled and linted like any other code: adjust
   the desired params, normalize Cloudflare's copy before comparing, extra steps after a sync, extra watches. IPList's
-  bulk operation and RateLimitRule's `cf.colo.id` are this kind of logic. Not built yet: no generated kind has needed
-  one, since entry validations, CEL rules, ignores and tests covered every rule kind
+  bulk operation is this kind of logic. Built for CRUD kinds, in the notes below; no rule kind has needed one, since
+  entry validations, CEL rules, ignores and tests covered them
 
 ```yaml
 kinds:
@@ -521,6 +521,40 @@ kinds:
   and one equivalent (a mapper's early return on a failed list, which leaves the list empty anyway); 52 of kflare-gen's
   new code, all caught. The first runs left two alive: the pattern's `minLength`, which the pattern already implied
   (dropped from the entry), and the page params of a single page, which a unit test now covers
+- **Hooks, union bodies and hooked kinds as built** (`feat/generate-remaining-kinds`, 2026-10-30), for the six kinds
+  left, in one pull request at the user's request ([Generate every kind](../CLAUDE.md#generate-every-kind)):
+  - `crudHooks` on `crudResourceKind`, every one optional: `account` (a resource's account, through another resource),
+    `key`, `references`, `resolve` (values a call needs besides the spec, or why the resource waits), `gone` (an object
+    Cloudflare still reads, deleted), `find`, `refuse`, `matches`, `synced`, `beforeDelete` and `watch`. An entry's
+    `hooks` key names what they bring: `specExtras`, `metadataExtras` and `statusExtras`, hand-written structs the
+    generated types embed inline, whose CEL rules controller-gen merges into the spec's; `sampleExtras` and
+    `tableExtras`; `columns`; `api`, a hand-written `<Kind>HooksAPI` the narrow interface embeds, which a hand-written
+    `<kind>Service` serves in production and `fake<Kind>HooksAPI` in the tests; and `params`, for hand-written functions
+    that finish a union body (`<kind>NewBody`, `<kind>EditBody`) and their fakes
+  - A call whose params hold `Body` as a union is read through `<Name>`, the variant of `<Name>Union` that holds every
+    field (`sdkCall.body`, `sdkField.inUnion`), as a DNS record's `RecordNewParamsBody` does
+  - `update` picks the call that changes an object, `fields.<f>.immutable` keeps a field Update takes fixed,
+    `fields.<f>.clearable` compares and sends an optional string even when unset, and objects may come from
+    cloudflare-go's `shared` package (`shared.CloudflareTunnel`)
+  - `hookedKinds` (`hookedkind.go`) are the kinds whose fields and calls stay hand-written: kflare-gen writes their
+    types and reconciler and registers them; `<kind>_hooks.go` holds their `crudResourceKind`, `<Kind>API`, and
+    `<kind>Object` and `<kind>Listed`. They have no generated table: Zone's is hand-written on `describeCRUDKind`, and
+    TunnelConfiguration and WorkerScript kept their own specs, which pass on the shared loop with their helpers renamed
+  - A resource whose status was never written deletes its object through its claim, in any kind; a zone's kind takes
+    the zone from its Zone then. The fake serves smaller pages than it is asked for (`pageCap`), reporting the
+    `per_page` it served, as a DNS list takes five million
+- **Reads past the cache** (`fix/crud-stale-cache`, 2026-10-31), after main's CI failed WorkerScript's spec in a
+  running manager on every run since #125: a reconcile read its resource before the cache had the status the previous
+  one wrote, found the Worker it had just created, and uploaded it again. The reconciler kflare-gen writes for a CRUD
+  or hooked kind (`emitCRUDReconcilerType`, `emitCRUDReconcilerSetup`, shared by both) holds an `apiReader`, which
+  `SetupWithManager` sets to the manager's API reader, and `crud()` hands the shared CRUD reconciler, or the client
+  when there is no manager. The shared CRUD reconciler reads the resource from the API server before it finds, adopts,
+  creates or updates an object, and stops while the cache is behind (`upToDate`). The shared specs reconcile each kind
+  from a stale copy (`reconcileStale`): before its status recorded the object (with `adopt-or-create`, which would mark
+  it adopted), and before a change of its spec (which would undo the change); a failed read, a resource gone, and the
+  reader's wiring. Mutations: 24 of the runtime, four kinds' generated glue and kflare-gen's emitters, all caught. The
+  first run left WorkerScript's glue alive, which no generated table checks: its and TunnelConfiguration's setup specs
+  now check the reader's wiring
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is
