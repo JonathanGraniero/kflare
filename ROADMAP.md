@@ -31,7 +31,9 @@ Since v0.3.0 every rule kind is generated from Cloudflare's API description, and
 jurisdiction and storage class, and `WorkerRoute` follows, its manifests unchanged. Since v0.4.0 every kind but
 `CloudflareAccount` runs on a shared reconciler, so they all report conflicts, adopt objects and delete them the same
 way: `IPList`, `Tunnel` and `DNSRecord` are generated too, and a Tunnel can be renamed. `Zone`, `TunnelConfiguration`
-and `WorkerScript` keep hand-written fields on the older SDK.
+and `WorkerScript` keep hand-written fields on the older SDK. kflare keeps each API token within Cloudflare's rate
+limit, and one account past its limit holds up no other (see
+[Cloudflare's API rate limit](docs/deploy.md#cloudflares-api-rate-limit)).
 
 ## Next
 
@@ -48,8 +50,6 @@ Candidates that a Free account can use and test, roughly in the order the code g
 For running kflare, the [production-readiness issues](https://github.com/JonathanGraniero/kflare/issues/91), among
 them:
 
-- **One Cloudflare client and rate limiter per API token**
-  ([#73](https://github.com/JonathanGraniero/kflare/issues/73))
 - **A token's expiry** on its `CloudflareAccount`, and the token checked again on a schedule
   ([#74](https://github.com/JonathanGraniero/kflare/issues/74))
 - **kflare's own metrics**: Cloudflare API calls, rate limiting, readiness and drift

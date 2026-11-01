@@ -992,6 +992,57 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(ready(name).Reason).To(Equal(reasonPaused))
 		}
 
+		// reconcileHeld reconciles the resource name, and checks that it made
+		// no Cloudflare call, which the fake records the zone of, and comes
+		// back later.
+		reconcileHeld := func(name string) {
+			GinkgoHelper()
+			calls := len(fake.zoneIDs)
+			result, err := reconcileOnce(name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(fake.zoneIDs).To(HaveLen(calls), "a reconcile held by a rate limit called Cloudflare")
+		}
+
+		It("keeps a Ready resource Ready while held", func() {
+			createSynced("held", specs.samples[0].spec)
+			holdToken(ctx, key(secretName))
+			reconcileHeld("held")
+			Expect(ready("held").Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready("held").Reason).To(Equal("Synced"))
+			releaseToken(ctx, key(secretName))
+			deleteAndReconcile("held")
+		})
+
+		It("reports a resource not in sync yet as RateLimited, then writes its settings", func() {
+			withFinalizer("held-new", specs.samples[0].spec, nil)
+			holdToken(ctx, key(secretName))
+			reconcileHeld("held-new")
+			Expect(ready("held-new").Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready("held-new").Reason).To(Equal(reasonRateLimited))
+
+			By("writing them once the limit lifts")
+			releaseToken(ctx, key(secretName))
+			_, err := reconcileOnce("held-new")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ready("held-new").Reason).To(Equal("Synced"))
+			deleteAndReconcile("held-new")
+		})
+
+		It("keeps a resource's settings and finalizer while held, and resets them afterwards", func() {
+			createSynced("held-deleted", specs.samples[0].spec)
+			holdToken(ctx, key(secretName))
+			Expect(k8sClient.Delete(ctx, get("held-deleted"))).To(Succeed())
+			reconcileHeld("held-deleted")
+			Expect(get("held-deleted").GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+
+			By("resetting them once the limit lifts")
+			releaseToken(ctx, key(secretName))
+			_, err := reconcileOnce("held-deleted")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("held-deleted"), specs.newObject()))).To(BeTrue())
+		})
+
 		It("calls Cloudflare for nothing while paused, and writes its changed settings once unpaused", func() {
 			sample, spec, settings := specs.samples[0], specs.samples[0].spec, specs.samples[0].settings
 			if len(specs.changes) > 0 {

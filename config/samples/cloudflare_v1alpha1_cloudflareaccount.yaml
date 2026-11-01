@@ -13,3 +13,7 @@ spec:
   tokenSecretRef:
     name: cloudflare-token
     namespace: kflare-system
+  # How fast kflare calls Cloudflare with this token, in place of the manager's
+  # --cloudflare-rate-limit. Set it when Cloudflare raised this account's limit.
+  # rateLimit:
+  #   requestsPerFiveMinutes: 900

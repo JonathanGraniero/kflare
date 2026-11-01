@@ -129,6 +129,9 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 - **Credentials stay in Secrets** that you can manage with External Secrets Operator or Sealed Secrets. A rotated token
   is picked up straight away. Only cluster administrators can create a `CloudflareAccount`; the namespaced kinds are
   added to the built-in `edit` and `admin` roles, so teams manage their own records and rules.
+- **One installation can serve many Cloudflare accounts.** Each API token stays within Cloudflare's rate limit, and an
+  account past its limit holds up no other
+  ([deploy guide](docs/deploy.md#several-cloudflare-accounts)).
 - **Every resource reports a single `Ready` condition** with a reason, and the controller serves Prometheus metrics.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how kflare finds, owns, corrects and deletes Cloudflare objects, and its

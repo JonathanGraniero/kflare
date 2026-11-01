@@ -20,6 +20,23 @@ type CloudflareAccountSpec struct {
 	// TokenSecretRef references a Secret containing the CF_API_TOKEN key.
 	// +kubebuilder:validation:Required
 	TokenSecretRef SecretReference `json:"tokenSecretRef"`
+
+	// RateLimit sets how fast kflare calls Cloudflare with this account's
+	// token, in place of the manager's --cloudflare-rate-limit. Set it when
+	// Cloudflare raised this account's limit, or when other tools use most of
+	// it. CloudflareAccounts that share a token share its budget, so the
+	// lowest rate among them applies.
+	// +optional
+	RateLimit *RateLimit `json:"rateLimit,omitempty"`
+}
+
+// RateLimit is how fast kflare calls Cloudflare with one API token.
+type RateLimit struct {
+	// RequestsPerFiveMinutes is how many requests kflare sends per five
+	// minutes. Cloudflare's global limit is 1,200.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	RequestsPerFiveMinutes int32 `json:"requestsPerFiveMinutes"`
 }
 
 // SecretReference points to a key within a Kubernetes Secret.

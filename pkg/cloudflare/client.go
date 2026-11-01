@@ -13,6 +13,7 @@ import (
 
 	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/option"
+	"golang.org/x/time/rate"
 )
 
 // Client is a thin wrapper around the cloudflare-go *API that serves as the
@@ -43,15 +44,16 @@ type Client struct {
 // Cloudflare API) is only confirmed when the first API call is made.
 //
 // Both SDKs send their requests through httpClient, whose timeouts bound
-// every request.
+// every request and whose transport keeps each token within its budget.
 func New(token string) (*Client, error) {
 	return newClient(token, httpClient)
 }
 
 // newClient is New, with the HTTP client both SDKs send their requests
-// through.
+// through. v0's own limiter is turned off: each Client has one, so it paces
+// nothing but a reconcile's own calls, which the transport does already.
 func newClient(token string, hc *http.Client) (*Client, error) {
-	api, err := cf.NewWithAPIToken(token, cf.HTTPClient(hc))
+	api, err := cf.NewWithAPIToken(token, cf.HTTPClient(hc), cf.UsingRateLimit(float64(rate.Inf)))
 	if err != nil {
 		return nil, err
 	}
@@ -102,9 +104,9 @@ var defaultHTTPTimeouts = httpTimeouts{
 }
 
 // httpClient is the HTTP client of every Client: one, so that both SDKs and
-// every reconcile, each of which builds its own Client, reuse its
-// connections.
-var httpClient = newHTTPClient(defaultHTTPTimeouts)
+// every reconcile, each of which builds its own Client, reuse its connections
+// and spend one budget per token.
+var httpClient = withRateLimit(newHTTPClient(defaultHTTPTimeouts), limiter)
 
 // newHTTPClient returns an HTTP client with timeouts t. Its transport is a
 // copy of http.DefaultTransport, so it keeps the proxy that the standard
@@ -116,6 +118,12 @@ func newHTTPClient(t httpTimeouts) *http.Client {
 	transport.ResponseHeaderTimeout = t.responseHeader
 	transport.HTTP2 = &http.HTTP2Config{SendPingTimeout: t.http2Ping, PingTimeout: t.http2PingTimeout}
 	return &http.Client{Transport: transport, Timeout: t.request}
+}
+
+// withRateLimit makes hc's requests keep within limits.
+func withRateLimit(hc *http.Client, limits *rateLimiter) *http.Client {
+	hc.Transport = &rateLimitedTransport{next: hc.Transport, limits: limits}
+	return hc
 }
 
 // V7Options returns the request options for the cloudflare-go v7 services a
@@ -135,8 +143,9 @@ func newHTTPClient(t httpTimeouts) *http.Client {
 //	params.Title.Value, params.Title.Present = title, true
 //
 // The services share httpClient with v0, whose timeouts bound each attempt.
-// They keep v7's retries: two, after a 408, 409, 429, 5xx or connection
-// error, which includes a request that timed out. They set no per-attempt
+// They keep v7's retries: two, after a 408, 409, 5xx or connection error,
+// which includes a request that timed out, but not after a 429, which the
+// transport marks not to retry (rateLimitedTransport). They set no per-attempt
 // timeout of v7's own (option.WithRequestTimeout): httpClient's already
 // bounds each attempt, and v7 gives up without a retry when its own runs
 // out.

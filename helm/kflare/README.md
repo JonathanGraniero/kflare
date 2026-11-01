@@ -61,6 +61,7 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `defaultDeletionPolicy` | `delete` | `retain` keeps the Cloudflare objects of deleted resources, unless they say `delete` |
 | `reconcileTimeout` | `5m` | How long a reconcile may run before it ends with `APIError` and is retried; `0s` turns it off |
 | `driftCheckInterval` | unset (off) | Check each resource against Cloudflare this often, such as `30m`, to correct changes made outside kflare |
+| `cloudflareRateLimit` | `900` | Requests per five minutes per API token, unless its `CloudflareAccount` sets `spec.rateLimit`; `0` turns the pacing off |
 | `logging.level` | `info` | `debug`, `info` or `error` |
 | `logging.format` | `json` | `json` or `console` |
 | `metrics.enabled` | `true` | Serve Prometheus metrics on `metrics.port` |

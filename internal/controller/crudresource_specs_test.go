@@ -924,6 +924,111 @@ func describeCRUDReferences[O conditionedObject, A any, R any, L any](e *crudSpe
 	})
 }
 
+// describeCRUDRateLimit adds the specs of a generated kind's reconciles while
+// Cloudflare's rate limit holds their token.
+func describeCRUDRateLimit[O conditionedObject, A any, R any, L any](e *crudSpecEnv[O, A, R, L]) {
+	ctx, k, key := e.ctx, e.t.kind, e.key
+	t, get, ready, reconcileIt, synced, create := e.t, e.get, e.ready, e.reconcileIt, e.synced, e.create
+
+	Describe("rate limiting", func() {
+		token := types.NamespacedName{Name: e.secretName, Namespace: crudSpecNamespace}
+
+		// reconcileHeld reconciles the resource, and checks that it made no
+		// Cloudflare call, which the fake records the parent's ID of, and
+		// comes back later.
+		reconcileHeld := func() {
+			GinkgoHelper()
+			calls := len(e.store.parentIDs)
+			result, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(e.store.parentIDs).To(HaveLen(calls), "a reconcile held by a rate limit called Cloudflare")
+		}
+
+		It("keeps a Ready resource Ready while held, and applies a changed spec afterwards", func() {
+			id := synced(nil)
+			holdToken(ctx, token)
+			obj := get()
+			for _, change := range t.changes {
+				change.edit(obj)
+			}
+			Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+			reconcileHeld()
+			Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready().Reason).To(Equal("Synced"))
+
+			By("applying the spec once the limit lifts")
+			releaseToken(ctx, token)
+			_, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			object := e.store.objects[id]
+			Expect(k.matches(get(), &object, e.refs)).To(BeTrue(), "the object is what the spec asks for")
+			Expect(ready().ObservedGeneration).To(Equal(get().GetGeneration()))
+		})
+
+		It("reports a resource not in sync yet as RateLimited, then creates its "+k.noun, func() {
+			e.createParent(true)
+			create(key, nil)
+			holdToken(ctx, token)
+			reconcileHeld()
+			Expect(ready().Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready().Reason).To(Equal(reasonRateLimited))
+			Expect(ready().Message).To(Equal(rateLimitedMessage))
+			Expect(e.store.objects).To(BeEmpty())
+
+			By("creating it once the limit lifts")
+			releaseToken(ctx, token)
+			_, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.store.objects).To(HaveLen(1))
+			Expect(ready().Reason).To(Equal("Synced"))
+		})
+
+		It("waits out a 429 on a read, with no error, and keeps a Ready resource Ready", func() {
+			id := synced(nil)
+			e.store.getErr = v7APIError(http.MethodGet, "objects/"+id, http.StatusTooManyRequests, 10000, "rate limited")
+			result, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(rateLimitRetryInterval))
+			Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready().Reason).To(Equal("Synced"))
+		})
+
+		It("waits out a 429 on a delete, with no error, and deletes the resource afterwards", func() {
+			id := synced(nil)
+			Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+			e.store.deleteErr = v7APIError(http.MethodDelete, "objects/"+id, http.StatusTooManyRequests, 10000,
+				"rate limited")
+			result, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(rateLimitRetryInterval))
+			Expect(get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+
+			By("deleting it once Cloudflare answers")
+			e.store.deleteErr = nil
+			_, err = reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue())
+		})
+
+		It("keeps a resource's "+k.noun+" and finalizer while held, and deletes both afterwards", func() {
+			id := synced(nil)
+			holdToken(ctx, token)
+			Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+			reconcileHeld()
+			Expect(e.store.objects).To(HaveKey(id))
+			Expect(get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+
+			By("deleting both once the limit lifts")
+			releaseToken(ctx, token)
+			_, err := reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.store.objects).NotTo(HaveKey(id))
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue())
+		})
+	})
+}
+
 // describeCRUDKind runs the shared specs on a generated kind's table.
 func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[O, A, R, L]) bool {
 	return Describe(t.kind.name+" (generated specs)", func() {
@@ -1900,6 +2005,8 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 				Expect(ready().Status).To(Equal(metav1.ConditionUnknown))
 			})
 		})
+
+		describeCRUDRateLimit(e)
 
 		Describe("validation", func() {
 			for _, change := range t.immutable {

@@ -67,6 +67,24 @@ spec:
               accountID:
                 description: AccountID is the Cloudflare account ID.
                 type: string
+              rateLimit:
+                description: |-
+                  RateLimit sets how fast kflare calls Cloudflare with this account's
+                  token, in place of the manager's --cloudflare-rate-limit. Set it when
+                  Cloudflare raised this account's limit, or when other tools use most of
+                  it. CloudflareAccounts that share a token share its budget, so the
+                  lowest rate among them applies.
+                properties:
+                  requestsPerFiveMinutes:
+                    description: |-
+                      RequestsPerFiveMinutes is how many requests kflare sends per five
+                      minutes. Cloudflare's global limit is 1,200.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - requestsPerFiveMinutes
+                type: object
               tokenSecretRef:
                 description: TokenSecretRef references a Secret containing the CF_API_TOKEN
                   key.

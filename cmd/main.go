@@ -29,6 +29,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	"github.com/JonathanGraniero/kflare/internal/controller"
+	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 	"github.com/JonathanGraniero/kflare/pkg/metricsauth"
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 	//+kubebuilder:scaffold:imports
@@ -56,6 +57,7 @@ func main() {
 	var defaultDeletionPolicy string
 	var reconcileTimeout time.Duration
 	var driftCheckInterval time.Duration
+	var cloudflareRateLimit int
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -82,6 +84,10 @@ func main() {
 			"(in the Cloudflare dashboard, through the API, by Terraform) is corrected within about that long. Each "+
 			"check is moved by up to a tenth either way at random, and makes one or more Cloudflare API calls per "+
 			"resource, which count against Cloudflare's rate limit. 0 turns the checks off.")
+	flag.IntVar(&cloudflareRateLimit, "cloudflare-rate-limit", cfpkg.DefaultRateLimit,
+		"How many requests per five minutes kflare sends with one Cloudflare API token, unless the token's "+
+			"CloudflareAccount sets spec.rateLimit. Cloudflare's global limit is 1,200, shared with everything else "+
+			"using the token. 0 turns the pacing off; kflare still stops when Cloudflare asks it to.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -100,6 +106,10 @@ func main() {
 	}
 	if err := reconciler.SetDriftCheckInterval(driftCheckInterval); err != nil {
 		setupLog.Error(err, "invalid --drift-check-interval")
+		os.Exit(1)
+	}
+	if err := cfpkg.SetRateLimit(cloudflareRateLimit); err != nil {
+		setupLog.Error(err, "invalid --cloudflare-rate-limit")
 		os.Exit(1)
 	}
 

@@ -171,9 +171,12 @@ func (r *settingsReconciler[A]) reconcile(ctx context.Context, req ctrl.Request)
 				owner.GetNamespace(), owner.GetName(), r.kind.noun, zoneID))
 	}
 
-	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, true)
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
+	}
+	if wait := admit(account, token, obj); wait > 0 {
+		return rateLimited(ctx, r.Client, obj, wait)
 	}
 	api, err := r.newAPI(token)
 	if err != nil {
@@ -354,7 +357,7 @@ func (r *settingsReconciler[A]) reconcileDelete(ctx context.Context, obj setting
 
 	if !reconciler.RetainOnDelete(obj) {
 		if err := r.resetSettings(ctx, obj); err != nil {
-			return ctrl.Result{}, err
+			return retryCleanup(err)
 		}
 	}
 
@@ -398,9 +401,12 @@ func (r *settingsReconciler[A]) resetSettings(ctx context.Context, obj settingsO
 		return nil
 	}
 
-	_, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, false)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, zone.Spec.AccountRef.Name, false)
 	if credErr != nil {
 		return credErr
+	}
+	if wait := admit(account, token, obj); wait > 0 {
+		return &cleanupDeferred{wait: wait}
 	}
 	api, err := r.newAPI(token)
 	if err != nil {
