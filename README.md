@@ -174,6 +174,8 @@ kflare is developed with AI assistance (Claude Code). What keeps it honest:
 - [Discussions](https://github.com/JonathanGraniero/kflare/discussions): questions, ideas and feedback
 - [Contributing](CONTRIBUTING.md): building, testing and the live suite
 - [Security](SECURITY.md): reporting a vulnerability
+- [Governance](GOVERNANCE.md) and [maintainers](MAINTAINERS.md): who decides, and how to become a maintainer
+- [Code of Conduct](CODE_OF_CONDUCT.md): the Contributor Covenant, which every space of the project follows
 
 ## License
 

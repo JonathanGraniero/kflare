@@ -8,6 +8,10 @@ Questions about installing or using kflare, and ideas, go to
 [Discussions](https://github.com/JonathanGraniero/kflare/discussions). Security issues go through
 [SECURITY.md](SECURITY.md), not public issues.
 
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md). [GOVERNANCE.md](GOVERNANCE.md) says how
+decisions are made and how contributors become reviewers and maintainers, who are listed in
+[MAINTAINERS.md](MAINTAINERS.md).
+
 ## What you need
 
 - Go 1.26 or newer

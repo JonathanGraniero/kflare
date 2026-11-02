@@ -1,2 +1,3 @@
+# The maintainers and reviewers in MAINTAINERS.md; the two must match.
 # The `require reviews` ruleset on main asks for a code owner's approval on every pull request.
 * @JonathanGraniero
