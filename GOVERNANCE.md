@@ -31,10 +31,11 @@ says how. Contributors need no permission and sign no agreement: contributions a
 ### Reviewers
 
 Contributors trusted to review pull requests in an area of the code (for example the generator, the Helm chart or a
-group of kinds). A reviewer's approval counts toward the reviews `main` requires, but only a maintainer merges. Any
-maintainer can nominate a contributor who has made several substantial contributions to an area and reviewed others'
-pull requests well; the maintainers decide as described under [Decision making](#decision-making). Reviewers are
-listed in [MAINTAINERS.md](MAINTAINERS.md) and added to [.github/CODEOWNERS](.github/CODEOWNERS) for their area.
+group of kinds). Reviewers have write access to the repository, because GitHub counts only those approvals toward the
+reviews `main` requires, and they leave merging to the maintainers. Any maintainer can nominate a contributor who has
+made several substantial contributions to an area and reviewed others' pull requests well; the maintainers decide as
+described under [Decision making](#decision-making). Reviewers are listed in [MAINTAINERS.md](MAINTAINERS.md) and added
+to [.github/CODEOWNERS](.github/CODEOWNERS) for their area.
 
 ### Maintainers
 
@@ -78,8 +79,8 @@ A contributor can become a maintainer after a sustained record of contributions,
 - help with issues and Discussions
 
 A maintainer nominates the contributor in an issue, which the contributor accepts. The decision follows the rules
-above. A new maintainer is added to [MAINTAINERS.md](MAINTAINERS.md), [.github/CODEOWNERS](.github/CODEOWNERS) and the
-repository's maintainer role, and is given access to the project's accounts as their responsibilities need.
+above. A new maintainer is added to [MAINTAINERS.md](MAINTAINERS.md) and [.github/CODEOWNERS](.github/CODEOWNERS), is
+given write access to the repository, and is given access to the project's accounts as their responsibilities need.
 
 ## Stepping down
 
@@ -97,8 +98,13 @@ So that the project does not depend on one person's accounts:
 
 - releases are signed keylessly, by the `Release` workflow's own identity, so there is no signing key to hand over
 - the image and the chart are published from GitHub Actions, not from a person's machine
-- each maintainer is given administrator access to the repository, the `ghcr.io` packages and the Artifact Hub
-  listing once there is more than one
+- each maintainer is given administrator access to the `ghcr.io` packages and the Artifact Hub listing once there is
+  more than one
+
+Two dependencies remain. The repository is in the project lead's personal GitHub account, which has one administrator;
+moving it to a GitHub organization would give every maintainer that access, but changes the address of the repository
+and the `ghcr.io` packages, so it is decided when a second maintainer joins. The `kflare.dev` domain, and with it the
+address for Code of Conduct reports, is also the project lead's.
 
 If every maintainer becomes unavailable, contributors are free to continue the project in a fork under the
 [MIT license](LICENSE). A fork should make clear that it is not the original project.

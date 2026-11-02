@@ -14,6 +14,10 @@ how to join them; [.github/CODEOWNERS](.github/CODEOWNERS) must match this file.
 None yet. Contributors who would like to review an area of the code are welcome to say so in
 [Discussions](https://github.com/JonathanGraniero/kflare/discussions).
 
+## Emeritus
+
+None yet.
+
 ## Contact
 
 - Questions and ideas: [Discussions](https://github.com/JonathanGraniero/kflare/discussions)
