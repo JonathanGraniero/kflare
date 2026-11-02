@@ -53,6 +53,11 @@ const (
 	// API the chart's HorizontalPodAutoscaler reads. kind does not run it.
 	metricsServerManifest = "https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/" +
 		"components.yaml"
+
+	// serviceMonitorCRD is the Prometheus Operator's, which local/prometheus.sh
+	// installs: with it, the chart's ServiceMonitor has the cluster's
+	// Prometheus scrape the manager during the run.
+	serviceMonitorCRD = "servicemonitors.monitoring.coreos.com"
 )
 
 // metricsCA trusts the CA that signed the metrics server's certificate.
@@ -84,7 +89,9 @@ func TestE2E(t *testing.T) {
 // it running. The chart's NetworkPolicy is on: the live specs reach Cloudflare
 // under it, and a smoke spec checks its rules from a probe pod. The metrics
 // server's certificate comes from a Secret, signed by a CA the suite makes, so
-// that the metrics spec verifies it.
+// that the metrics spec verifies it. On a cluster with the Prometheus
+// Operator, as local/prometheus.sh installs it, the chart's ServiceMonitor is
+// on too, so that Grafana's kflare dashboard shows the run.
 var _ = BeforeSuite(func() {
 	if externalManager() {
 		By("installing CRDs for the externally running manager")
@@ -122,12 +129,18 @@ var _ = BeforeSuite(func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
+	// Uninstalling removes the CRDs too, so that the cluster is left as it was.
+	values := "crds.keep=false,networkPolicy.enabled=true,metrics.certSecret=" + metricsCertSecret
+	if _, err := utils.Run(exec.Command("kubectl", "get", "crd", serviceMonitorCRD)); err == nil {
+		By("turning the chart's ServiceMonitor on, for the cluster's Prometheus")
+		values += ",metrics.serviceMonitor.enabled=true,metrics.serviceMonitor.interval=10s"
+	}
+
 	By("installing the chart, which installs the CRDs, and waiting for the controller")
 	_, err = utils.Run(exec.Command("helm", "install", releaseName, "helm/kflare",
 		"--namespace", managerNamespace,
 		"--set", "image.repository="+managerImageRepository+",image.tag="+managerImageTag,
-		// Uninstalling removes the CRDs too, so that the cluster is left as it was.
-		"--set", "crds.keep=false,networkPolicy.enabled=true,metrics.certSecret="+metricsCertSecret,
+		"--set", values,
 		"--wait", "--timeout", "3m"))
 	Expect(err).NotTo(HaveOccurred())
 })

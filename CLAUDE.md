@@ -88,7 +88,8 @@ With:
 │   └── samples/           # Example CRs
 ├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e)
 ├── test/gitopshealth/     # Runs the Argo CD and Flux health checks as those tools do, for their tests and the specs
-├── local/                 # kind cluster setup for running the controller with make run
+├── local/                 # kind cluster setup for running the controller with make run; Argo CD and Prometheus
+│                          #   (prometheus.sh: Grafana's kflare dashboard, scraping the e2e suite's manager)
 ├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
 ├── helm/artifacthub-repo.yml  # Artifact Hub metadata; the Artifact Hub workflow pushes it (verified publisher)
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);

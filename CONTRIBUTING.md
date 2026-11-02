@@ -17,6 +17,7 @@ decisions are made and how contributors become reviewers and maintainers, who ar
 - Go 1.26 or newer
 - Docker, for kind (kind itself is pinned and downloaded by `make kind`)
 - kubectl
+- Helm, for `make test-e2e` and the Prometheus that `local/setup.sh` installs
 - For anything that talks to Cloudflare: a Cloudflare account and an API token. A free account with R2 enabled and a
   zone on the Free plan are enough for every live test kflare has
 
@@ -79,7 +80,7 @@ Point kubectl at a kind cluster, install the CRDs and run the manager on your ma
 
 ```sh
 export CF_API_TOKEN=<token> CF_ACCOUNT_ID=<account ID>
-./local/setup.sh      # kind cluster, CRDs, a token Secret, a CloudflareAccount named my-account and Argo CD
+./local/setup.sh      # kind cluster, CRDs, a token Secret, a CloudflareAccount named my-account, Argo CD, Prometheus
 make run              # the manager, against the current kubeconfig
 kubectl get cloudflareaccount my-account   # Ready=True once the token is valid
 ./local/teardown.sh   # when you are done
@@ -88,6 +89,14 @@ kubectl get cloudflareaccount my-account   # Ready=True once the token is valid
 `setup.sh` also installs Argo CD (`local/argocd.sh`) with kflare's health check, to watch kflare resources sync in its
 UI; the script prints how to open it. `INSTALL_ARGOCD=0 ./local/setup.sh` leaves it out, and `./local/argocd.sh` adds
 it to a cluster you already have (`./local/argocd.sh uninstall` removes it again).
+
+It also installs Prometheus and Grafana (`local/prometheus.sh`, from kube-prometheus-stack), with a kflare dashboard:
+calls to Cloudflare by controller and status, resources by `Ready`, drift corrections, reconciles, and the manager's
+CPU and memory. The script prints how to open them. Prometheus scrapes the manager either way the e2e suite runs it, so
+the dashboard shows a run as it goes: `make test-e2e` turns the chart's ServiceMonitor on, and `hack/e2e-live.sh`
+serves its manager's metrics on the kind network's gateway, where Prometheus looks for them. `INSTALL_PROMETHEUS=0
+./local/setup.sh` leaves it out, `./local/prometheus.sh` adds it to a kind cluster you already have, and
+`./local/prometheus.sh uninstall` removes it again.
 
 kflare creates only what you apply, and takes over nothing that already exists unless a resource carries
 `kflare.dev/adoption-policy` (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). Still, use a test
@@ -147,7 +156,9 @@ chart's NetworkPolicy on, and checks that it starts and serves its metrics only 
 `CF_API_TOKEN` and `CF_ACCOUNT_ID` set, it also runs the live specs in `test/e2e/cloudflare_test.go` against your
 account, and with `CF_E2E_ZONE` the zone-level ones against that zone. They create, change and delete one of each
 resource, all named `kflare-e2e-<run>`, check Cloudflare's copy after each step, and clean up even when they fail.
-`KFLARE_E2E_MANAGER=external` uses a manager you already run with `make run` instead of deploying one.
+`KFLARE_E2E_MANAGER=external` uses a manager you already run with `make run` instead of deploying one. To watch a run's
+metrics, install Prometheus on the cluster first (`./local/prometheus.sh`, see
+[Running kflare against a real account](#running-kflare-against-a-real-account)).
 
 - The token needs the permissions in the [deploy guide](docs/deploy.md#1-create-a-cloudflare-api-token), plus
   Zone · Zone · Read on the zone. That set is verified to be enough on its own
