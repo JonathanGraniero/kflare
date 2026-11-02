@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -328,6 +329,99 @@ func TestErrorMessage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := cfpkg.ErrorMessage(tc.err); got != tc.want {
 				t.Errorf("ErrorMessage(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// v0Answer returns the error cloudflare-go v0 returns when Cloudflare answers
+// with status, without retries.
+func v0Answer(t *testing.T, status int, header http.Header) error {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		maps.Copy(w.Header(), header)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, `{"result":null,"success":false,"errors":[{"code":10000,"message":"no"}],"messages":[]}`)
+	}))
+	defer server.Close()
+	api, err := cf.NewWithAPIToken("token", cf.BaseURL(server.URL), cf.UsingRetryPolicy(0, 0, 0))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, _, err = api.Account(context.Background(), "account-id")
+	return err
+}
+
+// v7Answered is v7ErrorBody with the response's headers.
+func v7Answered(t *testing.T, status int, header http.Header) error {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		maps.Copy(w.Header(), header)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, `{"result":null,"success":false,"errors":[{"code":10000,"message":"no"}],"messages":[]}`)
+	}))
+	defer server.Close()
+	return getV7Namespace(option.WithBaseURL(server.URL))
+}
+
+func TestRayID(t *testing.T) {
+	const ray = "8f2b7c9d1a2e3f40-YYZ"
+	withRay := http.Header{"Cf-Ray": {ray}}
+
+	// Every status the SDKs tell apart.
+	for _, status := range []int{400, 401, 403, 404, 409, 429, 500, 503} {
+		t.Run(fmt.Sprintf("v0's %d", status), func(t *testing.T) {
+			err := v0Answer(t, status, withRay)
+			want := ray
+			if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+				// v0 reports these with a plain error once its retries run out.
+				want = ""
+			}
+			if got := cfpkg.RayID(err); got != want {
+				t.Errorf("RayID(%v) = %q, want %q", err, got, want)
+			}
+			if got := cfpkg.RayID(fmt.Errorf("reading the account: %w", err)); got != want {
+				t.Errorf("wrapped: RayID = %q, want %q", got, want)
+			}
+			if got := cfpkg.RayID(v0Answer(t, status, nil)); got != "" {
+				t.Errorf("no header: RayID = %q, want none", got)
+			}
+		})
+		t.Run(fmt.Sprintf("v7's %d", status), func(t *testing.T) {
+			err := v7Answered(t, status, withRay)
+			if got := cfpkg.RayID(err); got != ray {
+				t.Errorf("RayID(%v) = %q, want %q", err, got, ray)
+			}
+			if got := cfpkg.RayID(fmt.Errorf("reading the namespace: %w", err)); got != ray {
+				t.Errorf("wrapped: RayID = %q, want %q", got, ray)
+			}
+			if got := cfpkg.RayID(v7Answered(t, status, nil)); got != "" {
+				t.Errorf("no header: RayID = %q, want none", got)
+			}
+		})
+	}
+
+	t.Run("a v0 error that keeps the ID, whatever its type", func(t *testing.T) {
+		for _, err := range []error{
+			ptrAuthN(&cf.Error{RayID: ray}), ptrAuthZ(&cf.Error{RayID: ray}), ptrNotFound(&cf.Error{RayID: ray}),
+			ptrRequest(&cf.Error{RayID: ray}), ptrRateLimit(&cf.Error{RayID: ray}), ptrService(&cf.Error{RayID: ray}),
+		} {
+			if got := cfpkg.RayID(err); got != ray {
+				t.Errorf("RayID(%T) = %q, want %q", err, got, ray)
+			}
+		}
+	})
+
+	for name, err := range map[string]error{
+		"no error":         nil,
+		"another error":    errors.New("boom"),
+		"no response":      v7ConnectionError(t),
+		"a v7 error alone": &kv.Error{StatusCode: http.StatusInternalServerError},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := cfpkg.RayID(err); got != "" {
+				t.Errorf("RayID(%v) = %q, want none", err, got)
 			}
 		})
 	}

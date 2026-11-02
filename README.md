@@ -135,7 +135,8 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 - **One installation can serve many Cloudflare accounts.** Each API token stays within Cloudflare's rate limit, and an
   account past its limit holds up no other
   ([deploy guide](docs/deploy.md#several-cloudflare-accounts)).
-- **Every resource reports a single `Ready` condition** with a reason, and the controller serves Prometheus metrics.
+- **Every resource reports a single `Ready` condition** with a reason, and the controller serves
+  [Prometheus metrics](docs/deploy.md#monitoring): Cloudflare API calls, rate limits, readiness and drift.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how kflare finds, owns, corrects and deletes Cloudflare objects, and its
 known limitations. One to know up front: a change made in the Cloudflare dashboard is corrected on the next

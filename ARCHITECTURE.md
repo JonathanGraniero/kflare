@@ -152,6 +152,14 @@ What each controller compares when it does reconcile:
 | `ManagedTransform` | Whether each managed transform its spec lists is on, by ID. The transforms it does not list are neither compared nor changed |
 | `WAFCustomRule`, `RateLimitRule`, `ManagedRuleset`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`, `OriginRule` | The rule's whole definition: expression, action and its parameters, enabled, description, for a rate limiting rule how it counts (characteristics, period, requests per period, mitigation timeout, counting expression, origin requests only), for a managed ruleset deployment the ruleset and its overrides, and for a transform rule its URL rewrite or header changes. Also its place among kflare's rules in the zone and phase (see [Rules](#rules)). Recreated if deleted externally |
 
+`kflare_drift_corrections_total` counts what these comparisons correct: a write for a resource that was `Ready` at its
+current generation, whose spec therefore has not changed since kflare last wrote it (`recordDriftCorrection`). That
+takes in an object recreated after it was deleted outside kflare, rules moved back into order, an IPList's items and a
+Zone's plan, each write once, so an IPList recreated with its items counts twice. A Worker uploaded because its
+ConfigMap or a Secret changed does not count: nothing changed in Cloudflare (`crudHooks.sourceChanged`). A new value
+from a reference does: a Tunnel recreated with a new ID corrects its DNSRecords, as nothing records what the reference
+gave before.
+
 ## Pausing a resource
 
 The annotation `kflare.dev/paused: "true"` makes kflare leave a resource alone, for example while someone fixes its
@@ -375,6 +383,15 @@ error type, `*cloudflare.Error`, for every status, and `errors.go` classifies it
 gives Cloudflare's messages and codes, such as `namespace not found (10013)`, for both SDKs (`cfpkg.ErrorMessage`); the
 returned error, which controller-runtime logs, also names the request.
 
+A failure's condition ends in the response's `cf-ray` ID, which Cloudflare support asks for, and keeps the first one for
+as long as the resource fails the same way (`withRayID`). This is not a detail: kflare's watches have no generation
+predicate, so a change to status reconciles the resource at once, past its back-off. A write that changes nothing is
+dropped by the API server and starts nothing, which is what stops a failing resource, so every message must be the same
+from one attempt to the next. With a new ID in the message each time, one refused call became a loop of hundreds of
+calls a second (`docs/design-notes.md`, [Metrics](docs/design-notes.md#metrics)). The transport logs each attempt's
+ID. v0 reports a 429 or a 5xx with a plain error once its retries run out, so a condition has an ID for those on v7's
+kinds only.
+
 Every controller reconciles one resource at a time, so a call that never returns would stall its kind. Two
 timeouts prevent that:
 
@@ -462,6 +479,25 @@ Cloudflare sends `Ratelimit` on most responses but not all: KV's carried none wh
 refills as it is spent rather than in fixed windows. So the header only ever slows kflare down, and pacing does not
 depend on it. A raised limit has to be set by hand, since the Free plan kflare is tested on cannot show one
 (`docs/design-notes.md`, [Rate limits](docs/design-notes.md#rate-limits)).
+
+## Metrics
+
+kflare's own metrics are in `metrics.Registry`, so they are served with controller-runtime's on the authenticated
+endpoint (deploy.md, [Monitoring](docs/deploy.md#monitoring)). No label holds a resource's name, a zone ID or a URL.
+
+- **API calls.** `pkg/cloudflare`'s `instrumentedTransport` sits inside the rate limit, around the network, so it sees
+  what reaches Cloudflare: every attempt of either SDK, retries included, and not a call kept back or the time one waits
+  for its turn. Each controller's name reaches it in the request's context (`cfpkg.WithController`), which every
+  shared reconciler's `setup` arranges with `withControllerName`; controller-runtime keeps its name in the logger alone.
+  A duration runs to the response's headers, as `http.RoundTripper` returns there.
+- **Resources.** `kflare_resources` counts when scraped, from the manager's cache, so nothing keeps counts between
+  scrapes and they hold across restarts and deletions. Only the leader answers. A standby has none of these informers,
+  and a list would start them all, on a pod meant to sit idle. The list reads the cache's objects without copying them,
+  since nothing here keeps or changes them, and a Worker's inline script alone can be a megabyte. A kind that cannot be
+  listed in 5 seconds, as a new leader's cache may be filling, is left out and logged: controller-runtime answers a
+  scrape with an invalid metric with a 500, which would cost every other metric too.
+- **Corrections.** See [When drift is detected](#when-drift-is-detected). The counter starts at 0 for every kind, so
+  that a rule on its increase sees the first one.
 
 ## Deletion
 

@@ -1006,12 +1006,20 @@ The controller serves controller-runtime's standard Prometheus metrics: `control
 `controller_runtime_reconcile_errors_total` and `controller_runtime_reconcile_timeouts_total` (reconciles that ran
 longer than `reconcileTimeout`), labelled by `controller`, `controller_runtime_reconcile_time_seconds`,
 `workqueue_depth`, and the Go runtime's. Turn on `metrics.serviceMonitor.enabled` to have the Prometheus Operator scrape
-them. It also serves two of its own, about [Cloudflare's API rate limit](#cloudflares-api-rate-limit):
+them. It also serves its own:
 
 | Metric | What it counts |
 |---|---|
+| `kflare_cloudflare_api_requests_total{controller,method,code}` | Requests sent to Cloudflare, each retry among them, by HTTP status, or `code="error"` for one that got no response. A call kept back for the rate limit was never sent, so it does not count |
+| `kflare_cloudflare_api_request_duration_seconds{controller,method}` | How long Cloudflare took to start answering, as a histogram. Time waiting for the rate limit does not count |
 | `kflare_cloudflare_api_rate_limited_total{account}` | 429s from Cloudflare, for each `CloudflareAccount` using the token |
-| `kflare_cloudflare_reconciles_deferred_total{account,reason}` | Reconciles put off because Cloudflare asked kflare to stop (`reason="hold"`), or because the token's budget was used up (`reason="budget"`) |
+| `kflare_cloudflare_reconciles_deferred_total{account,reason}` | Reconciles put off because Cloudflare asked kflare to stop (`reason="hold"`), or because the token's budget was used up (`reason="budget"`). See [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
+| `kflare_resources{kind,ready,reason}` | Resources by the status and reason of their `Ready` condition, as `kubectl get` shows them: `ready="Unknown"` with no reason for one no reconcile has reached. Only the leader serves it, so a sum across pods counts each resource once |
+| `kflare_drift_corrections_total{kind}` | Writes made because Cloudflare differed from a spec that had not changed, so kflare undid a change made outside it (see [What each controller compares](../ARCHITECTURE.md#when-drift-is-detected)) |
+
+`controller` is the name controller-runtime's metrics give the controller, the kind in lower case such as `dnsrecord`,
+so the two can be read together. No label holds a resource's name, a zone ID or a URL, so the number of series stays
+small: `kubectl get` finds the resources behind a number.
 
 The endpoint answers over HTTPS only, and to a bearer token allowed to `get` `/metrics`: a request gets 401 without a
 token the API server accepts, and 403 with one that lacks the permission. The ServiceMonitor scrapes with Prometheus'
@@ -1063,14 +1071,17 @@ spec:
 The controller reloads the certificate when it is renewed. `metrics.serviceMonitor.tlsConfig` replaces the
 ServiceMonitor's TLS settings, for a CA kept elsewhere.
 
-Three things to alert on:
+Four things to alert on:
 
-- **Errors from Cloudflare that kflare retries** (5xx, network failures, timeouts) count as reconcile errors.
-  A rate that stays above zero means kflare cannot reach Cloudflare:
+- **Errors from Cloudflare that kflare retries** (5xx, network failures, timeouts). A rate that stays above zero means
+  kflare cannot reach Cloudflare, or Cloudflare is failing. `controller_runtime_reconcile_errors_total` rises too, but
+  it also counts errors from the Kubernetes API, and does not tell them apart:
 
   ```yaml
-  - alert: KflareReconcileErrors
-    expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{namespace="kflare-system"}[15m])) > 0
+  - alert: KflareCloudflareErrors
+    expr: >-
+      sum by (controller) (rate(kflare_cloudflare_api_requests_total{namespace="kflare-system",code=~"5..|error"}[15m]))
+      > 0
     for: 30m
   ```
 
@@ -1084,13 +1095,32 @@ Three things to alert on:
 
   Reconciles deferred with `reason="budget"` are expected during a large change or after a restart. If they go on for
   hours, the account has more work than its budget: raise `cloudflareRateLimit` or lengthen `driftCheckInterval`.
+  `sum(rate(kflare_cloudflare_api_requests_total[5m])) * 300` shows what kflare sends per five minutes, for all its
+  tokens together.
 
 - **Resources that are not `Ready`.** Errors kflare does not retry, such as a spec Cloudflare refuses or a missing
   token permission (`TerminalError`), and waits such as `AlreadyExists` or a parent that is not ready, do not count as
-  reconcile errors: they show only in the condition. Check the `READY` column after each change, or export the
-  conditions with kube-state-metrics' custom resource state metrics and alert on `Ready` being `False`.
+  reconcile errors. `for` leaves out what clears by itself, such as an `IPList` whose items Cloudflare is replacing:
 
-The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name.
+  ```yaml
+  - alert: KflareResourcesNotReady
+    expr: sum by (kind, reason) (kflare_resources{namespace="kflare-system",ready="False"}) > 0
+    for: 30m
+  ```
+
+- **Changes made outside kflare.** Someone edits by hand what kflare manages, or another tool does. If it never stops,
+  the two keep rewriting the same object, or Cloudflare stores something other than what the spec says. kflare only
+  finds such a change when it reconciles, so set a
+  [drift check interval](#correcting-changes-made-outside-kflare):
+
+  ```yaml
+  - alert: KflareDriftCorrected
+    expr: sum by (kind) (increase(kflare_drift_corrections_total{namespace="kflare-system"}[1h])) > 0
+  ```
+
+The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name. Every response
+from Cloudflare with an error status is logged with its `cfRay`, the ID Cloudflare support asks for. A 404, which kflare
+expects when an object is gone, is logged only with the chart's `logging.level: debug`.
 
 ### Network access
 
@@ -1294,8 +1324,8 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 |---|---|---|
 | `Synced`, `Validated` | In sync with Cloudflare | Nothing |
 | `Paused` | The resource is annotated `kflare.dev/paused: "true"`: kflare leaves it and its Cloudflare object alone, and a deleted one keeps its finalizer. `Ready` keeps the status it had | Remove the annotation to resume (see [Pausing a resource](#pausing-a-resource)) |
-| `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change |
-| `APIError` | Transient failure (5xx, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout` |
+| `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change. For Cloudflare support, the message ends in the ID of the first response that failed this way: `(cf-ray <id>)` |
+| `APIError` | Transient failure (5xx, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout`. One ending in `(cf-ray <id>)` gives the first failure's ID, and the log each attempt's; `CloudflareAccount`, `Zone`, `TunnelConfiguration` and `WorkerScript` show a 5xx's only in the log |
 | `RateLimited` | The resource has work to do, but its API token's budget is used up, or Cloudflare asked kflare to stop | Nothing: kflare carries on by itself. If it lasts, see [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
 | `AccountNotAllowed` | The `CloudflareAccount`'s `spec.allowedNamespaces` leaves out the resource's namespace | Move the resource, or have a cluster administrator [allow the namespace](#limiting-which-namespaces-may-use-an-account) |

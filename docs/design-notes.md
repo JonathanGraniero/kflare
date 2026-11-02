@@ -1560,6 +1560,61 @@ Decided against:
   a change draws on the budget level with a restart's backlog. In a 5,000-item backlog it would wait about as long as
   the backlog does
 
+## Metrics
+
+Why kflare's metrics work as they do (ARCHITECTURE.md's [Metrics](../ARCHITECTURE.md#metrics)). Measured on 2026-11-01
+in envtest (1.34.1); none of it took a Cloudflare account.
+
+**A condition keeps its first `cf-ray` ID.** The issue asked for the ID in the condition message. Under a real manager,
+with one resource refused by a fake API, counting Cloudflare calls for 5 seconds:
+
+| Message | Calls |
+|---|---|
+| The same on every attempt | 2 |
+| A new ID on every attempt | 2,862 |
+
+`For()` sets no generation predicate, so a status write queues a reconcile at once, past the back-off, and the API
+server drops a write that changes nothing. So a terminal error, which is never retried, looped at about 570 calls a
+second. With the real transport the budget would cap that at 3 a second after a burst of 30, spending all of the
+token's budget on one resource, whichever others are waiting. Hence `withRayID`, and `rateLimitedMessage`, which holds
+no time for the same reason.
+
+**The transport logs the IDs, not `handleCloudflareError`.** Errors returned from a deletion reach no condition, and
+each retry has an ID of its own. And cloudflare-go v0.119 does not hand a 429's or a 5xx's over: its retry loop sets a
+plain error (`received bad gateway response (HTTP 502), please try again later`), which it returns once its retries run
+out, so `ServiceError` and `RatelimitError` carry an ID only when built by hand.
+
+**`client.UnsafeDisableDeepCopy`.** One scrape of 5,000 KVNamespaces in a real cache, averaged over 20:
+
+| List | Time | Allocated | Allocations |
+|---|---|---|---|
+| The cache's own objects | 1.06 ms | 1.9 MB | 260 |
+| Copies | 4.85 ms | 8.9 MB | 60,238 |
+
+KVNamespaces are small. Copies grow with the objects: an IPList can hold 10,000 items, and a WorkerScript its code.
+
+Read in controller-runtime v0.25.2 rather than measured: `Elected()` closes once the controllers have started, not once
+their caches have synced, so a scrape may find a cache filling, which is why `Collect` has a timeout of its own; and the
+metrics server answers an invalid metric with a 500 (`promhttp.HTTPErrorOnError`), which is why a kind that cannot be
+counted is left out.
+
+Decided against:
+
+- **promhttp's `InstrumentRoundTripperCounter`:** it counts nothing when `RoundTrip` returns an error, and a request
+  that got no response is what `code="error"` is for
+- **An `account` label on the API metrics:** the transport knows a token, and a token may serve several accounts.
+  Accounts would have to reach it through the context too, and each would multiply the series. The rate limit's own
+  metrics have the label, since that is where it matters
+- **`kflare_cloudflare_api_rate_limited_total{controller}`,** as the issue proposed: #73 shipped it by account, which is
+  what a limit belongs to, and `kflare_cloudflare_api_requests_total{code="429"}` gives the view by controller
+- **The drift counter in kflare-gen,** as the issue proposed: since #125 every comparison is in a shared reconciler or a
+  hook, and nothing generated compares anything
+- **Telling a reference's new value from drift:** nothing records what a reference gave before, so a Tunnel recreated
+  with a new ID counts as a correction of its DNSRecords, as well as of the Tunnel
+
+`kflare_account_token_expiry_timestamp_seconds`, the last row of the issue's table, comes with #74, which reads the
+expiry.
+
 ## Allowed namespaces
 
 Decisions behind `spec.allowedNamespaces` (#77), for one kflare serving several Cloudflare accounts in a shared or

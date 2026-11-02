@@ -1310,12 +1310,14 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			}
 
 			It("writes nothing to Cloudflare once the "+k.noun+" is in sync", func() {
+				before := corrections(k.name)
 				synced(nil)
 				writes, pages := e.store.writes, len(e.store.listPages)
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(e.store.writes).To(Equal(writes))
 				Expect(e.store.listPages).To(HaveLen(pages), "the object is read by its ID, not found in the list")
+				Expect(corrections(k.name)).To(Equal(before), "creating an object corrects nothing")
 			})
 
 			It("schedules a drift check after a sync, once the manager sets an interval", func() {
@@ -1698,11 +1700,12 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 			It("recreates the "+k.noun+" when it was deleted outside kflare", func() {
 				id := synced(nil)
-				writes := e.store.writes
+				writes, before := e.store.writes, corrections(k.name)
 				delete(e.store.objects, id)
 				_, err := reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
 				expectRecreated(id, writes)
+				Expect(corrections(k.name)).To(Equal(before+1), "a correction of drift")
 			})
 
 			It("recreates an adopted "+k.noun+" deleted outside kflare as its own with adopt-or-create", func() {
@@ -1740,7 +1743,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			for _, change := range t.changes {
 				It("updates the "+k.noun+" in place after "+change.what, func() {
 					id := synced(nil)
-					writes := e.store.writes
+					writes, before := e.store.writes, corrections(k.name)
 					obj := get()
 					change.edit(obj)
 					Expect(k8sClient.Update(ctx, obj)).To(Succeed())
@@ -1753,6 +1756,28 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 					Expect(e.matches(obj, &object)).To(BeTrue(), "the object is what the edited spec asks for")
 					Expect(e.store.writes).To(Equal(writes + 1))
 					Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+					Expect(corrections(k.name)).To(Equal(before), "a changed spec is no drift")
+				})
+
+				It("writes the "+k.noun+" back after "+change.what+" made outside kflare", func() {
+					id := synced(nil)
+					stale := e.store.objects[id]
+					obj := get()
+					change.edit(obj)
+					Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+					_, err := reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(ready().Status).To(Equal(metav1.ConditionTrue))
+
+					// Cloudflare now differs from a spec that has not changed.
+					e.store.objects[id] = stale
+					writes, before := e.store.writes, corrections(k.name)
+					_, err = reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					object := e.store.objects[id]
+					Expect(e.matches(get(), &object)).To(BeTrue(), "the object is what the spec asks for again")
+					Expect(e.store.writes).To(Equal(writes + 1))
+					Expect(corrections(k.name)).To(Equal(before + 1))
 				})
 			}
 

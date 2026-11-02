@@ -137,7 +137,7 @@ func (r *CloudflareAccountReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		b = b.Watches(dependent.newObject(), handler.EnqueueRequestsFromMapFunc(r.deletingAccountOf),
 			builder.WithPredicates(deletesOnly))
 	}
-	return b.Complete(r)
+	return b.Complete(withControllerName("CloudflareAccount", r))
 }
 
 // accountsForSecret maps a Secret event to reconcile.Requests for every

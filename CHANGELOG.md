@@ -14,7 +14,8 @@ Cloudflare's limit. If Cloudflare raised your limit, set the chart's `cloudflare
 `kflare_cloudflare_api_rate_limited_total` instead. The deploy guide has
 [an example](docs/deploy.md#monitoring).
 
-No manifest changes. `spec.allowedNamespaces` changes nothing until you set it. The manager's ClusterRole gains `get`,
+No manifest changes. `spec.allowedNamespaces` changes nothing until you set it. A Cloudflare error's condition message
+now ends in `(cf-ray <id>)`, so check anything that matches one exactly. The manager's ClusterRole gains `get`,
 `list` and `watch` on Namespaces, and `CloudflareAccount`'s CRD gains two optional fields: if you manage the CRDs
 yourself (`crds.enabled=false`), apply `config/crd/bases` first.
 
@@ -34,6 +35,15 @@ yourself (`crds.enabled=false`), apply `config/crd/bases` first.
   `CloudflareAccount` included, whose going not-ready used to stop everything using it. Any other reports the new reason
   `RateLimited`
 - Two metrics: `kflare_cloudflare_api_rate_limited_total` and `kflare_cloudflare_reconciles_deferred_total`, by account
+- **kflare's own metrics.** `kflare_cloudflare_api_requests_total` and
+  `kflare_cloudflare_api_request_duration_seconds` show what each controller sends to Cloudflare and how it answers, for
+  both SDKs, `kflare_resources` how many resources are `Ready` and why not, by kind, and
+  `kflare_drift_corrections_total` how often kflare undoes a change made outside it. So an alert no longer needs
+  kube-state-metrics to see a resource that is not `Ready`, and can tell Cloudflare failing from the Kubernetes API
+  failing. The deploy guide's [alert examples](docs/deploy.md#monitoring) use them.
+  ([#75](https://github.com/JonathanGraniero/kflare/issues/75))
+- **A failure now gives Cloudflare's `cf-ray` ID,** which Cloudflare support asks for: the log for each response with an
+  error status, and a `TerminalError` or `APIError` condition for the first response that failed that way
 - **A `CloudflareAccount` can limit which namespaces may use it.** With `spec.allowedNamespaces`, a label selector picks
   the namespaces, the way a Gateway API listener's `allowedRoutes` does. A resource in any other namespace reports
   reason `AccountNotAllowed`, and kflare makes no Cloudflare call for it, so a team that can edit its own namespace can

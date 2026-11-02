@@ -38,7 +38,9 @@ namespaces may use it (see
 [Limiting which namespaces may use an account](docs/deploy.md#limiting-which-namespaces-may-use-an-account)). Argo CD
 and Flux judge kflare resources by their `Ready` condition with the health checks the deploy guide gives them, so sync
 waves and `dependsOn` wait for them (see
-[Health checks in Argo CD and Flux](docs/deploy.md#health-checks-in-argo-cd-and-flux)).
+[Health checks in Argo CD and Flux](docs/deploy.md#health-checks-in-argo-cd-and-flux)). kflare's own metrics show its
+calls to Cloudflare, how many resources are `Ready`, and how often it undoes a change made outside it (see
+[Monitoring](docs/deploy.md#monitoring)).
 
 ## Next
 
@@ -57,8 +59,6 @@ them:
 
 - **A token's expiry** on its `CloudflareAccount`, and the token checked again on a schedule
   ([#74](https://github.com/JonathanGraniero/kflare/issues/74))
-- **kflare's own metrics**: Cloudflare API calls, rate limiting, readiness and drift
-  ([#75](https://github.com/JonathanGraniero/kflare/issues/75))
 
 ## Waiting on something
 

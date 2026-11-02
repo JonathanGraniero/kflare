@@ -185,6 +185,9 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	if state.moved {
 		logger.Info("Reordered rules", "zoneID", zoneID, "phase", phase)
 	}
+	if state.wrote || state.moved {
+		recordDriftCorrection(r.kind.name, obj)
+	}
 
 	obj.GetRulesetRuleStatus().CloudflareMetadata = cloudflarev1alpha1.RulesetRuleCloudflareMetadata{
 		ZoneID:    zoneID,
@@ -345,7 +348,7 @@ func (r *rulesetRuleReconciler) setup(mgr ctrl.Manager, rec reconcile.Reconciler
 		b = b.Watches(kind.newObject(), handler.EnqueueRequestsFromMapFunc(r.rulesInZoneOfDeleted),
 			builder.WithPredicates(deletesOnly))
 	}
-	return b.Complete(rec)
+	return b.Complete(withControllerName(r.kind.name, rec))
 }
 
 // deletionsWatched returns the rule kinds whose deletions the kind's

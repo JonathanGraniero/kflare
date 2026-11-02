@@ -165,6 +165,7 @@ func syncZonePlan(ctx context.Context, c client.Client, api ZoneAPI, zone *cloud
 		result, err := handleCloudflareError(ctx, c, zone, err)
 		return result, true, err
 	}
+	recordDriftCorrection("Zone", zone)
 	log.FromContext(ctx).Info("Changed zone plan", "zoneID", current.ID, "from", current.Plan.LegacyID,
 		"to", zone.Spec.Plan)
 

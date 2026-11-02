@@ -77,7 +77,7 @@ With:
 ├── cmd/main.go            # Manager entrypoint; registers every controller
 ├── internal/controller/   # One reconciler per CRD (+ credentials.go), envtest suites alongside
 ├── pkg/
-│   ├── cloudflare/        # Client wrapper, error classification and each API token's rate limit
+│   ├── cloudflare/        # Client wrapper, error classification, each API token's rate limit and the API metrics
 │   ├── metricsauth/       # Authenticates and authorizes metrics requests (TokenReview, SubjectAccessReview)
 │   └── reconciler/        # Conditions, finalizer and deletion-policy helpers
 ├── config/
@@ -149,6 +149,13 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
     returns `rateLimited` when told to wait (`cleanupDeferred` in a deletion's cleanup), so that it gives its worker
     back. Every call goes through the transport regardless (`pkg/cloudflare/ratelimit.go`; ARCHITECTURE.md's Rate
     limits)
+13. **Metrics** — a path that writes to Cloudflare on a difference calls `recordDriftCorrection` once the write
+    succeeds; a write that follows something other than the spec, as a Worker's follows its ConfigMap, stays out of it
+    (`crudHooks.sourceChanged`). A controller's `Complete` goes through `withControllerName`. No label holds a
+    resource's name, an ID or a URL (`internal/controller/metrics.go`; ARCHITECTURE.md's Metrics)
+14. **Condition messages** — a message stays the same from one attempt to the next: no times, counts or request IDs. A
+    status write that changes something reconciles the resource at once, past its back-off, so a message that changes
+    on each attempt calls Cloudflare in a loop (`withRayID`; docs/design-notes.md's Metrics)
 
 ---
 
