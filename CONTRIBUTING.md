@@ -75,11 +75,15 @@ Point kubectl at a kind cluster, install the CRDs and run the manager on your ma
 
 ```sh
 export CF_API_TOKEN=<token> CF_ACCOUNT_ID=<account ID>
-./local/setup.sh      # kind cluster, CRDs, a token Secret and a CloudflareAccount named my-account
+./local/setup.sh      # kind cluster, CRDs, a token Secret, a CloudflareAccount named my-account and Argo CD
 make run              # the manager, against the current kubeconfig
 kubectl get cloudflareaccount my-account   # Ready=True once the token is valid
 ./local/teardown.sh   # when you are done
 ```
+
+`setup.sh` also installs Argo CD (`local/argocd.sh`) with kflare's health check, to watch kflare resources sync in its
+UI; the script prints how to open it. `INSTALL_ARGOCD=0 ./local/setup.sh` leaves it out, and `./local/argocd.sh` adds
+it to a cluster you already have (`./local/argocd.sh uninstall` removes it again).
 
 kflare creates only what you apply, and takes over nothing that already exists unless a resource carries
 `kflare.dev/adoption-policy` (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). Still, use a test

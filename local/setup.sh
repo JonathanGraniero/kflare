@@ -52,6 +52,10 @@ spec:
     key: CF_API_TOKEN
 EOF
 
+if [[ "${INSTALL_ARGOCD:-1}" != 0 ]]; then
+  "$SCRIPT_DIR/argocd.sh" install
+fi
+
 echo ""
 echo "==> Cluster ready. Run the controller with:"
 echo "    make run"
