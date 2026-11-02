@@ -266,6 +266,7 @@ var _ = Describe("Rule controller", func() {
 			Expect(order()).To(Equal([]string{"b", "c", "a"}))
 
 			By("moving the rules when a priority changes, and checking again shortly")
+			before := corrections("WAFCustomRule")
 			rule := getRule(key("a"))
 			rule.Spec.Priority = 0
 			Expect(k8sClient.Update(ctx, rule)).To(Succeed())
@@ -274,6 +275,26 @@ var _ = Describe("Rule controller", func() {
 			Expect(result.RequeueAfter).To(Equal(rulesetRuleRecheckInterval))
 			Expect(order()).To(Equal([]string{"a", "b", "c"}))
 			Expect(fake.writes).To(Equal(3), "moving rules does not rewrite them")
+			Expect(corrections("WAFCustomRule")).To(Equal(before), "a changed spec is no drift")
+		})
+
+		It("counts putting rules back in order, after someone moved them, as a correction", func() {
+			readyEnv()
+			createRule(ns, "a", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 10 })
+			createRule(ns, "b", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 1 })
+			for _, k := range []types.NamespacedName{key("a"), key("b")} {
+				_, err := reconcileRule(k)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(order()).To(Equal([]string{"b", "a"}))
+
+			rules := fake.entrypoint().rules
+			rules[0], rules[1] = rules[1], rules[0]
+			before := corrections("WAFCustomRule")
+			_, err := reconcileRule(key("a"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(order()).To(Equal([]string{"b", "a"}))
+			Expect(corrections("WAFCustomRule")).To(Equal(before + 1))
 		})
 
 		It("checks the order again shortly after moving rules, whatever the drift check interval", func() {

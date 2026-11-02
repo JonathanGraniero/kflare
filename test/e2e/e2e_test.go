@@ -202,6 +202,8 @@ var _ = Describe("controller-manager", func() {
 		_, body, err := get("https", reader)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(body).To(ContainSubstring("controller_runtime_reconcile_total"))
+		By("serving kflare's own, whose corrections every kind has from the start")
+		Expect(body).To(ContainSubstring(`kflare_drift_corrections_total{kind="DNSRecord"}`))
 	})
 
 	It("lets through only DNS, the API server and port 443 under the NetworkPolicy", func() {

@@ -310,6 +310,7 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				sample := specs.samples[change.sample]
 				createSynced(name, sample.spec)
 				ruleID := storedRule(sample.phase, name).id()
+				before := corrections(kind)
 
 				Expect(replaceSpec(name, change.spec)).To(Succeed())
 				expectGitOpsHealth(get(name), gitopshealth.ArgoCDProgressing, gitopshealth.FluxInProgress)
@@ -320,6 +321,7 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				Expect(rule.id()).To(Equal(ruleID))
 				Expect(comparableStoredRule(rule)).To(Equal(comparableJSONRule(change.rule)))
 				Expect(get(name).GetRulesetRuleStatus().CloudflareMetadata.Version).To(Equal("2"))
+				Expect(corrections(kind)).To(Equal(before), "a changed spec is no drift")
 
 				// The resource goes again, so that a kind with many changes in a
 				// phase stays within its quota.
@@ -328,6 +330,32 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(holdsRule(sample.phase, name)).To(BeFalse())
 			}
+		})
+
+		It("writes a rule changed or deleted outside kflare again, and counts each as a correction", func() {
+			sample := specs.samples[0]
+			createSynced("drift", sample.spec)
+			want := comparableStoredRule(storedRule(sample.phase, "drift"))
+
+			By("changing it")
+			storedRule(sample.phase, "drift")["description"] = "changed outside kflare"
+			before := corrections(kind)
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("drift")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comparableStoredRule(storedRule(sample.phase, "drift"))).To(Equal(want))
+			Expect(corrections(kind)).To(Equal(before + 1))
+
+			By("deleting it")
+			fake.entrypointIn(sample.phase).rules = nil
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key("drift")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comparableStoredRule(storedRule(sample.phase, "drift"))).To(Equal(want))
+			Expect(corrections(kind)).To(Equal(before + 2))
+
+			By("counting nothing once it is back")
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key("drift")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(corrections(kind)).To(Equal(before + 2))
 		})
 
 		It("deletes the rule with the resource, and keeps it with the retain policy", func() {

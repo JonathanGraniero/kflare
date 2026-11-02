@@ -135,6 +135,9 @@ var workerScriptKind = crudResourceKind[*cloudflarev1alpha1.WorkerScript, Worker
 	hooks: crudHooks[*cloudflarev1alpha1.WorkerScript, WorkerScriptAPI, workerScriptObject]{
 		resolve: resolveWorkerUpload,
 		gone:    func(current *workerScriptObject) bool { return current.ID == "" },
+		sourceChanged: func(obj *cloudflarev1alpha1.WorkerScript, refs map[string]string) bool {
+			return refs[workerHashValue] != obj.Status.AppliedHash
+		},
 		find: func(ctx context.Context, _ client.Client, api WorkerScriptAPI, obj *cloudflarev1alpha1.WorkerScript,
 			accountID string, _ map[string]string) (string, *workerScriptObject, error) {
 			found, err := listedWorker(ctx, api, accountID, obj.Spec.Name)

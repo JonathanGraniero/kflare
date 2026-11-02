@@ -265,6 +265,7 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, zo
 		if err := k.write(ctx, api, zoneID, obj, ids); err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
 		}
+		recordDriftCorrection(k.name, obj)
 		logger.Info("Wrote the "+k.noun, keys...)
 	}
 
@@ -429,7 +430,7 @@ func (r *settingsReconciler[A]) setup(mgr ctrl.Manager, rec reconcile.Reconciler
 		Watches(&cloudflarev1alpha1.Zone{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForZone)).
 		Watches(r.kind.newObject(), handler.EnqueueRequestsFromMapFunc(r.othersInZoneOf),
 			builder.WithPredicates(deletesOnly)).
-		Complete(rec)
+		Complete(withControllerName(r.kind.name, rec))
 }
 
 // resourcesForZone maps a Zone event to the kind's resources that use it.

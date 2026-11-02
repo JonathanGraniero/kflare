@@ -685,10 +685,12 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			createSynced("drift", specs.samples[0].spec)
 			fake.seed(zoneID, specs.unconfigured)
 			writes, before := len(fake.writes), fake.snapshot(zoneID)
+			counted := corrections(specs.kind.name)
 			_, err := reconcileOnce("drift")
 			Expect(err).NotTo(HaveOccurred())
 			fake.expectWritten(specs.kind.byID, writes, before, specs.samples[0].settings)
 			Expect(holds(specs.samples[0].settings)).To(BeTrue())
+			Expect(corrections(specs.kind.name)).To(Equal(counted + 1))
 		})
 
 		It("writes the settings again when the spec changes", func() {
@@ -700,11 +702,13 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 				Expect(replaceSpec(name, change.spec)).To(Succeed())
 				expectGitOpsHealth(get(name), gitopshealth.ArgoCDProgressing, gitopshealth.FluxInProgress)
 				writes, before := len(fake.writes), fake.snapshot(zoneID)
+				counted := corrections(specs.kind.name)
 				_, err := reconcileOnce(name)
 				Expect(err).NotTo(HaveOccurred())
 				expectGitOpsHealth(get(name), gitopshealth.ArgoCDHealthy, gitopshealth.FluxCurrent)
 				fake.expectWritten(specs.kind.byID, writes, before, change.settings)
 				Expect(holds(change.settings)).To(BeTrue())
+				Expect(corrections(specs.kind.name)).To(Equal(counted), "a changed spec is no drift")
 				deleteAndReconcile(name)
 			}
 		})
