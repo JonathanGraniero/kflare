@@ -10,7 +10,7 @@ Questions about installing or using kflare, and ideas, go to
 
 Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md). [GOVERNANCE.md](GOVERNANCE.md) says how
 decisions are made and how contributors become reviewers and maintainers, who are listed in
-[MAINTAINERS.md](MAINTAINERS.md).
+[MAINTAINERS.md](MAINTAINERS.md). If you run kflare, adding yourself to [ADOPTERS.md](ADOPTERS.md) helps too.
 
 ## What you need
 
@@ -198,7 +198,8 @@ A change to how a controller behaves comes with:
 - Branch from `main`: `feat/<name>` for features, `fix/<name>` for fixes, `docs/<name>` for documentation
 - One change per pull request, against `main`. Don't base a pull request on another open one; wait for it to merge
 - Merge `main` into your branch if it falls behind, rather than rebasing a branch others may have pulled
-- Describe what changed and how you checked it: the tests, and for live behavior, what you ran against Cloudflare
+- Describe what changed and how you checked it: the tests, and for live behavior, what you ran against Cloudflare.
+  The pull request template ([.github/pull_request_template.md](.github/pull_request_template.md)) lists the checks
 - `main` is protected: every change lands through a pull request whose checks (CI, the E2E smoke tests and the
   dependency review) pass on a branch up to date with `main`. A code owner ([.github/CODEOWNERS](.github/CODEOWNERS))
   reviews and merges it
