@@ -177,6 +177,7 @@ kflare is developed with AI assistance (Claude Code). What keeps it honest:
 - [Security](SECURITY.md): reporting a vulnerability
 - [Governance](GOVERNANCE.md) and [maintainers](MAINTAINERS.md): who decides, and how to become a maintainer
 - [Code of Conduct](CODE_OF_CONDUCT.md): the Contributor Covenant, which every space of the project follows
+- [Adopters](ADOPTERS.md): who runs kflare; add yourself with a pull request
 
 ## Sponsoring kflare
 

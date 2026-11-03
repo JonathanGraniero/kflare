@@ -102,6 +102,7 @@ With:
 ├── CHANGELOG.md           # Release notes; a release's section is its GitHub release's notes
 ├── GOVERNANCE.md          # Roles, decision making, becoming a maintainer; MAINTAINERS.md lists them
 ├── CODE_OF_CONDUCT.md     # Contributor Covenant 2.1; reports to conduct@kflare.dev
+├── ADOPTERS.md            # Who runs kflare, added by pull request
 ├── CLAUDE.md              # This file
 └── Makefile
 ```
