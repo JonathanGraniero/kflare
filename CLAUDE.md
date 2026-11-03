@@ -77,16 +77,19 @@ With:
 ├── cmd/main.go            # Manager entrypoint; registers every controller
 ├── internal/controller/   # One reconciler per CRD (+ credentials.go), envtest suites alongside
 ├── pkg/
-│   ├── cloudflare/        # Client wrapper, error classification and each API token's rate limit
+│   ├── cloudflare/        # Client wrapper, error classification, each API token's rate limit and the API metrics
 │   ├── metricsauth/       # Authenticates and authorizes metrics requests (TokenReview, SubjectAccessReview)
 │   └── reconciler/        # Conditions, finalizer and deletion-policy helpers
 ├── config/
 │   ├── crd/               # Generated CRDs (make manifests) + kustomization
 │   ├── rbac/              # Generated role.yaml + kustomize RBAC
 │   ├── default/           # Kustomize base used by make deploy
+│   ├── argocd/, flux/     # Health checks for Argo CD (health.lua) and Flux (healthCheckExprs), with their tests
 │   └── samples/           # Example CRs
 ├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e)
-├── local/                 # kind cluster setup for running the controller with make run
+├── test/gitopshealth/     # Runs the Argo CD and Flux health checks as those tools do, for their tests and the specs
+├── local/                 # kind cluster setup for running the controller with make run; Argo CD and Prometheus
+│                          #   (prometheus.sh: Grafana's kflare dashboard, scraping the e2e suite's manager)
 ├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
 ├── helm/artifacthub-repo.yml  # Artifact Hub metadata; the Artifact Hub workflow pushes it (verified publisher)
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);
@@ -97,6 +100,8 @@ With:
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
 ├── CHANGELOG.md           # Release notes; a release's section is its GitHub release's notes
+├── GOVERNANCE.md          # Roles, decision making, becoming a maintainer; MAINTAINERS.md lists them
+├── CODE_OF_CONDUCT.md     # Contributor Covenant 2.1; reports to conduct@kflare.dev
 ├── CLAUDE.md              # This file
 └── Makefile
 ```
@@ -112,7 +117,10 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    that was not `Ready`: see `internal/controller/ratelimit.go`); credential reasons from `credentials.go`
    (`AccountNotFound`, `AccountNotAllowed`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a
    minute); `Paused`
-   (the status kept, see convention 11)
+   (the status kept, see convention 11). A new reason goes into `readyReasons` (`test/gitopshealth`), and, if a person
+   must act on it, into the Argo CD and Flux health checks' lists (`config/argocd/health.lua`,
+   `config/flux/health-check-exprs.yaml`, and deploy.md's copies); its test finds a reason the controllers set that
+   the table lacks
 2. **Status fields** — every CRD status has `conditions []metav1.Condition` and a `cloudflareMetadata` block
 3. **References** — foreign-key relationships use `*Ref` fields (e.g., `zoneRef`, `tunnelRef`) not raw IDs
 4. **Adoption** — a resource creates its Cloudflare object, and takes over an existing one with its key only when its
@@ -142,6 +150,13 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
     returns `rateLimited` when told to wait (`cleanupDeferred` in a deletion's cleanup), so that it gives its worker
     back. Every call goes through the transport regardless (`pkg/cloudflare/ratelimit.go`; ARCHITECTURE.md's Rate
     limits)
+13. **Metrics** — a path that writes to Cloudflare on a difference calls `recordDriftCorrection` once the write
+    succeeds; a write that follows something other than the spec, as a Worker's follows its ConfigMap, stays out of it
+    (`crudHooks.sourceChanged`). A controller's `Complete` goes through `withControllerName`. No label holds a
+    resource's name, an ID or a URL (`internal/controller/metrics.go`; ARCHITECTURE.md's Metrics)
+14. **Condition messages** — a message stays the same from one attempt to the next: no times, counts or request IDs. A
+    status write that changes something reconciles the resource at once, past its back-off, so a message that changes
+    on each attempt calls Cloudflare in a loop (`withRayID`; docs/design-notes.md's Metrics)
 
 ---
 
@@ -897,6 +912,11 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - Verified by installing on kind with a live token: account Ready, Secret protection finalizer, upgrade,
     uninstall keeping CRDs
 - [x] Chart listed on ArtifactHub (L6, 2026-10-21; verified publisher)
+- [ ] Argo CD and Flux health checks (#83, `feat/argocd-health-checks`): deploy.md's Lua script for `argocd-cm` and
+  `healthCheckExprs` for Flux, tested in CI in Argo CD's format and on the conditions the shared specs' controllers
+  write. Tried on an Argo CD and a Flux on kind on 2026-11-01, against a stand-in for Cloudflare's API
+  ([design notes](docs/design-notes.md#health-checks-in-argo-cd-and-flux)). Left: a run against Cloudflare itself, one
+  on Kubernetes 1.34 or newer, and, the maintainer's call, contributing the script to Argo CD
 - [ ] Kustomize component overlays for common patterns (tunnel + DNS combo, zero-trust stack)
 - [ ] Docusaurus documentation site
   - Getting Started

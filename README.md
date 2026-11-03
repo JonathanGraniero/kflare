@@ -116,7 +116,9 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 
 - **Install it like any other platform component.** Pin the chart version, keep your values in git, and let Argo CD or
   Flux install it; the guide has an `Application` and a `HelmRelease` to start from. The chart installs and upgrades
-  the CRDs, keeps them on uninstall, and runs under the restricted Pod Security Standard.
+  the CRDs, keeps them on uninstall, and runs under the restricted Pod Security Standard. The guide also has health
+  checks for Argo CD and Flux, so that an application turns Degraded when Cloudflare refuses a resource, and sync
+  waves wait for one to be ready.
 - **Releases are signed** (from v0.2.1): the image and the chart with cosign, keyless, with SBOMs
   and provenance, so that cosign, an admission policy or Flux can check them; the guide has a Kyverno policy.
 - **One installation per cluster**, with leader election. A HorizontalPodAutoscaler adds standby replicas while the
@@ -133,7 +135,8 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 - **One installation can serve many Cloudflare accounts.** Each API token stays within Cloudflare's rate limit, and an
   account past its limit holds up no other
   ([deploy guide](docs/deploy.md#several-cloudflare-accounts)).
-- **Every resource reports a single `Ready` condition** with a reason, and the controller serves Prometheus metrics.
+- **Every resource reports a single `Ready` condition** with a reason, and the controller serves
+  [Prometheus metrics](docs/deploy.md#monitoring): Cloudflare API calls, rate limits, readiness and drift.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how kflare finds, owns, corrects and deletes Cloudflare objects, and its
 known limitations. One to know up front: a change made in the Cloudflare dashboard is corrected on the next
@@ -172,6 +175,8 @@ kflare is developed with AI assistance (Claude Code). What keeps it honest:
 - [Discussions](https://github.com/JonathanGraniero/kflare/discussions): questions, ideas and feedback
 - [Contributing](CONTRIBUTING.md): building, testing and the live suite
 - [Security](SECURITY.md): reporting a vulnerability
+- [Governance](GOVERNANCE.md) and [maintainers](MAINTAINERS.md): who decides, and how to become a maintainer
+- [Code of Conduct](CODE_OF_CONDUCT.md): the Contributor Covenant, which every space of the project follows
 
 ## License
 

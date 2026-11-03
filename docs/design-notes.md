@@ -1560,6 +1560,61 @@ Decided against:
   a change draws on the budget level with a restart's backlog. In a 5,000-item backlog it would wait about as long as
   the backlog does
 
+## Metrics
+
+Why kflare's metrics work as they do (ARCHITECTURE.md's [Metrics](../ARCHITECTURE.md#metrics)). Measured on 2026-11-01
+in envtest (1.34.1); none of it took a Cloudflare account.
+
+**A condition keeps its first `cf-ray` ID.** The issue asked for the ID in the condition message. Under a real manager,
+with one resource refused by a fake API, counting Cloudflare calls for 5 seconds:
+
+| Message | Calls |
+|---|---|
+| The same on every attempt | 2 |
+| A new ID on every attempt | 2,862 |
+
+`For()` sets no generation predicate, so a status write queues a reconcile at once, past the back-off, and the API
+server drops a write that changes nothing. So a terminal error, which is never retried, looped at about 570 calls a
+second. With the real transport the budget would cap that at 3 a second after a burst of 30, spending all of the
+token's budget on one resource, whichever others are waiting. Hence `withRayID`, and `rateLimitedMessage`, which holds
+no time for the same reason.
+
+**The transport logs the IDs, not `handleCloudflareError`.** Errors returned from a deletion reach no condition, and
+each retry has an ID of its own. And cloudflare-go v0.119 does not hand a 429's or a 5xx's over: its retry loop sets a
+plain error (`received bad gateway response (HTTP 502), please try again later`), which it returns once its retries run
+out, so `ServiceError` and `RatelimitError` carry an ID only when built by hand.
+
+**`client.UnsafeDisableDeepCopy`.** One scrape of 5,000 KVNamespaces in a real cache, averaged over 20:
+
+| List | Time | Allocated | Allocations |
+|---|---|---|---|
+| The cache's own objects | 1.06 ms | 1.9 MB | 260 |
+| Copies | 4.85 ms | 8.9 MB | 60,238 |
+
+KVNamespaces are small. Copies grow with the objects: an IPList can hold 10,000 items, and a WorkerScript its code.
+
+Read in controller-runtime v0.25.2 rather than measured: `Elected()` closes once the controllers have started, not once
+their caches have synced, so a scrape may find a cache filling, which is why `Collect` has a timeout of its own; and the
+metrics server answers an invalid metric with a 500 (`promhttp.HTTPErrorOnError`), which is why a kind that cannot be
+counted is left out.
+
+Decided against:
+
+- **promhttp's `InstrumentRoundTripperCounter`:** it counts nothing when `RoundTrip` returns an error, and a request
+  that got no response is what `code="error"` is for
+- **An `account` label on the API metrics:** the transport knows a token, and a token may serve several accounts.
+  Accounts would have to reach it through the context too, and each would multiply the series. The rate limit's own
+  metrics have the label, since that is where it matters
+- **`kflare_cloudflare_api_rate_limited_total{controller}`,** as the issue proposed: #73 shipped it by account, which is
+  what a limit belongs to, and `kflare_cloudflare_api_requests_total{code="429"}` gives the view by controller
+- **The drift counter in kflare-gen,** as the issue proposed: since #125 every comparison is in a shared reconciler or a
+  hook, and nothing generated compares anything
+- **Telling a reference's new value from drift:** nothing records what a reference gave before, so a Tunnel recreated
+  with a new ID counts as a correction of its DNSRecords, as well as of the Tunnel
+
+`kflare_account_token_expiry_timestamp_seconds`, the last row of the issue's table, comes with #74, which reads the
+expiry.
+
 ## Allowed namespaces
 
 Decisions behind `spec.allowedNamespaces` (#77), for one kflare serving several Cloudflare accounts in a shared or
@@ -1580,3 +1635,84 @@ management cluster:
 - **Namespaces are watched only by kinds that name an account.** A zone's kind follows its Zone, and a relabelling that
   no account's selector concerns reconciles nothing, so it costs no Cloudflare calls
 
+## Health checks in Argo CD and Flux
+
+Decisions behind the deploy guide's health checks (#83), and what was checked, on 2026-11-01:
+
+- **One script for every kind**, under `resource.customizations`' `kflare.dev/*` key, the only kind of key Argo CD
+  takes a wildcard in (its v3.5.6 `util/lua` falls back to a wildcard match on the overrides when no exact key matches,
+  and `argocd admin settings resource-overrides health` goes through the same lookup). Every kind reports the same
+  `Ready` condition through `internal/controller/status.go`, so one script fits them all
+- **No string library.** Argo CD opens only `package`, `base` and `table` (and a safe part of `os`) for a script in
+  `argocd-cm` unless `useOpenLibs` is set, which loosens its sandbox: so no suffix match on `Conflict`, and the reasons
+  a person must act on are listed one by one
+- **The generation is the condition's.** kflare sets `observedGeneration` on `Ready`, not `status.observedGeneration`.
+  A resource whose spec changed is Progressing until kflare reconciles it, so an application does not turn Healthy on
+  the old spec's result, and a fixed spec stops being Degraded at once
+- **Degraded is for what waits on a person**: Cloudflare's refusals, conflicts with another resource, adoption, and
+  settings that do not fit. Everything kflare retries or waits out (`APIError`, `RateLimited`, a parent missing or not
+  ready, a Secret or ConfigMap not there yet) is Progressing, which is also what a reason the script does not know
+  gets. A key missing from a Secret or ConfigMap that exists is Degraded, as no tool fills one in later
+- **Paused is Suspended**, as Argo CD reports a paused Deployment or a suspended CronJob. A sync wave waits for a
+  Suspended resource as it does for a Progressing one (gitops-engine's sync settles a running task only on Healthy or
+  Degraded)
+- **Deletion is not judged.** Argo CD v3.5 reports a resource with a deletion timestamp as Progressing ("Pending
+  deletion") before running any check; a `deletionMessage`, which would let a check say why kflare holds a deletion
+  back, is only on Argo CD's main branch
+- **Flux needs its own check.** kstatus reads `status.observedGeneration` and the `Ready` condition's status only: it
+  takes a resource without any condition, or one whose `Ready` is `True` from an older generation, for Current, and a
+  `Ready=False` for InProgress until the timeout. `healthCheckExprs` (Flux 2.5 for a Kustomization, 2.8 for a
+  HelmRelease, and an entry without a kind from 2.9, read in the controllers' docs at their release tags) give it the
+  script's rules. Until kflare writes a resource's first status, the expressions cannot read `status`, and Flux reports
+  the resource Unknown and waits (the status reader's error path in `fluxcd/cli-utils`). Flux has no Suspended, so a
+  paused resource is Current while the pause keeps it `Ready` for its current generation
+- **Tested the way the tools run them.** `test/gitopshealth` runs the script with gopher-lua v1.1.2 (Argo CD v3.5.6's
+  version) as `util/lua`'s `ExecuteHealthLua` does, and the expressions with cel-go in the environment of
+  `fluxcd/pkg/runtime/cel`, both read at those versions. The cases follow Argo CD's `health_test.yaml` format, and the
+  API server (envtest) accepts each input, which caught an `IPList` field that does not exist. The shared specs of
+  every generated kind check both on what the controllers write: synced, a changed spec, a refusal, an API error, an
+  existing object without a policy, an account not ready, a conflict, and a pause. `hack/mutate.sh` made 48 mutations
+  of the script, the expressions and the evaluators (each reason dropped from a list, each branch and message
+  changed), and the tests caught all of them once `TestDegradedNeedsReadyFalse` pinned that only `Ready=False` is
+  Degraded
+- **Tried on kind on 2026-11-01**, on the dev cluster, with Argo CD v3.5.6, Flux v2.10.0, the manager on the host and a
+  local stand-in for Cloudflare's API: `HTTPS_PROXY` and `SSL_CERT_FILE` on an unchanged manager, a dummy token, and
+  every host but `api.cloudflare.com` refused, so nothing reached Cloudflare. It refused routes as the live API did
+  (10022). The cluster is Kubernetes 1.29.2, below the 1.34 floor, as a third cluster hits the inotify limit; the chart
+  needs 1.34, so neither tool installed it:
+  - Stock Argo CD kept an application Healthy with a `WorkerRoute` at `TerminalError`. deploy.md's block turned it
+    Degraded with no restart, at the next refresh, 3 min 39 s later
+  - deploy.md's sync-wave example held wave 1 for 1 min 45 s while the Zone got 503s, and created the DNSRecord in the
+    second the Zone turned Ready, then the Deployment. Without the check, both were applied at once
+  - A spec changed with the manager stopped was Progressing ("Waiting for kflare to reconcile generation 2"), with the
+    sync held, and Healthy once the manager went on. A paused Zone held its wave as Suspended
+  - The released `argocd` binary (`argocd admin settings resource-overrides health`), with the script from deploy.md,
+    gave `health_test.yaml`'s status and message for its 16 cases, and what `test/gitopshealth` gives for 548 inputs:
+    each reason by status and generation, and edge cases. Argo CD's own `TestLuaHealthScript` was not run: running its
+    source was refused here too
+  - The manager drove 23 resources of 8 kinds to 17 reasons, each of which took the health `readyReasons` gives it.
+    They include `CloudflareAccount`, `TunnelConfiguration` and `WorkerScript`, whose specs are not the shared ones
+  - Stock Flux took a resource kflare had never seen for ready in 2 seconds (a HelmRelease in 1), and a `Ready` from an
+    older generation too, and waited out its timeout on a refusal. With the expressions, a refusal failed a
+    Kustomization in 5 seconds and a HelmRelease in 7, both waited for a resource without a status, a Kustomization
+    waited on an older generation, and `dependsOn` held the next one until the Zone was ready. kustomize-controller
+    gave the status `test/gitopshealth` gives for every row of `readyReasons`, an object each, Failed for the 19
+    reasons of `health.lua`'s list. Each release's CRDs confirm the versions above: `kind` required from 2.5 to 2.8,
+    optional from 2.9, and `healthCheckExprs` on a HelmRelease from 2.8
+- **`argocd-cm` is patched, not applied.** Over an `argocd-cm` last applied client-side, `kubectl apply` of a block
+  without its labels removed them and its other 8 keys. Argo CD reads only ConfigMaps labelled
+  `app.kubernetes.io/part-of: argocd`, so it logged `configmap "argocd-cm" not found` and reported applications Unknown.
+  A server-side install kept both, and `kubectl patch --patch-file` kept both in either case
+- **Degraded fails a sync only before the last wave.** In the last one, or in an application without waves, the sync
+  Succeeded and the application was Degraded, and with a later wave the sync failed and held that wave back
+- **A held wave has no time limit**, as `controller.sync.timeout.seconds` defaults to 0 and Argo CD's `autoSync` starts
+  nothing while an operation runs: a commit fixing a typo'd `zoneRef` or a pause stayed unapplied, and the sync pinned
+  to the old revision, until someone ended it. `argocd app terminate-op` and unpausing on the live object both did. A
+  resource at `TerminalError` does not get stuck like this: its sync fails, and a fix in git landed by itself in 61
+  seconds. Missing parents stay Progressing, as #83 proposes: one may be on its way, in an earlier wave or another
+  application. So for them nothing is Degraded, and the guide says how to get out
+- **Not checked yet**: a run against Cloudflare itself, so the test inputs' statuses are not from a live run as #83
+  proposes, and Kubernetes 1.34 or newer
+- **Not contributed to Argo CD**, the maintainer's call. The files follow Argo CD's layout for a wildcard check
+  (`resource_customizations/kflare.dev/_/`), and built-in checks get the standard libraries, so the script would work
+  there unchanged

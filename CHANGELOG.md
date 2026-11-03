@@ -14,7 +14,8 @@ Cloudflare's limit. If Cloudflare raised your limit, set the chart's `cloudflare
 `kflare_cloudflare_api_rate_limited_total` instead. The deploy guide has
 [an example](docs/deploy.md#monitoring).
 
-No manifest changes. `spec.allowedNamespaces` changes nothing until you set it. The manager's ClusterRole gains `get`,
+No manifest changes. `spec.allowedNamespaces` changes nothing until you set it. A Cloudflare error's condition message
+now ends in `(cf-ray <id>)`, so check anything that matches one exactly. The manager's ClusterRole gains `get`,
 `list` and `watch` on Namespaces, and `CloudflareAccount`'s CRD gains two optional fields: if you manage the CRDs
 yourself (`crds.enabled=false`), apply `config/crd/bases` first.
 
@@ -34,12 +35,32 @@ yourself (`crds.enabled=false`), apply `config/crd/bases` first.
   `CloudflareAccount` included, whose going not-ready used to stop everything using it. Any other reports the new reason
   `RateLimited`
 - Two metrics: `kflare_cloudflare_api_rate_limited_total` and `kflare_cloudflare_reconciles_deferred_total`, by account
+- **kflare's own metrics.** `kflare_cloudflare_api_requests_total` and
+  `kflare_cloudflare_api_request_duration_seconds` show what each controller sends to Cloudflare and how it answers, for
+  both SDKs, `kflare_resources` how many resources are `Ready` and why not, by kind, and
+  `kflare_drift_corrections_total` how often kflare undoes a change made outside it. So an alert no longer needs
+  kube-state-metrics to see a resource that is not `Ready`, and can tell Cloudflare failing from the Kubernetes API
+  failing. The deploy guide's [alert examples](docs/deploy.md#monitoring) use them.
+  ([#75](https://github.com/JonathanGraniero/kflare/issues/75))
+- **A failure now gives Cloudflare's `cf-ray` ID,** which Cloudflare support asks for: the log for each response with an
+  error status, and a `TerminalError` or `APIError` condition for the first response that failed that way
 - **A `CloudflareAccount` can limit which namespaces may use it.** With `spec.allowedNamespaces`, a label selector picks
   the namespaces, the way a Gateway API listener's `allowedRoutes` does. A resource in any other namespace reports
   reason `AccountNotAllowed`, and kflare makes no Cloudflare call for it, so a team that can edit its own namespace can
   no longer use another team's token
   ([deploy guide](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
   ([#77](https://github.com/JonathanGraniero/kflare/issues/77))
+
+### GitOps
+
+- **Health checks for Argo CD and Flux.** Argo CD judged no kflare resource, and Flux's default check took one for
+  ready before kflare had reconciled it. The deploy guide now has a health check for every kflare kind in Argo CD (a
+  Lua script for `argocd-cm`) and in Flux (`healthCheckExprs`, Flux 2.9 or newer for one entry): a resource is Healthy
+  once `Ready` is `True` for its current spec, Degraded when Cloudflare refused it or a conflict or setting needs a
+  person, Suspended while paused, and Progressing otherwise. So an application turns Degraded when Cloudflare refuses a
+  record, and sync waves and `dependsOn` wait for a `Zone` to be ready
+  ([deploy guide](docs/deploy.md#health-checks-in-argo-cd-and-flux),
+  [#83](https://github.com/JonathanGraniero/kflare/issues/83))
 
 ## v0.4.1 (alpha)
 

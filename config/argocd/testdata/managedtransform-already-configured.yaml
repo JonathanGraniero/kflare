@@ -1,0 +1,25 @@
+apiVersion: kflare.dev/v1alpha1
+kind: ManagedTransform
+metadata:
+  creationTimestamp: "2026-10-31T11:41:09Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 1
+  name: headers-staging
+  namespace: staging
+  resourceVersion: "56877"
+  uid: 7e9a1c3d-5b2f-4e8a-9c0d-4f6b8a0c2e5d
+spec:
+  managedRequestHeaders:
+  - enabled: true
+    id: add_visitor_location_headers
+  zoneRef:
+    name: example
+status:
+  conditions:
+  - lastTransitionTime: "2026-10-31T11:41:10Z"
+    message: ManagedTransform web/headers configures the managed transforms of zone 5d2e7f9a1c3b4e6d8f0a2c4e6b8d0f1a
+    observedGeneration: 1
+    reason: AlreadyConfigured
+    status: "False"
+    type: Ready

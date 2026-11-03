@@ -169,6 +169,11 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	refuse func(found *R) *conditionError
 	// matches replaces the comparison of the object with the spec.
 	matches func(obj O, current *R, refs map[string]string) bool
+	// sourceChanged reports that what the resource's calls send changed since
+	// its last write, its spec staying the same, as a Worker's code does in a
+	// ConfigMap. An update then follows that change, rather than correct what
+	// changed in Cloudflare (recordDriftCorrection).
+	sourceChanged func(obj O, refs map[string]string) bool
 	// synced runs once the object is as the spec asks and status records it.
 	// It does what the service's calls cannot, such as an IPList's items. Set
 	// stop to end the reconcile with what it returns, rather than report the
@@ -432,6 +437,9 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 		if err != nil {
 			return handleCloudflareError(ctx, r.Client, obj, err)
 		}
+		if k.hooks.sourceChanged == nil || !k.hooks.sourceChanged(obj, refs) {
+			recordDriftCorrection(k.name, obj)
+		}
 		current = updated
 		logger.Info("Updated "+k.noun, "id", k.id(current))
 	}
@@ -549,6 +557,7 @@ func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, o
 		if err != nil {
 			return stop(handleCloudflareError(ctx, r.Client, obj, err))
 		}
+		recordDriftCorrection(k.name, obj)
 		logger.Info("Created "+k.noun, "key", key, "id", k.id(current))
 	}
 	return current, adopting, false, ctrl.Result{}, nil
@@ -844,7 +853,7 @@ func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconci
 	if r.kind.hooks.watch != nil {
 		b = r.kind.hooks.watch(b, r.Client)
 	}
-	return b.Complete(rec)
+	return b.Complete(withControllerName(r.kind.name, rec))
 }
 
 // resourcesForAccount maps a CloudflareAccount event to the kind's resources

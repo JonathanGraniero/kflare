@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -269,11 +270,11 @@ func invalidToken(ctx context.Context, c client.StatusClient, obj conditionedObj
 // they need a change to the spec or the credentials, which re-triggers the
 // reconcile. Anything else is returned so controller-runtime retries with
 // back-off. The condition shows Cloudflare's
-// messages and codes (cfpkg.ErrorMessage); the returned error, which
-// controller-runtime logs, keeps everything. A call cut short because the
-// reconcile ran out of time fails with the context's error alone, so the
-// condition adds the context's cause: "reconciliation timeout", from
-// controller-runtime.
+// messages and codes (cfpkg.ErrorMessage) and the response's cf-ray ID
+// (withRayID); the returned error, which controller-runtime logs, keeps
+// everything. A call cut short because the reconcile ran out of time fails
+// with the context's error alone, so the condition adds the context's cause:
+// "reconciliation timeout", from controller-runtime.
 func handleCloudflareError(ctx context.Context, c client.StatusClient, obj conditionedObject, err error) (ctrl.Result, error) {
 	message := cfpkg.ErrorMessage(err)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -284,12 +285,35 @@ func handleCloudflareError(ctx context.Context, c client.StatusClient, obj condi
 	if cfpkg.IsRateLimit(err) {
 		return rateLimited(statusCtx, c, obj, rateLimitRetryInterval)
 	}
+	ray := cfpkg.RayID(err)
 	if cfpkg.IsTerminalError(err) {
 		return ctrl.Result{}, updateNotReady(statusCtx, c, obj, "TerminalError",
-			fmt.Sprintf("Terminal Cloudflare API error: %s", message))
+			withRayID(obj, fmt.Sprintf("Terminal Cloudflare API error: %s", message), ray))
 	}
-	if statusErr := updateNotReady(statusCtx, c, obj, "APIError", fmt.Sprintf("Cloudflare API error: %s", message)); statusErr != nil {
+	if statusErr := updateNotReady(statusCtx, c, obj, "APIError",
+		withRayID(obj, fmt.Sprintf("Cloudflare API error: %s", message), ray)); statusErr != nil {
 		return ctrl.Result{}, statusErr
 	}
 	return ctrl.Result{}, err
+}
+
+// rayIDPrefix starts what withRayID adds to a message.
+const rayIDPrefix = " (cf-ray "
+
+// withRayID ends message with ray, the ID of the response that failed, which
+// Cloudflare support asks for, unless obj already reports message with an ID:
+// it then keeps that one. Every attempt gets a new ID, and every change to
+// status is a watch event that reconciles the resource at once, past its
+// back-off, so a resource that failed the same way twice would call Cloudflare
+// in a loop, hundreds of times a second, were its message to change each time.
+// The log has each attempt's ID (pkg/cloudflare's instrumentedTransport).
+func withRayID(obj conditionedObject, message, ray string) string {
+	if ray == "" {
+		return message
+	}
+	ready := meta.FindStatusCondition(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
+	if ready != nil && strings.HasPrefix(ready.Message, message+rayIDPrefix) {
+		return ready.Message
+	}
+	return message + rayIDPrefix + ray + ")"
 }

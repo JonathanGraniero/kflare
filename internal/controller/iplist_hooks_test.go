@@ -292,8 +292,10 @@ var _ = Describe("IPList hooks", func() {
 		syncList()
 		id := getList().Status.CloudflareMetadata.ListID
 		items.items[id][0].Comment = "changed by hand"
+		before := corrections("IPList")
 		syncList()
 		Expect(stored()).To(ConsistOf("192.0.2.1 front door", "198.51.100.0/24"))
+		Expect(corrections("IPList")).To(Equal(before + 1))
 	})
 
 	It("empties the list when the spec has no items", func() {

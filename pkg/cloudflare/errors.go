@@ -159,6 +159,25 @@ func ErrorMessage(err error) string {
 	return strings.Join(messages, ", ")
 }
 
+// RayID returns the ID Cloudflare gave the response behind err, its cf-ray
+// header, which Cloudflare support asks for, or "" if err has none, as for a
+// request that got no response. v7 keeps the response, and v0's error types
+// the header, but v0 reports a 429 or a 5xx with a plain error once its
+// retries run out: only the log has those IDs (instrumentedTransport).
+func RayID(err error) string {
+	if v7Err, ok := asV7Error(err); ok {
+		if v7Err.Response == nil {
+			return ""
+		}
+		return v7Err.Response.Header.Get("Cf-Ray")
+	}
+	var v0Err interface{ RayID() string }
+	if errors.As(err, &v0Err) {
+		return v0Err.RayID()
+	}
+	return ""
+}
+
 // isRequestErrorStatus reports whether v0 returns a RequestError for status:
 // a client error other than 401, 403, 404 and 429.
 func isRequestErrorStatus(status int) bool {

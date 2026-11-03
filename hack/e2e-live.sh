@@ -12,7 +12,9 @@
 #   1. Takes a lock, so two runs from this machine never overlap: a Free zone holds one rate limiting rule and a Free
 #      account one IP list, so overlapping runs fail
 #   2. Installs the CRDs (make install), builds bin/manager, starts it and waits until it is ready. The manager logs to
-#      bin/e2e-live-manager.log; its health probe listens on $KFLARE_E2E_PROBE_ADDR (default 127.0.0.1:18081)
+#      bin/e2e-live-manager.log; its health probe listens on $KFLARE_E2E_PROBE_ADDR (default 127.0.0.1:18081). If
+#      local/prometheus.sh installed Prometheus on the cluster, the manager serves its metrics where that Prometheus
+#      scrapes them (the kind network's gateway, port 18080), so Grafana's kflare dashboard shows the run
 #   3. Runs the suite
 #   4. Deletes the suite's namespace while the manager still runs, so finalizers can finish
 #   5. Stops the manager, uninstalls the CRDs unless they were installed before the run, and prints the manager log's
@@ -93,7 +95,16 @@ make -s install >/dev/null
 say "building the manager"
 make -s build
 mkdir -p "$(dirname "$LOG")"
-bin/manager --metrics-bind-address=0 --health-probe-bind-address="$PROBE_ADDR" >"$LOG" 2>&1 &
+# The address local/prometheus.sh points the cluster's Prometheus at, if it ran. The manager serves its metrics there
+# as the chart does: over HTTPS, to a token allowed to get /metrics, as Prometheus' own is.
+metrics_flags=(--metrics-bind-address=0)
+metrics_addr="$(kubectl get endpointslice kflare-host-manager -n monitoring \
+  -o jsonpath='{.endpoints[0].addresses[0]}:{.ports[0].port}' 2>/dev/null || true)"
+if [[ "$metrics_addr" =~ ^[0-9.]+:[0-9]+$ ]]; then
+  metrics_flags=(--metrics-bind-address="$metrics_addr" --metrics-secure)
+  say "serving metrics on $metrics_addr, where the cluster's Prometheus scrapes them (local/prometheus.sh)"
+fi
+bin/manager "${metrics_flags[@]}" --health-probe-bind-address="$PROBE_ADDR" >"$LOG" 2>&1 &
 manager_pid=$!
 say "started the manager ($manager_pid), waiting for it to be ready"
 for _ in $(seq 120); do

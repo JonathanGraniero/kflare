@@ -1,0 +1,23 @@
+apiVersion: kflare.dev/v1alpha1
+kind: KVNamespace
+metadata:
+  creationTimestamp: "2026-10-31T11:20:15Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 1
+  name: sessions-copy
+  namespace: web
+  resourceVersion: "55102"
+  uid: 1c3e5a7b-9d2f-4a6c-8e0b-3d5f7a9c1e4b
+spec:
+  accountRef:
+    name: my-account
+  title: sessions
+status:
+  conditions:
+  - lastTransitionTime: "2026-10-31T11:20:16Z"
+    message: KV namespace "sessions" is already managed by KVNamespace web/sessions
+    observedGeneration: 1
+    reason: TitleConflict
+    status: "False"
+    type: Ready

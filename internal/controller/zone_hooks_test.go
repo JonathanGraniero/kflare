@@ -348,6 +348,23 @@ var _ = Describe("Zone hooks", func() {
 			Expect(condition().Reason).To(Equal("Synced"))
 		})
 
+		It("counts putting a zone back on its plan, after someone changed it, as a correction", func() {
+			onPlan("pro", true)
+			createZone("pro", adopted)
+			_, err := reconcileZone()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(plans.calls).To(BeZero())
+			Expect(condition().Reason).To(Equal("Synced"))
+
+			onPlan("free", false)
+			plans.after = cf.ZonePlan{LegacyID: "pro", IsSubscribed: true}
+			before := corrections("Zone")
+			_, err = reconcileZone()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(plans.created).To(Equal("CF_PRO"))
+			Expect(corrections("Zone")).To(Equal(before + 1))
+		})
+
 		It("updates the subscription of a paid zone and reports a scheduled downgrade", func() {
 			onPlan("business", true)
 			plans.after = cf.ZonePlan{LegacyID: "business", IsSubscribed: true}

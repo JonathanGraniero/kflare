@@ -450,12 +450,14 @@ var _ = Describe("WorkerScript Controller", func() {
 
 				fake.workers = workers
 				fake.uploadResp = uploadResp("etag-1", uploadedAt.Add(time.Minute))
+				before := corrections("WorkerScript")
 				_, err = reconcileWorker(r)
 				Expect(err).NotTo(HaveOccurred())
 				// A deleted Worker is looked for again before its upload, with one more
 				// read.
 				Expect(fake.uploads).To(HaveLen(2), "the Worker is uploaded again")
 				Expect(getWorker().Status.CloudflareMetadata.ModifiedOn).To(Equal("2026-10-03T02:14:10.984591Z"))
+				Expect(corrections("WorkerScript")).To(Equal(before + 1))
 			},
 			Entry("modified (for example a binding edited in the dashboard)", []cf.WorkerMetaData{
 				{ID: scriptName, ETAG: "etag-1", ModifiedOn: uploadedAt.Add(30 * time.Second)},
@@ -470,6 +472,7 @@ var _ = Describe("WorkerScript Controller", func() {
 			_, err := reconcileWorker(r)
 			Expect(err).NotTo(HaveOccurred())
 			firstHash := getWorker().Status.AppliedHash
+			before := corrections("WorkerScript")
 
 			ws := getWorker()
 			ws.Spec.Bindings[0].PlainText = new("changed")
@@ -480,6 +483,7 @@ var _ = Describe("WorkerScript Controller", func() {
 			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers", "UploadWorker"}))
 			Expect(fake.uploads[1].Bindings["GREETING"]).To(Equal(cf.WorkerPlainTextBinding{Text: "changed"}))
 			Expect(getWorker().Status.AppliedHash).NotTo(Equal(firstHash))
+			Expect(corrections("WorkerScript")).To(Equal(before), "a changed spec is no drift")
 		})
 
 		It("uploads again when a bound Secret changes", func() {
@@ -493,11 +497,14 @@ var _ = Describe("WorkerScript Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: bindingSecret, Namespace: ns}, secret)).To(Succeed())
 			secret.Data["api-key"] = []byte("rotated-value")
 			Expect(k8sClient.Update(ctx, secret)).To(Succeed())
+			before := corrections("WorkerScript")
 
 			_, err = reconcileWorker(r)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.calls).To(Equal([]string{"ListWorkers", "UploadWorker", "ListWorkers", "UploadWorker"}))
 			Expect(fake.uploads[1].Bindings["API_KEY"]).To(Equal(cf.WorkerSecretTextBinding{Text: "rotated-value"}))
+			Expect(corrections("WorkerScript")).To(Equal(before),
+				"a new Secret value changed nothing in Cloudflare, and is no drift")
 		})
 
 		// otherWorker is a Worker with the WorkerScript's name that kflare did

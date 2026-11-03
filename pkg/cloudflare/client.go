@@ -105,8 +105,10 @@ var defaultHTTPTimeouts = httpTimeouts{
 
 // httpClient is the HTTP client of every Client: one, so that both SDKs and
 // every reconcile, each of which builds its own Client, reuse its connections
-// and spend one budget per token.
-var httpClient = withRateLimit(newHTTPClient(defaultHTTPTimeouts), limiter)
+// and spend one budget per token. Its metrics sit inside the rate limit, so
+// that they show what reached Cloudflare: not a call kept back unsent, nor
+// the time one waits for its turn.
+var httpClient = withRateLimit(withMetrics(newHTTPClient(defaultHTTPTimeouts)), limiter)
 
 // newHTTPClient returns an HTTP client with timeouts t. Its transport is a
 // copy of http.DefaultTransport, so it keeps the proxy that the standard
@@ -118,6 +120,12 @@ func newHTTPClient(t httpTimeouts) *http.Client {
 	transport.ResponseHeaderTimeout = t.responseHeader
 	transport.HTTP2 = &http.HTTP2Config{SendPingTimeout: t.http2Ping, PingTimeout: t.http2PingTimeout}
 	return &http.Client{Transport: transport, Timeout: t.request}
+}
+
+// withMetrics makes hc's requests count in the API metrics.
+func withMetrics(hc *http.Client) *http.Client {
+	hc.Transport = &instrumentedTransport{next: hc.Transport}
+	return hc
 }
 
 // withRateLimit makes hc's requests keep within limits.

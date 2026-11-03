@@ -1,0 +1,26 @@
+apiVersion: kflare.dev/v1alpha1
+kind: Tunnel
+metadata:
+  creationTimestamp: "2026-10-31T13:02:44Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 1
+  name: home
+  namespace: web
+  resourceVersion: "60432"
+  uid: 8a0c2e4a-6c3d-4a9b-8d1e-0c2e4a6c8e1f
+spec:
+  accountRef:
+    name: my-account
+  credentialsSecretRef:
+    name: home-tunnel-token
+  name: home
+status:
+  conditions:
+  - lastTransitionTime: "2026-10-31T13:02:45Z"
+    message: 'tunnel "home" already exists and kflare did not create it. To manage it, set the annotation
+      kflare.dev/adoption-policy: adopt'
+    observedGeneration: 1
+    reason: AlreadyExists
+    status: "False"
+    type: Ready

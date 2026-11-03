@@ -1,0 +1,51 @@
+# kube-prometheus-stack's values for local/prometheus.sh: Prometheus and Grafana, to watch kflare's metrics on a kind
+# cluster during an e2e run. Everything else the stack offers is off: its exporters, rules and dashboards are about the
+# cluster, and kind does not expose most of what they scrape, so its alerts would fire from the start.
+defaultRules:
+  create: false
+alertmanager:
+  enabled: false
+nodeExporter:
+  enabled: false
+kubeStateMetrics:
+  enabled: false
+kubeApiServer:
+  enabled: false
+kubelet:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+coreDns:
+  enabled: false
+
+grafana:
+  # Only kflare's dashboard (local/prometheus/kflare-dashboard.json), which the sidecar loads from its ConfigMap.
+  defaultDashboardsEnabled: false
+  # Dashboards without a login; the admin login, for editing, is in the prometheus-grafana Secret.
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+
+prometheus:
+  prometheusSpec:
+    # An e2e run's resources go from created to deleted within a minute or two.
+    scrapeInterval: 10s
+    evaluationInterval: 10s
+    retention: 7d
+    # The manager on this machine is scraped through an EndpointSlice local/prometheus.sh writes, which the default
+    # role, Endpoints, would not see.
+    serviceDiscoveryRole: EndpointSlice
+    # Every monitor in the cluster, not only those labelled with this release: the chart's ServiceMonitor carries no
+    # such label.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false

@@ -7,6 +7,7 @@ account, and covers running it in production, upgrades, uninstalling and trouble
 - [1. Create a Cloudflare API token](#1-create-a-cloudflare-api-token)
 - [2. Install the chart](#2-install-the-chart)
   - [With Argo CD or Flux](#with-argo-cd-or-flux)
+  - [Health checks in Argo CD and Flux](#health-checks-in-argo-cd-and-flux)
 - [3. Connect your Cloudflare account](#3-connect-your-cloudflare-account)
 - [4. Manage Cloudflare resources](#4-manage-cloudflare-resources)
 - [Configuration](#configuration)
@@ -190,6 +191,308 @@ Things to know:
   fails its first sync until the CRDs exist; `syncPolicy.retry` lets it try again. In Flux, put the `HelmRelease` in
   a `Kustomization` that the ones holding kflare resources list under `dependsOn`.
 - **Upgrade by changing the version in git**, after reading the release notes (see [Upgrading](#upgrading)).
+
+### Health checks in Argo CD and Flux
+
+kflare reports each resource's state in its `Ready` condition, for the generation of the spec it last reconciled (the
+condition's `observedGeneration`). Neither tool reads it unaided. Argo CD gives a custom resource no health without a
+health check for its kind, so an application stays Healthy while Cloudflare refuses its records, and a sync wave does
+not wait for a `Zone`. Flux's default check, [kstatus][kstatus], reads a `status.observedGeneration` that kflare does
+not set: it takes a resource kflare has not reconciled yet, or has not reconciled since its spec changed, for ready,
+and waits until its timeout for one Cloudflare refused. The checks below read `Ready` for the current generation:
+
+| `Ready` | Argo CD | Flux |
+|---|---|---|
+| `True`, for the current generation | Healthy | Current |
+| `False`, for the current generation, for a reason a person must act on (below) | Degraded | Failed |
+| Reason `Paused` | Suspended | Current if `Ready` is `True` for the current generation, else InProgress |
+| Anything else, such as no `Ready` yet, an older generation, `APIError` or a parent not ready | Progressing | InProgress |
+
+The reasons a person must act on, which [Troubleshooting](#troubleshooting) explains: Cloudflare refused the request
+(`TerminalError`); kflare cannot build a client from the token (`InvalidToken`); another resource manages the
+Cloudflare object or configures the same settings (`NameConflict`, `TitleConflict`, `PatternConflict`,
+`RulesetConflict`, `CredentialsSecretConflict`, `AlreadyConfigured`, `TunnelAlreadyConfigured`); the object exists,
+or is missing, against the adoption policy (`AlreadyExists`, `NotFound`, `InvalidAdoptionPolicy`); a setting is wrong
+(`AccountNotAllowed`, `AccountMismatch`, `InvalidAllowedNamespaces`, `R2BucketJurisdictionUnsupported`,
+`TokenKeyMissing`, `ScriptKeyMissing`, `BindingSecretKeyMissing`). kflare retries any other reason, or waits for what
+it names to appear or become ready.
+
+[kstatus]: https://github.com/kubernetes-sigs/cli-utils/tree/master/pkg/kstatus
+
+#### Argo CD
+
+Add the health check to `argocd-cm`. One entry covers every kflare kind, as Argo CD takes a wildcard in the key of
+`resource.customizations` (and not in the `resource.customizations.health.<group>_<kind>` keys). Save this as
+`argocd-cm-kflare.yaml`:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  resource.customizations: |
+    kflare.dev/*:
+      health.lua: |
+        -- Argo CD health check for every kflare kind (kflare.dev/*), from kflare's Ready condition.
+        --
+        -- kflare reports each resource's state in one condition, Ready, set for the generation it last reconciled
+        -- (its observedGeneration; kflare sets no status.observedGeneration). docs/deploy.md, "Health checks in
+        -- Argo CD and Flux", explains it:
+        --   Healthy      Ready is True for the current generation
+        --   Degraded     Ready is False for the current generation, for a reason a person must act on
+        --   Suspended    the kflare.dev/paused annotation stops kflare from reconciling the resource
+        --   Progressing  anything else: kflare has not reconciled the current spec yet, or waits for
+        --                Cloudflare, for a rate limit, or for another resource
+        --
+        -- Argo CD opens only Lua's base, table and package libraries for a script in argocd-cm, so this one uses
+        -- no string function. config/argocd/health_test.yaml holds its tests, in Argo CD's format.
+
+        -- The reasons of Ready=False that wait for a person rather than for time: Cloudflare refused the spec,
+        -- another resource holds the object, the object exists or is missing against the adoption policy, or a
+        -- setting is wrong. Every other reason clears up by itself: an API error or a rate limit is retried, and
+        -- a missing or unready parent is waited for.
+        local needsPerson = {
+          -- Cloudflare refused the request (4xx), or kflare cannot build a client from the token
+          TerminalError = true,
+          InvalidToken = true,
+          -- The CloudflareAccount, or a reference, does not fit
+          AccountNotAllowed = true,
+          AccountMismatch = true,
+          InvalidAllowedNamespaces = true,
+          R2BucketJurisdictionUnsupported = true,
+          -- A Secret or ConfigMap exists but lacks the key the spec names
+          TokenKeyMissing = true,
+          ScriptKeyMissing = true,
+          BindingSecretKeyMissing = true,
+          -- Adoption (the kflare.dev/adoption-policy annotation)
+          AlreadyExists = true,
+          NotFound = true,
+          InvalidAdoptionPolicy = true,
+          -- Another resource manages the Cloudflare object, or configures the same settings
+          NameConflict = true,
+          TitleConflict = true,
+          PatternConflict = true,
+          RulesetConflict = true,
+          CredentialsSecretConflict = true,
+          AlreadyConfigured = true,
+          TunnelAlreadyConfigured = true,
+        }
+
+        local hs = {}
+
+        local ready = nil
+        if obj.status ~= nil and obj.status.conditions ~= nil then
+          for _, condition in ipairs(obj.status.conditions) do
+            if condition.type == "Ready" then
+              ready = condition
+            end
+          end
+        end
+
+        if ready == nil then
+          hs.status = "Progressing"
+          hs.message = "Waiting for kflare to reconcile the resource"
+          return hs
+        end
+
+        -- A paused resource keeps the status and generation of its last reconcile.
+        if ready.reason == "Paused" then
+          hs.status = "Suspended"
+          hs.message = ready.message
+          return hs
+        end
+
+        if ready.observedGeneration ~= obj.metadata.generation then
+          hs.status = "Progressing"
+          hs.message = "Waiting for kflare to reconcile generation " .. tostring(obj.metadata.generation) ..
+            " (last reconciled: " .. tostring(ready.observedGeneration) .. ")"
+          return hs
+        end
+
+        if ready.status == "True" then
+          hs.status = "Healthy"
+        elseif ready.status == "False" and needsPerson[ready.reason] then
+          hs.status = "Degraded"
+        else
+          hs.status = "Progressing"
+        end
+        hs.message = ready.message
+        return hs
+```
+
+Then merge it into the `argocd-cm` your Argo CD has:
+
+```sh
+kubectl -n argocd patch configmap argocd-cm --patch-file argocd-cm-kflare.yaml
+```
+
+- **Patch the ConfigMap, do not `kubectl apply` the file.** The file holds only what kflare adds, so on an `argocd-cm`
+  last applied with client-side `kubectl apply`, applying it removes every other key, such as `resource.exclusions`.
+- **Keep the labels** wherever you manage this ConfigMap: Argo CD reads only one labelled
+  `app.kubernetes.io/part-of: argocd`, and without it reports every application's health and sync as Unknown.
+- If `argocd-cm` already has `resource.customizations`, add the `kflare.dev/*` entry to that value first: the key holds
+  one YAML document for every group, and the patch replaces it whole. With Argo CD's Helm chart, set the key under
+  `configs.cm`.
+- Argo CD takes the check up without a restart, the next time it refreshes an application, which can take a few
+  minutes. `argocd app get <app> --hard-refresh` does it at once.
+- The script uses only the Lua libraries Argo CD opens for any health check, so it needs no `useOpenLibs`. The script
+  is [`config/argocd/health.lua`](../config/argocd/health.lua), with its tests in Argo CD's format next to it.
+- `argocd admin settings resource-overrides health <resource.yaml> --argocd-cm-path argocd-cm-kflare.yaml` shows the
+  health the check gives a resource saved with `kubectl get -o yaml`.
+- An application's health is the worst of its resources': a resource Cloudflare refused makes it Degraded, and a paused
+  one Suspended. Argo CD reports a resource being deleted as Progressing, whatever the check says, so a deletion kflare
+  holds back (`InUse`, `ListInUse`, `BucketNotEmpty`) shows as Progressing.
+
+With the health check, sync waves wait for kflare resources: Argo CD applies a wave once every resource of the waves
+before it is Healthy. A resource that turns Degraded there fails the sync (which `syncPolicy.retry` retries), and a
+Progressing or Suspended one holds the next wave back. Argo CD waits for nothing in the last wave, though: the sync
+succeeds once that wave is applied. So a resource Cloudflare refuses in the last wave, or in an application without
+waves, leaves the sync Succeeded and the application Degraded: alert on the application's health, not only on failed
+syncs.
+
+kflare does not need waves for its own resources: a DNSRecord waits for its Zone by itself, reporting `ZoneNotReady`.
+They help to hold back what depends on Cloudflare, such as a workload that should start only once its hostname
+resolves:
+
+```yaml
+apiVersion: kflare.dev/v1alpha1
+kind: Zone
+metadata:
+  name: example
+  namespace: web
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    kflare.dev/adoption-policy: adopt
+    kflare.dev/deletion-policy: retain
+spec:
+  accountRef:
+    name: my-account
+  name: example.com
+---
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: www
+  namespace: web
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  zoneRef:
+    name: example
+  name: www.example.com
+  type: A
+  content: 192.0.2.1
+  proxied: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: web
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.29
+```
+
+The `CloudflareAccount` comes with the kflare installation, in its own application: until it exists and is `Ready`,
+the `Zone` reports `AccountNotFound` or `AccountNotReady`, Progressing, and the sync waits for it.
+
+That wait has no time limit. A Deployment that cannot start turns Degraded at its `progressDeadlineSeconds`, but a
+kflare resource stays Progressing for as long as what it waits for is missing, and a paused one stays Suspended. A
+`zoneRef` with a typo holds the sync, and nothing reports Degraded, as the Zone it names does not exist. Argo CD starts
+no other sync meanwhile, so a fix in git waits too. To get out of it:
+
+- `argocd app terminate-op <app>` ends the sync, and an automated sync then applies the latest commit.
+- For a paused resource, removing `kflare.dev/paused` from the object on the cluster also lets the sync go on.
+- A fix to an immutable field, such as `zoneRef`, is refused: delete the resource as well.
+
+To limit how long any sync runs, set `controller.sync.timeout.seconds` in `argocd-cmd-params-cm`. Its default, 0, means
+no limit.
+
+#### Flux
+
+Add the expressions to each Kustomization or HelmRelease that holds kflare resources and waits for them. One entry
+without a `kind` covers every kflare kind, which needs Flux 2.9 or newer; on Flux 2.5 to 2.8, repeat the entry once per
+kind, with its `kind` (a HelmRelease takes `healthCheckExprs` from Flux 2.8). The entry is
+[`config/flux/health-check-exprs.yaml`](../config/flux/health-check-exprs.yaml), with its tests next to it.
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: web
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./apps/web
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: platform
+  wait: true
+  timeout: 5m
+  healthCheckExprs:
+    - apiVersion: kflare.dev/v1alpha1
+      failed: >-
+        status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
+        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'AccountMismatch',
+        'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
+        'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
+        'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',
+        'TunnelAlreadyConfigured'])
+      current: >-
+        status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
+        metadata.generation)
+```
+
+A HelmRelease waits for its resources unless `disableWait` is set, with the `poller` wait strategy, the default:
+
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: web
+  namespace: web
+spec:
+  interval: 10m
+  chartRef:
+    kind: OCIRepository
+    name: web
+  healthCheckExprs:
+    - apiVersion: kflare.dev/v1alpha1
+      failed: >-
+        status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
+        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'AccountMismatch',
+        'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
+        'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
+        'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',
+        'TunnelAlreadyConfigured'])
+      current: >-
+        status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
+        metadata.generation)
+```
+
+Flux then marks the Kustomization or HelmRelease ready once every kflare resource in it is Current, and fails it as
+soon as one is Failed. A Kustomization that lists it under `dependsOn` waits until then, which orders kflare resources
+and what depends on them as Argo CD's sync waves do. Until kflare writes a resource's first status, the expressions
+cannot read it, and Flux reports the resource Unknown and goes on waiting.
 
 ## 3. Connect your Cloudflare account
 
@@ -703,12 +1006,20 @@ The controller serves controller-runtime's standard Prometheus metrics: `control
 `controller_runtime_reconcile_errors_total` and `controller_runtime_reconcile_timeouts_total` (reconciles that ran
 longer than `reconcileTimeout`), labelled by `controller`, `controller_runtime_reconcile_time_seconds`,
 `workqueue_depth`, and the Go runtime's. Turn on `metrics.serviceMonitor.enabled` to have the Prometheus Operator scrape
-them. It also serves two of its own, about [Cloudflare's API rate limit](#cloudflares-api-rate-limit):
+them. It also serves its own:
 
 | Metric | What it counts |
 |---|---|
+| `kflare_cloudflare_api_requests_total{controller,method,code}` | Requests sent to Cloudflare, each retry among them, by HTTP status, or `code="error"` for one that got no response. A call kept back for the rate limit was never sent, so it does not count |
+| `kflare_cloudflare_api_request_duration_seconds{controller,method}` | How long Cloudflare took to start answering, as a histogram. Time waiting for the rate limit does not count |
 | `kflare_cloudflare_api_rate_limited_total{account}` | 429s from Cloudflare, for each `CloudflareAccount` using the token |
-| `kflare_cloudflare_reconciles_deferred_total{account,reason}` | Reconciles put off because Cloudflare asked kflare to stop (`reason="hold"`), or because the token's budget was used up (`reason="budget"`) |
+| `kflare_cloudflare_reconciles_deferred_total{account,reason}` | Reconciles put off because Cloudflare asked kflare to stop (`reason="hold"`), or because the token's budget was used up (`reason="budget"`). See [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
+| `kflare_resources{kind,ready,reason}` | Resources by the status and reason of their `Ready` condition, as `kubectl get` shows them: `ready="Unknown"` with no reason for one no reconcile has reached. Only the leader serves it, so a sum across pods counts each resource once |
+| `kflare_drift_corrections_total{kind}` | Writes made because Cloudflare differed from a spec that had not changed, so kflare undid a change made outside it (see [What each controller compares](../ARCHITECTURE.md#when-drift-is-detected)) |
+
+`controller` is the name controller-runtime's metrics give the controller, the kind in lower case such as `dnsrecord`,
+so the two can be read together. No label holds a resource's name, a zone ID or a URL, so the number of series stays
+small: `kubectl get` finds the resources behind a number.
 
 The endpoint answers over HTTPS only, and to a bearer token allowed to `get` `/metrics`: a request gets 401 without a
 token the API server accepts, and 403 with one that lacks the permission. The ServiceMonitor scrapes with Prometheus'
@@ -760,14 +1071,17 @@ spec:
 The controller reloads the certificate when it is renewed. `metrics.serviceMonitor.tlsConfig` replaces the
 ServiceMonitor's TLS settings, for a CA kept elsewhere.
 
-Three things to alert on:
+Four things to alert on:
 
-- **Errors from Cloudflare that kflare retries** (5xx, network failures, timeouts) count as reconcile errors.
-  A rate that stays above zero means kflare cannot reach Cloudflare:
+- **Errors from Cloudflare that kflare retries** (5xx, network failures, timeouts). A rate that stays above zero means
+  kflare cannot reach Cloudflare, or Cloudflare is failing. `controller_runtime_reconcile_errors_total` rises too, but
+  it also counts errors from the Kubernetes API, and does not tell them apart:
 
   ```yaml
-  - alert: KflareReconcileErrors
-    expr: sum by (controller) (rate(controller_runtime_reconcile_errors_total{namespace="kflare-system"}[15m])) > 0
+  - alert: KflareCloudflareErrors
+    expr: >-
+      sum by (controller) (rate(kflare_cloudflare_api_requests_total{namespace="kflare-system",code=~"5..|error"}[15m]))
+      > 0
     for: 30m
   ```
 
@@ -781,13 +1095,32 @@ Three things to alert on:
 
   Reconciles deferred with `reason="budget"` are expected during a large change or after a restart. If they go on for
   hours, the account has more work than its budget: raise `cloudflareRateLimit` or lengthen `driftCheckInterval`.
+  `sum(rate(kflare_cloudflare_api_requests_total[5m])) * 300` shows what kflare sends per five minutes, for all its
+  tokens together.
 
 - **Resources that are not `Ready`.** Errors kflare does not retry, such as a spec Cloudflare refuses or a missing
   token permission (`TerminalError`), and waits such as `AlreadyExists` or a parent that is not ready, do not count as
-  reconcile errors: they show only in the condition. Check the `READY` column after each change, or export the
-  conditions with kube-state-metrics' custom resource state metrics and alert on `Ready` being `False`.
+  reconcile errors. `for` leaves out what clears by itself, such as an `IPList` whose items Cloudflare is replacing:
 
-The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name.
+  ```yaml
+  - alert: KflareResourcesNotReady
+    expr: sum by (kind, reason) (kflare_resources{namespace="kflare-system",ready="False"}) > 0
+    for: 30m
+  ```
+
+- **Changes made outside kflare.** Someone edits by hand what kflare manages, or another tool does. If it never stops,
+  the two keep rewriting the same object, or Cloudflare stores something other than what the spec says. kflare only
+  finds such a change when it reconciles, so set a
+  [drift check interval](#correcting-changes-made-outside-kflare):
+
+  ```yaml
+  - alert: KflareDriftCorrected
+    expr: sum by (kind) (increase(kflare_drift_corrections_total{namespace="kflare-system"}[1h])) > 0
+  ```
+
+The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name. Every response
+from Cloudflare with an error status is logged with its `cfRay`, the ID Cloudflare support asks for. A 404, which kflare
+expects when an object is gone, is logged only with the chart's `logging.level: debug`.
 
 ### Network access
 
@@ -991,8 +1324,8 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 |---|---|---|
 | `Synced`, `Validated` | In sync with Cloudflare | Nothing |
 | `Paused` | The resource is annotated `kflare.dev/paused: "true"`: kflare leaves it and its Cloudflare object alone, and a deleted one keeps its finalizer. `Ready` keeps the status it had | Remove the annotation to resume (see [Pausing a resource](#pausing-a-resource)) |
-| `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change |
-| `APIError` | Transient failure (5xx, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout` |
+| `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change. For Cloudflare support, the message ends in the ID of the first response that failed this way: `(cf-ray <id>)` |
+| `APIError` | Transient failure (5xx, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout`. One ending in `(cf-ray <id>)` gives the first failure's ID, and the log each attempt's; `CloudflareAccount`, `Zone`, `TunnelConfiguration` and `WorkerScript` show a 5xx's only in the log |
 | `RateLimited` | The resource has work to do, but its API token's budget is used up, or Cloudflare asked kflare to stop | Nothing: kflare carries on by itself. If it lasts, see [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
 | `AccountNotAllowed` | The `CloudflareAccount`'s `spec.allowedNamespaces` leaves out the resource's namespace | Move the resource, or have a cluster administrator [allow the namespace](#limiting-which-namespaces-may-use-an-account) |
@@ -1000,6 +1333,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `SecretNotFound`, `TokenKeyMissing`, `InvalidToken` | The token Secret is missing, lacks the key, or is empty | Fix the Secret; the account re-validates immediately |
 | `ZoneNotFound`, `ZoneNotReady`, `TunnelNotFound`, `TunnelNotReady` | The referenced parent is missing or not ready | Check the parent resource |
 | `TunnelAlreadyConfigured` | Another `TunnelConfiguration` owns this tunnel | Keep one configuration per tunnel |
+| `AlreadyConfigured` | Another resource of the kind, in any namespace, configures the same Cloudflare zone's settings | Keep one per zone; kflare checks again every minute, and when the other is deleted |
 | `CredentialsSecretConflict` | A Secret with the tunnel's `credentialsSecretRef` name exists and kflare does not own it | Delete it or pick another name |
 | `AlreadyExists` | The Cloudflare object the resource names (a zone, record, tunnel, Worker, bucket, ...) exists and kflare did not create it | Annotate the resource `kflare.dev/adoption-policy: adopt` to manage it, or pick another name |
 | `NotFound` | The resource's adoption policy is `adopt` and there is nothing to adopt | Check the name, or use `adopt-or-create` to create one |
@@ -1013,6 +1347,8 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `NameConflict` | Another `R2Bucket` already manages a bucket with this name in the same Cloudflare account and jurisdiction, another `IPList` a list with this name, another `D1Database` a database with this name, or the account has a list of another kind with this name | Keep one R2Bucket per bucket, one IPList per list and one D1Database per database; list names are unique across list kinds |
 | `R2BucketNotFound`, `R2BucketNotReady` | A WorkerScript's `r2BucketRef` names a missing or not-yet-ready R2Bucket | Check the R2Bucket; it must use the Worker's account |
 | `R2BucketJurisdictionUnsupported` | A WorkerScript's `r2BucketRef` names an R2Bucket outside the default jurisdiction, which kflare cannot bind yet | Bind a bucket in the default jurisdiction |
+| `ScriptConfigMapNotFound`, `ScriptKeyMissing` | A WorkerScript's `scriptConfigMapRef` names a missing ConfigMap, or a key that is missing or empty in it | Fix the ConfigMap or the reference |
+| `BindingSecretNotFound`, `BindingSecretKeyMissing` | A WorkerScript binding's `secretKeyRef` names a missing Secret, or a key that is missing or empty in it | Fix the Secret or the reference |
 | `ReplacingItems` | Cloudflare is replacing an `IPList`'s items in the background | Nothing: kflare checks again every 2 seconds |
 | `RulesetConflict` | Another rule in the zone already deploys the `ManagedRuleset`'s managed ruleset: another ManagedRuleset, or a rule made in the dashboard or the API | Keep one ManagedRuleset per ruleset and zone, or delete the other rule; kflare checks again every minute |
 | `ListInUse` | A deleted `IPList`'s list is still used by a rule, and Cloudflare does not delete it until no rule does | Remove the `$name` from the rules that use it (a kflare rule's goes with its resource), or annotate the IPList `kflare.dev/deletion-policy: retain` to keep the list |

@@ -121,9 +121,13 @@ func TestHTTPClient_DefaultTimeouts(t *testing.T) {
 	if !ok {
 		t.Fatalf("httpClient's transport is a %T", httpClient.Transport)
 	}
-	transport, ok := limited.next.(*http.Transport)
+	instrumented, ok := limited.next.(*instrumentedTransport)
 	if !ok {
-		t.Fatalf("httpClient's network transport is a %T", limited.next)
+		t.Fatalf("httpClient's rate limit sends through a %T", limited.next)
+	}
+	transport, ok := instrumented.next.(*http.Transport)
+	if !ok {
+		t.Fatalf("httpClient's network transport is a %T", instrumented.next)
 	}
 	if transport.HTTP2 == nil {
 		t.Fatal("httpClient has no HTTP/2 health check")

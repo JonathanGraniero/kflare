@@ -147,6 +147,7 @@ func syncIPListItems(ctx context.Context, c client.Client, api IPListAPI, ipList
 			return result, true, err
 		}
 		metadata.OperationID = id
+		recordDriftCorrection("IPList", ipList)
 		log.FromContext(ctx).Info("Replacing IP list items", "listID", current.ID, "operationID", id)
 		return ctrl.Result{RequeueAfter: ipListOperationPollInterval}, true,
 			updateNotReady(ctx, c, ipList, "ReplacingItems", "Cloudflare is replacing the list's items")

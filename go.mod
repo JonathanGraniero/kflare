@@ -12,6 +12,7 @@ require (
 	github.com/google/cel-go v0.30.0
 	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
+	github.com/yuin/gopher-lua v1.1.2
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
 	sigs.k8s.io/controller-runtime v0.25.2

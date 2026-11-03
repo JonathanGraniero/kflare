@@ -1,0 +1,71 @@
+# The tests of health.lua, in the format of Argo CD's resource_customizations: each case's input, a kflare resource as
+# kubectl get -o yaml shows it, and the health Argo CD gives it. test/gitopshealth runs them as Argo CD does, checks
+# each input against its kind's CRD, and runs the same inputs through Flux's check (config/flux/health_test.yaml).
+tests:
+- healthStatus:
+    status: Healthy
+    message: DNS record is synced with Cloudflare
+  inputPath: testdata/dnsrecord-synced.yaml
+- healthStatus:
+    status: Progressing
+    message: 'Waiting for kflare to reconcile generation 3 (last reconciled: 2)'
+  inputPath: testdata/dnsrecord-spec-changed.yaml
+- healthStatus:
+    status: Progressing
+    message: Zone "example" is not ready
+  inputPath: testdata/dnsrecord-zone-not-ready.yaml
+- healthStatus:
+    status: Progressing
+    message: Waiting for the Cloudflare API rate limit of this resource's API token; kflare carries on by itself
+  inputPath: testdata/dnsrecord-rate-limited.yaml
+- healthStatus:
+    status: Degraded
+    message: 'Terminal Cloudflare API error: Route pattern must include zone name: example.com (10022)'
+  inputPath: testdata/workerroute-terminal-error.yaml
+- healthStatus:
+    status: Progressing
+    message: 'Waiting for kflare to reconcile generation 2 (last reconciled: 1)'
+  inputPath: testdata/workerroute-terminal-error-fixed.yaml
+- healthStatus:
+    status: Degraded
+    message: KV namespace "sessions" is already managed by KVNamespace web/sessions
+  inputPath: testdata/kvnamespace-title-conflict.yaml
+- healthStatus:
+    status: Degraded
+    message: ManagedTransform web/headers configures the managed transforms of zone 5d2e7f9a1c3b4e6d8f0a2c4e6b8d0f1a
+  inputPath: testdata/managedtransform-already-configured.yaml
+- healthStatus:
+    status: Healthy
+    message: Credentials are valid and account is reachable
+  inputPath: testdata/cloudflareaccount-validated.yaml
+- healthStatus:
+    status: Progressing
+    message: 'Secret kflare-system/cloudflare-token not found: secrets "cloudflare-token" not found'
+  inputPath: testdata/cloudflareaccount-secret-not-found.yaml
+- healthStatus:
+    status: Suspended
+    message: 'Reconciling is paused by the kflare.dev/paused annotation: kflare changes nothing in Cloudflare until the
+      annotation is removed'
+  inputPath: testdata/wafcustomrule-paused.yaml
+- healthStatus:
+    status: Suspended
+    message: 'Reconciling is paused by the kflare.dev/paused annotation: kflare changes nothing in Cloudflare until the
+      annotation is removed'
+  inputPath: testdata/r2bucket-created-paused.yaml
+- healthStatus:
+    status: Progressing
+    message: Waiting for kflare to reconcile the resource
+  inputPath: testdata/r2bucket-new.yaml
+- healthStatus:
+    status: Progressing
+    message: 'Cloudflare API error: HTTP 503 Service Unavailable'
+  inputPath: testdata/zone-api-error.yaml
+- healthStatus:
+    status: Degraded
+    message: 'tunnel "home" already exists and kflare did not create it. To manage it, set the annotation
+      kflare.dev/adoption-policy: adopt'
+  inputPath: testdata/tunnel-already-exists.yaml
+- healthStatus:
+    status: Progressing
+    message: Cloudflare is replacing the list's items
+  inputPath: testdata/iplist-replacing-items.yaml
