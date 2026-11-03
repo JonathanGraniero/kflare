@@ -73,4 +73,6 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `resources` | 100m/64Mi requests, 1/512Mi limits | Controller resources; raise memory for clusters with many Secrets |
 | `topologySpreadConstraints`, `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` | unset | Pod scheduling |
 | `extraEnv` | `[]` | Extra environment variables, such as `HTTPS_PROXY` and `NO_PROXY` |
+| `trustedCA.configMap`, `trustedCA.secret`, `trustedCA.key` | unset, unset, `ca.crt` | A CA bundle to trust besides the public roots, for a proxy that inspects TLS |
+| `extraVolumes`, `extraVolumeMounts` | `[]` | Extra volumes for the pod, and their mounts in the controller container |
 | `extraArgs` | `[]` | Extra controller arguments |

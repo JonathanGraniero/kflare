@@ -1182,6 +1182,26 @@ extraEnv:
 With the NetworkPolicy on, add the proxy to `networkPolicy.extraEgress`, for example
 `[{to: [{ipBlock: {cidr: 10.0.0.10/32}}], ports: [{port: 3128}]}]`.
 
+A proxy that inspects TLS presents its own certificate for `api.cloudflare.com`, signed by your organization's CA.
+The image trusts only the public roots, so every call to Cloudflare fails with
+`x509: certificate signed by unknown authority` until the controller trusts that CA too. Put the CA's PEM bundle in a
+ConfigMap (or a Secret) in kflare's namespace, and name it in `trustedCA`:
+
+```sh
+kubectl -n kflare-system create configmap corporate-ca --from-file=ca.crt=corporate-ca.pem
+```
+
+```yaml
+trustedCA:
+  configMap: corporate-ca   # or secret: <name>
+  key: ca.crt
+```
+
+The chart mounts the bundle and sets `SSL_CERT_DIR`, so that the controller trusts the public roots and your CA. It
+reads the bundle when it starts: restart it (`kubectl -n kflare-system rollout restart deployment/kflare`) after the
+bundle changes. The connection to the Kubernetes API server uses the cluster's own CA and is not affected. For any
+other file the controller needs, `extraVolumes` and `extraVolumeMounts` add volumes to the pod and mount them.
+
 ### Protecting objects that must outlive their manifests
 
 These all delete the Cloudflare objects kflare created, as long as the controller runs: deleting a resource or its

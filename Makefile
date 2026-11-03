@@ -182,7 +182,13 @@ helm-lint: helm ## Lint the chart and render it with default and non-default val
 			--set metrics.certSecret=kflare-metrics-tls \
 			--set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 > /dev/null; \
 		$(HELM) template kflare helm/kflare --kube-version $$v \
-			--set metrics.secure=false,metrics.serviceMonitor.enabled=true,replicaCount=2 > /dev/null; \
+			--set metrics.secure=false,metrics.serviceMonitor.enabled=true,replicaCount=2 \
+			--set trustedCA.configMap=corporate-ca,trustedCA.key=bundle.pem \
+			--set 'extraVolumes[0].name=scratch,extraVolumes[0].emptyDir.medium=Memory' \
+			--set 'extraVolumeMounts[0].name=scratch,extraVolumeMounts[0].mountPath=/scratch' > /dev/null; \
+		$(HELM) template kflare helm/kflare --kube-version $$v \
+			--set trustedCA.secret=corporate-ca,metrics.certSecret=kflare-metrics-tls \
+			--set 'extraEnv[0].name=HTTPS_PROXY,extraEnv[0].value=http://proxy:3128' > /dev/null; \
 		$(HELM) template kflare helm/kflare --kube-version $$v \
 			--set autoscaling.minReplicas=2,autoscaling.maxReplicas=4 \
 			--set autoscaling.targetCPUUtilizationPercentage=null,autoscaling.targetMemoryUtilizationPercentage=90 \

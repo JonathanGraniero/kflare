@@ -1,6 +1,18 @@
 {{- if and .Values.metrics.certSecret (not .Values.metrics.secure) }}
 {{- fail "metrics.certSecret needs metrics.secure: the certificate is for HTTPS" }}
 {{- end }}
+{{- if and .Values.trustedCA.configMap .Values.trustedCA.secret }}
+{{- fail "trustedCA takes a configMap or a secret, not both" }}
+{{- end }}
+{{- $trustedCA := or .Values.trustedCA.configMap .Values.trustedCA.secret }}
+{{- if $trustedCA }}
+{{- range .Values.extraEnv }}
+{{- if eq .name "SSL_CERT_DIR" }}
+{{- fail "trustedCA sets SSL_CERT_DIR: remove it from extraEnv" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $metricsCerts := and .Values.metrics.enabled .Values.metrics.certSecret }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,9 +80,16 @@ spec:
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with .Values.extraEnv }}
+          {{- if or $trustedCA .Values.extraEnv }}
           env:
+            {{- if $trustedCA }}
+            # Go reads the system bundle, then every certificate in these directories.
+            - name: SSL_CERT_DIR
+              value: /etc/ssl/certs:/etc/kflare/trusted-ca
+            {{- end }}
+            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           ports:
             - name: health
@@ -97,14 +116,25 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if and .Values.metrics.enabled .Values.metrics.certSecret }}
+          {{- if or $metricsCerts $trustedCA .Values.extraVolumeMounts }}
           volumeMounts:
+            {{- if $metricsCerts }}
             - name: metrics-certs
               mountPath: /etc/kflare/metrics-certs
               readOnly: true
+            {{- end }}
+            {{- if $trustedCA }}
+            - name: trusted-ca
+              mountPath: /etc/kflare/trusted-ca
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
-      {{- if and .Values.metrics.enabled .Values.metrics.certSecret }}
+      {{- if or $metricsCerts $trustedCA .Values.extraVolumes }}
       volumes:
+        {{- if $metricsCerts }}
         - name: metrics-certs
           secret:
             secretName: {{ .Values.metrics.certSecret }}
@@ -113,6 +143,25 @@ spec:
                 path: tls.crt
               - key: tls.key
                 path: tls.key
+        {{- end }}
+        {{- if .Values.trustedCA.configMap }}
+        - name: trusted-ca
+          configMap:
+            name: {{ .Values.trustedCA.configMap }}
+            items:
+              - key: {{ .Values.trustedCA.key }}
+                path: ca.crt
+        {{- else if .Values.trustedCA.secret }}
+        - name: trusted-ca
+          secret:
+            secretName: {{ .Values.trustedCA.secret }}
+            items:
+              - key: {{ .Values.trustedCA.key }}
+                path: ca.crt
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

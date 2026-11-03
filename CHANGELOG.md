@@ -51,6 +51,14 @@ yourself (`crds.enabled=false`), apply `config/crd/bases` first.
   ([deploy guide](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
   ([#77](https://github.com/JonathanGraniero/kflare/issues/77))
 
+### The Helm chart
+
+- **Trust your organization's CA, for a proxy that inspects TLS.** Behind an egress proxy that presents its own
+  certificate for `api.cloudflare.com`, every call failed with `x509: certificate signed by unknown authority`, since
+  the image trusts only the public roots. `trustedCA` names a ConfigMap or Secret holding a PEM bundle, which the
+  controller trusts besides the public roots. `extraVolumes` and `extraVolumeMounts` are new too
+  ([deploy guide](docs/deploy.md#network-access), [#89](https://github.com/JonathanGraniero/kflare/issues/89))
+
 ### GitOps
 
 - **Health checks for Argo CD and Flux.** Argo CD judged no kflare resource, and Flux's default check took one for
