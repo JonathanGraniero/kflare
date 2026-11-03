@@ -254,3 +254,21 @@ topologySpreadConstraints: []
 extraArgs: []
 # -- Extra environment variables for the controller container.
 extraEnv: []
+# -- Extra volumes for the controller pod.
+extraVolumes: []
+# -- Extra volume mounts for the controller container.
+extraVolumeMounts: []
+
+# A CA bundle to trust besides the public roots, for an egress proxy that
+# inspects TLS: it presents its own certificate for api.cloudflare.com, signed
+# by your organization's CA. Name a ConfigMap or a Secret in the release's
+# namespace, not both. The controller reads the bundle when it starts: restart
+# it after the bundle changes. The connection to the Kubernetes API server uses
+# the cluster's own CA and is not affected.
+trustedCA:
+  # -- ConfigMap holding the PEM bundle.
+  configMap: ""
+  # -- Secret holding the PEM bundle.
+  secret: ""
+  # -- Key of the bundle in the ConfigMap or Secret.
+  key: ca.crt
