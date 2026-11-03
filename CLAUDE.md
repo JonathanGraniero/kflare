@@ -876,7 +876,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     and the chart (`sha256:eabd818d…`) verify with cosign 3.1.3 for `refs/tags/v0.4.0`, and the image is refused for
     `refs/tags/v0.3.0`; the SBOMs pass `verify-blob`, and Artifact Hub lists 0.4.0 with `signed: true`. The release
     scan, by hand (41244936180): Grype 0 matches in 78 packages, the binary clean
-- [ ] v0.4.1's pre-tag checks (`docs/release-v0.4.1`), a patch release: #131, and nothing else. Done on the branch:
+- [x] v0.4.1, released 2026-11-01: its pre-tag checks (`docs/release-v0.4.1`), a patch release: #131, and nothing
+  else. Done on the branch:
   - An upgrade from 0.4.0 needs nothing: since v0.4.0, nothing changed under `api`, `cmd`, `config` or `helm`, nor in
     `go.mod`. The chart pulled anonymously from GHCR and the branch's render the same 32 objects with the default
     values, and 33 with two replicas, the NetworkPolicy, the ServiceMonitor, a drift check interval and `retain`, but
@@ -885,6 +886,32 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - Left, for the user: the live suite with the CI token (a `/live-e2e` review comment, never alongside a local run).
     None has run on #125's or #131's code. Then the tag on the release PR's merge commit, the release workflow, and
     #84's checks
+  - Tagged on `4c3600c` (#133's merge commit), without a live run; `Release` run 41255722059 passed, and the draft
+    was published as latest. The image (`sha256:68abbe00…`) and the chart (`sha256:d6a30428…`) verify with cosign
+    3.1.3 for `refs/tags/v0.4.1`, and both are refused for `refs/tags/v0.4.0`; the SBOMs pass `verify-blob`, and
+    Artifact Hub lists 0.4.1 with `signed: true`. The release scan (41256230985) passed. The first live run on #125's
+    and #131's code came later, on #142's branch (v0.4.2's checks, below)
+- [ ] v0.4.2's pre-tag checks (`docs/release-v0.4.2`), the user's version: #137, #138, #139, #142 and #146 add a CRD's
+  fields, a ClusterRole rule, chart values and metrics, and break no manifest (a minor by #87's proposed rule, as
+  v0.2.1 was). Done on the branch:
+  - The chart pulled anonymously from GHCR (0.4.1, `sha256:d6a30428…`) and the branch's render the same 32 objects
+    with the default values, and 33 with two replicas, the NetworkPolicy, the ServiceMonitor, a drift check interval
+    and `retain`, on Kubernetes 1.34 and 1.37. Versions normalized, they differ only in `CloudflareAccount`'s CRD
+    (`spec.rateLimit`, `spec.allowedNamespaces`), the manager ClusterRole's `namespaces` and the Deployment's
+    `--cloudflare-rate-limit=900`; the other 19 CRDs are the same
+  - An upgrade from 0.4.1 on an envtest API server (1.34.1, no pods): the chart from GHCR, v0.4.1's CloudflareAccount
+    sample, then `helm upgrade` to the branch's chart. The account's spec reads back unchanged. An account with
+    `rateLimit` and `allowedNamespaces`, refused by v0.4.1's CRD (strict decoding: unknown fields), is accepted after
+    it, the ClusterRole gets, lists and watches Namespaces, and the branch's 26 samples pass a server-side dry run
+  - The live suite: run 41379410100 (a `/live-e2e` review on #142, the CI token, Kubernetes 1.37) passed 28 of 28 on
+    `f7e173f`, whose non-Markdown tree is #142's merge commit `70f8abe`, with #127, #131, #137, #138 and #139 before
+    it. Since then nothing under `api`, `cmd`, `pkg` or `internal` changed but a test, and the chart renders as it
+    did at `70f8abe` with the default values and with the e2e suite's, but for the version. #146's `trustedCA`, off
+    in both, was checked on kind behind mitmproxy (#146)
+  - `gopher-lua`, new in `go.mod` for the Argo CD health check's tests, is not among the manager's dependencies
+    (`go list -deps ./cmd`)
+  - Left, for the user: the merge. Then the tag on its merge commit, once main's CI and E2E pass there, the release
+    workflow, and #84's checks
 - [x] Artifact Hub annotations (#90, `feat/artifacthub-annotations`). Why the page showed none, read in Artifact Hub's
   tracker (`internal/tracker/source/helm`, 2026-10-28): it finds a chart's images by a dry-run install for Kubernetes
   1.29, which `kubeVersion: ">=1.34.0-0"` refuses (Helm 4.3.1: "incompatible with Kubernetes v1.29"), and the license
@@ -936,16 +963,16 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
 > `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule` and `OriginRule`
 > done.**
-> cloudflare-go is at v7.13.0, with v0.119 next to it for `Zone`, `TunnelConfiguration` and `WorkerScript`. Every kind
+> cloudflare-go is at v7.13.1, with v0.119 next to it for `Zone`, `TunnelConfiguration` and `WorkerScript`. Every kind
 > but `CloudflareAccount` runs on a shared reconciler: the shared CRUD reconciler, the shared rule controller or the shared
 > settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
 > hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:
 > [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done:
-> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.1 is the latest release.
+> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.2 is the latest release.
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero
 > Trust still waits on account setup. Items
 > needing a paid plan, add-on or account setup are tracked under
 > [Deferred](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup) in docs/design-notes.md.
-> Last updated: October 2026
+> Last updated: November 2026

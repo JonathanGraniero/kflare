@@ -5,7 +5,25 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
-### Upgrading
+## v0.4.2 (alpha)
+
+The seventh alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. kflare now
+keeps each API token within Cloudflare's rate limit, so one account past its limit no longer holds up the others. A
+`CloudflareAccount` can limit which namespaces may use it, kflare has metrics of its own, the deploy guide has health
+checks for Argo CD and Flux, and the chart can trust your organization's CA, for a proxy that inspects TLS. **Manifests
+written for v0.4 apply unchanged**, but kflare now paces its calls: read
+[Upgrading from v0.4.1](#upgrading-from-v041) before upgrading.
+
+```sh
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version 0.4.2 -n kflare-system \
+  --values kflare-values.yaml
+```
+
+The image is `ghcr.io/jonathangraniero/kflare:0.4.2`, for `linux/amd64` and `linux/arm64`. The deploy guide's
+[Verifying a release](docs/deploy.md#verifying-a-release) checks both signatures before you install. To install kflare
+for the first time, follow the [README's quickstart](README.md#quickstart-expose-a-service-through-a-cloudflare-tunnel).
+
+### Upgrading from v0.4.1
 
 **kflare now paces its calls to Cloudflare**, to 900 requests per five minutes per API token by default. A large change
 or a restart takes longer than before on an installation with more than a few hundred resources, and stays within
@@ -69,6 +87,18 @@ yourself (`crds.enabled=false`), apply `config/crd/bases` first.
   record, and sync waves and `dependsOn` wait for a `Zone` to be ready
   ([deploy guide](docs/deploy.md#health-checks-in-argo-cd-and-flux),
   [#83](https://github.com/JonathanGraniero/kflare/issues/83))
+
+### Development
+
+- **`local/setup.sh` installs Argo CD and Prometheus too.** Argo CD comes with kflare's health check, to watch kflare
+  resources sync in its UI, and Prometheus and Grafana with a kflare dashboard, which shows an e2e run as it goes
+  however the suite runs the manager. `INSTALL_ARGOCD=0` and `INSTALL_PROMETHEUS=0` leave them out
+  ([CONTRIBUTING.md](CONTRIBUTING.md#running-kflare-against-a-real-account))
+
+### Known limitations
+
+v0.4.1's, and two of the rate limit's: a token's budget lives in one manager's memory, and each kind still reconciles
+one resource at a time. [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains each.
 
 ## v0.4.1 (alpha)
 
