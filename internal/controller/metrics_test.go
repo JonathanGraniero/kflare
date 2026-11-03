@@ -343,6 +343,17 @@ var _ = Describe("kflare's metrics", func() {
 			var reader client.Reader
 			startManager(ctx, func(mgr manager.Manager) error {
 				reader = mgr.GetClient()
+				// In cmd/main.go each kind's controller starts its informer. Here none
+				// does, so the first scrape would start them one at a time, within
+				// collectTimeout, and leave out every kind it had no time for, so that
+				// later scrapes wait for those to sync. Registered here, they start with
+				// the cache, and startManager waits for every one.
+				for kind := range resourceLists(scheme.Scheme) {
+					gvk := cloudflarev1alpha1.GroupVersion.WithKind(kind)
+					if _, err := mgr.GetCache().GetInformerForKind(ctx, gvk); err != nil {
+						return err
+					}
+				}
 				return nil
 			})
 			registry := prometheus.NewPedanticRegistry()
