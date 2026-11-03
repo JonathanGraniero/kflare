@@ -178,6 +178,18 @@ kflare is developed with AI assistance (Claude Code). What keeps it honest:
 - [Governance](GOVERNANCE.md) and [maintainers](MAINTAINERS.md): who decides, and how to become a maintainer
 - [Code of Conduct](CODE_OF_CONDUCT.md): the Contributor Covenant, which every space of the project follows
 
+## Sponsoring kflare
+
+kflare is free and MIT licensed, and will stay that way. [Sponsoring it](https://github.com/sponsors/JonathanGraniero)
+pays first for the Cloudflare plans the live tests need beyond the Free plan: a Pro zone and the Load Balancing
+add-on, without which load balancers and standalone health checks cannot be built, nor zone plans and custom block
+responses tested (see [Waiting on something](ROADMAP.md#waiting-on-something)). Beyond that, it pays for the time
+kflare takes: reviews, releases, security fixes and the next Cloudflare products.
+
+Companies that sponsor $100 a month or more have their logo here, with a link. Sponsoring buys no say over the
+roadmap: plans and decisions are made in public, as [GOVERNANCE.md](GOVERNANCE.md) describes, and what users ask for
+in issues decides the order.
+
 ## License
 
 MIT. Copyright (c) 2026 Jonathan Graniero. See [LICENSE](LICENSE).

@@ -70,4 +70,7 @@ them:
 | Zone plans (`Zone` `spec.plan`) | Built, but not tested live: changing a plan bills the account |
 | Custom block responses on WAF custom rules | Built to Cloudflare's documented limits, but a Free zone cannot use them, so not tested live |
 
+A Pro zone and the Load Balancing add-on would unblock all of these but Zero Trust. They are the first thing
+[sponsorship](README.md#sponsoring-kflare) pays for.
+
 Later, beyond these: an OLM bundle, and a documentation site.
