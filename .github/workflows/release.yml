@@ -1,15 +1,26 @@
 name: Release
 
-# Pushing a vX.Y.Z tag publishes the controller image and the Helm chart to
-# GitHub Container Registry, signs both with cosign, and drafts the GitHub
-# release with the image's SBOMs. Bump version and appVersion in
-# helm/kflare/Chart.yaml (through a PR) before tagging; the tag must match.
+# Releases a vX.Y.Z tag: publishes the controller image and the Helm chart to
+# GitHub Container Registry, signs both with cosign, checks the signatures as
+# users do, and publishes the GitHub release with the image's SBOMs and
+# CHANGELOG.md's section as its notes. Tag release tags a merge to main that
+# bumps version and appVersion in helm/kflare/Chart.yaml and starts this
+# workflow on the tag; a tag pushed by hand starts it too. The tag must match
+# the chart.
 on:
   push:
     tags: ["v*.*.*"]
+  # A tag the workflow token creates starts no workflow, so Tag release starts
+  # this one on its tag. Started on a branch, it stops at the first step.
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# One run per tag at a time, never cancelled halfway through publishing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/jonathangraniero/kflare
@@ -20,7 +31,7 @@ jobs:
     name: Publish image and chart
     runs-on: ubuntu-latest
     permissions:
-      # Drafts the GitHub release and attaches the SBOMs.
+      # Drafts the GitHub release, attaches the SBOMs and publishes it.
       contents: write
       # Pushes the image, the chart and their signatures.
       packages: write
@@ -37,7 +48,14 @@ jobs:
 
       - name: Check the tag matches the chart
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "::error::Release runs on a vX.Y.Z tag, not on $GITHUB_REF"
+            exit 1
+          fi
           version="${GITHUB_REF_NAME#v}"
           chart="$(awk '/^version:/ {print $2}' helm/kflare/Chart.yaml)"
           app="$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}' helm/kflare/Chart.yaml)"
@@ -45,7 +63,30 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match Chart.yaml (version $chart, appVersion $app)"
             exit 1
           fi
+          # A published release's image and chart are public and signed, and
+          # stay as they are. This endpoint returns only a published release,
+          # so a rerun after a failed step goes on with its draft.
+          if gh api "repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME" --silent 2> "$RUNNER_TEMP/release.err"; then
+            echo "::error::$GITHUB_REF_NAME is published already"
+            exit 1
+          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/release.err"; then
+            cat "$RUNNER_TEMP/release.err" >&2
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Before anything is published, so that a section CHANGELOG.md lacks
+      # stops the release here.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          check-latest: true
+          # Nothing a release runs comes from a cache.
+          cache: false
+
+      - name: Write the release notes
+        run: go run ./hack/releasenotes > "$RUNNER_TEMP/notes.md"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -119,8 +160,8 @@ jobs:
         run: cosign sign --yes "${CHART_REPO#oci://}/kflare@$DIGEST"
 
       # The SBOMs from the image index, each with the Sigstore bundle that
-      # cosign verify-blob checks it with. A maintainer then replaces the
-      # draft's notes with CHANGELOG.md's section and publishes it.
+      # cosign verify-blob checks it with. The release stays a draft until
+      # the signatures verify.
       - name: Draft the GitHub release with the SBOMs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -137,10 +178,82 @@ jobs:
             jq -e .spdxVersion "$file" > /dev/null
             cosign sign-blob --yes --bundle "$file.sigstore.json" "$file"
           done
-          # A rerun replaces the assets of the release it drafted.
+          # A rerun replaces the assets and notes of the release it drafted.
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/sbom/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "kflare $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
           else
-            gh release create "$GITHUB_REF_NAME" dist/sbom/* --draft --verify-tag --title "$GITHUB_REF_NAME" \
-              --notes "Draft: the notes are CHANGELOG.md's $GITHUB_REF_NAME section."
+            gh release create "$GITHUB_REF_NAME" dist/sbom/* --draft --verify-tag --title "kflare $GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/notes.md"
           fi
+
+      # What deploy.md's Verifying a release tells users to run, without a
+      # login to ghcr.io: the image and the chart at the version's tags,
+      # signed by this workflow for this tag, are what was pushed, and so are
+      # the SBOM files.
+      - name: Verify the signatures
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -o pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/anonymous"
+          mkdir -p "$DOCKER_CONFIG"
+          echo '{}' > "$DOCKER_CONFIG/config.json"
+          identity="https://github.com/JonathanGraniero/kflare/.github/workflows/release.yml@refs/tags/v$VERSION"
+          issuer=https://token.actions.githubusercontent.com
+          verify() {
+            local verified
+            if ! verified="$(cosign verify "$1" --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" |
+              jq -r '.[0].critical.image."docker-manifest-digest"')"; then
+              echo "::error::$1 is not signed by this workflow for v$VERSION"
+              exit 1
+            fi
+            if [ "$verified" != "$2" ]; then
+              echo "::error::$1 is $verified, but the workflow pushed $2"
+              exit 1
+            fi
+          }
+          verify "$IMAGE:$VERSION" "$IMAGE_DIGEST"
+          verify "${CHART_REPO#oci://}/kflare:$VERSION" "$CHART_DIGEST"
+          for file in dist/sbom/*.spdx.json; do
+            cosign verify-blob "$file" --bundle "$file.sigstore.json" \
+              --certificate-identity "$identity" --certificate-oidc-issuer "$issuer"
+          done
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -o pipefail
+          # Latest, unless a newer version is tagged, as when a fix goes out
+          # for an older release.
+          newest="$(gh api "repos/$GH_REPO/git/matching-refs/tags/v" --paginate --jq '.[].ref' |
+            sed 's|^refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+          latest=false
+          if [ "$newest" = "$GITHUB_REF_NAME" ]; then
+            latest=true
+          fi
+          id="$(TAG="$GITHUB_REF_NAME" gh api "repos/$GH_REPO/releases?per_page=100" --paginate \
+            --jq '.[] | select(.draft and .tag_name == env.TAG) | .id')"
+          if [ -z "$id" ]; then
+            echo "::error::found no draft release for $GITHUB_REF_NAME"
+            exit 1
+          fi
+          gh api -X PATCH "repos/$GH_REPO/releases/$id" -F draft=false -f make_latest="$latest" --silent
+          echo "Published $GITHUB_REF_NAME (latest: $latest)."
+
+  scan:
+    name: Start the release scan
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      # Starts Release scan on main, whose code scanning results it reports.
+      actions: write
+    steps:
+      - name: Start the release scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release-scan.yml --repo "$GITHUB_REPOSITORY" --ref main

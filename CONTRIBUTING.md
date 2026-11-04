@@ -206,14 +206,27 @@ A change to how a controller behaves comes with:
 
 ## Releasing
 
-Maintainers release by bumping `version` and `appVersion` in `helm/kflare/Chart.yaml`, adding the release's section to
-[CHANGELOG.md](CHANGELOG.md) and running `make helm`, through a pull request, then pushing a `vX.Y.Z` tag that matches
-them. The GitHub release's notes are that section. Artifact Hub's changelog shows its bullets as plain text, but for
-those under "Upgrading ..." and "Known limitations": write each change as one bullet (a list nested in it joins its
-text), whose links Artifact Hub lists below it. The `Release` workflow refuses a tag that does not match, and otherwise
-publishes the image (`linux/amd64` and `linux/arm64`, with an SBOM and provenance for each) and the chart to `ghcr.io`,
-signs both with cosign, keyless, and drafts the GitHub release with the SBOMs. A maintainer then replaces the draft's
-notes with the CHANGELOG.md section and publishes it.
+Maintainers release through a pull request that bumps `version` and `appVersion` in `helm/kflare/Chart.yaml`, adds the
+release's section to [CHANGELOG.md](CHANGELOG.md) and runs `make helm`. Merging it releases that version:
+
+1. The `Tag release` workflow waits for every job of CI and E2E on the merge commit, then tags it `vX.Y.Z` and starts
+   the `Release` workflow on the tag. It releases only a merge that changes the version, to one newer than every tag,
+   and stops before tagging if `appVersion` differs or CHANGELOG.md has no section for it
+2. `Release` publishes the image (`linux/amd64` and `linux/arm64`, with an SBOM and provenance for each) and the chart
+   to `ghcr.io`, signs both with cosign, keyless, and drafts the GitHub release with the SBOMs and the section as its
+   notes (`hack/releasenotes`)
+3. It checks the signatures as [Verifying a release](docs/deploy.md#verifying-a-release) does, without a login, then
+   publishes the release, as latest unless a newer version is tagged, and starts `Release scan`
+
+The notes are the section with its relative links made absolute, to the files at the tag, and each wrapped line joined
+to the one it continues, since a release page shows every line break. Artifact Hub's changelog shows the bullets as
+plain text, but for those under "Upgrading ..." and "Known limitations": write each change as one bullet (a list
+nested in it joins its text), whose links Artifact Hub lists below it.
+
+If a job of CI or E2E fails on the merge commit, nothing is tagged: rerun the failed jobs, then rerun `Tag release`. A
+`vX.Y.Z` tag pushed by hand starts `Release` too, as does running it on a tag from the Actions tab. `Release` refuses a
+tag that does not match `Chart.yaml`, and a release that is published already; rerun after a failed step, it goes on
+with its draft.
 
 ## License
 

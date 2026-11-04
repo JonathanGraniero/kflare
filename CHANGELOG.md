@@ -5,6 +5,14 @@ read the notes before upgrading. The chart and the controller image share one ve
 
 ## Unreleased
 
+### Releases
+
+- **Merging a version bump releases it.** Once CI and E2E pass on the merge commit, the `Tag release` workflow tags
+  it, and the `Release` workflow publishes the GitHub release after checking the image's and the chart's signatures as
+  the deploy guide's [Verifying a release](docs/deploy.md#verifying-a-release) does. The notes now keep each paragraph
+  on one line and link to CHANGELOG.md at the tag: a release page shows every line break, and gives its headings no
+  anchors for a link to go to
+
 ## v0.4.2 (alpha)
 
 The seventh alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. kflare now

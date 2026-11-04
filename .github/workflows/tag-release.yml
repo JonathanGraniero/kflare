@@ -1,0 +1,174 @@
+name: Tag release
+
+# Releases a merge to main that bumps the chart's version: once every job of
+# CI and E2E has passed on the merge commit, this tags it vX.Y.Z and starts
+# the Release workflow on the tag, which publishes and signs the image and the
+# chart, then the GitHub release. A push that leaves the version as it was
+# releases nothing.
+on:
+  push:
+    branches: [main]
+    paths: [helm/kflare/Chart.yaml]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # -e and -o pipefail.
+    shell: bash
+
+jobs:
+  check:
+    name: Check the version and wait for CI and E2E
+    runs-on: ubuntu-latest
+    # E2E takes about 25 minutes, and its jobs can queue behind others'.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      # Reads the jobs of CI's and E2E's runs.
+      actions: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The chart before the push, and the tags.
+          fetch-depth: 0
+
+      # The release is the commit that changes the version. A later push that
+      # touches Chart.yaml, as a CRD change does, is not released with it.
+      - name: Find a new version
+        id: version
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # A top-level key of Chart.yaml at a commit, read as Release reads it.
+          chart() { git show "$1:helm/kflare/Chart.yaml" | awk -v key="^$2:" '$0 ~ key {gsub(/"/, "", $2); print $2}'; }
+          version="$(chart "$GITHUB_SHA" version)"
+          before="$(chart "$BEFORE" version)"
+          if [ "$version" = "$before" ]; then
+            echo "The chart's version is still $version: nothing to release."
+            exit 0
+          fi
+          tag="v$version"
+          fail() {
+            echo "::error::$*"
+            exit 1
+          }
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version $version is not X.Y.Z"
+          app="$(chart "$GITHUB_SHA" appVersion)"
+          [ "$app" = "$version" ] || fail "appVersion $app does not match version $version"
+          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            fail "$tag is tagged already"
+          fi
+          newest="$({ git tag -l 'v*.*.*'; echo "$tag"; } | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+          [ "$newest" = "$tag" ] || fail "$tag is older than $newest"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Chart.yaml's version went from $before to $version."
+
+      - name: Set up Go
+        if: steps.version.outputs.tag
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: false
+
+      # Release writes them the same way, but only after the tag is made.
+      - name: Check the release notes
+        if: steps.version.outputs.tag
+        run: go run ./hack/releasenotes > /dev/null
+
+      # Every job of CI's and E2E's runs on this commit must pass, or be
+      # skipped, as the live suite is on a push. Jobs rather than runs: a run
+      # can stay in progress a while after its last job is done.
+      - name: Wait for CI and E2E
+        if: steps.version.outputs.tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          deadline=$((SECONDS + 110 * 60))
+          while :; do
+            waiting=()
+            for workflow in ci.yml e2e.yml; do
+              run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push" \
+                --jq '.workflow_runs[0].id // empty')"
+              jobs=""
+              if [ -n "$run" ]; then
+                jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" \
+                  --jq '.jobs[] | [.status, .conclusion // "", .name] | @tsv')"
+              fi
+              failed="$(awk -F '\t' '$1 == "completed" && $2 != "success" && $2 != "skipped" {print $3}' <<< "$jobs" |
+                paste -s -d , -)"
+              if [ -n "$failed" ]; then
+                echo "::error::$workflow did not pass on this commit ($failed), so it is not tagged." \
+                  "Rerun the failed jobs, then this workflow."
+                exit 1
+              fi
+              if [ -z "$jobs" ] || awk -F '\t' '$1 != "completed" {found = 1} END {exit !found}' <<< "$jobs"; then
+                waiting+=("$workflow")
+              elif ! awk -F '\t' '$2 == "success" {found = 1} END {exit !found}' <<< "$jobs"; then
+                echo "::error::no job of $workflow ran on this commit"
+                exit 1
+              fi
+            done
+            if [ "${#waiting[@]}" -eq 0 ]; then
+              echo "CI and E2E passed on $GITHUB_SHA."
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::still waiting for ${waiting[*]}: rerun this workflow once they are done"
+              exit 1
+            fi
+            sleep 60
+          done
+
+  tag:
+    name: Tag the release and start Release
+    needs: check
+    if: needs.check.outputs.tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # One tag at a time, and never cancelled between the tag and Release.
+    concurrency:
+      group: tag-release
+      cancel-in-progress: false
+    permissions:
+      # Creates the tag.
+      contents: write
+      # Starts Release on it.
+      actions: write
+    steps:
+      - name: Tag the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          # A tag pushed by hand while this waited is left as it is.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2> /dev/null; then
+            echo "$TAG is tagged already."
+            exit 0
+          fi
+          # Annotated, as the tags pushed by hand were.
+          object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$TAG" -f message="kflare $TAG" \
+            -f object="$GITHUB_SHA" -f type=commit --jq .sha)"
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" --silent
+          echo "Tagged $GITHUB_SHA as $TAG."
+
+      # A tag the workflow token creates starts no workflow. One pushed by
+      # hand started Release itself, and a rerun of this job finds that run.
+      - name: Start Release on the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?branch=$TAG" --jq .total_count)"
+          if [ "$runs" -gt 0 ]; then
+            echo "Release has run on $TAG already."
+            exit 0
+          fi
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          echo "Started Release on $TAG."

@@ -94,8 +94,8 @@ With:
 ├── helm/artifacthub-repo.yml  # Artifact Hub metadata; the Artifact Hub workflow pushes it (verified publisher)
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);
 │                          #   its CLAUDE.md holds the generator's design
-├── hack/                  # sync-helm-chart.sh, chartannotations (Artifact Hub annotations), mutate.sh
-│                          #   (mutations), e2e-live.sh (live e2e), license header
+├── hack/                  # sync-helm-chart.sh, chartannotations (Artifact Hub annotations), releasenotes (a
+│                          #   GitHub release's notes), mutate.sh (mutations), e2e-live.sh (live e2e), license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
@@ -912,6 +912,30 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     (`go list -deps ./cmd`)
   - Left, for the user: the merge. Then the tag on its merge commit, once main's CI and E2E pass there, the release
     workflow, and #84's checks
+- [ ] Releases from the merge (`ci/release-on-merge`), the user's request on 2026-11-04: a release took a maintainer's
+  tag, a draft's notes and #84's checks by hand. `tag-release.yml` runs on a push to `main` that changes `Chart.yaml`,
+  and releases only when that push changed the version (a later CRD change also touches the file). It checks the
+  version (X.Y.Z, `appVersion` the same, untagged and newer than every tag) and its notes, waits for every job of CI's
+  and E2E's runs on the commit, tags it through the API and starts `Release` on the tag: a tag the workflow token makes
+  starts no workflow. Jobs rather than runs, since during GitHub's Actions incident that day CI's run on `06602d9`
+  showed in progress for about 40 minutes after its last job passed. A dispatched run keeps the signing identity,
+  `release.yml@refs/tags/vX.Y.Z`, which names the ref, not the event. `release.yml` writes the notes
+  (`hack/releasenotes`) before it publishes anything, refuses a branch and a published release, checks the
+  signatures as deploy.md's Verifying a release does, without a login, publishes as latest unless a newer version is
+  tagged, and starts the release scan. Checked:
+  - `hack/releasenotes`: its tests, and 24 of 24 mutations caught. A release page gives its headings no anchors (read in
+    v0.4.0's HTML), so its two links to headings went nowhere; they now go to CHANGELOG.md at the tag, whose headings
+    have them. It also shows every line break: GitHub's Markdown API renders v0.4.1's notes from it as published but
+    for 11 line breaks, and v0.4.0's but for 34, those two links and the known issue written into it by hand
+  - The steps' scripts, run here against the repository and its runs with writes blocked: the version check (the
+    v0.4.2 bump found; a push that kept the version, v0.4.1's tagged bump, an older version and a mismatched
+    `appVersion` refused), the wait (`06602d9` passes on its jobs while its run still showed in progress, and
+    `298c8f7`, whose `Test (newest Kubernetes)` failed, is refused), the tag and dispatch steps' paths for a tag made
+    by hand, Release's tag check (a branch, a published release and a mismatched tag refused), the signature checks
+    with cosign 3.1.3 on v0.4.1's image, chart and SBOM files (a digest the run did not push, an unsigned v0.2.0 and a
+    changed SBOM refused), and the choice of latest
+  - Left: actionlint and shellcheck, which the auto mode classifier refused to fetch, and the calls that write (the tag,
+    the dispatch, publishing), which only a release makes; the first release after the merge runs them
 - [x] Artifact Hub annotations (#90, `feat/artifacthub-annotations`). Why the page showed none, read in Artifact Hub's
   tracker (`internal/tracker/source/helm`, 2026-10-28): it finds a chart's images by a dry-run install for Kubernetes
   1.29, which `kubeVersion: ">=1.34.0-0"` refuses (Helm 4.3.1: "incompatible with Kubernetes v1.29"), and the license
@@ -932,8 +956,9 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 - [ ] Full `FieldExport` implementation (export any CRD field → ConfigMap/Secret)
 - [ ] `AdoptedResource` full implementation (import existing CF resources into management)
 - [x] Helm chart (`helm/kflare`) with deploy guide (`docs/deploy.md`); `.github/workflows/release.yml` publishes
-  the image and chart to `ghcr.io` on a `vX.Y.Z` tag matching `Chart.yaml`, signs both with cosign and drafts the
-  GitHub release with the SBOMs (#84)
+  the image and chart to `ghcr.io` on a `vX.Y.Z` tag matching `Chart.yaml`, signs both with cosign (#84), checks the
+  signatures and publishes the GitHub release with the SBOMs; `tag-release.yml` tags a merge that bumps the version
+  and starts it (Release and CI, `ci/release-on-merge`)
   - CRDs are templates (upgraded by `helm upgrade`, `helm.sh/resource-policy: keep`), generated from
     `config/crd/bases` with the manager ClusterRole rules by `make helm`; CI fails if they drift
   - `view`/`edit` aggregated ClusterRoles; CloudflareAccount is never in `edit` (it can point at any Secret)
