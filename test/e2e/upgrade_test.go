@@ -366,20 +366,11 @@ func TestUpgradeManifests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kinds, keys := map[string]bool{}, map[string]bool{}
-	for _, obj := range m.objects {
-		if obj.GetAPIVersion() != "kflare.dev/v1alpha1" || obj.GetName() == "" {
-			t.Errorf("%s holds an object that is not a named kflare resource: %v", upgradeManifests, obj.Object)
-		}
-		if keys[keyOf(obj)] {
-			t.Errorf("%s holds %s twice", upgradeManifests, keyOf(obj))
-		}
-		kinds[obj.GetKind()], keys[keyOf(obj)] = true, true
-	}
 	files, err := filepath.Glob(filepath.Join(root, "config", "crd", "bases", "*.yaml"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no CRDs: %v", err)
 	}
+	kinds := make([]string, 0, len(files))
 	for _, file := range files {
 		raw, err := os.ReadFile(file)
 		if err != nil {
@@ -389,9 +380,143 @@ func TestUpgradeManifests(t *testing.T) {
 		if err := yaml.Unmarshal(raw, crd); err != nil {
 			t.Fatal(err)
 		}
-		if kind := crd.Spec.Names.Kind; !kinds[kind] {
-			t.Errorf("%s has no %s: add one, so that upgrades are tested with it", upgradeManifests, kind)
+		kinds = append(kinds, crd.Spec.Names.Kind)
+	}
+	for _, problem := range manifestProblems(m, kinds) {
+		t.Errorf("%s %s", upgradeManifests, problem)
+	}
+
+	// And manifests the checks refuse.
+	zone, record := object(t, "Zone", "zone", `{}`), object(t, "DNSRecord", "record", `{}`)
+	other := object(t, "Zone", "other", `{}`)
+	other.SetAPIVersion("v1")
+	unnamed := object(t, "Zone", "", `{}`)
+	got := manifestProblems(manifests{objects: []*unstructured.Unstructured{zone, record, record, other, unnamed}},
+		[]string{"Zone", "DNSRecord", "Tunnel"})
+	want := []string{
+		"holds DNSRecord " + upgradeNamespace + "/record twice",
+		fmt.Sprintf("holds an object that is not a named kflare resource: %v", other.Object),
+		fmt.Sprintf("holds an object that is not a named kflare resource: %v", unnamed.Object),
+		"has no Tunnel: add one, so that upgrades are tested with it",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("problems\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+	}
+}
+
+// manifestProblems returns what is wrong with m, the upgrade manifests, for
+// CRDs of kinds: each object must be a named kflare resource, held once, and
+// every kind must have one.
+func manifestProblems(m manifests, kinds []string) []string {
+	var problems []string
+	held, keys := map[string]bool{}, map[string]bool{}
+	for _, obj := range m.objects {
+		switch {
+		case obj.GetAPIVersion() != "kflare.dev/v1alpha1" || obj.GetName() == "":
+			problems = append(problems, fmt.Sprintf("holds an object that is not a named kflare resource: %v",
+				obj.Object))
+		case keys[keyOf(obj)]:
+			problems = append(problems, "holds "+keyOf(obj)+" twice")
 		}
+		held[obj.GetKind()], keys[keyOf(obj)] = true, true
+	}
+	for _, kind := range kinds {
+		if !held[kind] {
+			problems = append(problems, "has no "+kind+": add one, so that upgrades are tested with it")
+		}
+	}
+	return problems
+}
+
+// object returns an object of kind named name in the upgrade namespace, with
+// the spec given as JSON.
+func object(t *testing.T, kind, name, spec string) *unstructured.Unstructured {
+	t.Helper()
+	obj := &unstructured.Unstructured{}
+	raw := `{"apiVersion": "kflare.dev/v1alpha1", "kind": "` + kind + `", "metadata": {"name": "` + name + `", ` +
+		`"namespace": "` + upgradeNamespace + `"}, "spec": ` + spec + `}`
+	if err := json.Unmarshal([]byte(raw), &obj.Object); err != nil {
+		t.Fatal(err)
+	}
+	return obj
+}
+
+func TestChangedObjects(t *testing.T) {
+	released := manifests{objects: []*unstructured.Unstructured{
+		object(t, "Zone", "zone", `{"name": "example.com"}`),
+		object(t, "DNSRecord", "record", `{"name": "a.example.com", "ttl": 60}`),
+	}}
+	current := manifests{objects: []*unstructured.Unstructured{
+		object(t, "Zone", "zone", `{"name": "example.com"}`),
+		object(t, "DNSRecord", "record", `{"name": "a.example.com", "ttl": 120}`),
+		object(t, "Tunnel", "tunnel", `{"name": "t"}`),
+	}}
+	got := slices.Sorted(maps.Keys(changedObjects(released, current)))
+	want := []string{"DNSRecord " + upgradeNamespace + "/record", "Tunnel " + upgradeNamespace + "/tunnel"}
+	if !slices.Equal(got, want) {
+		t.Errorf("changed %v, want %v", got, want)
+	}
+	if changed := changedObjects(current, current); len(changed) > 0 {
+		t.Errorf("unchanged manifests: %v", changed)
+	}
+}
+
+func TestLostSince(t *testing.T) {
+	was := object(t, "DNSRecord", "record", `{"name": "a.example.com", "tags": ["x", "y"], "ref": {"name": "zone"}}`)
+	was.SetUID("1")
+	was.SetLabels(map[string]string{"kflare.dev/record-id": "r1"})
+	was.SetAnnotations(map[string]string{"kflare.dev/adopted": "true"})
+	was.SetFinalizers([]string{"kflare.dev/finalizer"})
+	was.Object["status"] = map[string]any{
+		"conditions":         []any{map[string]any{"type": "Ready", "status": "True", "reason": "Synced"}},
+		"cloudflareMetadata": map[string]any{"recordID": "r1"},
+	}
+	same := func() *unstructured.Unstructured { return was.DeepCopy() }
+
+	for _, tc := range []struct {
+		name   string
+		change func(*unstructured.Unstructured)
+		want   []string
+	}{
+		{name: "nothing changed", change: func(*unstructured.Unstructured) {}},
+		{name: "fields gained, and other conditions", change: func(now *unstructured.Unstructured) {
+			now.Object["spec"].(map[string]any)["ttl"] = int64(1)
+			now.SetLabels(map[string]string{"kflare.dev/record-id": "r1", "kflare.dev/new": "x"})
+			now.Object["status"].(map[string]any)["conditions"] = []any{}
+		}},
+		{name: "a label lost", change: func(now *unstructured.Unstructured) { now.SetLabels(nil) },
+			want: []string{".metadata.labels: map[kflare.dev/record-id:r1] becomes <nil>"}},
+		{name: "an annotation changed", change: func(now *unstructured.Unstructured) {
+			now.SetAnnotations(map[string]string{"kflare.dev/adopted": "false"})
+		}, want: []string{".metadata.annotations.kflare.dev/adopted: true becomes false"}},
+		{name: "a finalizer lost", change: func(now *unstructured.Unstructured) { now.SetFinalizers(nil) },
+			want: []string{".metadata.finalizers: [kflare.dev/finalizer] becomes <nil>"}},
+		{name: "a finalizer gained", change: func(now *unstructured.Unstructured) {
+			now.SetFinalizers([]string{"kflare.dev/finalizer", "kflare.dev/other"})
+		}},
+		{name: "a finalizer replaced", change: func(now *unstructured.Unstructured) {
+			now.SetFinalizers([]string{"kflare.dev/other"})
+		}, want: []string{".metadata.finalizers[0]: kflare.dev/finalizer becomes kflare.dev/other"}},
+		{name: "a spec field lost, a list shortened, a value changed", change: func(now *unstructured.Unstructured) {
+			spec := now.Object["spec"].(map[string]any)
+			delete(spec, "name")
+			spec["tags"] = []any{"x"}
+			spec["ref"] = map[string]any{"name": "other"}
+		}, want: []string{".spec.name: a.example.com is gone", ".spec.ref.name: zone becomes other",
+			".spec.tags: [x y] becomes [x]"}},
+		{name: "a status ID changed", change: func(now *unstructured.Unstructured) {
+			now.Object["status"].(map[string]any)["cloudflareMetadata"] = map[string]any{"recordID": "r2"}
+		}, want: []string{".status.cloudflareMetadata.recordID: r1 becomes r2"}},
+		{name: "recreated", change: func(now *unstructured.Unstructured) { now.SetUID("2") },
+			want: []string{"it was recreated"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := same()
+			tc.change(now)
+			if got := lostSince(was, now); !slices.Equal(got, tc.want) {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -651,7 +776,8 @@ func withoutConditions(status any) any {
 }
 
 // missing returns, by path, where got lacks a value want holds, or holds
-// another value: a map may gain keys, a list's items are compared in order.
+// another value. A map may gain keys, and a list items after those it had,
+// such as another finalizer.
 func missing(want, got any, path string) []string {
 	switch w := want.(type) {
 	case map[string]any:
@@ -671,7 +797,7 @@ func missing(want, got any, path string) []string {
 		return out
 	case []any:
 		g, ok := got.([]any)
-		if !ok || len(g) != len(w) {
+		if !ok || len(g) < len(w) {
 			return []string{fmt.Sprintf("%s: %v becomes %v", path, want, got)}
 		}
 		var out []string
