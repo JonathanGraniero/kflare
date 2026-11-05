@@ -199,6 +199,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 	}
 
 	BeforeAll(func() {
+		if upgradeFrom() != "" {
+			Skip("KFLARE_E2E_UPGRADE_FROM is set: the suite runs only the upgrade specs")
+		}
 		token := os.Getenv("CF_API_TOKEN")
 		accountID = os.Getenv("CF_ACCOUNT_ID")
 		if token == "" || accountID == "" {

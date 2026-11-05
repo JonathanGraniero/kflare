@@ -22,6 +22,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The release tags, for the CRD check below.
+          fetch-depth: 0
 
       # The newest 1.26 patch, which the Dockerfile's golang:1.26 builder also
       # uses: without check-latest, setup-go takes the older patch the runner
@@ -57,6 +60,12 @@ jobs:
 
       - name: Check generated and formatted files are committed
         run: git diff --exit-code
+
+      # Fails on a breaking change to a CRD the last release served, such as a
+      # field removed or a tighter enum, that CHANGELOG.md does not list under
+      # "Breaking changes" (hack/crdcompat).
+      - name: Check the CRDs against the last release
+        run: make crd-compat
 
       - name: Lint
         run: make lint

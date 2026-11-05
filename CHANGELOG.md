@@ -12,6 +12,13 @@ read the notes before upgrading. The chart and the controller image share one ve
   the deploy guide's [Verifying a release](docs/deploy.md#verifying-a-release) does. The notes now keep each paragraph
   on one line and link to CHANGELOG.md at the tag: a release page shows every line break, and gives its headings no
   anchors for a link to go to
+- **Upgrades from the last release are tested in CI.** The `E2E` workflow installs the last release's chart with a
+  resource of each kind, upgrades it to the new chart and checks that every resource is kept, still applies as a GitOps
+  sync would, and is reconciled again; with Cloudflare credentials, that the new controller finds each one in sync and
+  writes nothing to Cloudflare. A release is tagged only once it passes
+- **A breaking change to a CRD is listed under "Breaking changes".** CI compares the CRDs with the last release's and
+  fails on a change that a manifest written for it may not fit, such as a field removed or a tighter enum, unless the
+  release notes name its kind under that heading and say how to upgrade
 
 ## v0.4.2 (alpha)
 

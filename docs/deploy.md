@@ -1285,7 +1285,10 @@ would only install them once.) To manage CRDs yourself, for example through GitO
 wave, set `crds.enabled=false` and apply `config/crd/bases` from the matching release first.
 
 kflare's API is `v1alpha1`: read the release notes before upgrading, as fields can still change between
-releases.
+releases. A change to a CRD that a manifest written for the release before may not fit is listed under "Breaking
+changes" in the notes, with how to upgrade. Each release is tested upgrading from the one before: CI installs that
+release's chart with a resource of each kind, upgrades it to the new chart, and checks that every resource is kept,
+still applies, and is reconciled again.
 
 ## Uninstalling
 

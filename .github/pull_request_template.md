@@ -20,4 +20,6 @@ accepted, refused and stored. A fork gets no CI secrets, so describe a run again
 - [ ] Docs: ARCHITECTURE.md (drift, adoption, errors, deletion), the deploy guide (permissions, troubleshooting),
       samples, and Markdown lines of 120 characters or fewer
 - [ ] A change users see: an entry under CHANGELOG.md's Unreleased, with upgrade steps if it breaks a manifest, a
-      chart value or a flag
+      chart value or a flag; a breaking CRD change goes under "Breaking changes", naming each kind
+      `make crd-compat` reports
+- [ ] A new kind: a resource of it in `test/e2e/testdata/upgrade.yaml`

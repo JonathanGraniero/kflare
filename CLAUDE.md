@@ -86,7 +86,8 @@ With:
 │   ├── default/           # Kustomize base used by make deploy
 │   ├── argocd/, flux/     # Health checks for Argo CD (health.lua) and Flux (healthCheckExprs), with their tests
 │   └── samples/           # Example CRs
-├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e)
+├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e), and the
+│                          #   upgrade from the last release (make test-e2e-upgrade, testdata/upgrade.yaml)
 ├── test/gitopshealth/     # Runs the Argo CD and Flux health checks as those tools do, for their tests and the specs
 ├── local/                 # kind cluster setup for running the controller with make run; Argo CD and Prometheus
 │                          #   (prometheus.sh: Grafana's kflare dashboard, scraping the e2e suite's manager)
@@ -95,7 +96,8 @@ With:
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);
 │                          #   its CLAUDE.md holds the generator's design
 ├── hack/                  # sync-helm-chart.sh, chartannotations (Artifact Hub annotations), releasenotes (a
-│                          #   GitHub release's notes), mutate.sh (mutations), e2e-live.sh (live e2e), license header
+│                          #   GitHub release's notes), crdcompat (breaking CRD changes since the last release),
+│                          #   mutate.sh (mutations), e2e-live.sh (live e2e), license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
@@ -170,6 +172,10 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
 - Keep tooling such as the mutation runner in the repo (e.g. `hack/`), not in the scratchpad.
 - Verify token-permission claims against live specs, not old notes.
 - A new kind follows [Adding a kind](#adding-a-kind).
+- A CRD change: `make crd-compat` (CI runs it) reports what a manifest written for the last release may not fit. While
+  the API is `v1alpha1` such a change can ship once CHANGELOG.md's Unreleased lists it under `### Breaking changes`,
+  naming each kind it reports, with how to upgrade (GOVERNANCE.md: an issue open a week, the lead's approval), and
+  `test/e2e/testdata/upgrade.yaml` changes the kind's resource to the new shape (CONTRIBUTING.md, Changing a CRD)
 
 ---
 
@@ -240,6 +246,9 @@ why.
      resets the settings if the run changed them. Keep the suite within the Free limits
      ([docs/design-notes.md](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup)), and never run two live
      runs at once
+   - The upgrade manifests: a resource of the kind in `test/e2e/testdata/upgrade.yaml`, in the shape its live spec
+     checks for an idle reconcile, so that upgrades from the next release on are tested with it
+     (`TestUpgradeManifests` fails without one)
    - The mutation check: `MUTATE_FOCUS=<Kind> hack/mutate.sh <mutations.json>`, until every mutation is caught. The
      rule kinds so far took 21 to 40, of: the generated conversion (each field), the phase and action, the kind's name
      and registration, the CRD's bounds, patterns, enums, required fields and CEL rules, and any kflare-gen code the
@@ -300,6 +309,13 @@ make kind
 # e2e: deploys to the kind cluster in the current context ($KIND_CLUSTER, default "kind");
 # runs the live Cloudflare specs when CF_API_TOKEN/CF_ACCOUNT_ID (and CF_E2E_ZONE) are set
 make test-e2e
+
+# The e2e suite's upgrade specs: the last release (UPGRADE_FROM), its manifests, then this checkout's chart; the
+# resources reach Cloudflare when CF_API_TOKEN, CF_ACCOUNT_ID and CF_E2E_ZONE are set. Needs the tags
+make test-e2e-upgrade
+
+# Breaking changes to the CRDs since the last release, which CHANGELOG.md must list (also run in CI)
+make crd-compat
 
 # The same suite with the manager on this machine, against the current kind cluster (see the script's header)
 hack/e2e-live.sh
@@ -946,6 +962,38 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   rather than write one, and its tests check the committed annotations as the tracker does; 35 of 35 mutations
   caught. v0.3.0's CHANGELOG.md section gives 15 changes. Left: check the page after the first release that carries
   the annotations (license, CRDs with examples, a security report), then close #90
+- [ ] Upgrade tests and breaking CRD changes ([#86](https://github.com/JonathanGraniero/kflare/issues/86),
+  `ci/upgrade-test`): CI installed only the branch's chart, never an upgrade, which is what users do most
+  - `hack/crdcompat` (`make crd-compat`, a step of CI's Build & Test, whose checkout now fetches the history for the
+    tags) compares `config/crd/bases` with the CRDs of the newest vX.Y.Z tag in HEAD's history, for each version that
+    release served: what is removed, a new type, kind or scope, a field newly required without a default, a default
+    added, changed or removed, a tighter enum, bound, length or count, a pattern, format or CEL rule added or changed,
+    null or unknown fields no longer accepted, and list or map types or keys that change. The issue's decision, to
+    fail or to ask for a changelog entry while the API is an alpha, GOVERNANCE.md had made: a breaking change to a
+    released CRD ships once CHANGELOG.md lists it with how to upgrade. So an alpha's change passes when a `### Breaking
+    changes` section above the release's own section names each kind, and a beta's or GA version's always fails.
+    OpenShift's crd-schema-checker, the issue's other option, checks no pattern, bound or CEL rule, has no tagged
+    release, and would add k8s.io/apiserver, cli-runtime, cobra and OpenShift's admission server to go.mod. Against
+    v0.2.1, it reports v0.3.0's three rule kinds, as that release's notes do, and nothing since v0.3.0
+  - The e2e suite's upgrade specs (`upgrade_test.go`, `make test-e2e-upgrade`): with KFLARE_E2E_UPGRADE_FROM,
+    BeforeSuite installs that release's chart from GHCR, and the specs apply its copy of
+    `test/e2e/testdata/upgrade.yaml` (a resource of each kind; this checkout's copy until a release has the file),
+    upgrade to the branch's chart and check the served CRDs, the branch's image holding the lease, a server-side apply
+    of the branch's copy with strict field validation, a dry-run create of it (validation ratcheting lets an update
+    through that a create fails), and a pause and resume of every resource, after which each keeps the labels,
+    annotations, finalizers, spec and status the release stored. With credentials, each is Ready before and after, the
+    new manager's `kflare_cloudflare_api_requests_total` counts nothing but GETs for a kind whose resource did not
+    change, and deleting them leaves nothing in Cloudflare. A resource the branch changes or adds is applied after the
+    upgrade, as the migration its notes describe, and only checked to reconcile
+  - E2E: the job `Upgrade from the last release (Kubernetes v1.37.0)` on pull requests and pushes, and a step after
+    the suite in the live job: a job of its own would join the `e2e-cloudflare` group, which keeps one pending job and
+    cancels the one before. Tag release waits for every E2E job, so a release is tagged only once it passes. Not
+    required by `protect main`: the user's call
+  - Checked on an envtest API server (1.34.1, no pods): v0.4.2's chart from GHCR takes the suite's values, the 21
+    resources apply to its CRDs with strict validation, and after `helm upgrade` the served CRDs are
+    `config/crd/bases`; the reapply and the dry-run create pass. With `spec.comment` removed from DNSRecord's CRD, the
+    reapply is refused (`field not declared in schema`) and the stored value reads back without it; with a
+    `maxLength` that the stored `spec.content` fails, the reapply passes and the dry-run create is refused
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---

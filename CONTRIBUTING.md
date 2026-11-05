@@ -31,9 +31,11 @@ make build   # runs codegen, manifests, generate, fmt, fix and vet, then builds 
 make test    # the same generators, then the unit and envtest suites (Kubernetes 1.34.1)
 make lint    # golangci-lint
 make vulncheck  # govulncheck: known vulnerabilities in the modules and the Go standard library the code calls
+make crd-compat # breaking changes to the CRDs since the last release (see Changing a CRD; needs the tags)
 ```
 
-CI runs `make test`, `make lint`, `make helm-lint`, `make vulncheck` and a Docker build, scans the image with Grype
+CI runs `make test`, `make lint`, `make helm-lint`, `make vulncheck`, `make crd-compat` and a Docker build, scans the
+image with Grype
 (failing on a fixable vulnerability of high or critical severity), runs the envtest suites again on the newest
 Kubernetes (`make test ENVTEST_K8S_VERSION=1.37.0`), and fails if `git diff` shows anything afterwards: commit what
 the generators write, and run `go fix ./...` (part of `make test`) before you push. [SECURITY.md](SECURITY.md) lists
@@ -169,10 +171,37 @@ metrics, install Prometheus on the cluster first (`./local/prometheus.sh`, see
   them if you like
 
 The same suite runs in GitHub Actions against the project's test account, on Kubernetes 1.37 (the `E2E` workflow).
-Pull requests and pushes to `main` run only a smoke test of the deployment, with no Cloudflare credentials. A
-maintainer runs the live suite on a pull request with a review comment starting with `/live-e2e`. A pull request from
-a fork gets no secrets, so the live suite cannot run on it: describe what you ran against your own account instead.
-Runs never overlap.
+Pull requests and pushes to `main` run only a smoke test of the deployment, with no Cloudflare credentials, and the
+upgrade from the last release ([Changing a CRD](#changing-a-crd)). A maintainer runs the live suite on a pull request
+with a review comment starting with `/live-e2e`, and the upgrade specs against the account after it. A pull request
+from a fork gets no secrets, so the live suite cannot run on it: describe what you ran against your own account
+instead. Runs never overlap.
+
+## Changing a CRD
+
+A change to a CRD can break an upgrade with every test passing: the API server goes on serving the stored resources,
+but a manifest written for the last release may no longer apply, a stored resource can lose a field, and the same
+manifests may fail on a new cluster. `make crd-compat`, which CI runs, compares `config/crd/bases` with the CRDs of
+the newest release tag in your branch's history (`hack/crdcompat`). For each version that release served, it reports:
+
+- a CRD, a version or a field removed or renamed, a version no longer served, and a new kind or scope
+- a field's new type, a field newly required without a default, and a default added, changed or removed
+- a tighter enum, bound, length or count, a pattern, format or CEL rule added or changed, and null or unknown fields
+  no longer accepted
+- a list or map whose type or keys change, which changes how a server-side apply merges it
+
+While the API is an alpha, such a change can ship as [GOVERNANCE.md](GOVERNANCE.md) describes: list it in
+CHANGELOG.md's Unreleased section, under a `### Breaking changes` heading that names each kind the check reports and
+says how to upgrade. A version that is not an alpha cannot break: serve the change in a new version.
+
+The `E2E` workflow's `Upgrade from the last release` job (`make test-e2e-upgrade`) installs the last release's chart
+on kind, applies a resource of each kind from `test/e2e/testdata/upgrade.yaml` as that release has it, and upgrades
+the chart to your branch's. Every resource must then still apply as a GitOps sync would, also as a new resource on a
+new cluster, and be reconciled again by the new manager, keeping what the release stored. Under `/live-e2e` the
+resources reach Cloudflare first, and the new manager must find each one in sync and write nothing to Cloudflare.
+Your branch's copy of the file is applied after the upgrade, so a resource that differs from the release's is the
+migration your release notes describe: change one only along with its "Breaking changes" entry, and add one for a
+new kind.
 
 ## Changing a controller
 
@@ -207,7 +236,9 @@ A change to how a controller behaves comes with:
 ## Releasing
 
 Maintainers release through a pull request that bumps `version` and `appVersion` in `helm/kflare/Chart.yaml`, adds the
-release's section to [CHANGELOG.md](CHANGELOG.md) and runs `make helm`. Merging it releases that version:
+release's section to [CHANGELOG.md](CHANGELOG.md) and runs `make helm`. Unreleased's "Breaking changes" stay under
+that heading in the release's section, where the CRD check finds them until the tag exists. Merging it releases that
+version:
 
 1. The `Tag release` workflow waits for every job of CI and E2E on the merge commit, then tags it `vX.Y.Z` and starts
    the `Release` workflow on the tag. It releases only a merge that changes the version, to one newer than every tag,

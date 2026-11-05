@@ -1,0 +1,342 @@
+# One resource of each kind, which the e2e suite's upgrade specs (upgrade_test.go) apply to the last release before
+# upgrading the chart to this checkout's. They apply this file as the release has it, then this checkout's copy, as
+# a GitOps sync after the upgrade would: what is the same in both must work unchanged, and a resource that differs
+# is the migration the release notes describe. So change a resource here only along with its "Breaking changes"
+# entry in CHANGELOG.md, and add one for a new kind.
+#
+# It is a Go template (text/template), whose fields every release's copy may use, so keep them: .Name names the
+# run's Cloudflare objects and its CloudflareAccount, .ListName its IP list (no hyphens), .Namespace holds the rest,
+# .Zone is the zone (CF_E2E_ZONE), .AccountID the account (CF_ACCOUNT_ID) and .Run the run's ID. Without
+# Cloudflare credentials the resources wait for them. Where the live suite checks that a resource leaves Cloudflare
+# alone once in sync (cloudflare_test.go), its resource here is the one it checks.
+apiVersion: kflare.dev/v1alpha1
+kind: CloudflareAccount
+metadata:
+  name: {{ .Name }}
+spec:
+  accountID: {{ .AccountID }}
+  tokenSecretRef:
+    name: cloudflare-token
+    namespace: {{ .Namespace }}
+    key: CF_API_TOKEN
+---
+apiVersion: kflare.dev/v1alpha1
+kind: Zone
+metadata:
+  name: zone
+  namespace: {{ .Namespace }}
+  annotations:
+    # The test zone is never deleted or changed.
+    kflare.dev/adoption-policy: adopt
+    kflare.dev/deletion-policy: retain
+spec:
+  accountRef:
+    name: {{ .Name }}
+  name: {{ .Zone }}
+---
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: record
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  name: {{ .Name }}.{{ .Zone }}
+  type: A
+  content: 192.0.2.10
+  comment: kflare e2e {{ .Run }}
+---
+apiVersion: kflare.dev/v1alpha1
+kind: Tunnel
+metadata:
+  name: tunnel
+  namespace: {{ .Namespace }}
+spec:
+  accountRef:
+    name: {{ .Name }}
+  name: {{ .Name }}
+  credentialsSecretRef:
+    name: tunnel-token
+---
+apiVersion: kflare.dev/v1alpha1
+kind: TunnelConfiguration
+metadata:
+  name: tunnel-config
+  namespace: {{ .Namespace }}
+spec:
+  tunnelRef:
+    name: tunnel
+  ingress:
+  - hostname: {{ .Name }}.example.com
+    service: http://localhost:8080
+---
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: tunnel-record
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  name: {{ .Name }}-tunnel.{{ .Zone }}
+  type: CNAME
+  tunnelRef:
+    name: tunnel
+  comment: kflare e2e {{ .Run }}
+---
+apiVersion: kflare.dev/v1alpha1
+kind: KVNamespace
+metadata:
+  name: kv
+  namespace: {{ .Namespace }}
+spec:
+  accountRef:
+    name: {{ .Name }}
+  title: {{ .Name }}
+---
+apiVersion: kflare.dev/v1alpha1
+kind: R2Bucket
+metadata:
+  name: bucket
+  namespace: {{ .Namespace }}
+spec:
+  accountRef:
+    name: {{ .Name }}
+  name: {{ .Name }}
+  locationHint: weur
+---
+apiVersion: kflare.dev/v1alpha1
+kind: D1Database
+metadata:
+  name: d1
+  namespace: {{ .Namespace }}
+spec:
+  accountRef:
+    name: {{ .Name }}
+  name: {{ .Name }}
+---
+apiVersion: kflare.dev/v1alpha1
+kind: WorkerScript
+metadata:
+  name: worker
+  namespace: {{ .Namespace }}
+spec:
+  accountRef:
+    name: {{ .Name }}
+  name: {{ .Name }}
+  compatibilityDate: "2024-09-23"
+  script: |
+    export default { async fetch(request, env) { return new Response(env.GREETING); } };
+  bindings:
+  - name: GREETING
+    plainText: hello from kflare e2e
+  - name: CACHE
+    kvNamespaceRef:
+      name: kv
+  - name: ASSETS
+    r2BucketRef:
+      name: bucket
+---
+apiVersion: kflare.dev/v1alpha1
+kind: WorkerRoute
+metadata:
+  name: route
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  pattern: {{ .Name }}.{{ .Zone }}/*
+  workerScriptRef:
+    name: worker
+---
+apiVersion: kflare.dev/v1alpha1
+kind: WAFCustomRule
+metadata:
+  name: waf
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  expression: 'starts_with(http.request.uri.path, "/{{ .Name }}")'
+  description: kflare e2e {{ .Run }}
+  priority: 10
+  action: block
+---
+apiVersion: kflare.dev/v1alpha1
+kind: RateLimitRule
+metadata:
+  name: rate-limit
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  expression: 'starts_with(http.request.uri.path, "/{{ .Name }}")'
+  description: kflare e2e {{ .Run }}
+  action: block
+  ratelimit:
+    characteristics:
+    - ip.src
+    - cf.colo.id
+    period: 10
+    requestsPerPeriod: 100
+    mitigationTimeout: 10
+    requestsToOrigin: false
+  response:
+    statusCode: 429
+    contentType: application/json
+    content: '{"error":"rate limited"}'
+---
+apiVersion: kflare.dev/v1alpha1
+kind: ManagedRuleset
+metadata:
+  name: managed-ruleset
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  expression: "true"
+  description: kflare e2e {{ .Run }}
+  # The Cloudflare Free Managed Ruleset.
+  id: 77454fe2d30c4220b5701f6fdfb893ba
+  overrides:
+    categories:
+    - category: wordpress
+      action: log
+    - category: log4j
+      action: managed_challenge
+    rules:
+    # Shellshock.
+    - id: 9f7e454e4cad45abbcc40696037f70df
+      enabled: false
+---
+apiVersion: kflare.dev/v1alpha1
+kind: TransformRule
+metadata:
+  name: response-headers
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  type: responseHeaders
+  expression: 'starts_with(http.request.uri.path, "/{{ .Name }}")'
+  description: kflare e2e {{ .Run }}
+  headers:
+  - name: x-kflare-e2e
+    operation: add
+    value: "{{ .Run }}"
+  - name: x-frame-options
+    operation: set
+    value: DENY
+---
+apiVersion: kflare.dev/v1alpha1
+kind: RedirectRule
+metadata:
+  name: redirect
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  expression: 'http.request.uri.path eq "/{{ .Name }}"'
+  description: kflare e2e {{ .Run }}
+  fromValue:
+    targetURL:
+      value: https://{{ .Zone }}/{{ .Name }}/moved
+    statusCode: 308
+    preserveQueryString: true
+---
+apiVersion: kflare.dev/v1alpha1
+kind: CacheRule
+metadata:
+  name: cache
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  expression: 'starts_with(http.request.uri.path, "/{{ .Name }}/")'
+  description: kflare e2e {{ .Run }}
+  cache: true
+  edgeTTL:
+    mode: override_origin
+    default: 7200
+    statusCodeTTL:
+    - statusCode: 404
+      value: 60
+    - statusCodeRange:
+        from: 500
+      value: 0
+  browserTTL:
+    mode: respect_origin
+  cacheKey:
+    customKey:
+      queryString:
+        exclude:
+          all: true
+  vary:
+    default:
+      action: passthrough
+    headers:
+    - name: accept
+      action: normalize
+      mediaTypes:
+      - image/avif
+      - image/webp
+---
+apiVersion: kflare.dev/v1alpha1
+kind: ConfigurationRule
+metadata:
+  name: configuration
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  expression: 'starts_with(http.request.uri.path, "/{{ .Name }}/")'
+  description: kflare e2e {{ .Run }}
+  securityLevel: medium
+  ssl: strict
+  rocketLoader: true
+  disableZaraz: true
+  polish: "off"
+---
+apiVersion: kflare.dev/v1alpha1
+kind: OriginRule
+metadata:
+  name: origin
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  expression: 'starts_with(http.request.uri.path, "/{{ .Name }}/")'
+  description: kflare e2e {{ .Run }}
+  origin:
+    port: 8080
+---
+apiVersion: kflare.dev/v1alpha1
+kind: IPList
+metadata:
+  name: ip-list
+  namespace: {{ .Namespace }}
+spec:
+  accountRef:
+    name: {{ .Name }}
+  name: {{ .ListName }}
+  description: kflare e2e {{ .Run }}
+  items:
+  - ip: 192.0.2.1
+    comment: front door
+  - ip: 203.0.113.7/32
+---
+apiVersion: kflare.dev/v1alpha1
+kind: ManagedTransform
+metadata:
+  name: managed-transform
+  namespace: {{ .Namespace }}
+spec:
+  zoneRef:
+    name: zone
+  managedRequestHeaders:
+  - id: add_visitor_location_headers
+    enabled: true
+  managedResponseHeaders:
+  - id: remove_x-powered-by_header
+    enabled: true
