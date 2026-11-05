@@ -177,10 +177,6 @@ spec:
             - accountID
             - tokenSecretRef
             type: object
-            x-kubernetes-validations:
-            - message: deliberately breaking, to see the checks catch it (reverted
-                next)
-              rule: '!has(self.tokenSecretRef.namespace) || !self.tokenSecretRef.namespace.startsWith(''kflare-e2e-upgrade'')'
           status:
             description: CloudflareAccountStatus defines the observed state of CloudflareAccount
             properties:

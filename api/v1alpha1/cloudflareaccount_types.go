@@ -12,7 +12,6 @@ import (
 )
 
 // CloudflareAccountSpec defines the desired state of CloudflareAccount
-// +kubebuilder:validation:XValidation:rule="!has(self.tokenSecretRef.namespace) || !self.tokenSecretRef.namespace.startsWith('kflare-e2e-upgrade')",message="deliberately breaking, to see the checks catch it (reverted next)"
 type CloudflareAccountSpec struct {
 	// AccountID is the Cloudflare account ID.
 	// +kubebuilder:validation:Required
