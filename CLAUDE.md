@@ -992,8 +992,18 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - Checked on an envtest API server (1.34.1, no pods): v0.4.2's chart from GHCR takes the suite's values, the 21
     resources apply to its CRDs with strict validation, and after `helm upgrade` the served CRDs are
     `config/crd/bases`; the reapply and the dry-run create pass. With `spec.comment` removed from DNSRecord's CRD, the
-    reapply is refused (`field not declared in schema`) and the stored value reads back without it; with a
-    `maxLength` that the stored `spec.content` fails, the reapply passes and the dry-run create is refused
+    reapply is refused (`field not declared in schema`) and the stored value reads back without it. For a stored
+    DNSRecord that a tightened CRD refuses, ratcheting lets its reapply, metadata patches, status writes and deletion
+    through, and refuses a create; a new CEL rule on `spec` also refuses a change to another of its fields, as the
+    rule's object changed, and a `maxLength` on `spec.content` does not. The API server warns of the rule it let
+    through, which controller-runtime logs at info level
+  - Checked in CI: `hack/crdcompat`'s tests (every field of each of the 20 CRDs removed in turn, 603, is the one change
+    reported) and 80 of 80 mutations; the upgrade specs' helpers, 18 of 18. On `4ca4c7d` every check passed: the CRD
+    check said "No breaking change to the CRDs since v0.4.2" (CI run 41953587389), and the upgrade job ran its 8
+    specs without credentials (E2E run 41953587375). A deliberately breaking commit (`dbde485`, reverted in
+    `95206a4`), a CEL rule on CloudflareAccount that only the upgrade specs' namespaces fail, failed Build & Test at
+    the CRD check, which named CloudflareAccount (CI run 41955570160), and the upgrade job at the create of the
+    same manifests, after the reapply passed (E2E run 41955570097); every other job passed
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---

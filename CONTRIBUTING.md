@@ -192,7 +192,10 @@ the newest release tag in your branch's history (`hack/crdcompat`). For each ver
 
 While the API is an alpha, such a change can ship as [GOVERNANCE.md](GOVERNANCE.md) describes: list it in
 CHANGELOG.md's Unreleased section, under a `### Breaking changes` heading that names each kind the check reports and
-says how to upgrade. A version that is not an alpha cannot break: serve the change in a new version.
+says how to upgrade. A version that is not an alpha cannot break: serve the change in a new version. For a tighter
+rule, the notes should say what validation ratcheting leaves of a stored resource that fails it (checked on
+Kubernetes 1.34): it can still be reapplied, write its status and be deleted, but its manifest no longer creates a
+resource, and under a new CEL rule on an object, no other field of that object can change until the value is fixed.
 
 The `E2E` workflow's `Upgrade from the last release` job (`make test-e2e-upgrade`) installs the last release's chart
 on kind, applies a resource of each kind from `test/e2e/testdata/upgrade.yaml` as that release has it, and upgrades
