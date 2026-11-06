@@ -302,17 +302,24 @@ var _ = Describe("Upgrade from the last release", Ordered, Label("upgrade"), fun
 		})
 
 		By("checking that each resource keeps what the release stored")
+		// Every resource that lost something, so that one run shows them all.
+		lost := map[string][]string{}
 		for key, now := range settled(ctx, k8s, current.objects) {
 			was, ok := stored[key]
 			if !ok {
 				continue
 			}
 			if changed[key] {
-				Expect(now.GetUID()).To(Equal(was.GetUID()), "%s was recreated", key)
+				if now.GetUID() != was.GetUID() {
+					lost[key] = []string{"it was recreated"}
+				}
 				continue
 			}
-			Expect(lostSince(was, now)).To(BeEmpty(), "%s lost what the release stored", key)
+			if l := lostSince(was, now); len(l) > 0 {
+				lost[key] = l
+			}
 		}
+		Expect(lost).To(BeEmpty(), "these resources lost what the release stored")
 	})
 
 	It("writes nothing to Cloudflare for a resource whose manifest did not change", func() {
@@ -329,10 +336,8 @@ var _ = Describe("Upgrade from the last release", Ordered, Label("upgrade"), fun
 		}
 		reads, writes := cloudflareRequests(pod)
 		Expect(reads).To(BeNumerically(">", 0), "the manager's metrics count no read of Cloudflare's")
-		for controller, requests := range writes {
-			Expect(allowed[controller]).To(BeTrue(),
-				"the %s controller wrote to Cloudflare after the upgrade: %v", controller, requests)
-		}
+		maps.DeleteFunc(writes, func(controller string, _ []string) bool { return allowed[controller] })
+		Expect(writes).To(BeEmpty(), "these controllers wrote to Cloudflare after the upgrade")
 	})
 
 	It("deletes every resource, and with it what it holds in Cloudflare", func() {
@@ -477,6 +482,8 @@ func TestLostSince(t *testing.T) {
 		name   string
 		change func(*unstructured.Unstructured)
 		want   []string
+		// annotations replaces was's, when set.
+		annotations map[string]string
 	}{
 		{name: "nothing changed", change: func(*unstructured.Unstructured) {}},
 		{name: "fields gained, and other conditions", change: func(now *unstructured.Unstructured) {
@@ -509,9 +516,23 @@ func TestLostSince(t *testing.T) {
 		}, want: []string{".status.cloudflareMetadata.recordID: r1 becomes r2"}},
 		{name: "recreated", change: func(now *unstructured.Unstructured) { now.SetUID("2") },
 			want: []string{"it was recreated"}},
+		{name: "the creating annotation dropped", change: func(now *unstructured.Unstructured) {
+			now.SetAnnotations(map[string]string{"kflare.dev/adopted": "true"})
+		}, annotations: map[string]string{"kflare.dev/adopted": "true", reconciler.CreatingAnnotation: "z1"}},
+		{name: "the only annotation, the creating one, dropped", change: func(now *unstructured.Unstructured) {
+			now.SetAnnotations(nil)
+		}, annotations: map[string]string{reconciler.CreatingAnnotation: "z1"}},
+		{name: "another annotation lost along with the creating one", change: func(now *unstructured.Unstructured) {
+			now.SetAnnotations(nil)
+		}, annotations: map[string]string{"kflare.dev/adopted": "true", reconciler.CreatingAnnotation: "z1"},
+			want: []string{".metadata.annotations: map[kflare.dev/adopted:true] becomes <nil>"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			now := same()
+			was := same()
+			if tc.annotations != nil {
+				was.SetAnnotations(tc.annotations)
+			}
+			now := was.DeepCopy()
 			tc.change(now)
 			if got := lostSince(was, now); !slices.Equal(got, tc.want) {
 				t.Errorf("got %q, want %q", got, tc.want)
@@ -755,12 +776,35 @@ func lostSince(was, now *unstructured.Unstructured) []string {
 			continue
 		}
 		after, _, _ := unstructured.NestedFieldNoCopy(now.Object, field...)
-		if field[0] == "status" {
+		switch field[len(field)-1] {
+		case "status":
 			before, after = withoutConditions(before), withoutConditions(after)
+		case "annotations":
+			if before = withoutCreating(before); before == nil {
+				continue
+			}
 		}
 		lost = append(lost, missing(before, after, "."+strings.Join(field, "."))...)
 	}
 	return lost
+}
+
+// withoutCreating returns a copy of annotations without kflare.dev/creating,
+// or nil when no other is left. That annotation marks a create about to
+// happen, and a reconcile drops it once status records what it created: a
+// kind with a claim label in the same patch, one without on a later reconcile
+// (adoption.go), which may be the new manager's.
+func withoutCreating(annotations any) any {
+	fields, ok := annotations.(map[string]any)
+	if !ok {
+		return annotations
+	}
+	fields = maps.Clone(fields)
+	delete(fields, reconciler.CreatingAnnotation)
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
 }
 
 // withoutConditions returns a copy of status without its conditions, which

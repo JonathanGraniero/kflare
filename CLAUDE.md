@@ -1004,6 +1004,11 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     `95206a4`), a CEL rule on CloudflareAccount that only the upgrade specs' namespaces fail, failed Build & Test at
     the CRD check, which named CloudflareAccount (CI run 41955570160), and the upgrade job at the create of the
     same manifests, after the reapply passed (E2E run 41955570097); every other job passed
+  - The first live run (E2E run 41959507810): the suite passed, 28 specs; the upgrade specs stopped at
+    ManagedTransform's `kflare.dev/creating`, gone after the new manager's reconcile. A settings kind has no claim
+    label, so it drops the annotation on the reconcile after the one whose status records the zone, which v0.4.2's
+    had not come to; the check lets that annotation go, and now reports every resource and controller at once.
+    Nothing was left in Cloudflare
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
