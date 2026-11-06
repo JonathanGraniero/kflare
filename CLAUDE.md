@@ -86,8 +86,8 @@ With:
 │   ├── default/           # Kustomize base used by make deploy
 │   ├── argocd/, flux/     # Health checks for Argo CD (health.lua) and Flux (healthCheckExprs), with their tests
 │   └── samples/           # Example CRs
-├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e), and the
-│                          #   upgrade from the last release (make test-e2e-upgrade, testdata/upgrade.yaml)
+├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e), and
+│                          #   the upgrade from the last release (make test-e2e-upgrade, testdata/upgrade.yaml)
 ├── test/gitopshealth/     # Runs the Argo CD and Flux health checks as those tools do, for their tests and the specs
 ├── local/                 # kind cluster setup for running the controller with make run; Argo CD and Prometheus
 │                          #   (prometheus.sh: Grafana's kflare dashboard, scraping the e2e suite's manager)
@@ -1008,7 +1008,11 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     ManagedTransform's `kflare.dev/creating`, gone after the new manager's reconcile. A settings kind has no claim
     label, so it drops the annotation on the reconcile after the one whose status records the zone, which v0.4.2's
     had not come to; the check lets that annotation go, and now reports every resource and controller at once.
-    Nothing was left in Cloudflare
+    Nothing was left in Cloudflare. On `f2332ca` the live run passed (E2E run 42151057925): the suite's 28 specs,
+    then the upgrade's 9, with credentials
+  - That review's run also skipped the upgrade job, whose name had the version written out, so the pull request
+    showed it skipped instead of the push's pass: GitHub shows the latest check of a name. A matrix of one gives a
+    skipped job the unexpanded name, as the smoke job's has
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---

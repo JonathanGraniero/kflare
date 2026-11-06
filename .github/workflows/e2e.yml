@@ -73,10 +73,18 @@ jobs:
   # stored. Without Cloudflare credentials, the resources wait for them; the live
   # job runs the same specs against Cloudflare.
   upgrade:
-    name: Upgrade from the last release (Kubernetes v1.37.0)
+    name: Upgrade from the last release (Kubernetes ${{ matrix.kubernetes }})
     if: github.event_name != 'pull_request_review'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # A matrix of one, for the name: a job its condition skips keeps the
+    # unexpanded name, as the smoke job's does. With the version written out,
+    # the skipped job of a /live-e2e review's run would share this job's name,
+    # and the pull request would show it, skipped, instead of this one, even
+    # when this one failed.
+    strategy:
+      matrix:
+        kubernetes: [v1.37.0]
     env:
       GOTOOLCHAIN: local
     steps:
@@ -100,7 +108,7 @@ jobs:
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           version: v0.33.0
-          node_image: kindest/node:v1.37.0
+          node_image: kindest/node:${{ matrix.kubernetes }}
           cluster_name: kflare-e2e
           config: local/kind-config.yaml
 
