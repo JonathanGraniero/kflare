@@ -1755,7 +1755,8 @@ Decisions behind the deploy guide's health checks (#83), and what was checked, o
   kind, must be Ready for its current generation and Healthy and Current, and the D1Database and the Zone without an
   adoption policy (`AlreadyExists`) and the WAF rule Cloudflare refuses while its IP list does not exist
   (`TerminalError`), Degraded and Failed. So each live run tests the checks on what kflare writes against Cloudflare,
-  as #83 proposed for the test inputs
+  as #83 proposed for the test inputs. The first such run, GitHub run 42333433050 (Kubernetes 1.37.0, the CI token),
+  passed the suite's 28 specs (e2e run `b194d8`) and the upgrade's 9, and left nothing in Cloudflare
 - **Not contributed to Argo CD**: the maintainer deferred it on 2026-11-06, until kflare's API is `v1beta1`. While the
   API is an alpha its reasons can still change, and a reason added to a built-in check reaches users only with an Argo
   CD release, while deploy.md's copy changes with kflare's; argoproj also takes a change only as its author's
