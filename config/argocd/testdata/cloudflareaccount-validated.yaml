@@ -11,6 +11,7 @@ metadata:
 spec:
   accountID: 0123456789abcdef0123456789abcdef
   tokenSecretRef:
+    key: CF_API_TOKEN
     name: cloudflare-token
     namespace: kflare-system
 status:
@@ -22,3 +23,6 @@ status:
     reason: Validated
     status: "True"
     type: Ready
+  protectedTokenSecret:
+    name: cloudflare-token
+    namespace: kflare-system

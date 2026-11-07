@@ -60,9 +60,10 @@ The health checks the deploy guide gives Argo CD and Flux are tested the way tho
 (`test/gitopshealth`): Argo CD's Lua with the libraries it opens, and Flux's CEL in its environment. Their cases are
 in `config/argocd/health_test.yaml`, in the format of Argo CD's built-in checks, and `config/flux/health_test.yaml`,
 with inputs the API server accepts for their kinds. The shared specs check both on the conditions the controllers
-write. A new `Ready` reason goes into `readyReasons`, and, if a person must act on it, into both checks' lists and
-deploy.md's copies of them; the tests fail on a reason the controllers set that `readyReasons` lacks, and on a
-deploy.md that does not hold the checks as they are.
+write, and the live specs on each status they wait for, against Cloudflare. A new `Ready` reason goes into
+`readyReasons`, and, if a person must act on it, into both checks' lists and deploy.md's copies of them; the tests
+fail on a reason the controllers set that `readyReasons` lacks, and on a deploy.md that does not hold the checks as
+they are.
 
 ## Generated code
 

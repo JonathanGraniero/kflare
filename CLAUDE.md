@@ -1041,11 +1041,13 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - Verified by installing on kind with a live token: account Ready, Secret protection finalizer, upgrade,
     uninstall keeping CRDs
 - [x] Chart listed on ArtifactHub (L6, 2026-10-21; verified publisher)
-- [ ] Argo CD and Flux health checks (#83, `feat/argocd-health-checks`): deploy.md's Lua script for `argocd-cm` and
-  `healthCheckExprs` for Flux, tested in CI in Argo CD's format and on the conditions the shared specs' controllers
-  write. Tried on an Argo CD and a Flux on kind on 2026-11-01, against a stand-in for Cloudflare's API
-  ([design notes](docs/design-notes.md#health-checks-in-argo-cd-and-flux)). Left: a run against Cloudflare itself, one
-  on Kubernetes 1.34 or newer, and, the maintainer's call, contributing the script to Argo CD
+- [x] Argo CD and Flux health checks (#83, `feat/argocd-health-checks`, finished in `test/gitops-health-live`):
+  deploy.md's Lua script for `argocd-cm` and `healthCheckExprs` for Flux, tested in CI in Argo CD's format and on the
+  conditions the shared specs' controllers write, and on each live run on what kflare writes against Cloudflare. Tried
+  on an Argo CD and a Flux on kind on 2026-11-01, against a stand-in for Cloudflare's API, and on 2026-11-06 on
+  Kubernetes 1.34.11 against Cloudflare itself, kflare installed by deploy.md's Argo CD `Application`
+  ([design notes](docs/design-notes.md#health-checks-in-argo-cd-and-flux)). Contributing the script to Argo CD waits
+  until the API is `v1beta1` (the maintainer, 2026-11-06)
 - [ ] Kustomize component overlays for common patterns (tunnel + DNS combo, zero-trust stack)
 - [ ] Docusaurus documentation site
   - Getting Started

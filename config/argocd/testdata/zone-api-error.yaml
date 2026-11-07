@@ -16,10 +16,12 @@ spec:
   accountRef:
     name: my-account
   name: example.com
+  type: full
 status:
+  cloudflareMetadata: {}
   conditions:
   - lastTransitionTime: "2026-10-31T09:10:14Z"
-    message: 'Cloudflare API error: HTTP 503 Service Unavailable'
+    message: 'Cloudflare API error: received service unavailable response (HTTP 503), please try again later'
     observedGeneration: 1
     reason: APIError
     status: "False"

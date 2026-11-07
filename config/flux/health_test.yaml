@@ -31,6 +31,8 @@ tests:
   inputPath: ../argocd/testdata/r2bucket-new.yaml
 - status: InProgress
   inputPath: ../argocd/testdata/zone-api-error.yaml
+- status: InProgress
+  inputPath: ../argocd/testdata/zone-account-not-found.yaml
 - status: Failed
   inputPath: ../argocd/testdata/tunnel-already-exists.yaml
 - status: InProgress
