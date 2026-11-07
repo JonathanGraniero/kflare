@@ -170,12 +170,12 @@ metrics, install Prometheus on the cluster first (`./local/prometheus.sh`, see
 - Runs leave empty ruleset entry points in some of the zone's phases. They hold no rules and change nothing; delete
   them if you like
 
-The same suite runs in GitHub Actions against the project's test account, on Kubernetes 1.37 (the `E2E` workflow).
-Pull requests and pushes to `main` run only a smoke test of the deployment, with no Cloudflare credentials, and the
-upgrade from the last release ([Changing a CRD](#changing-a-crd)). A maintainer runs the live suite on a pull request
-with a review comment starting with `/live-e2e`, and the upgrade specs against the account after it. A pull request
-from a fork gets no secrets, so the live suite cannot run on it: describe what you ran against your own account
-instead. Runs never overlap.
+The same suite runs in GitHub Actions against the project's test account, on Kubernetes 1.37, in the `Live E2E`
+workflow: a maintainer runs it on a pull request with a review comment starting with `/live-e2e`, and the upgrade
+specs against the account after it. Pull requests and pushes to `main` run the `E2E` workflow instead: only a smoke
+test of the deployment, with no Cloudflare credentials, and the upgrade from the last release
+([Changing a CRD](#changing-a-crd)). A pull request from a fork gets no secrets, so the live suite cannot run on it:
+describe what you ran against your own account instead. Runs never overlap.
 
 ## Changing a CRD
 

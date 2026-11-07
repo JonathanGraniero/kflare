@@ -1,0 +1,103 @@
+name: Live E2E
+
+# The whole e2e suite against the Cloudflare account in the CF_API_TOKEN and
+# CF_ACCOUNT_ID secrets and the zone in the CF_E2E_ZONE variable (a zone the
+# token can edit, adopted and never deleted), then the upgrade specs against the
+# same account. A workflow of its own, apart from the E2E workflow's smoke and
+# upgrade jobs: a run makes a check for every job of its workflow, skipped or
+# not, so in one workflow each pull request showed this job skipped, and each
+# /live-e2e review the other jobs.
+on:
+  # A maintainer's review comment starting with /live-e2e runs it on the pull
+  # request as it was when reviewed. A review, unlike a plain comment, pins the
+  # commit reviewed, and runs like a pull_request event: from the pull request's
+  # own copy of this file, and without secrets for a fork.
+  pull_request_review:
+    types: [submitted]
+  # By hand, on the selected branch: gh workflow run live-e2e.yml --ref <branch>
+  workflow_dispatch:
+
+# Read-only: the job only checks out and tests.
+permissions:
+  contents: read
+
+jobs:
+  # It runs when the owner, a member or a collaborator submits a review on a
+  # pull request whose comment starts with /live-e2e (gh pr review <number>
+  # --comment -b /live-e2e), or by hand. It tests the pull request merged into
+  # its base, as of the review. A pull request from a fork gets no secrets, so
+  # it fails: push its branch to this repository first. Any other review skips
+  # it, and the pull request then shows that skipped check in place of an
+  # earlier run's; no ruleset requires it. The upgrade specs run after the
+  # suite: a step of this job rather than a job of its own, since a concurrency
+  # group keeps only one pending job, and a second live job pending in it would
+  # cancel another run's.
+  live:
+    name: Live E2E (Kubernetes v1.37.0)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request_review' &&
+       startsWith(github.event.review.body, '/live-e2e') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.review.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # One live run at a time across every run of this workflow, never
+    # cancelled halfway: the specs share one zone and account, whose Free plan
+    # holds one rate limiting rule and one IP list, and a cancelled run cannot
+    # clean up. Local live runs (hack/e2e-live.sh) must not overlap with it
+    # either.
+    concurrency:
+      group: e2e-cloudflare
+      cancel-in-progress: false
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The release tags, for the upgrade specs.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: true
+
+      # The suite installs the manager with the Helm chart.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Set up kind
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          node_image: kindest/node:v1.37.0
+          cluster_name: kflare-e2e
+          config: local/kind-config.yaml
+
+      - name: Run e2e tests
+        env:
+          KIND_CLUSTER: kflare-e2e
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_E2E_ZONE: ${{ vars.CF_E2E_ZONE }}
+        run: |
+          if [[ -z "$CF_API_TOKEN" || -z "$CF_ACCOUNT_ID" || -z "$CF_E2E_ZONE" ]]; then
+            echo "::error::The CF_API_TOKEN and CF_ACCOUNT_ID secrets and the CF_E2E_ZONE variable are not set" \
+              "(a pull request from a fork gets no secrets): without them every live spec skips"
+            exit 1
+          fi
+          make test-e2e
+
+      # After the suite, which leaves the cluster and the account as it found
+      # them, whether it passed or not.
+      - name: Run the upgrade specs
+        if: ${{ !cancelled() }}
+        env:
+          KIND_CLUSTER: kflare-e2e
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_E2E_ZONE: ${{ vars.CF_E2E_ZONE }}
+        run: make test-e2e-upgrade
