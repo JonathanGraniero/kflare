@@ -83,8 +83,8 @@ jobs:
         run: go run ./hack/releasenotes > /dev/null
 
       # Every job of CI's and E2E's runs on this commit must pass, or be
-      # skipped, as the live suite is on a push. Jobs rather than runs: a run
-      # can stay in progress a while after its last job is done.
+      # skipped. Jobs rather than runs: a run can stay in progress a while
+      # after its last job is done.
       - name: Wait for CI and E2E
         if: steps.version.outputs.tag
         env:

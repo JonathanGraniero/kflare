@@ -14,8 +14,8 @@ read the notes before upgrading. The chart and the controller image share one ve
   anchors for a link to go to
 - **Upgrades from the last release are tested in CI.** The `E2E` workflow installs the last release's chart with a
   resource of each kind, upgrades it to the new chart and checks that every resource is kept, still applies as a GitOps
-  sync would, and is reconciled again; with Cloudflare credentials, that the new controller finds each one in sync and
-  writes nothing to Cloudflare. A release is tagged only once it passes
+  sync would, and is reconciled again. A release is tagged only once it passes. The `Live E2E` workflow runs it against
+  Cloudflare too, where the new controller must find each resource in sync and write nothing to Cloudflare
 - **A breaking change to a CRD is listed under "Breaking changes".** CI compares the CRDs with the last release's and
   fails on a change that a manifest written for it may not fit, such as a field removed or a tighter enum, unless the
   release notes name its kind under that heading and say how to upgrade

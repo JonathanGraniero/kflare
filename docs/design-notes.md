@@ -1516,6 +1516,11 @@ should not need an ID copied from status to do the same: manifests must be writa
   `pull_request` event instead: from the pull request's own copy of the workflow, on the merge commit as of the review,
   and without secrets for a fork (the job then fails, naming the missing secrets, instead of skipping every spec). It
   sits in a `concurrency` group that never runs two at once or cancels one halfway
+- The live job moved to a workflow of its own, `live-e2e.yml` (2026-11-06), with the same triggers; by hand, with no
+  input. A run makes a check for every job of its workflow, run or skipped, so with the smoke test in one workflow,
+  each pull request showed the live job skipped, and each `/live-e2e` review the smoke and upgrade jobs, which read as
+  a run that had not finished. A review's body cannot filter a trigger, so a review without `/live-e2e` still makes
+  one skipped `Live E2E` check, which the pull request then shows in place of an earlier run's
 
 ## Rate limits
 

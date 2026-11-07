@@ -257,8 +257,9 @@ why.
      suite against it and leaves the cluster as it found it (its header says how). Afterwards, check that Cloudflare
      holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57).
      Once the repo has its CI secrets (Release and CI below), a `/live-e2e` review comment on the pull request
-     (`gh pr review <number> --comment -b /live-e2e`) runs the same suite in GitHub Actions instead. Never run both at
-     once: the script's lock does not see a CI run
+     (`gh pr review <number> --comment -b /live-e2e`) runs the same suite in GitHub Actions instead (the `Live E2E`
+     workflow; by hand, `gh workflow run live-e2e.yml --ref <branch>`). Never run both at once: the script's lock does
+     not see a CI run
 7. **Docs.** Every place that lists the kinds names the last one of the same shape, so
    `git grep -n OriginRule -- '*.md' '*.yml'` (or `D1Database`, `ManagedTransform`) finds them: README's kinds,
    deploy.md's permission row (the label Cloudflare's docs give it), kinds table and uninstall command,
@@ -985,10 +986,10 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     new manager's `kflare_cloudflare_api_requests_total` counts nothing but GETs for a kind whose resource did not
     change, and deleting them leaves nothing in Cloudflare. A resource the branch changes or adds is applied after the
     upgrade, as the migration its notes describe, and only checked to reconcile
-  - E2E: the job `Upgrade from the last release (Kubernetes v1.37.0)` on pull requests and pushes, and a step after
-    the suite in the live job: a job of its own would join the `e2e-cloudflare` group, which keeps one pending job and
-    cancels the one before. Tag release waits for every E2E job, so a release is tagged only once it passes. Not
-    required by `protect main`: the user's call
+  - E2E: the job `Upgrade from the last release (Kubernetes v1.37.0)` on pull requests and pushes; Live E2E: a step
+    after the suite in the live job, as a job of its own would join the `e2e-cloudflare` group, which keeps one pending
+    job and cancels the one before. Tag release waits for every E2E job, so a release is tagged only once it passes.
+    Not required by `protect main`: the user's call
   - Checked on an envtest API server (1.34.1, no pods): v0.4.2's chart from GHCR takes the suite's values, the 21
     resources apply to its CRDs with strict validation, and after `helm upgrade` the served CRDs are
     `config/crd/bases`; the reapply and the dry-run create pass. With `spec.comment` removed from DNSRecord's CRD, the
@@ -1013,6 +1014,12 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - That review's run also skipped the upgrade job, whose name had the version written out, so the pull request
     showed it skipped instead of the push's pass: GitHub shows the latest check of a name. A matrix of one gives a
     skipped job the unexpanded name, as the smoke job's has
+  - The live job then moved to a workflow of its own, `live-e2e.yml` (`ci/live-e2e-workflow`). In one workflow, a run
+    made a check for each job, so a pull request showed the live job skipped, and each `/live-e2e` review the smoke and
+    upgrade jobs, two skipped checks under unexpanded names, which read as a run that had not finished, though it had
+    passed (E2E run 42258172292: the suite's 28 specs, then the upgrade's 9). Without them, the upgrade job's name
+    needs no matrix. A review without `/live-e2e` still makes one skipped `Live E2E` check: no trigger filters a
+    review's body
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
