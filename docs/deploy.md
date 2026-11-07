@@ -24,7 +24,8 @@ account, and covers running it in production, upgrades, uninstalling and trouble
 
 ## Requirements
 
-- Kubernetes 1.34 or newer. The chart refuses to install on older clusters.
+- Kubernetes 1.34 to 1.37: each release supports the four newest minors (see
+  [Kubernetes versions](versioning.md#kubernetes-versions)). The chart refuses to install on older clusters.
 - Helm 3.8 or newer (OCI chart support), or a GitOps tool that installs Helm charts from an OCI registry, such as
   Argo CD or Flux.
 - One kflare installation per cluster. A second release would reconcile the same resources.
@@ -1284,11 +1285,12 @@ The CRDs are part of the chart's templates, so `helm upgrade` upgrades them too.
 would only install them once.) To manage CRDs yourself, for example through GitOps with a separate sync
 wave, set `crds.enabled=false` and apply `config/crd/bases` from the matching release first.
 
-kflare's API is `v1alpha1`: read the release notes before upgrading, as fields can still change between
-releases. A change to a CRD that a manifest written for the release before may not fit is listed under "Breaking
-changes" in the notes, with how to upgrade. Each release is tested upgrading from the one before: CI installs that
-release's chart with a resource of each kind, upgrades it to the new chart, and checks that every resource is kept,
-still applies, and is reconciled again.
+kflare's API is `v1alpha1`: a minor release can change fields, so read its notes before upgrading, while a patch
+release needs no change ([Versioning and support](versioning.md)). A change to a CRD that a manifest written for the
+release before may not fit is listed under "Breaking changes" in the notes, with how to upgrade. Each release is
+tested upgrading from the one before: CI installs that release's chart with a resource of each kind, upgrades it to
+the new chart, and checks that every resource is kept, still applies, and is reconciled again. So to skip a minor
+release, read its notes too.
 
 ## Uninstalling
 

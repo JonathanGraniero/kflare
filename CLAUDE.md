@@ -34,7 +34,9 @@ the same prefix (`kflare.dev/finalizer`, `kflare.dev/deletion-policy`, ...). The
 
 ### Language & Frameworks
 - **Go** (1.26+; required by the Kubernetes 0.37 libraries)
-- **Kubernetes 1.34+** is the support floor. Client libraries track the newest release (k8s.io/* v0.37,
+- **Kubernetes 1.34+** is the support floor: kflare supports the four newest minors, and drops the oldest only in a
+  minor release, the first after each new Kubernetes minor ([docs/versioning.md](docs/versioning.md), and
+  CONTRIBUTING.md's Releasing for the files it changes). Client libraries track the newest release (k8s.io/* v0.37,
   controller-runtime v0.25); envtest runs on 1.34.1 (`ENVTEST_K8S_VERSION`) and 1.37.0 in CI, and the e2e
   workflow on kind node images 1.34 and 1.37. No compatibility code for older clusters
 - **controller-runtime** for reconciler scaffolding

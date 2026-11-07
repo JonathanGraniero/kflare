@@ -3,10 +3,21 @@
 Please report vulnerabilities privately through GitHub: **Security → Report a vulnerability** on this repository.
 Don't open a public issue.
 
-kflare is an alpha, so only the latest release is supported: fixes go into the next release, not into older ones.
-
 For how kflare handles credentials and what its controller can access, see the deploy guide's
 [Security model](docs/deploy.md#security-model).
+
+## Supported versions
+
+- **The latest minor release** gets every fix, in its next patch release
+- **The minor release before it** gets security fixes for three months after the latest came out, in patch releases
+  of its own. This starts with v0.4, once v0.5.0 is out
+- **Older releases** get no fixes
+
+Within a minor release, upgrade to its newest patch: a patch release needs no change to upgrade. A fixed vulnerability
+is announced in a GitHub security advisory, which names the fixed release of each supported minor.
+[Versioning and support](docs/versioning.md) says what each release may change and which Kubernetes versions it
+supports. The weekly scan below covers only the latest release for now: scanning the minor release before it too is
+[#157](https://github.com/JonathanGraniero/kflare/issues/157).
 
 ## How kflare is checked
 
@@ -19,7 +30,7 @@ For how kflare handles credentials and what its controller can access, see the d
   runs their seed inputs and every input that once failed.
 - **Every week:** Grype scans the latest release's image, sending its report to code scanning, and govulncheck checks
   the release's binary, so that a vulnerability published after a release shows up without a new commit. A fix goes
-  into the next release.
+  into the next patch release.
 - **Dependencies:** Dependabot proposes updates to the Go modules, the GitHub Actions and the Dockerfile's base images
   every week, once a release is a week old, and security updates as soon as an advisory is published. Every action is
   pinned to a commit. The base images stay on their tags, so that a release is built with the newest Go patch and base

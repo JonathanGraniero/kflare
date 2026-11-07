@@ -2,7 +2,8 @@
 
 kflare is an alpha (API `v1alpha1`). This page says what works, what may come next, and what waits on something
 outside the project. Nothing below "Done" is a promise or has a date: if you need one of these, say so in an issue,
-since what people ask for decides the order.
+since what people ask for decides the order. What a release may change meanwhile, and what a kind needs to become
+`v1beta1`, is in [Versioning and support](docs/versioning.md).
 
 ## Done
 

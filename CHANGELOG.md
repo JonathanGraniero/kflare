@@ -1,7 +1,14 @@
 # Changelog
 
-kflare follows [semantic versioning](https://semver.org). While its API is `v1alpha1`, any release can change it:
-read the notes before upgrading. The chart and the controller image share one version.
+kflare follows [semantic versioning](https://semver.org), as [Versioning and support](docs/versioning.md) applies it
+before 1.0.0: a patch release needs no change to upgrade, and a minor release can make breaking changes. The chart and
+the controller image share one version.
+
+Each release's section opens by saying whether manifests written for the release before apply unchanged. A breaking
+change is listed under a `### Breaking changes` heading in the section of the release that makes it, with how to
+upgrade, and one to a CRD names each kind it changes, which CI checks (`make crd-compat`). The steps to upgrade are
+under "Upgrading from" the release before, and a deprecation is under "Deprecated", with the earliest release that may
+remove it. Releases up to v0.4.2 describe their breaking changes in their opening paragraph and "Upgrading from".
 
 ## Unreleased
 
@@ -19,6 +26,11 @@ read the notes before upgrading. The chart and the controller image share one ve
 - **A breaking change to a CRD is listed under "Breaking changes".** CI compares the CRDs with the last release's and
   fails on a change that a manifest written for it may not fit, such as a field removed or a tighter enum, unless the
   release notes name its kind under that heading and say how to upgrade
+- **A versioning and support policy.** [Versioning and support](docs/versioning.md) says what a patch and a minor
+  release may change, which Kubernetes versions a release supports (the four newest minors), how long a release gets
+  fixes (the minor before the latest gets security fixes for three months after the latest comes out), how kflare's API
+  versions are deprecated, and what a kind needs to become `v1beta1`
+  ([#87](https://github.com/JonathanGraniero/kflare/issues/87))
 
 ## v0.4.2 (alpha)
 

@@ -239,9 +239,10 @@ A change to how a controller behaves comes with:
 ## Releasing
 
 Maintainers release through a pull request that bumps `version` and `appVersion` in `helm/kflare/Chart.yaml`, adds the
-release's section to [CHANGELOG.md](CHANGELOG.md) and runs `make helm`. Unreleased's "Breaking changes" stay under
-that heading in the release's section, where the CRD check finds them until the tag exists. Merging it releases that
-version:
+release's section to [CHANGELOG.md](CHANGELOG.md) and runs `make helm`. The version follows
+[Versioning and support](docs/versioning.md#release-versions): a minor release when Unreleased lists a breaking
+change, a patch release otherwise. Unreleased's "Breaking changes" stay under that heading in the release's section,
+where the CRD check finds them until the tag exists. Merging it releases that version:
 
 1. The `Tag release` workflow waits for every job of CI and E2E on the merge commit, then tags it `vX.Y.Z` and starts
    the `Release` workflow on the tag. It releases only a merge that changes the version, to one newer than every tag,
@@ -261,6 +262,19 @@ If a job of CI or E2E fails on the merge commit, nothing is tagged: rerun the fa
 `vX.Y.Z` tag pushed by hand starts `Release` too, as does running it on a tag from the Actions tab. `Release` refuses a
 tag that does not match `Chart.yaml`, and a release that is published already; rerun after a failed step, it goes on
 with its draft.
+
+A security fix for the minor release before the latest
+([Supported releases](docs/versioning.md#supported-releases)) is a patch release of that minor, from a `release-0.Y`
+branch. `Tag release` releases only merges to `main`, so its tag is pushed by hand, and `Release` publishes it without
+making it latest. CI, the release scan and branch protection don't cover release branches yet;
+[#157](https://github.com/JonathanGraniero/kflare/issues/157) adds them before v0.5.0 is released.
+
+CI tests the oldest and the newest Kubernetes minor kflare supports
+([Kubernetes versions](docs/versioning.md#kubernetes-versions)). Supporting a new one changes CI's newest envtest
+version (`ci.yml`), the E2E jobs' kind images and `HELM_KUBE_VERSIONS`. Dropping the oldest, in a minor release only,
+changes `kubeVersion` in `Chart.yaml`, `ENVTEST_K8S_VERSION`, the E2E smoke tests' matrix, `local/kind-config.yaml`,
+and the docs that name the version, which `git grep` finds. The E2E jobs' names hold their Kubernetes versions, so
+`main`'s required checks change with them.
 
 ## License
 

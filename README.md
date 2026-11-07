@@ -8,8 +8,9 @@ kflare is a Kubernetes operator that manages Cloudflare through custom resources
 and their storage, WAF rules and the Rules products. You keep Cloudflare's configuration in git next to the workloads
 it serves, apply it with Helm, Argo CD or Flux like everything else, and kflare keeps Cloudflare matching it.
 
-**Status: alpha.** The API is `v1alpha1`, and fields can still change between releases. kflare needs Kubernetes 1.34
-or newer, and installs with Helm 3.8 or newer.
+**Status: alpha.** The API is `v1alpha1`: a minor release can still change fields, and its notes say how to upgrade,
+while a patch release needs no change. kflare supports the four newest Kubernetes minors, 1.34 to 1.37 today, and
+installs with Helm 3.8 or newer. [Versioning and support](docs/versioning.md) says how long each release gets fixes.
 
 ## Quickstart: expose a Service through a Cloudflare Tunnel
 
@@ -172,9 +173,11 @@ kflare is developed with AI assistance (Claude Code). What keeps it honest:
 - [Deploy guide](docs/deploy.md): install, configure, operate, upgrade, uninstall, troubleshoot
 - [Architecture](ARCHITECTURE.md): how the controllers behave, and known limitations
 - [Roadmap](ROADMAP.md): what may come next
+- [Versioning and support](docs/versioning.md): what each release may change, the Kubernetes versions it supports,
+  how long it gets fixes, and what the API needs for `v1beta1`
 - [Discussions](https://github.com/JonathanGraniero/kflare/discussions): questions, ideas and feedback
 - [Contributing](CONTRIBUTING.md): building, testing and the live suite
-- [Security](SECURITY.md): reporting a vulnerability
+- [Security](SECURITY.md): reporting a vulnerability, and which releases get security fixes
 - [Governance](GOVERNANCE.md) and [maintainers](MAINTAINERS.md): who decides, and how to become a maintainer
 - [Code of Conduct](CODE_OF_CONDUCT.md): the Contributor Covenant, which every space of the project follows
 - [Adopters](ADOPTERS.md): who runs kflare; add yourself with a pull request
