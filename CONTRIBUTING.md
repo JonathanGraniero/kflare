@@ -271,10 +271,10 @@ making it latest. CI, the release scan and branch protection don't cover release
 
 CI tests the oldest and the newest Kubernetes minor kflare supports
 ([Kubernetes versions](docs/versioning.md#kubernetes-versions)). Supporting a new one changes CI's newest envtest
-version (`ci.yml`), the E2E jobs' kind images and `HELM_KUBE_VERSIONS`. Dropping the oldest, in a minor release only,
-changes `kubeVersion` in `Chart.yaml`, `ENVTEST_K8S_VERSION`, the E2E smoke tests' matrix, `local/kind-config.yaml`,
-and the docs that name the version, which `git grep` finds. The E2E jobs' names hold their Kubernetes versions, so
-`main`'s required checks change with them.
+version (`ci.yml`), the kind images in `e2e.yml` and `live-e2e.yml`, and `HELM_KUBE_VERSIONS`. Dropping the oldest, in
+a minor release only, changes `kubeVersion` in `Chart.yaml`, `ENVTEST_K8S_VERSION`, the smoke tests' matrix in
+`e2e.yml`, `local/kind-config.yaml`, and the docs that name the version, which `git grep` finds. The jobs' names hold
+their Kubernetes versions, so `main`'s required checks change with them.
 
 ## License
 
