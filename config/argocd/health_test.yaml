@@ -1,6 +1,10 @@
 # The tests of health.lua, in the format of Argo CD's resource_customizations: each case's input, a kflare resource as
 # kubectl get -o yaml shows it, and the health Argo CD gives it. test/gitopshealth runs them as Argo CD does, checks
 # each input against its kind's CRD, and runs the same inputs through Flux's check (config/flux/health_test.yaml).
+# The statuses of the WorkerRoute's refusal, the Zone waiting for its account and the CloudflareAccount's are those the
+# manager wrote against Cloudflare on 2026-11-06 (docs/design-notes.md, Health checks in Argo CD and Flux), with the
+# names, IDs and cf-ray changed. The Zone's API error, which Cloudflare cannot be made to return, has cloudflare-go
+# v0.119's message for a 503 after its retries, which the Zone's calls return as is.
 tests:
 - healthStatus:
     status: Healthy
@@ -20,7 +24,8 @@ tests:
   inputPath: testdata/dnsrecord-rate-limited.yaml
 - healthStatus:
     status: Degraded
-    message: 'Terminal Cloudflare API error: Route pattern must include zone name: example.com (10022)'
+    message: 'Terminal Cloudflare API error: Route pattern must include zone name: example.com (10022) (cf-ray
+      8e1f5c2a9b3d7e40-IAD)'
   inputPath: testdata/workerroute-terminal-error.yaml
 - healthStatus:
     status: Progressing
@@ -40,7 +45,7 @@ tests:
   inputPath: testdata/cloudflareaccount-validated.yaml
 - healthStatus:
     status: Progressing
-    message: 'Secret kflare-system/cloudflare-token not found: secrets "cloudflare-token" not found'
+    message: 'Secret kflare-system/cloudflare-token not found: Secret "cloudflare-token" not found'
   inputPath: testdata/cloudflareaccount-secret-not-found.yaml
 - healthStatus:
     status: Suspended
@@ -58,8 +63,12 @@ tests:
   inputPath: testdata/r2bucket-new.yaml
 - healthStatus:
     status: Progressing
-    message: 'Cloudflare API error: HTTP 503 Service Unavailable'
+    message: 'Cloudflare API error: received service unavailable response (HTTP 503), please try again later'
   inputPath: testdata/zone-api-error.yaml
+- healthStatus:
+    status: Progressing
+    message: 'CloudflareAccount "my-account" not found: CloudflareAccount.kflare.dev "my-account" not found'
+  inputPath: testdata/zone-account-not-found.yaml
 - healthStatus:
     status: Degraded
     message: 'tunnel "home" already exists and kflare did not create it. To manage it, set the annotation

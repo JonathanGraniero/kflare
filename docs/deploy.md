@@ -191,6 +191,10 @@ Things to know:
 - **On a new cluster, kflare resources need the CRDs first.** In Argo CD, an application holding kflare resources
   fails its first sync until the CRDs exist; `syncPolicy.retry` lets it try again. In Flux, put the `HelmRelease` in
   a `Kustomization` that the ones holding kflare resources list under `dependsOn`.
+- **Without the metrics API, Argo CD reports kflare's application Degraded**, though the controller runs. The chart's
+  HorizontalPodAutoscaler cannot read the controller's CPU then (its `ScalingActive` condition is `False`), and Argo
+  CD's health check for an autoscaler takes that for Degraded. Install metrics-server (see
+  [Requirements](#requirements)), or set `autoscaling.enabled: false`.
 - **Upgrade by changing the version in git**, after reading the release notes (see [Upgrading](#upgrading)).
 
 ### Health checks in Argo CD and Flux
@@ -947,7 +951,8 @@ the autoscaler adds while the leader is busy are standbys: they shorten a failov
 capacity and do not make the leader's work go faster.
 
 - **It needs the metrics API**, which metrics-server provides. Without it, `kubectl get hpa` shows the target as
-  `<unknown>`, and the Deployment keeps `autoscaling.minReplicas` replicas.
+  `<unknown>`, the Deployment keeps `autoscaling.minReplicas` replicas, and Argo CD reports the autoscaler Degraded
+  (see [With Argo CD or Flux](#with-argo-cd-or-flux)).
 - **To keep a standby at all times**, set `autoscaling.minReplicas: 2`. `replicaCount` is ignored while autoscaling
   is on; with `autoscaling.enabled: false`, it sets the replicas again.
 - **Memory is left out by default.** The leader caches every Secret in the cluster and a standby caches nothing, so

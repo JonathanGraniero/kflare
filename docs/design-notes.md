@@ -1716,8 +1716,50 @@ Decisions behind the deploy guide's health checks (#83), and what was checked, o
   resource at `TerminalError` does not get stuck like this: its sync fails, and a fix in git landed by itself in 61
   seconds. Missing parents stay Progressing, as #83 proposes: one may be on its way, in an earlier wave or another
   application. So for them nothing is Degraded, and the guide says how to get out
-- **Not checked yet**: a run against Cloudflare itself, so the test inputs' statuses are not from a live run as #83
-  proposes, and Kubernetes 1.34 or newer
-- **Not contributed to Argo CD**, the maintainer's call. The files follow Argo CD's layout for a wildcard check
+- **Tried against Cloudflare itself on 2026-11-06**, on the dev cluster, by then Kubernetes 1.34.11, with Argo CD
+  v3.5.6 (`local/argocd.sh`), Flux v2.10.0, kflare 0.4.2 installed by deploy.md's Argo CD `Application`, the dev token
+  and the zone in `CF_E2E_ZONE`. Both tools synced from a git server on this machine (`git http-backend`):
+  - deploy.md's `Application` installed the chart from GHCR as written: Argo CD needed no repository Secret for the
+    OCI registry. It reported the application Degraded, though both controllers ran: kind has no metrics-server, so
+    the HorizontalPodAutoscaler's `ScalingActive` was `False` (`FailedGetResourceMetric`), which Argo CD's health check
+    for an autoscaler takes for Degraded. With metrics-server v0.9.0, installed as the e2e suite installs it, the
+    application turned Healthy; deploy.md now says so. The other way out, `autoscaling.enabled: false`, renders no
+    autoscaler (`helm template`); it was not tried on the cluster
+  - deploy.md's sync-wave example, with its namespace, account and hostname changed, synced before its account existed:
+    wave 1 waited 2 min 23 s while the Zone reported `AccountNotFound` (Argo CD: "waiting for healthy state of
+    kflare.dev/Zone/example"). The Zone was `Synced` a second after the account was created, the DNSRecord was
+    created in that second and the Deployment 2 seconds later. Cloudflare held the record as the example writes it,
+    proxied
+  - A WorkerRoute outside the zone, alone in an application: Cloudflare refused it (10022), and within 5 seconds of the
+    application's creation its sync had Succeeded and it was Degraded. With kflare's entry taken out of `argocd-cm`, a
+    hard refresh made it Healthy, the route with no health at all; once `local/argocd.sh` had run again, it was
+    Degraded again
+  - Flux, with the expressions as `config/flux/health-check-exprs.yaml` has them: a Kustomization whose Zone waited for
+    its account went on waiting ("Reconciliation in progress"), and one listing it under `dependsOn` reported
+    `DependencyNotReady`. Once the account existed, the first was Ready within 10 seconds, and the second applied the
+    refused route and failed 5 seconds into its health check ("failed early due to stalled resources", the route
+    `Failed`), not at its 3-minute timeout. Without the expressions, the same route held it for its whole timeout of a
+    minute ("timeout waiting for", the route `InProgress`)
+  - Deleting an application with cascade kept a ConfigMap annotated `helm.sh/resource-policy: keep` and deleted one
+    without it, and deleting kflare's application kept the 20 CRDs and the cluster's `CloudflareAccount`, as deploy.md
+    says. kflare deleted the record from Cloudflare and kept the zone (retain), and Cloudflare held no route. Not run:
+    deploy.md's Flux `OCIRepository` and `HelmRelease` for the chart, as the cluster's CRDs were not Helm's, and Helm
+    does not take over objects it did not create
+  - The test inputs now hold the statuses the manager wrote there, IDs, names and cf-ray changed: a refusal's message
+    ends with its cf-ray (since kflare's own metrics, #142); a `CloudflareAccount` whose Secret is missing says
+    `Secret "<name>" not found`, as the manager's cache words it, not the API server's `secrets "<name>" not found`;
+    and a new input holds the Zone waiting for its account. A Zone's API error, which Cloudflare cannot be made to
+    return, has cloudflare-go v0.119's message for a 503 after its retries, which the Zone's calls return as is, in
+    place of v7's
+- **The live suite checks both on every run** (`test/e2e/cloudflare_test.go`): each resource it waits for, of every
+  kind, must be Ready for its current generation and Healthy and Current, and the D1Database and the Zone without an
+  adoption policy (`AlreadyExists`) and the WAF rule Cloudflare refuses while its IP list does not exist
+  (`TerminalError`), Degraded and Failed. So each live run tests the checks on what kflare writes against Cloudflare,
+  as #83 proposed for the test inputs. The first such run, GitHub run 42333433050 (Kubernetes 1.37.0, the CI token),
+  passed the suite's 28 specs (e2e run `b194d8`) and the upgrade's 9, and left nothing in Cloudflare
+- **Not contributed to Argo CD**: the maintainer deferred it on 2026-11-06, until kflare's API is `v1beta1`. While the
+  API is an alpha its reasons can still change, and a reason added to a built-in check reaches users only with an Argo
+  CD release, while deploy.md's copy changes with kflare's; argoproj also takes a change only as its author's
+  signed-off pull request (DCO). The files follow Argo CD's layout for a wildcard check
   (`resource_customizations/kflare.dev/_/`), and built-in checks get the standard libraries, so the script would work
   there unchanged

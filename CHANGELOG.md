@@ -32,6 +32,19 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   versions are deprecated, and what a kind needs to become `v1beta1`
   ([#87](https://github.com/JonathanGraniero/kflare/issues/87))
 
+### GitOps
+
+- **Argo CD without the metrics API.** On a cluster without metrics-server, Argo CD reports the application that
+  installs kflare Degraded, though the controller runs: the chart's autoscaler cannot read its CPU. The deploy guide
+  now says so, and how to avoid it ([deploy guide](docs/deploy.md#with-argo-cd-or-flux))
+
+### Development
+
+- **The live suite checks the Argo CD and Flux health checks.** Every resource the live specs wait for must be Healthy
+  and Current for its current generation, and one Cloudflare refuses or that exists without an adoption policy
+  Degraded and Failed, so both checks are tested on what kflare writes against Cloudflare. Their test inputs hold
+  statuses from a run against Cloudflare ([#83](https://github.com/JonathanGraniero/kflare/issues/83))
+
 ## v0.4.2 (alpha)
 
 The seventh alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. kflare now

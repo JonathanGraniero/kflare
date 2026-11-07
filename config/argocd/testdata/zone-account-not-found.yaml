@@ -1,0 +1,30 @@
+apiVersion: kflare.dev/v1alpha1
+kind: Zone
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/tracking-id: web:kflare.dev/Zone:web/example
+    kflare.dev/adoption-policy: adopt
+    kflare.dev/deletion-policy: retain
+  creationTimestamp: "2026-10-31T09:08:30Z"
+  finalizers:
+  - kflare.dev/finalizer
+  generation: 1
+  name: example
+  namespace: web
+  resourceVersion: "47504"
+  uid: 1c7e9a3f-5b2d-4f6e-8a0c-4e6b8d0f2a4c
+spec:
+  accountRef:
+    name: my-account
+  name: example.com
+  type: full
+status:
+  cloudflareMetadata: {}
+  conditions:
+  - lastTransitionTime: "2026-10-31T09:08:30Z"
+    message: 'CloudflareAccount "my-account" not found: CloudflareAccount.kflare.dev "my-account" not found'
+    observedGeneration: 1
+    reason: AccountNotFound
+    status: "False"
+    type: Ready

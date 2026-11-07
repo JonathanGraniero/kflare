@@ -42,6 +42,7 @@ import (
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
+	"github.com/JonathanGraniero/kflare/test/gitopshealth"
 	"github.com/JonathanGraniero/kflare/test/utils"
 )
 
@@ -99,6 +100,13 @@ const (
 // deploy the Free Managed Ruleset already. The ManagedTransform spec turns
 // some of the zone's managed transforms on and then all of them off, so they
 // must all be off before the run.
+//
+// Each status the specs wait for is also judged with the health checks
+// docs/deploy.md gives Argo CD and Flux, run as those tools run them
+// (test/gitopshealth), so that the checks are tested on what kflare writes
+// against Cloudflare itself: Healthy and Current once a resource is Ready for
+// its current generation, Degraded and Failed for a refusal or an object that
+// exists without an adoption policy.
 var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 	var (
 		ctx       = context.Background()
@@ -120,6 +128,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		// transforms is cloudflare-go v7's managed transforms service, which
 		// kflare calls too.
 		transforms *managed_transforms.ManagedTransformService
+		// gitops holds the health checks docs/deploy.md gives Argo CD and Flux.
+		gitops *gitopshealth.Checks
 
 		accountKey, tunnelKey, tunnelConfigKey, workerKey, zoneKey, recordKey client.ObjectKey
 		tunnelRecordKey                                                       client.ObjectKey
@@ -148,26 +158,45 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 	// listName is the name of the run's IP list: list names allow no hyphens.
 	listName := func() string { return "kflare_e2e_" + run }
 
-	// expectReady waits until obj, re-read through key, reports Ready=True.
+	// expectGitOpsHealth checks the health Argo CD and Flux give obj, as the
+	// manager left it, with the health checks docs/deploy.md gives them:
+	// argoCD for Argo CD, and flux for Flux.
+	expectGitOpsHealth := func(g Gomega, obj client.Object, argoCD, flux string) {
+		health, err := gitops.ArgoCD(obj)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(health.Status).To(Equal(argoCD), "Argo CD's health, with the message %q", health.Message)
+		status, err := gitops.Flux(obj)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(status).To(Equal(flux), "Flux's status")
+	}
+
+	// expectReady waits until obj, re-read through key, reports Ready=True for
+	// its current generation, and checks that Argo CD and Flux take it for
+	// Healthy and Current.
 	expectReady := func(key client.ObjectKey, obj client.Object, conditions func() []metav1.Condition) {
 		Eventually(func(g Gomega) {
 			g.Expect(k8s.Get(ctx, key, obj)).To(Succeed())
 			ready := meta.FindStatusCondition(conditions(), cloudflarev1alpha1.ConditionReady)
 			g.Expect(ready).NotTo(BeNil(), "no Ready condition yet")
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "%s: %s", ready.Reason, ready.Message)
+			g.Expect(ready.ObservedGeneration).To(Equal(obj.GetGeneration()), "Ready is for an earlier generation")
+			expectGitOpsHealth(g, obj, gitopshealth.ArgoCDHealthy, gitopshealth.FluxCurrent)
 		}, e2eTimeout, e2ePoll).Should(Succeed())
 	}
 
 	// expectNotReady waits until obj, re-read through key, reports Ready=False
-	// with reason.
+	// with reason for its current generation, and checks the health Argo CD
+	// and Flux give it: argoCD and flux.
 	expectNotReady := func(key client.ObjectKey, obj client.Object, conditions func() []metav1.Condition,
-		reason string) {
+		reason, argoCD, flux string) {
 		Eventually(func(g Gomega) {
 			g.Expect(k8s.Get(ctx, key, obj)).To(Succeed())
 			ready := meta.FindStatusCondition(conditions(), cloudflarev1alpha1.ConditionReady)
 			g.Expect(ready).NotTo(BeNil(), "no Ready condition yet")
 			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse), "%s: %s", ready.Reason, ready.Message)
 			g.Expect(ready.Reason).To(Equal(reason), ready.Message)
+			g.Expect(ready.ObservedGeneration).To(Equal(obj.GetGeneration()), "Ready is for an earlier generation")
+			expectGitOpsHealth(g, obj, argoCD, flux)
 		}, e2eTimeout, e2ePoll).Should(Succeed())
 	}
 
@@ -214,6 +243,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		run = hex.EncodeToString(b)
 		By("using run ID " + run)
+
+		root, err := utils.GetProjectDir()
+		Expect(err).NotTo(HaveOccurred())
+		gitops, err = gitopshealth.Load(root)
+		Expect(err).NotTo(HaveOccurred())
 
 		scheme := runtime.NewScheme()
 		Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
@@ -509,7 +543,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		By("creating a D1Database with the same name and no adoption policy, which leaves the database alone")
 		db = newDatabase()
 		Expect(k8s.Create(ctx, db)).To(Succeed())
-		expectNotReady(d1Key, db, func() []metav1.Condition { return db.Status.Conditions }, "AlreadyExists")
+		expectNotReady(d1Key, db, func() []metav1.Condition { return db.Status.Conditions }, "AlreadyExists",
+			gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
 		Expect(db.Labels).NotTo(HaveKey(cloudflarev1alpha1.D1DatabaseIDLabel))
 		Expect(d1DatabaseIDs(ctx, cfAPI, accountRC, resourceName())).To(ConsistOf(databaseID))
 
@@ -589,7 +624,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}
 		By("creating the Zone without an adoption policy, which leaves the existing zone alone")
 		Expect(k8s.Create(ctx, zone)).To(Succeed())
-		expectNotReady(zoneKey, zone, func() []metav1.Condition { return zone.Status.Conditions }, "AlreadyExists")
+		expectNotReady(zoneKey, zone, func() []metav1.Condition { return zone.Status.Conditions }, "AlreadyExists",
+			gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
 		Expect(zone.Status.CloudflareMetadata.ZoneID).To(BeEmpty())
 
 		By("setting the adopt policy")
@@ -1411,6 +1447,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				g.Expect(ready).NotTo(BeNil(), "no Ready condition yet")
 				g.Expect(ready.Reason).To(Equal("TerminalError"))
 				g.Expect(ready.Message).To(ContainSubstring("is unknown"))
+				expectGitOpsHealth(g, rule, gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
 			}, e2eTimeout, e2ePoll).Should(Succeed())
 		}
 
