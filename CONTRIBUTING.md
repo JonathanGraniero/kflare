@@ -229,13 +229,15 @@ A change to how a controller behaves comes with:
 ## Branches and pull requests
 
 - Branch from `main`: `feat/<name>` for features, `fix/<name>` for fixes, `docs/<name>` for documentation
-- One change per pull request, against `main`. Don't base a pull request on another open one; wait for it to merge
+- One change per pull request, against `main`, or against a release branch for a fix to an older minor release
+  ([Patch releases from a release branch](#patch-releases-from-a-release-branch)). Don't base a pull request on another
+  open one; wait for it to merge
 - Merge `main` into your branch if it falls behind, rather than rebasing a branch others may have pulled
 - Describe what changed and how you checked it: the tests, and for live behavior, what you ran against Cloudflare.
   The pull request template ([.github/pull_request_template.md](.github/pull_request_template.md)) lists the checks
-- `main` is protected: every change lands through a pull request whose checks (CI, the E2E smoke tests and the
-  dependency review) pass on a branch up to date with `main`. A code owner ([.github/CODEOWNERS](.github/CODEOWNERS))
-  reviews and merges it
+- `main` and the release branches are protected: every change lands through a pull request whose checks (CI, the E2E
+  smoke and upgrade tests, and the dependency review) pass on a branch up to date with the one it targets. A code
+  owner ([.github/CODEOWNERS](.github/CODEOWNERS)) reviews and merges it
 
 ## Releasing
 
@@ -261,14 +263,9 @@ nested in it joins its text), whose links Artifact Hub lists below it.
 
 If a job of CI or E2E fails on the merge commit, nothing is tagged: rerun the failed jobs, then rerun `Tag release`. A
 `vX.Y.Z` tag pushed by hand starts `Release` too, as does running it on a tag from the Actions tab. `Release` refuses a
-tag that does not match `Chart.yaml`, and a release that is published already; rerun after a failed step, it goes on
-with its draft.
-
-A security fix for the minor release before the latest
-([Supported releases](docs/versioning.md#supported-releases)) is a patch release of that minor, from a `release-0.Y`
-branch. `Tag release` releases only merges to `main`, so its tag is pushed by hand, and `Release` publishes it without
-making it latest. CI, the release scan and branch protection don't cover release branches yet;
-[#157](https://github.com/JonathanGraniero/kflare/issues/157) adds them before v0.5.0 is released.
+tag that does not match `Chart.yaml`, a release that is published already, and a tag on a commit that is in the history
+of neither `main` nor its minor release's branch, or on `main` but older than the newest version; rerun after a failed
+step, it goes on with its draft.
 
 CI tests the oldest and the newest Kubernetes minor kflare supports
 ([Kubernetes versions](docs/versioning.md#kubernetes-versions)). Supporting a new one changes CI's newest envtest
@@ -276,6 +273,56 @@ version (`ci.yml`), the kind images in `e2e.yml` and `live-e2e.yml`, and `HELM_K
 a minor release only, changes `kubeVersion` in `Chart.yaml`, `ENVTEST_K8S_VERSION`, the smoke tests' matrix in
 `e2e.yml`, `local/kind-config.yaml`, and the docs that name the version, which `git grep` finds. The jobs' names hold
 their Kubernetes versions, so `main`'s required checks change with them.
+
+### Patch releases from a release branch
+
+A patch release that `main` cannot make comes from its minor release's `release-0.Y` branch: a security fix for the
+minor release before the latest ([Supported releases](docs/versioning.md#supported-releases)), or a fix for the latest
+once `main` holds a breaking change for the next one. The `protect release branches` ruleset protects the branch as
+`protect main` protects `main`, and `require reviews` covers it too: changes come through pull requests, which merge
+once CI's, E2E's and the dependency review's checks pass on a branch up to date with it.
+
+1. **Cut the branch**, once for the minor release, from its newest patch's tag:
+
+   ```sh
+   git fetch --tags origin
+   git push origin 'v0.4.3^{commit}:refs/heads/release-0.4'
+   ```
+
+   A branch runs the workflows its own files hold, so its checks take their names from the tag's, Kubernetes versions
+   included. `protect release branches` must require those names, which
+   `gh api repos/JonathanGraniero/kflare/rules/branches/release-0.4` lists: change its checks to the new branch's, or,
+   while an older release branch whose checks are named otherwise still gets fixes, give the new one a ruleset of its
+   own
+2. **Cherry-pick the fix** onto a branch from `release-0.4` (`git cherry-pick -x <commit>`), and open the pull request
+   against `release-0.4`. Fix `main` first, unless only the older minor release needs the fix. CI checks it as it checks
+   `main`, comparing the CRDs with the minor release's newest patch and testing the upgrade from it: a patch release's
+   notes list no breaking change, so the CRD check fails on any. A vulnerability in the Go standard library or in the
+   image's base files needs no change, since the release builds the image with the newest Go 1.26 patch and base
+   files. One in a Go module needs its fixed version on the branch (`go get <module>@<version>`, then `go mod tidy`):
+   Dependabot opens pull requests for `main` only
+3. **Prepare the release** as for `main`, in a pull request against `release-0.4`: the next patch version in
+   `Chart.yaml`, its section in CHANGELOG.md above the branch's last release's, and `make helm`. A `/live-e2e` review
+   runs the live suite on it
+4. **Tag its merge commit** by hand, once every job of CI and E2E has passed on it: `Tag release` releases only merges
+   to `main`.
+
+   ```sh
+   git fetch origin release-0.4
+   git tag -a v0.4.4 -m "kflare v0.4.4" <merge commit>
+   git push origin v0.4.4
+   ```
+
+   `Release` publishes it as it does a release from `main`, with `release-0.4` as its target and as latest only if no
+   newer version is tagged, then starts `Release scan`, which scans its image every week for as long as its minor
+   release gets fixes
+5. **Record it on `main`**, in a pull request: the release's section in main's CHANGELOG.md, below the newer minor
+   release's sections. For a security fix, the GitHub security advisory names the fixed release of each supported
+   minor release
+
+The branch stays once its minor release gets no more fixes. The release scan's `release-image-previous-minor`
+category then keeps the release's last report until the next minor release's turn: dismiss what it still shows as
+won't fix.
 
 ## License
 

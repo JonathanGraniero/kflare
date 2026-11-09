@@ -73,7 +73,46 @@ jobs:
             cat "$RUNNER_TEMP/release.err" >&2
             exit 1
           fi
+          # A release is made from main, or from its minor release's
+          # release-X.Y branch once main has moved on (CONTRIBUTING.md,
+          # Releasing), so the tagged commit must be in the history of one of
+          # them: a tag pushed by hand on any other commit is refused.
+          #
+          # in_history reports whether the tagged commit is in the history of
+          # branch $1. A branch that does not exist has none.
+          in_history() {
+            local status
+            if status="$(gh api "repos/$GH_REPO/compare/$1...$GITHUB_SHA" --jq .status \
+              2> "$RUNNER_TEMP/compare.err")"; then
+              [ "$status" = identical ] || [ "$status" = behind ]
+            elif grep -q 'HTTP 404' "$RUNNER_TEMP/compare.err"; then
+              return 1
+            else
+              cat "$RUNNER_TEMP/compare.err" >&2
+              exit 1
+            fi
+          }
+          release_branch="release-${version%.*}"
+          if in_history main; then
+            # Main releases only its newest version. A patch release of an
+            # older minor release comes from its release branch, without
+            # what main has had since.
+            set -o pipefail
+            newest="$(gh api "repos/$GH_REPO/git/matching-refs/tags/v" --paginate --jq '.[].ref' |
+              sed 's|^refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+            if [ "$newest" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::$GITHUB_REF_NAME is older than $newest: tag it on $release_branch, not on main"
+              exit 1
+            fi
+            branch=main
+          elif in_history "$release_branch"; then
+            branch="$release_branch"
+          else
+            echo "::error::$GITHUB_REF_NAME is on neither main nor $release_branch"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       # Before anything is published, so that a section CHANGELOG.md lacks
       # stops the release here.
@@ -161,13 +200,16 @@ jobs:
 
       # The SBOMs from the image index, each with the Sigstore bundle that
       # cosign verify-blob checks it with. The release stays a draft until
-      # the signatures verify.
+      # the signatures verify. Its target is the branch it was made from,
+      # which the release page and OpenSSF Scorecard read: Scorecard checks
+      # the protection of each branch that a release names.
       - name: Draft the GitHub release with the SBOMs
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           DIGEST: ${{ steps.image.outputs.digest }}
           VERSION: ${{ steps.version.outputs.version }}
+          BRANCH: ${{ steps.version.outputs.branch }}
         run: |
           mkdir -p dist/sbom
           for platform in linux/amd64 linux/arm64; do
@@ -183,8 +225,8 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" dist/sbom/* --clobber
             gh release edit "$GITHUB_REF_NAME" --title "kflare $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
           else
-            gh release create "$GITHUB_REF_NAME" dist/sbom/* --draft --verify-tag --title "kflare $GITHUB_REF_NAME" \
-              --notes-file "$RUNNER_TEMP/notes.md"
+            gh release create "$GITHUB_REF_NAME" dist/sbom/* --draft --verify-tag --target "$BRANCH" \
+              --title "kflare $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
           fi
 
       # What deploy.md's Verifying a release tells users to run, without a

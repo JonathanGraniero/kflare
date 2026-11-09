@@ -1,14 +1,15 @@
 name: Dependency review
 
-# Fails a pull request that adds a dependency with a known vulnerability.
+# Fails a pull request that adds a dependency with a known vulnerability, to
+# main or to a minor release's release-X.Y branch.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "release-*"]
 
 permissions:
   contents: read
 
-# The `protect main` ruleset requires the `review` job by name: rename it there too.
+# The `protect main` and `protect release branches` rulesets require the `review` job by name: rename it there too.
 jobs:
   review:
     runs-on: ubuntu-latest

@@ -1,16 +1,20 @@
 name: CI
 
+# On main, and on the release-X.Y branch that a minor release's patch releases
+# come from once main has moved on (CONTRIBUTING.md, Releasing). A branch runs
+# this file as it has it, so a release branch runs the CI of its minor release.
 on:
   push:
-    branches: [main]
+    branches: [main, "release-*"]
   pull_request:
-    branches: [main]
+    branches: [main, "release-*"]
 
 # Read-only: these jobs only check out and test.
 permissions:
   contents: read
 
-# The `protect main` ruleset requires both jobs by name: rename them there too.
+# The `protect main` ruleset requires both jobs by name, and `protect release
+# branches` as the release branch names them: rename them there too.
 jobs:
   build:
     name: Build & Test

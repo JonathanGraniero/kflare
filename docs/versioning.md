@@ -51,6 +51,11 @@ Only two minor releases get fixes at a time: if another minor release comes out 
 of the three gets no more. Within a minor release, use its newest patch: a patch needs no change to upgrade, so a fix
 comes as the next patch, never as a change to an earlier one. A published release never changes.
 
+A patch release of an older minor release comes from that minor release's own branch, whose changes CI checks as it
+checks `main`'s, and the upgrade to it from the patch before it is tested too. The weekly scan of the released images
+covers the newest patch of the minor release before the latest for as long as it gets security fixes
+([SECURITY.md](../SECURITY.md#how-kflare-is-checked)).
+
 This starts with v0.4: when v0.5.0 comes out, v0.4 gets security fixes for three months, as v0.4 patch releases, and
 v0.5 gets every fix. v0.3 and older get none.
 

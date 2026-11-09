@@ -16,8 +16,7 @@ For how kflare handles credentials and what its controller can access, see the d
 Within a minor release, upgrade to its newest patch: a patch release needs no change to upgrade. A fixed vulnerability
 is announced in a GitHub security advisory, which names the fixed release of each supported minor.
 [Versioning and support](docs/versioning.md) says what each release may change and which Kubernetes versions it
-supports. The weekly scan below covers only the latest release for now: scanning the minor release before it too is
-[#157](https://github.com/JonathanGraniero/kflare/issues/157).
+supports.
 
 ## How kflare is checked
 
@@ -28,9 +27,10 @@ supports. The weekly scan below covers only the latest release for now: scanning
 - **Fuzz tests** cover the code that reads input kflare does not control: the metrics endpoint's authentication,
   which serves any client that can reach its port, and the reading of the errors Cloudflare's API returns. `make test`
   runs their seed inputs and every input that once failed.
-- **Every week:** Grype scans the latest release's image, sending its report to code scanning, and govulncheck checks
-  the release's binary, so that a vulnerability published after a release shows up without a new commit. A fix goes
-  into the next patch release.
+- **Every week:** Grype scans the image of each release that gets fixes, sending its report to code scanning, and
+  govulncheck checks its binary, so that a vulnerability published after a release shows up without a new commit.
+  Those releases are the latest, and the newest patch of the minor release before it during its three months of
+  security fixes. A fix goes into the next patch release of each.
 - **Dependencies:** Dependabot proposes updates to the Go modules, the GitHub Actions and the Dockerfile's base images
   every week, once a release is a week old, and security updates as soon as an advisory is published. Every action is
   pinned to a commit. The base images stay on their tags, so that a release is built with the newest Go patch and base

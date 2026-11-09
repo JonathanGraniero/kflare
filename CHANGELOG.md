@@ -31,6 +31,12 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   fixes (the minor before the latest gets security fixes for three months after the latest comes out), how kflare's API
   versions are deprecated, and what a kind needs to become `v1beta1`
   ([#87](https://github.com/JonathanGraniero/kflare/issues/87))
+- **Security fixes for the minor release before the latest.** Its patch releases come from a `release-0.Y` branch,
+  protected as `main` is, whose pull requests CI, the dependency review and the E2E tests check, the upgrade from the
+  minor release's last patch included. The weekly scan of the released images now covers the newest patch of the minor
+  release before the latest during its three months of security fixes, and the `Release` workflow refuses a tag on a
+  commit that is on neither `main` nor its minor release's branch
+  ([#157](https://github.com/JonathanGraniero/kflare/issues/157))
 
 ### GitOps
 

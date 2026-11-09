@@ -1,11 +1,15 @@
 name: Release scan
 
-# Scans the latest release's image every week, so that a vulnerability found
-# after the release shows up without a new commit: in the image's base files
-# or in the Go modules and standard library its binary was built with. Grype's
-# report goes to code scanning, and a fixable vulnerability of high or critical
-# severity fails the run. govulncheck then checks the binary against the Go
-# project's own advisories, which reach it before they reach Grype's sources.
+# Scans the images of the releases that get fixes every week, so that a
+# vulnerability found after a release shows up without a new commit: in the
+# image's base files or in the Go modules and standard library its binary was
+# built with. Those releases are the latest, and the newest patch of the minor
+# release before it while that one gets security fixes, for three months after
+# the latest minor release came out (docs/versioning.md, Supported releases).
+# Each release's Grype report goes to code scanning under a category of its
+# own, and a fixable vulnerability of high or critical severity fails its scan.
+# govulncheck then checks its binary against the Go project's own advisories,
+# which reach it before they reach Grype's sources.
 on:
   schedule:
     - cron: "0 6 * * 1"
@@ -15,12 +19,50 @@ permissions:
   contents: read
 
 jobs:
+  releases:
+    name: Find the releases that get fixes
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    outputs:
+      releases: ${{ steps.releases.outputs.releases }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: true
+
+      # A tag and a code scanning category for each, from the published
+      # releases (hack/supportedreleases), which also says why in the log.
+      - name: Find the releases
+        id: releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            go run ./hack/supportedreleases)"
+          echo "releases=$releases" >> "$GITHUB_OUTPUT"
+
   scan:
-    name: Scan the latest release
+    name: Scan ${{ matrix.tag }}
+    needs: releases
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
+    strategy:
+      # A vulnerability in one release's image does not stop the other's scan.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.releases.outputs.releases) }}
     env:
       GOTOOLCHAIN: local
 
@@ -28,13 +70,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Find the latest release's image
+      - name: Find the release's image
         id: release
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
-          echo "image=ghcr.io/jonathangraniero/kflare:${tag#v}" >> "$GITHUB_OUTPUT"
+          TAG: ${{ matrix.tag }}
+        run: echo "image=ghcr.io/jonathangraniero/kflare:${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Scan the image
         id: scan
@@ -46,12 +86,16 @@ jobs:
           output-format: sarif
           cache-db: true
 
+      # release-image for the latest release, release-image-previous-minor for
+      # the one before it. Each upload replaces its category's last report, so
+      # once the minor release before the latest gets no more fixes, its
+      # category keeps the last report until the next minor release's turn.
       - name: Upload the report to code scanning
         if: ${{ !cancelled() && steps.scan.outputs.sarif != '' }}
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: ${{ steps.scan.outputs.sarif }}
-          category: release-image
+          category: ${{ matrix.category }}
 
       - name: Set up Go
         if: ${{ !cancelled() && steps.release.outcome == 'success' }}

@@ -99,7 +99,8 @@ With:
 │                          #   its CLAUDE.md holds the generator's design
 ├── hack/                  # sync-helm-chart.sh, chartannotations (Artifact Hub annotations), releasenotes (a
 │                          #   GitHub release's notes), crdcompat (breaking CRD changes since the last release),
-│                          #   mutate.sh (mutations), e2e-live.sh (live e2e), license header
+│                          #   supportedreleases (the releases that get fixes, for the release scan), mutate.sh
+│                          #   (mutations), e2e-live.sh (live e2e), license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
@@ -845,7 +846,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   round-trip property for the generated conversions, is left for later
 - [x] Branch-Protection (3 on `bf97313`, a score of 8), 2026-10-28: `main` has two rulesets. `protect main`, which no
   one bypasses, also requires CI's checks from GitHub Actions, by name (`Build & Test`, `Test (newest Kubernetes)`,
-  both `E2E Tests` jobs, `review`), on a branch up to date with `main`. `require reviews` asks for two approvals, one
+  both `E2E Tests` jobs, `review`, and since 2026-11-06 `Upgrade from the last release (Kubernetes v1.37.0)`), on a
+  branch up to date with `main`. `require reviews` asks for two approvals, one
   a code owner's (`.github/CODEOWNERS`), a new one after the last push, and dismisses stale ones; the repository
   admin role bypasses it on a pull request (the merge box's "bypass rules"). Scorecard v5.6.0 scores this 9. 10
   needs no bypass actor in any ruleset (it reads one as "doesn't apply to admins"), and one maintainer, who can't
@@ -991,7 +993,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - E2E: the job `Upgrade from the last release (Kubernetes v1.37.0)` on pull requests and pushes; Live E2E: a step
     after the suite in the live job, as a job of its own would join the `e2e-cloudflare` group, which keeps one pending
     job and cancels the one before. Tag release waits for every E2E job, so a release is tagged only once it passes.
-    Not required by `protect main`: the user's call
+    Not required by `protect main` at first, the user's call; required since 2026-11-06, at the user's request
   - Checked on an envtest API server (1.34.1, no pods): v0.4.2's chart from GHCR takes the suite's values, the 21
     resources apply to its CRDs with strict validation, and after `helm upgrade` the served CRDs are
     `config/crd/bases`; the reapply and the dry-run create pass. With `spec.comment` removed from DNSRecord's CRD, the

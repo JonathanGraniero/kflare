@@ -1,10 +1,12 @@
 name: E2E
 
 # The live suite, against Cloudflare, is the Live E2E workflow (live-e2e.yml).
+# Pushes to main and to the release-X.Y branches run it, so that a release's
+# merge commit has passed it before its tag.
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "release-*"]
   workflow_dispatch:
 
 # Read-only by default: the jobs only check out and test.
@@ -23,7 +25,8 @@ jobs:
       fail-fast: false
       matrix:
         # The oldest supported release and the newest one. The `protect main`
-        # ruleset requires each job by name: change its versions there too.
+        # ruleset requires each job by name, and `protect release branches` as
+        # the release branch names them: change its versions there too.
         kubernetes: [v1.34.11, v1.37.0]
     env:
       GOTOOLCHAIN: local
@@ -60,7 +63,10 @@ jobs:
   # manager are its, that every resource still applies as GitOps would sync it,
   # and that the new manager reconciles each one and keeps what the release
   # stored. Without Cloudflare credentials, the resources wait for them; the
-  # Live E2E workflow runs the same specs against Cloudflare.
+  # Live E2E workflow runs the same specs against Cloudflare. On a release
+  # branch, the last release is the newest patch of its minor release. The
+  # `protect main` and `protect release branches` rulesets require the job by
+  # name, which holds its Kubernetes version: change it there too.
   upgrade:
     name: Upgrade from the last release (Kubernetes v1.37.0)
     runs-on: ubuntu-latest
