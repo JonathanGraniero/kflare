@@ -107,18 +107,23 @@ var _ = Describe("an installation scoped to a namespace", Ordered, func() {
 	})
 
 	It("can read the Secrets of the namespace it watches, and of no other", func() {
-		canI := func(namespace string) string {
-			// kubectl auth can-i exits with 1 for no, and prints the answer either way.
-			out, _ := utils.Run(exec.Command("kubectl", "auth", "can-i", "list", "secrets", "-n", namespace,
-				"--as", serviceAccount))
-			return strings.TrimSpace(string(out))
+		// canI returns kubectl auth can-i's answer for the scoped installation's
+		// ServiceAccount: its last line, as kubectl prints any warning before it,
+		// and exits with 1 for no.
+		canI := func(args ...string) string {
+			args = append(append([]string{"auth", "can-i"}, args...), "--as", serviceAccount)
+			out, _ := utils.Run(exec.Command("kubectl", args...))
+			lines := utils.GetNonEmptyLines(string(out))
+			if len(lines) == 0 {
+				return ""
+			}
+			return strings.TrimSpace(lines[len(lines)-1])
 		}
-		Expect(canI(scopedNamespace)).To(Equal("yes"))
-		Expect(canI(managerNamespace)).To(Equal("no"))
-		Expect(canI("default")).To(Equal("no"))
-
-		out, _ := utils.Run(exec.Command("kubectl", "auth", "can-i", "list", "cloudflareaccounts.kflare.dev",
-			"--as", serviceAccount))
-		Expect(strings.TrimSpace(string(out))).To(Equal("yes"), "a scoped installation reads every account")
+		Expect(canI("list", "secrets", "-n", scopedNamespace)).To(Equal("yes"))
+		Expect(canI("list", "secrets", "-n", managerNamespace)).To(Equal("no"))
+		Expect(canI("list", "secrets", "-n", "default")).To(Equal("no"))
+		Expect(canI("list", "secrets", "--all-namespaces")).To(Equal("no"))
+		Expect(canI("list", "cloudflareaccounts.kflare.dev", "--all-namespaces")).To(Equal("yes"),
+			"a scoped installation reads every account")
 	})
 })
