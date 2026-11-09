@@ -133,7 +133,8 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 - **Any resource can be paused** with `kflare.dev/paused: "true"`, during an incident or a migration done by hand:
   kflare leaves its Cloudflare object alone until the annotation is removed (from v0.2.1).
 - **Credentials stay in Secrets** that you can manage with External Secrets Operator or Sealed Secrets. A rotated token
-  is picked up straight away. Only cluster administrators can create a `CloudflareAccount`, and each can
+  is picked up straight away, and each account shows when its token expires and is checked again every hour. Only
+  cluster administrators can create a `CloudflareAccount`, and each can
   [limit the namespaces that may use it](docs/deploy.md#limiting-which-namespaces-may-use-an-account); the namespaced
   kinds are added to the built-in `edit` and `admin` roles, so teams manage their own records and rules.
 - **One installation can serve many Cloudflare accounts.** Each API token stays within Cloudflare's rate limit, and an

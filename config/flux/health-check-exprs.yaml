@@ -10,11 +10,11 @@
   failed: >-
     status.conditions.exists(c, c.type == 'Ready' && c.status == 'False'
     && c.observedGeneration == metadata.generation
-    && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'NotWatched', 'AccountMismatch',
-    'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
-    'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
-    'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',
-    'TunnelAlreadyConfigured'])
+    && c.reason in ['TerminalError', 'InvalidToken', 'TokenExpired', 'TokenDisabled', 'AccountNotAllowed',
+    'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported',
+    'TokenKeyMissing', 'ScriptKeyMissing', 'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound',
+    'InvalidAdoptionPolicy', 'NameConflict', 'TitleConflict', 'PatternConflict', 'RulesetConflict',
+    'CredentialsSecretConflict', 'AlreadyConfigured', 'TunnelAlreadyConfigured'])
   current: >-
     status.conditions.exists(c, c.type == 'Ready' && c.status == 'True'
     && c.observedGeneration == metadata.generation)

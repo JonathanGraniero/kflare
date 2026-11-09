@@ -41,6 +41,12 @@ var resourcesDesc = prometheus.NewDesc("kflare_resources",
 	"Resources by kind, and by the status and reason of their Ready condition. Served by the leader only.",
 	[]string{"kind", "ready", "reason"}, nil)
 
+// tokenExpiryDesc is kflare_account_token_expiry_timestamp_seconds.
+var tokenExpiryDesc = prometheus.NewDesc("kflare_account_token_expiry_timestamp_seconds",
+	"When each CloudflareAccount's API token expires, as Cloudflare last reported it, in seconds since the Unix "+
+		"epoch. An account whose token never expires has none. Served by the leader only.",
+	[]string{"account"}, nil)
+
 func init() {
 	metrics.Registry.MustRegister(driftCorrections)
 }
@@ -67,9 +73,10 @@ func withControllerName(kind string, rec reconcile.Reconciler) reconcile.Reconci
 	})
 }
 
-// resourceCollector serves kflare_resources. It counts when scraped, from the
-// manager's cache, so nothing keeps counts up to date between scrapes, and
-// they hold across restarts and deletions.
+// resourceCollector serves kflare_resources and
+// kflare_account_token_expiry_timestamp_seconds. It reads them when scraped,
+// from the manager's cache, so nothing keeps them up to date between scrapes,
+// and they hold across restarts and deletions.
 //
 // Only the leader answers. A standby has none of these informers, and a list
 // would start them all, on a pod meant to sit idle; and a sum across pods
@@ -109,6 +116,7 @@ func resourceLists(scheme *runtime.Scheme) map[string]client.ObjectList {
 
 func (c *resourceCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- resourcesDesc
+	ch <- tokenExpiryDesc
 }
 
 // Collect leaves out a kind it cannot count. An invalid metric would fail the
@@ -121,6 +129,9 @@ func (c *resourceCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), collectTimeout)
 	defer cancel()
+	// The expiries first, so that a kind whose cache is late cannot use up
+	// the time an alert on a token depends on.
+	c.collectTokenExpiries(ctx, ch)
 	for _, kind := range slices.Sorted(maps.Keys(c.lists)) {
 		counts, err := c.count(ctx, kind)
 		if err != nil {
@@ -131,6 +142,27 @@ func (c *resourceCollector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(resourcesDesc, prometheus.GaugeValue, float64(count), kind,
 				state.status, state.reason)
 		}
+	}
+}
+
+// collectTokenExpiries sends the expiry of each token that the installation's
+// CloudflareAccounts record (status.tokenExpiresAt). The label is the
+// account's name: accounts are few, and an alert must say which token to
+// replace.
+func (c *resourceCollector) collectTokenExpiries(ctx context.Context, ch chan<- prometheus.Metric) {
+	accounts := &cloudflarev1alpha1.CloudflareAccountList{}
+	if err := c.reader.List(ctx, accounts, client.UnsafeDisableDeepCopy); err != nil {
+		log.Log.WithName("metrics").Error(err, "Leaving out kflare_account_token_expiry_timestamp_seconds")
+		return
+	}
+	for i := range accounts.Items {
+		account := &accounts.Items[i]
+		expiresAt := account.Status.TokenExpiresAt
+		if expiresAt == nil || c.scope.accountOutside(account) != "" {
+			continue
+		}
+		ch <- prometheus.MustNewConstMetric(tokenExpiryDesc, prometheus.GaugeValue,
+			float64(expiresAt.Unix()), account.Name)
 	}
 }
 

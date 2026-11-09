@@ -39,6 +39,24 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **Nothing else changes without them.** An installation with neither value renders as before, and keeps its leader
   election Lease, so upgrading it never runs two leaders
 
+### API token checks
+
+- **A `CloudflareAccount` shows its token's status and expiry.** `status.tokenStatus` (`active`, `disabled` or
+  `expired`) and `status.tokenExpiresAt`, which `kubectl get cloudflareaccounts` shows as `TOKEN EXPIRES`, come from
+  Cloudflare's token verification, for account-owned and user tokens alike, which takes no permission beyond the token
+  ([deploy guide](docs/deploy.md#3-connect-your-cloudflare-account),
+  [#74](https://github.com/JonathanGraniero/kflare/issues/74))
+- **An expired or disabled token turns its account `Ready=False`** with a reason of its own, `TokenExpired` or
+  `TokenDisabled`, where it was `TerminalError` with Cloudflare's "Invalid access token". The deploy guide's Argo CD
+  and Flux health checks report both Degraded and Failed: update your copies of them
+- **Each account is validated again every hour** (`tokenCheckInterval`, the controller's `--token-check-interval`;
+  `0s` turns it off), and just after its token expires, so a token disabled, expired or deleted in Cloudflare shows
+  within the hour, where it could take until the 10-hour resync. Each check makes two Cloudflare API calls
+- **A warning before the token expires.** From 14 days before (`tokenExpiryWarning`, `--token-expiry-warning`; `0s`
+  turns it off), each check records a `TokenExpiresSoon` Warning Event on the account, and the new metric
+  `kflare_account_token_expiry_timestamp_seconds{account}` holds the expiry for an alert of your own
+  ([Monitoring](docs/deploy.md#monitoring))
+
 ### Releases
 
 - **Merging a version bump releases it.** Once CI and E2E pass on the merge commit, the `Tag release` workflow tags

@@ -45,6 +45,18 @@ import (
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 )
 
+// activeTokenClient is a real client whose token Cloudflare reports active,
+// so that a CloudflareAccount goes on to read its account through v0. Its
+// own VerifyToken calls v7, which a test cannot point at another server
+// (pkg/cloudflare's tests cover it).
+type activeTokenClient struct {
+	*cfpkg.Client
+}
+
+func (activeTokenClient) VerifyToken(context.Context, string) (cfpkg.TokenVerification, error) {
+	return cfpkg.TokenVerification{Status: cfpkg.TokenActive}, nil
+}
+
 // served adds up the series of the metric name, among those with labels, that
 // gatherer serves: 0 for a metric it does not serve.
 func served(gatherer prometheus.Gatherer, name string, labels map[string]string) float64 {
@@ -321,7 +333,7 @@ var _ = Describe("kflare's metrics", func() {
 								return nil, err
 							}
 							client.BaseURL = cloudflare.URL
-							return client, nil
+							return activeTokenClient{client}, nil
 						}}).SetupWithManager(mgr)
 				}),
 		)

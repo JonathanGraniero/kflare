@@ -100,6 +100,18 @@ type CloudflareAccountStatus struct {
 	// AccountName is the name of the Cloudflare account as returned by the API.
 	AccountName string `json:"accountName,omitempty"`
 
+	// TokenStatus is the API token's status, as Cloudflare's token
+	// verification last reported it: active, disabled or expired. kflare
+	// verifies the token on each validation, and forgets what it learned
+	// once Cloudflare refuses the token or the Secret no longer holds one.
+	// +optional
+	TokenStatus string `json:"tokenStatus,omitempty"`
+
+	// TokenExpiresAt is when the API token expires, as Cloudflare's token
+	// verification last reported it. Unset for a token that never expires.
+	// +optional
+	TokenExpiresAt *metav1.Time `json:"tokenExpiresAt,omitempty"`
+
 	// ProtectedTokenSecret is the token Secret kflare holds a finalizer on,
 	// so that it cannot be deleted while this account exists. When
 	// spec.tokenSecretRef changes, kflare releases this Secret.
@@ -119,6 +131,7 @@ const (
 //+kubebuilder:printcolumn:name="Account ID",type=string,JSONPath=`.spec.accountID`
 //+kubebuilder:printcolumn:name="Account Name",type=string,JSONPath=`.status.accountName`
 //+kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+//+kubebuilder:printcolumn:name="Token Expires",type=string,JSONPath=`.status.tokenExpiresAt`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CloudflareAccount is the Schema for the cloudflareaccounts API.

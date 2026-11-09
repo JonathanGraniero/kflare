@@ -431,6 +431,9 @@ var readyReasons = []struct {
 	// Cloudflare refused the request, or kflare cannot build a client from the token.
 	{"False", "TerminalError", ArgoCDDegraded},
 	{"False", "InvalidToken", ArgoCDDegraded},
+	// Cloudflare reports the account's API token as expired or disabled.
+	{"False", "TokenExpired", ArgoCDDegraded},
+	{"False", "TokenDisabled", ArgoCDDegraded},
 	// Retried with back-off, or after a rate limit's wait.
 	{"False", "APIError", ArgoCDProgressing},
 	{"False", "RateLimited", ArgoCDProgressing},

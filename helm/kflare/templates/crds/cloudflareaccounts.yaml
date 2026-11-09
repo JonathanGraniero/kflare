@@ -34,6 +34,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
+    - jsonPath: .status.tokenExpiresAt
+      name: Token Expires
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -261,6 +264,19 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              tokenExpiresAt:
+                description: |-
+                  TokenExpiresAt is when the API token expires, as Cloudflare's token
+                  verification last reported it. Unset for a token that never expires.
+                format: date-time
+                type: string
+              tokenStatus:
+                description: |-
+                  TokenStatus is the API token's status, as Cloudflare's token
+                  verification last reported it: active, disabled or expired. kflare
+                  verifies the token on each validation, and forgets what it learned
+                  once Cloudflare refuses the token or the Secret no longer holds one.
+                type: string
             type: object
         type: object
     served: true

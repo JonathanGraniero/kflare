@@ -576,6 +576,10 @@ func (in *CloudflareAccountStatus) DeepCopyInto(out *CloudflareAccountStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.TokenExpiresAt != nil {
+		in, out := &in.TokenExpiresAt, &out.TokenExpiresAt
+		*out = (*in).DeepCopy()
+	}
 	if in.ProtectedTokenSecret != nil {
 		in, out := &in.ProtectedTokenSecret, &out.ProtectedTokenSecret
 		*out = new(corev1.SecretReference)

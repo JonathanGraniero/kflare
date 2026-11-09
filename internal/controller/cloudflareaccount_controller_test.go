@@ -20,16 +20,38 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
+	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 )
 
-// fakeCFClient is a test double for CloudflareAccountAPI.
+// fakeCFClient is a test double for CloudflareAccountAPI. Account answers with
+// account or err, and VerifyToken with verification or verifyErr; reads and
+// verifications count the calls. Its zero verification is an active token
+// that never expires.
 type fakeCFClient struct {
 	account cloudflare.Account
 	err     error
+
+	verification cfpkg.TokenVerification
+	verifyErr    error
+
+	reads, verifications int
 }
 
 func (f *fakeCFClient) Account(_ context.Context, _ string) (cloudflare.Account, cloudflare.ResultInfo, error) {
+	f.reads++
 	return f.account, cloudflare.ResultInfo{}, f.err
+}
+
+func (f *fakeCFClient) VerifyToken(_ context.Context, _ string) (cfpkg.TokenVerification, error) {
+	f.verifications++
+	if f.verifyErr != nil {
+		return cfpkg.TokenVerification{}, f.verifyErr
+	}
+	verification := f.verification
+	if verification.Status == "" {
+		verification.Status = cfpkg.TokenActive
+	}
+	return verification, nil
 }
 
 // reconcilerWithFake returns a reconciler wired to a pre-built fake CF client.

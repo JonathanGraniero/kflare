@@ -138,6 +138,20 @@ reconcileTimeout: 5m
 # against Cloudflare's rate limit: the deploy guide's Configuration says how
 # to pick an interval for the number of resources.
 driftCheckInterval: ""
+# -- How long after a CloudflareAccount is validated it is validated again, as
+# a duration such as 1h or 30m: its API token's status and expiry are read
+# from Cloudflare, and the account with the token. A token revoked, disabled
+# or expired in Cloudflare then shows on its account within about that long,
+# with reason TokenDisabled, TokenExpired or TerminalError. 0s turns the
+# checks off. Each check makes two Cloudflare API calls per account.
+tokenCheckInterval: 1h
+# -- How long before its API token expires a CloudflareAccount starts to
+# record a TokenExpiresSoon Warning Event at each validation, as a duration
+# such as 336h (14 days). 0s records none: a token that is always close to
+# its expiry, as one rotated weekly, would otherwise warn all the time. The
+# metric kflare_account_token_expiry_timestamp_seconds holds each expiry
+# for an alert of your own.
+tokenExpiryWarning: 336h
 # -- How many requests per five minutes kflare sends with one Cloudflare API
 # token, unless the token's CloudflareAccount sets spec.rateLimit. Cloudflare's
 # global limit is 1,200, shared with the dashboard and everything else using

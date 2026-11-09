@@ -364,6 +364,25 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		account := &cloudflarev1alpha1.CloudflareAccount{}
 		expectReady(accountKey, account, func() []metav1.Condition { return account.Status.Conditions })
 		Expect(account.Status.AccountName).NotTo(BeEmpty())
+
+		By("recording the token's status and expiry as Cloudflare reports them")
+		status, expiresOn := verifyToken(ctx, os.Getenv("CF_API_TOKEN"), accountID)
+		Expect(status).To(Equal(cfpkg.TokenActive))
+		Expect(account.Status.TokenStatus).To(Equal(status))
+		if expiresOn == "" {
+			Expect(account.Status.TokenExpiresAt).To(BeNil())
+		} else {
+			Expect(account.Status.TokenExpiresAt).NotTo(BeNil())
+			Expect(account.Status.TokenExpiresAt.UTC().Format(time.RFC3339)).To(Equal(expiresOn))
+		}
+
+		By("showing the expiry in kubectl get")
+		out, err := utils.Run(exec.Command("kubectl", "get", "cloudflareaccount", accountKey.Name))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(out)).To(ContainSubstring("TOKEN EXPIRES"))
+		if expiresOn != "" {
+			Expect(string(out)).To(ContainSubstring(expiresOn))
+		}
 	})
 
 	It("creates a Tunnel and writes its token Secret", func() {
@@ -1833,6 +1852,36 @@ func listItems(ctx context.Context, api *cf.API, rc *cf.ResourceContainer, listI
 
 // cleanupList deletes the account's list named name, if there is one. It
 // only reports problems: it runs after the specs, whether or not they passed.
+// verifyToken asks Cloudflare for token's status and expiry (RFC 3339, empty
+// when it never expires) with plain HTTP, rather than through kflare's
+// client, whose answer the spec checks: the endpoint of accountID's
+// account-owned tokens, then the user one.
+func verifyToken(ctx context.Context, token, accountID string) (status, expiresOn string) {
+	GinkgoHelper()
+	for _, path := range []string{"accounts/" + accountID + "/tokens/verify", "user/tokens/verify"} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			"https://api.cloudflare.com/client/v4/"+path, nil)
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Authorization", "Bearer "+token)
+		res, err := http.DefaultClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		var body struct {
+			Result struct {
+				Status    string `json:"status"`
+				ExpiresOn string `json:"expires_on"`
+			} `json:"result"`
+		}
+		err = json.NewDecoder(res.Body).Decode(&body)
+		_ = res.Body.Close()
+		if res.StatusCode == http.StatusOK {
+			Expect(err).NotTo(HaveOccurred())
+			return body.Result.Status, body.Result.ExpiresOn
+		}
+	}
+	Fail("Cloudflare verified the token on neither endpoint")
+	return "", ""
+}
+
 func cleanupList(ctx context.Context, api *cf.API, rc *cf.ResourceContainer, name string) {
 	lists, err := api.ListLists(ctx, rc, cf.ListListsParams{})
 	if err != nil {

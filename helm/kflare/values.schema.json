@@ -119,6 +119,14 @@
       "type": "string",
       "pattern": "^$|^(0|([0-9]+(\\.[0-9]+)?(ms|s|m|h))+)$"
     },
+    "tokenCheckInterval": {
+      "type": "string",
+      "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ms|s|m|h))+)$"
+    },
+    "tokenExpiryWarning": {
+      "type": "string",
+      "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ms|s|m|h))+)$"
+    },
     "cloudflareRateLimit": {
       "type": "integer",
       "minimum": 0

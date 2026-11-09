@@ -123,12 +123,12 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    is returned so controller-runtime backs off); `RateLimited` (waiting for the token's budget, and only on a resource
    that was not `Ready`: see `internal/controller/ratelimit.go`); credential reasons from `credentials.go`
    (`AccountNotFound`, `AccountNotAllowed`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a
-   minute); `NotWatched` (an account or a reference outside the installation's scope, `watchscope.go`: a reference is
-   read with `getReference`); `Paused`
-   (the status kept, see convention 11). A new reason goes into `readyReasons` (`test/gitopshealth`), and, if a person
-   must act on it, into the Argo CD and Flux health checks' lists (`config/argocd/health.lua`,
-   `config/flux/health-check-exprs.yaml`, and deploy.md's copies); its test finds a reason the controllers set that
-   the table lacks
+   minute); `TokenExpired`/`TokenDisabled` (a CloudflareAccount whose token Cloudflare reports so, checked again at
+   `--token-check-interval`); `NotWatched` (an account or a reference outside the installation's scope,
+   `watchscope.go`: a reference is read with `getReference`); `Paused` (the status kept, see convention 11). A new
+   reason goes into `readyReasons` (`test/gitopshealth`), and, if a person must act on it, into the Argo CD and Flux
+   health checks' lists (`config/argocd/health.lua`, `config/flux/health-check-exprs.yaml`, and deploy.md's copies);
+   its test finds a reason the controllers set that the table lacks
 2. **Status fields** — every CRD status has `conditions []metav1.Condition` and a `cloudflareMetadata` block
 3. **References** — foreign-key relationships use `*Ref` fields (e.g., `zoneRef`, `tunnelRef`) not raw IDs
 4. **Adoption** — a resource creates its Cloudflare object, and takes over an existing one with its key only when its
@@ -146,7 +146,8 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    (`updateReady`, `updateNotReady`, `handleCloudflareError`, `notReadyRetryAfter`, `updatePaused`); API types implement
    `GetConditions/SetConditions`. The helpers record each change of Ready's status or reason as an Event. A
    successful reconcile ends with `readyWithDriftCheck`, which also schedules the next drift check
-   (`--drift-check-interval`, `reconciler.NextDriftCheck`)
+   (`--drift-check-interval`, `reconciler.NextDriftCheck`). CloudflareAccount alone schedules its own
+   (`nextValidation`: the token check, the drift check or just after its token expires, whichever comes first)
 9. **Prefix** — every finalizer, annotation and label kflare owns starts with `kflare.dev/`
 10. **ARCHITECTURE.md** — a new controller, or a change to drift detection, adoption, error handling or deletion,
     updates the matching section and tables in `ARCHITECTURE.md`

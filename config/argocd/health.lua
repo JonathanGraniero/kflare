@@ -20,6 +20,9 @@ local needsPerson = {
   -- Cloudflare refused the request (4xx), or kflare cannot build a client from the token
   TerminalError = true,
   InvalidToken = true,
+  -- Cloudflare reports the account's API token as expired or disabled
+  TokenExpired = true,
+  TokenDisabled = true,
   -- The CloudflareAccount, or a reference, does not fit, or is outside the installation's scope
   AccountNotAllowed = true,
   NotWatched = true,

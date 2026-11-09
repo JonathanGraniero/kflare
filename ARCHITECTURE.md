@@ -130,6 +130,8 @@ trigger a reconcile**. Reconciles are triggered by:
 - a drift check, when the manager has a drift check interval (`--drift-check-interval`, the chart's
   `driftCheckInterval`): every successful reconcile schedules the next one that long later, moved by up to a tenth of
   the interval either way at random, so that resources synced together, as after a restart, spread their checks;
+- for a CloudflareAccount, its token check (`--token-check-interval`, the chart's `tokenCheckInterval`, an hour by
+  default), and a check just after its token expires (see [API tokens](#api-tokens));
 - the informer resync, which re-reconciles every resource. kflare does not set a sync period, so it uses
   controller-runtime's default of **10 hours**.
 
@@ -140,7 +142,7 @@ most 1.1 times the interval. A drift check is an ordinary reconcile, idle when n
 reads are one call for most kinds and two for a Tunnel (the tunnel and its token). An IPList takes two, plus one per
 500 items past the first 500. The short requeues stay as they are: an IPList whose items Cloudflare is replacing checks
 every 2 seconds, and a rule that moved other rules checks their order again 10 seconds later, whatever the interval. A
-CloudflareAccount's drift check validates its token again.
+CloudflareAccount's drift check validates its token again, and so does its token check, whichever comes first.
 
 To force a reconcile, change the resource's metadata:
 
@@ -152,7 +154,7 @@ What each controller compares when it does reconcile:
 
 | Resource | Drift detected on |
 |---|---|
-| `CloudflareAccount` | Token validity (re-validated against the account on every reconcile) |
+| `CloudflareAccount` | The token's status and expiry, as Cloudflare's token verification reports them, and the account read with the token, on every reconcile (see [API tokens](#api-tokens)) |
 | `Zone` | Zone type and `spec.plan`; recreated if deleted externally |
 | `DNSRecord` | Content, TTL, proxied, priority (when set), comment, tags, structured data; recreated if deleted externally. With a `tunnelRef`, the content is the Tunnel's hostname, `<tunnel ID>.cfargotunnel.com`, and proxied is on: a Tunnel recreated with a new ID re-triggers the record, which updates its content in place |
 | `Tunnel` | Name (renamed in place); existence (recreated if deleted externally); token Secret contents |
@@ -456,6 +458,32 @@ CD, and anything else is in progress. Both list the reasons a person must act on
 and in `test/gitopshealth`'s `readyReasons`, whose test reads the controllers for the reasons they set and fails on one
 it does not hold. The shared specs check both on the conditions the controllers write.
 
+## API tokens
+
+A `CloudflareAccount` first asks Cloudflare about its token (`cfpkg.Client.VerifyToken`): the endpoint of the
+account's own tokens, then, when that one refuses the token, the user endpoint, since neither verifies the other kind.
+Cloudflare answers a disabled or expired token with its status, where reading the account with it gets "Invalid
+access token" (9109), so this is where kflare learns why a token stopped working. The account records the token's status
+and expiry in `status.tokenStatus` and `status.tokenExpiresAt`, and then reads the account with the token, which checks
+the account ID and the token's permission to read it.
+
+- **Expired or disabled.** `Ready=False` with `TokenExpired` or `TokenDisabled`, without reading the account. The
+  message names the Secret, and the expiry, which stays the same from one check to the next, so the status is not
+  written again while nothing changes.
+- **Refused.** A token Cloudflare does not accept at all, deleted or mistyped, gets `TerminalError`, as any refusal
+  does, and the account forgets the status and expiry it had recorded: they may be another token's. So does an account
+  whose Secret no longer holds a token. An error to retry, such as a 5xx, keeps them.
+- **Checked again.** A token disabled or expired in Cloudflare, or enabled again, changes nothing in the cluster, so
+  every validation schedules the next: after `--token-check-interval` (an hour by default), or the drift check if
+  sooner, or 30 seconds after the token expires if that is sooner still, so that `Ready` turns False when the token
+  lapses rather than at the next check. A refused token is not checked again until something changes, as with any
+  `TerminalError`. A check makes two calls, or three for a user's token, and writes the status only when it changed,
+  so the resources that use the account are reconciled only when its state does.
+- **Close to its expiry.** Everything still works, so `Ready` stays True. Each validation within
+  `--token-expiry-warning` of the expiry (14 days by default) records a `TokenExpiresSoon` Warning Event: the API
+  server keeps an Event for an hour by default, so one recorded once would be gone long before the token.
+  `kflare_account_token_expiry_timestamp_seconds` holds the expiry for an alert (see [Metrics](#metrics)).
+
 ## Rate limits
 
 Cloudflare counts API calls per user, across the dashboard, API keys and the user's tokens, or per account-owned token:
@@ -503,7 +531,8 @@ depend on it. A raised limit has to be set by hand, since the Free plan kflare i
 ## Metrics
 
 kflare's own metrics are in `metrics.Registry`, so they are served with controller-runtime's on the authenticated
-endpoint (deploy.md, [Monitoring](docs/deploy.md#monitoring)). No label holds a resource's name, a zone ID or a URL.
+endpoint (deploy.md, [Monitoring](docs/deploy.md#monitoring)). No label holds a resource's name, a zone ID or a URL,
+but a CloudflareAccount's (`account`): accounts are few, and an alert on a rate limit or a token must say which.
 
 - **API calls.** `pkg/cloudflare`'s `instrumentedTransport` sits inside the rate limit, around the network, so it sees
   what reaches Cloudflare: every attempt of either SDK, retries included, and not a call kept back or the time one waits
@@ -518,6 +547,10 @@ endpoint (deploy.md, [Monitoring](docs/deploy.md#monitoring)). No label holds a 
   scrape with an invalid metric with a 500, which would cost every other metric too.
 - **Corrections.** See [When drift is detected](#when-drift-is-detected). The counter starts at 0 for every kind, so
   that a rule on its increase sees the first one.
+- **Token expiries.** `kflare_account_token_expiry_timestamp_seconds` is read with `kflare_resources`, from the
+  `status.tokenExpiresAt` of the cache's CloudflareAccounts, on the leader alone, and before the kinds are counted, so
+  that a kind whose cache is late cannot use up the time an alert on a token depends on. An account outside the
+  installation's scope, or whose token never expires, has no series.
 
 ## Deletion
 

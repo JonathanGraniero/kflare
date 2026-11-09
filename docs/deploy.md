@@ -64,7 +64,8 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 
 These are enough on their own: in October 2026 a token holding only them (with Zone · Zone · Read, and without Billing)
 ran kflare's full live test suite against an existing zone, and again before v0.2.0 with `ManagedTransform`'s row,
-which came later.
+which came later. kflare also asks Cloudflare about the token itself, its status and expiry, which takes no permission:
+in November 2026 a token holding only Account Settings Read was verified, active, disabled and expired.
 Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's overview page.
 
 ## 2. Install the chart
@@ -218,7 +219,8 @@ and waits until its timeout for one Cloudflare refused. The checks below read `R
 | Anything else, such as no `Ready` yet, an older generation, `APIError` or a parent not ready | Progressing | InProgress |
 
 The reasons a person must act on, which [Troubleshooting](#troubleshooting) explains: Cloudflare refused the request
-(`TerminalError`); kflare cannot build a client from the token (`InvalidToken`); another resource manages the
+(`TerminalError`); kflare cannot build a client from the token (`InvalidToken`); Cloudflare reports the account's
+token as expired or disabled (`TokenExpired`, `TokenDisabled`); another resource manages the
 Cloudflare object or configures the same settings (`NameConflict`, `TitleConflict`, `PatternConflict`,
 `RulesetConflict`, `CredentialsSecretConflict`, `AlreadyConfigured`, `TunnelAlreadyConfigured`); the object exists,
 or is missing, against the adoption policy (`AlreadyExists`, `NotFound`, `InvalidAdoptionPolicy`); a setting is wrong
@@ -270,6 +272,9 @@ data:
           -- Cloudflare refused the request (4xx), or kflare cannot build a client from the token
           TerminalError = true,
           InvalidToken = true,
+          -- Cloudflare reports the account's API token as expired or disabled
+          TokenExpired = true,
+          TokenDisabled = true,
           -- The CloudflareAccount, or a reference, does not fit, or is outside the installation's scope
           AccountNotAllowed = true,
           NotWatched = true,
@@ -463,11 +468,11 @@ spec:
     - apiVersion: kflare.dev/v1alpha1
       failed: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
-        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'NotWatched',
-        'AccountMismatch', 'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing',
-        'ScriptKeyMissing', 'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy',
-        'NameConflict', 'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict',
-        'AlreadyConfigured', 'TunnelAlreadyConfigured'])
+        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'TokenExpired', 'TokenDisabled',
+        'AccountNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
+        'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing', 'BindingSecretKeyMissing',
+        'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict', 'TitleConflict', 'PatternConflict',
+        'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured', 'TunnelAlreadyConfigured'])
       current: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
         metadata.generation)
@@ -490,11 +495,11 @@ spec:
     - apiVersion: kflare.dev/v1alpha1
       failed: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
-        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'NotWatched',
-        'AccountMismatch', 'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing',
-        'ScriptKeyMissing', 'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy',
-        'NameConflict', 'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict',
-        'AlreadyConfigured', 'TunnelAlreadyConfigured'])
+        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'TokenExpired', 'TokenDisabled',
+        'AccountNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
+        'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing', 'BindingSecretKeyMissing',
+        'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict', 'TitleConflict', 'PatternConflict',
+        'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured', 'TunnelAlreadyConfigured'])
       current: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
         metadata.generation)
@@ -532,14 +537,23 @@ spec:
 ```sh
 kubectl apply -f account.yaml
 kubectl get cloudflareaccounts.kflare.dev
-# NAME         ACCOUNT ID   ACCOUNT NAME     READY
-# my-account   0123abcd…    Example Account  True
+# NAME         ACCOUNT ID   ACCOUNT NAME     READY   TOKEN EXPIRES
+# my-account   0123abcd…    Example Account  True    2027-03-07T23:59:59Z
 ```
 
-`READY=True` means the token works and the account is reachable. kflare watches the Secret, so a
-rotated token is re-validated straight away. Rotate it by updating the Secret in place: kflare holds a
-finalizer on it (`kflare.dev/token-protection`) while an account references it, so a deleted Secret stays
-`Terminating` until its accounts are gone.
+`READY=True` means the token works and the account is reachable. kflare first asks Cloudflare about the token itself,
+and records its status (`status.tokenStatus`: `active`, `disabled` or `expired`) and when it expires
+(`status.tokenExpiresAt`, unset for a token that never does). It checks again every hour (`tokenCheckInterval`), and
+just after the token expires, so a token disabled, expired or deleted in Cloudflare shows on its account within the
+hour: `READY=False` with reason `TokenDisabled`, `TokenExpired` or, for a token Cloudflare no longer accepts,
+`TerminalError`. The resources using the account then wait for it (`AccountNotReady`), as for any account that is not
+ready, and go on once it is `Ready` again. From 14 days before the token expires (`tokenExpiryWarning`), each check
+also records a `TokenExpiresSoon` Warning Event on the account; [Monitoring](#monitoring) has an alert on the expiry.
+
+kflare watches the Secret, so a rotated token is re-validated straight away. Rotate it by updating the Secret in
+place: kflare holds a finalizer on it (`kflare.dev/token-protection`) while an account references it, so a deleted
+Secret stays `Terminating` until its accounts are gone. A token re-enabled in Cloudflare, or given a later expiry
+there, changes nothing in the cluster, so its account is `Ready` again at the next check.
 
 Managing the Secret with [External Secrets Operator](https://external-secrets.io) or Sealed Secrets works the
 same way; only the Secret's name and namespace matter.
@@ -1114,10 +1128,12 @@ them. It also serves its own:
 | `kflare_cloudflare_reconciles_deferred_total{account,reason}` | Reconciles put off because Cloudflare asked kflare to stop (`reason="hold"`), or because the token's budget was used up (`reason="budget"`). See [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
 | `kflare_resources{kind,ready,reason}` | Resources by the status and reason of their `Ready` condition, as `kubectl get` shows them: `ready="Unknown"` with no reason for one no reconcile has reached. Only the leader serves it, so a sum across pods counts each resource once |
 | `kflare_drift_corrections_total{kind}` | Writes made because Cloudflare differed from a spec that had not changed, so kflare undid a change made outside it (see [What each controller compares](../ARCHITECTURE.md#when-drift-is-detected)) |
+| `kflare_account_token_expiry_timestamp_seconds{account}` | When each `CloudflareAccount`'s API token expires, in seconds since the Unix epoch, as Cloudflare last reported it (`status.tokenExpiresAt`); none for a token that never expires. Only the leader serves it |
 
 `controller` is the name controller-runtime's metrics give the controller, the kind in lower case such as `dnsrecord`,
-so the two can be read together. No label holds a resource's name, a zone ID or a URL, so the number of series stays
-small: `kubectl get` finds the resources behind a number.
+so the two can be read together. No label holds a resource's name, a zone ID or a URL, but `account`, the name of a
+`CloudflareAccount`, of which there are few, so the number of series stays small: `kubectl get` finds the resources
+behind a number.
 
 The endpoint answers over HTTPS only, and to a bearer token allowed to `get` `/metrics`: a request gets 401 without a
 token the API server accepts, and 403 with one that lacks the permission. The ServiceMonitor scrapes with Prometheus'
@@ -1169,7 +1185,7 @@ spec:
 The controller reloads the certificate when it is renewed. `metrics.serviceMonitor.tlsConfig` replaces the
 ServiceMonitor's TLS settings, for a CA kept elsewhere.
 
-Four things to alert on:
+Five things to alert on:
 
 - **Errors from Cloudflare that kflare retries** (5xx, network failures, timeouts). A rate that stays above zero means
   kflare cannot reach Cloudflare, or Cloudflare is failing. `controller_runtime_reconcile_errors_total` rises too, but
@@ -1214,6 +1230,16 @@ Four things to alert on:
   ```yaml
   - alert: KflareDriftCorrected
     expr: sum by (kind) (increase(kflare_drift_corrections_total{namespace="kflare-system"}[1h])) > 0
+  ```
+
+- **An API token that expires soon.** Everything still works until the token expires, so its account stays `Ready`;
+  the metric holds the expiry Cloudflare reported, so the alert can give the time a rotation needs. Once the token has
+  expired, the account turns `READY=False` with `TokenExpired`, which the alert on resources that are not `Ready` finds,
+  and the expiry, now past, still fires this one:
+
+  ```yaml
+  - alert: KflareTokenExpiresSoon
+    expr: kflare_account_token_expiry_timestamp_seconds{namespace="kflare-system"} - time() < 14 * 86400
   ```
 
 The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name. Every response
@@ -1447,13 +1473,15 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `Synced`, `Validated` | In sync with Cloudflare | Nothing |
 | `Paused` | The resource is annotated `kflare.dev/paused: "true"`: kflare leaves it and its Cloudflare object alone, and a deleted one keeps its finalizer. `Ready` keeps the status it had | Remove the annotation to resume (see [Pausing a resource](#pausing-a-resource)) |
 | `TerminalError` | Cloudflare rejected the request (4xx): bad input or missing permission | Read the message, fix the spec or token; kflare retries on the next change. For Cloudflare support, the message ends in the ID of the first response that failed this way: `(cf-ray <id>)` |
-| `APIError` | Transient failure (5xx, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout`. One ending in `(cf-ray <id>)` gives the first failure's ID, and the log each attempt's; `CloudflareAccount`, `Zone`, `TunnelConfiguration` and `WorkerScript` show a 5xx's only in the log |
+| `APIError` | Transient failure (5xx, network, timeout) | Retried automatically with back-off. A message ending in `(reconciliation timeout)`: the reconcile ran longer than `reconcileTimeout`. One ending in `(cf-ray <id>)` gives the first failure's ID, and the log each attempt's; `Zone`, `TunnelConfiguration` and `WorkerScript`, and a `CloudflareAccount`'s read of its account, show a 5xx's only in the log |
 | `RateLimited` | The resource has work to do, but its API token's budget is used up, or Cloudflare asked kflare to stop | Nothing: kflare carries on by itself. If it lasts, see [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
 | `AccountNotAllowed` | The `CloudflareAccount`'s `spec.allowedNamespaces` leaves out the resource's namespace | Move the resource, or have a cluster administrator [allow the namespace](#limiting-which-namespaces-may-use-an-account) |
 | `NotWatched` | The resource's `CloudflareAccount`, or a resource it references, is outside what its installation watches: the account's token Secret is in a namespace it does not watch, or labels do not match its `watchSelector`. A resource being deleted then leaves its Cloudflare object, with a Warning Event | The message says which, and why: list the namespace in `watchNamespaces`, or label the resource (see [Scoping an installation](#scoping-an-installation)) |
 | `InvalidAllowedNamespaces` | A `CloudflareAccount`'s `spec.allowedNamespaces.selector` is invalid, such as `In` with no values. Until it is fixed, it allows no namespace | Fix the selector |
 | `SecretNotFound`, `TokenKeyMissing`, `InvalidToken` | The token Secret is missing, lacks the key, or is empty | Fix the Secret; the account re-validates immediately |
+| `TokenExpired` | Cloudflare reports the account's API token as expired, at the time the message gives | Put a new token in the Secret, which kflare re-validates at once, or extend the token's expiry in Cloudflare, which shows at the next check (`tokenCheckInterval`) |
+| `TokenDisabled` | Cloudflare reports the account's API token as disabled | Enable it again in Cloudflare, which shows at the next check (`tokenCheckInterval`), or put a new token in the Secret |
 | `ZoneNotFound`, `ZoneNotReady`, `TunnelNotFound`, `TunnelNotReady` | The referenced parent is missing or not ready | Check the parent resource |
 | `TunnelAlreadyConfigured` | Another `TunnelConfiguration` owns this tunnel | Keep one configuration per tunnel |
 | `AlreadyConfigured` | Another resource of the kind, in any namespace, configures the same Cloudflare zone's settings | Keep one per zone; kflare checks again every minute, and when the other is deleted |

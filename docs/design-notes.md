@@ -1617,8 +1617,8 @@ Decided against:
 - **Telling a reference's new value from drift:** nothing records what a reference gave before, so a Tunnel recreated
   with a new ID counts as a correction of its DNSRecords, as well as of the Tunnel
 
-`kflare_account_token_expiry_timestamp_seconds`, the last row of the issue's table, comes with #74, which reads the
-expiry.
+`kflare_account_token_expiry_timestamp_seconds`, the last row of the issue's table, came with #74, which reads the
+expiry (see [API token checks](#api-token-checks)).
 
 ## Allowed namespaces
 
@@ -1843,3 +1843,60 @@ Checked on 2026-11-09:
   with the dev token, its token Secret protected; a resource in team A naming team B's account reported `NotWatched`,
   and paused resources `Paused`. Deleting everything went through the controllers; the cluster was left as found. No
   Cloudflare object was created: the run's only calls were the accounts' validations
+
+## API token checks
+
+Decisions behind a `CloudflareAccount`'s `status.tokenStatus` and `status.tokenExpiresAt`, its token checks and the
+expiry's Event and metric (#74, `--token-check-interval`, `--token-expiry-warning`).
+
+**Checked live on 2026-11-09**, with the user's OK: two account-owned tokens on the dev account, each holding only
+Account Settings Read, one expiring three minutes after it was made and one set to disabled; both deleted afterwards.
+
+| Token | `GET /accounts/{id}/tokens/verify` | `GET /user/tokens/verify` | `GET /accounts/{id}` |
+|---|---|---|---|
+| The dev token, active | 200, `active`, its `expires_on` | 401, "Invalid API Token" (1000) | |
+| Active, no expiry | 200, `active`, no `expires_on` key | | |
+| Disabled | 200, `disabled`, message 10001 "This API Token was disabled" | 401 (1000) | "Invalid access token" (9109) |
+| Expired, 15 s after `expires_on` | 200, `expired`, its `expires_on`, messages 10001 and 10003 | 401 (1000) | 403, 9109 |
+
+- **The issue's first decision: verifying a token takes no permission but the token.** The probe tokens held only
+  Account Settings Read, the `CloudflareAccount` row of deploy.md's table, and no token permission. The live suite now
+  checks that the account records what Cloudflare's verify endpoint reports, which in CI is the CI token, holding
+  deploy.md's permissions and none for tokens
+- **The issue's second: a token close to its expiry leaves `Ready` alone,** as it proposed. Everything still works,
+  and `Ready=False` would stop every resource using the account. The Event and the metric say it
+- **Verification comes before the account's read.** The read says only "Invalid access token" for a disabled or
+  expired token; verification is the one call that says which. A status kflare does not know goes by the read
+- **The account endpoint first, then the user one,** after a refusal (any 4xx but 429): neither verifies the other
+  kind. Remembering which one answered, the issue's other option, would need state per token, in memory (lost on a
+  restart) or in status; a user's token costs one refused call per check instead, an hour apart. When both refuse,
+  the account endpoint's error is reported: the token is meant for that account
+- **Status says what Cloudflare last reported, and forgets it once there is no token to say it of:** a refused token
+  (it may not be the one verified before) or a Secret without one. An error to retry keeps it. No time of the last
+  check is written: a status write that changes something reconciles the account at once, so a time would loop (see
+  [Metrics](#metrics))
+- **Checked again on a schedule of its own**, an hour by default: a token disabled, expired or enabled again in
+  Cloudflare changes nothing in the cluster. Also 30 seconds after the expiry, when that comes first, so `Ready` turns
+  False when the token lapses rather than up to an hour later; Cloudflare already reported the probe token expired 15
+  seconds after its `expires_on`. Two calls per account per hour are nothing against 1,200 per five minutes
+- **The warning is an Event at each check, behind a flag.** The API server keeps an Event for an hour by default
+  (`--event-ttl`), so one recorded once would be gone weeks before the token. A token rotated weekly is always within
+  14 days of its expiry, so `--token-expiry-warning=0` turns the Events off
+- **The metric is read at scrape time from the cache,** as `kflare_resources` is, so deletions, restarts and the
+  installation's scope need nothing of their own, and before the kinds are counted, so a kind whose cache is late
+  cannot cost it the scrape's five seconds. Its `account` label is a `CloudflareAccount`'s name, as the rate limit's
+  metrics have: there are few, and the alert must say which token to replace
+- **The printer column is a string.** A `date` column shows the time since a timestamp, and a future one as
+  `<invalid>` (read in apiextensions-apiserver v0.37.2: `ConvertToHumanReadableDateType`, then `HumanDuration` of a
+  negative duration)
+- **The verification uses cloudflare-go v7** (`accounts` and `user`), not v0, which #134 removes. They bring four
+  packages into the manager (`accounts`, `user`, `organizations`, `tenants`), 57,344 bytes of a stripped build
+
+**On kind** (`kflare-dev`, Kubernetes 1.34.11), the branch's manager run on this machine, scoped by a label to one
+`CloudflareAccount` that used the dev token (account-owned), with `--token-check-interval=1m` and
+`--token-expiry-warning=3000h`: the account was `Validated` with `tokenStatus: active` and `tokenExpiresAt:
+2027-03-07T23:59:59Z`, the expiry Cloudflare's verify endpoint gave for that token; `kubectl get` showed it under
+`TOKEN EXPIRES`; the gauge read 1804463999, that time; a `TokenExpiresSoon` Warning Event was recorded; and with
+nothing changed in the cluster the account was validated again each minute, two calls each, all answered 200, its
+`Ready` condition's transition time unchanged. The log's one error was an optimistic-concurrency conflict at start,
+retried. The cluster was left as found, the CRD put back

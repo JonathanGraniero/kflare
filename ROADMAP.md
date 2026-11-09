@@ -41,7 +41,9 @@ and Flux judge kflare resources by their `Ready` condition with the health check
 waves and `dependsOn` wait for them (see
 [Health checks in Argo CD and Flux](docs/deploy.md#health-checks-in-argo-cd-and-flux)). kflare's own metrics show its
 calls to Cloudflare, how many resources are `Ready`, and how often it undoes a change made outside it (see
-[Monitoring](docs/deploy.md#monitoring)).
+[Monitoring](docs/deploy.md#monitoring)). A `CloudflareAccount` shows when its API token expires, checks the token
+again every hour, so that one disabled or expired in Cloudflare shows on the account, and warns before the expiry (see
+[Connect your Cloudflare account](docs/deploy.md#3-connect-your-cloudflare-account)).
 
 ## Next
 
@@ -55,11 +57,7 @@ Candidates that a Free account can use and test, roughly in the order the code g
 - **Bulk redirects**: account-level redirect lists and the rules that use them
 - **Managed ruleset exceptions**: skip rules for a managed ruleset kflare deploys
 
-For running kflare, the [production-readiness issues](https://github.com/JonathanGraniero/kflare/issues/91), among
-them:
-
-- **A token's expiry** on its `CloudflareAccount`, and the token checked again on a schedule
-  ([#74](https://github.com/JonathanGraniero/kflare/issues/74))
+For running kflare, see the [production-readiness issues](https://github.com/JonathanGraniero/kflare/issues/91).
 
 ## Waiting on something
 

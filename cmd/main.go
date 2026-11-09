@@ -65,6 +65,8 @@ func main() {
 	var defaultDeletionPolicy string
 	var reconcileTimeout time.Duration
 	var driftCheckInterval time.Duration
+	var tokenCheckInterval time.Duration
+	var tokenExpiryWarning time.Duration
 	var cloudflareRateLimit int
 	var leaderElectionID string
 	var watchNamespaces string
@@ -106,6 +108,13 @@ func main() {
 			"(in the Cloudflare dashboard, through the API, by Terraform) is corrected within about that long. Each "+
 			"check is moved by up to a tenth either way at random, and makes one or more Cloudflare API calls per "+
 			"resource, which count against Cloudflare's rate limit. 0 turns the checks off.")
+	flag.DurationVar(&tokenCheckInterval, "token-check-interval", time.Hour,
+		"How long after a CloudflareAccount is validated it is validated again: its API token's status and expiry "+
+			"read from Cloudflare, and the account read with it. A token revoked, disabled or expired in Cloudflare "+
+			"then shows on its account within about that long. 0 turns the checks off.")
+	flag.DurationVar(&tokenExpiryWarning, "token-expiry-warning", 14*24*time.Hour,
+		"How long before its API token expires a CloudflareAccount starts to record a TokenExpiresSoon Warning "+
+			"Event at each validation. 0 records none.")
 	flag.IntVar(&cloudflareRateLimit, "cloudflare-rate-limit", cfpkg.DefaultRateLimit,
 		"How many requests per five minutes kflare sends with one Cloudflare API token, unless the token's "+
 			"CloudflareAccount sets spec.rateLimit. Cloudflare's global limit is 1,200, shared with everything else "+
@@ -128,6 +137,16 @@ func main() {
 	}
 	if err := reconciler.SetDriftCheckInterval(driftCheckInterval); err != nil {
 		setupLog.Error(err, "invalid --drift-check-interval")
+		os.Exit(1)
+	}
+	if tokenCheckInterval < 0 {
+		setupLog.Error(nil, "--token-check-interval must be 0 (off) or a positive duration", "value",
+			tokenCheckInterval)
+		os.Exit(1)
+	}
+	if tokenExpiryWarning < 0 {
+		setupLog.Error(nil, "--token-expiry-warning must be 0 (off) or a positive duration", "value",
+			tokenExpiryWarning)
 		os.Exit(1)
 	}
 	if err := cfpkg.SetRateLimit(cloudflareRateLimit); err != nil {
@@ -235,8 +254,10 @@ func main() {
 	controller.SetEventRecorder(mgr.GetEventRecorder("kflare"))
 
 	if err = (&controller.CloudflareAccountReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		TokenCheckInterval: tokenCheckInterval,
+		TokenExpiryWarning: tokenExpiryWarning,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareAccount")
 		os.Exit(1)
