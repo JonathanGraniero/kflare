@@ -713,11 +713,13 @@ pick an installation's resources, and the namespaced RBAC comes with the namespa
   default render is byte-identical to main's
 - [x] Tests: envtest managers scoped by namespaces and by a selector, two at once as users holding only the chart's
   rules; `NotWatched` in the shared specs of every generated kind, TunnelConfiguration's and the WorkerScript bindings';
-  47 of 47 mutations; an e2e smoke spec installs a scoped release beside the suite's (first run in CI)
+  47 of 47 mutations; an e2e smoke spec installs a scoped release beside the suite's, which passed in CI's E2E on
+  1.34 and 1.37 (#162's d6b1f2d; its first run had failed on its own reading of `kubectl auth can-i`, which prints a
+  warning before the answer for a cluster-scoped resource asked about in a namespace)
 - [x] On kind (`kflare-dev`, 1.34.11): two releases in one namespace with namespaced RBAC, both healthy, each with its
   own Lease and accounts; details in the design notes
-- Left: the e2e spec's first CI run; a Reconciler error seen on kind, `not found` on an account being deleted, is
-  `RemoveFinalizer` on a stale cached copy, a path unchanged since main (`pkg/reconciler`), retried and harmless
+- Left: the merge. A Reconciler error seen on kind, `not found` on an account being deleted, is `RemoveFinalizer` on
+  a stale cached copy, a path unchanged since main (`pkg/reconciler`), retried and harmless
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first
