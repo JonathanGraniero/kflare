@@ -51,6 +51,21 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   Degraded and Failed, so both checks are tested on what kflare writes against Cloudflare. Their test inputs hold
   statuses from a run against Cloudflare ([#83](https://github.com/JonathanGraniero/kflare/issues/83))
 
+## v0.4.3 (alpha)
+
+A patch release of v0.4 from its `release-0.4` branch, made as a dry run of the backport steps in
+[#157](https://github.com/JonathanGraniero/kflare/issues/157): it is never tagged or published. **Manifests written for
+v0.4 apply unchanged.**
+
+```sh
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version 0.4.3 -n kflare-system \
+  --values kflare-values.yaml
+```
+
+### The controller
+
+- **A comment's grammar,** the stand-in for a fix cherry-picked from `main`
+
 ## v0.4.2 (alpha)
 
 The seventh alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. kflare now
