@@ -1,16 +1,20 @@
 name: CI
 
+# On main, and on the release-X.Y branch that a minor release's patch releases
+# come from once main has moved on (CONTRIBUTING.md, Releasing). A branch runs
+# this file as it has it, so a release branch runs the CI of its minor release.
 on:
   push:
-    branches: [main]
+    branches: [main, "release-*"]
   pull_request:
-    branches: [main]
+    branches: [main, "release-*"]
 
 # Read-only: these jobs only check out and test.
 permissions:
   contents: read
 
-# The `protect main` ruleset requires both jobs by name: rename them there too.
+# The `protect main` ruleset requires both jobs by name, and `protect release
+# branches` as the release branch names them: rename them there too.
 jobs:
   build:
     name: Build & Test
@@ -22,6 +26,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The release tags, for the CRD check below.
+          fetch-depth: 0
 
       # The newest 1.26 patch, which the Dockerfile's golang:1.26 builder also
       # uses: without check-latest, setup-go takes the older patch the runner
@@ -57,6 +64,12 @@ jobs:
 
       - name: Check generated and formatted files are committed
         run: git diff --exit-code
+
+      # Fails on a breaking change to a CRD the last release served, such as a
+      # field removed or a tighter enum, that CHANGELOG.md does not list under
+      # "Breaking changes" (hack/crdcompat).
+      - name: Check the CRDs against the last release
+        run: make crd-compat
 
       - name: Lint
         run: make lint

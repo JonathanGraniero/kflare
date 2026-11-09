@@ -94,6 +94,18 @@ test: manifests generate fmt fix vet envtest ## Run tests.
 test-e2e: kind ## Run the e2e suite against a kind cluster (and Cloudflare, when credentials are set).
 	KIND=$(KIND) go test ./test/e2e/ -v -ginkgo.v -timeout 45m
 
+# The e2e suite's upgrade specs: they install the chart of UPGRADE_FROM, by default the newest vX.Y.Z tag in HEAD's
+# history, on the kind cluster in the current context, apply that release's test/e2e/testdata/upgrade.yaml, upgrade
+# the chart to this checkout's and check every resource. With CF_API_TOKEN, CF_ACCOUNT_ID and CF_E2E_ZONE set, the
+# resources reach Cloudflare. The tags must be fetched (git fetch --tags).
+UPGRADE_FROM ?= $(shell git tag --merged HEAD --list --sort=-v:refname 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | \
+	head -n 1)
+.PHONY: test-e2e-upgrade
+test-e2e-upgrade: kind ## Run the e2e suite's upgrade from the last release against a kind cluster (and Cloudflare).
+	@test -n "$(UPGRADE_FROM)" || { echo "no release tag in HEAD's history: git fetch --tags, or set UPGRADE_FROM" >&2; \
+		exit 1; }
+	KIND=$(KIND) KFLARE_E2E_UPGRADE_FROM=$(UPGRADE_FROM) go test ./test/e2e/ -v -ginkgo.v -timeout 45m
+
 # Runs the image in IMG in Docker against an envtest API server and reports its CPU and memory (hack/sizing), such
 # as after make docker-build; SIZING_ARGS adds the command's flags (go run ./hack/sizing -h lists them).
 .PHONY: sizing
@@ -116,6 +128,13 @@ VULNCHECK_ARGS ?= ./...
 .PHONY: vulncheck
 vulncheck: govulncheck ## Check the code for known vulnerabilities in what it calls
 	$(GOVULNCHECK) $(VULNCHECK_ARGS)
+
+# hack/crdcompat compares config/crd/bases with the CRDs of the newest vX.Y.Z tag in HEAD's history, and fails on a
+# breaking change that CHANGELOG.md does not list under "Breaking changes". The tags must be fetched (git fetch
+# --tags); CRDCOMPAT_ARGS="-base vX.Y.Z" compares with another release.
+.PHONY: crd-compat
+crd-compat: ## Report breaking changes to the CRDs since the last release
+	go run ./hack/crdcompat $(CRDCOMPAT_ARGS)
 
 ##@ Build
 

@@ -34,7 +34,9 @@ the same prefix (`kflare.dev/finalizer`, `kflare.dev/deletion-policy`, ...). The
 
 ### Language & Frameworks
 - **Go** (1.26+; required by the Kubernetes 0.37 libraries)
-- **Kubernetes 1.34+** is the support floor. Client libraries track the newest release (k8s.io/* v0.37,
+- **Kubernetes 1.34+** is the support floor: kflare supports the four newest minors, and drops the oldest only in a
+  minor release, the first after each new Kubernetes minor ([docs/versioning.md](docs/versioning.md), and
+  CONTRIBUTING.md's Releasing for the files it changes). Client libraries track the newest release (k8s.io/* v0.37,
   controller-runtime v0.25); envtest runs on 1.34.1 (`ENVTEST_K8S_VERSION`) and 1.37.0 in CI, and the e2e
   workflow on kind node images 1.34 and 1.37. No compatibility code for older clusters
 - **controller-runtime** for reconciler scaffolding
@@ -86,7 +88,8 @@ With:
 │   ├── default/           # Kustomize base used by make deploy
 │   ├── argocd/, flux/     # Health checks for Argo CD (health.lua) and Flux (healthCheckExprs), with their tests
 │   └── samples/           # Example CRs
-├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e)
+├── test/e2e/              # e2e suite on kind: the chart's smoke specs and the live specs (make test-e2e), and
+│                          #   the upgrade from the last release (make test-e2e-upgrade, testdata/upgrade.yaml)
 ├── test/gitopshealth/     # Runs the Argo CD and Flux health checks as those tools do, for their tests and the specs
 ├── local/                 # kind cluster setup for running the controller with make run; Argo CD and Prometheus
 │                          #   (prometheus.sh: Grafana's kflare dashboard, scraping the e2e suite's manager)
@@ -95,7 +98,9 @@ With:
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);
 │                          #   its CLAUDE.md holds the generator's design
 ├── hack/                  # sync-helm-chart.sh, chartannotations (Artifact Hub annotations), releasenotes (a
-│                          #   GitHub release's notes), mutate.sh (mutations), e2e-live.sh (live e2e), license header
+│                          #   GitHub release's notes), crdcompat (breaking CRD changes since the last release),
+│                          #   supportedreleases (the releases that get fixes, for the release scan), mutate.sh
+│                          #   (mutations), e2e-live.sh (live e2e), license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
@@ -170,6 +175,10 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
 - Keep tooling such as the mutation runner in the repo (e.g. `hack/`), not in the scratchpad.
 - Verify token-permission claims against live specs, not old notes.
 - A new kind follows [Adding a kind](#adding-a-kind).
+- A CRD change: `make crd-compat` (CI runs it) reports what a manifest written for the last release may not fit. While
+  the API is `v1alpha1` such a change can ship once CHANGELOG.md's Unreleased lists it under `### Breaking changes`,
+  naming each kind it reports, with how to upgrade (GOVERNANCE.md: an issue open a week, the lead's approval), and
+  `test/e2e/testdata/upgrade.yaml` changes the kind's resource to the new shape (CONTRIBUTING.md, Changing a CRD)
 
 ---
 
@@ -240,6 +249,9 @@ why.
      resets the settings if the run changed them. Keep the suite within the Free limits
      ([docs/design-notes.md](docs/design-notes.md#deferred-paid-plan-add-on-or-account-setup)), and never run two live
      runs at once
+   - The upgrade manifests: a resource of the kind in `test/e2e/testdata/upgrade.yaml`, in the shape its live spec
+     checks for an idle reconcile, so that upgrades from the next release on are tested with it
+     (`TestUpgradeManifests` fails without one)
    - The mutation check: `MUTATE_FOCUS=<Kind> hack/mutate.sh <mutations.json>`, until every mutation is caught. The
      rule kinds so far took 21 to 40, of: the generated conversion (each field), the phase and action, the kind's name
      and registration, the CRD's bounds, patterns, enums, required fields and CEL rules, and any kflare-gen code the
@@ -248,8 +260,9 @@ why.
      suite against it and leaves the cluster as it found it (its header says how). Afterwards, check that Cloudflare
      holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57).
      Once the repo has its CI secrets (Release and CI below), a `/live-e2e` review comment on the pull request
-     (`gh pr review <number> --comment -b /live-e2e`) runs the same suite in GitHub Actions instead. Never run both at
-     once: the script's lock does not see a CI run
+     (`gh pr review <number> --comment -b /live-e2e`) runs the same suite in GitHub Actions instead (the `Live E2E`
+     workflow; by hand, `gh workflow run live-e2e.yml --ref <branch>`). Never run both at once: the script's lock does
+     not see a CI run
 7. **Docs.** Every place that lists the kinds names the last one of the same shape, so
    `git grep -n OriginRule -- '*.md' '*.yml'` (or `D1Database`, `ManagedTransform`) finds them: README's kinds,
    deploy.md's permission row (the label Cloudflare's docs give it), kinds table and uninstall command,
@@ -300,6 +313,13 @@ make kind
 # e2e: deploys to the kind cluster in the current context ($KIND_CLUSTER, default "kind");
 # runs the live Cloudflare specs when CF_API_TOKEN/CF_ACCOUNT_ID (and CF_E2E_ZONE) are set
 make test-e2e
+
+# The e2e suite's upgrade specs: the last release (UPGRADE_FROM), its manifests, then this checkout's chart; the
+# resources reach Cloudflare when CF_API_TOKEN, CF_ACCOUNT_ID and CF_E2E_ZONE are set. Needs the tags
+make test-e2e-upgrade
+
+# Breaking changes to the CRDs since the last release, which CHANGELOG.md must list (also run in CI)
+make crd-compat
 
 # The same suite with the manager on this machine, against the current kind cluster (see the script's header)
 hack/e2e-live.sh
@@ -826,7 +846,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   round-trip property for the generated conversions, is left for later
 - [x] Branch-Protection (3 on `bf97313`, a score of 8), 2026-10-28: `main` has two rulesets. `protect main`, which no
   one bypasses, also requires CI's checks from GitHub Actions, by name (`Build & Test`, `Test (newest Kubernetes)`,
-  both `E2E Tests` jobs, `review`), on a branch up to date with `main`. `require reviews` asks for two approvals, one
+  both `E2E Tests` jobs, `review`, and since 2026-11-06 `Upgrade from the last release (Kubernetes v1.37.0)`), on a
+  branch up to date with `main`. `require reviews` asks for two approvals, one
   a code owner's (`.github/CODEOWNERS`), a new one after the last push, and dismisses stale ones; the repository
   admin role bypasses it on a pull request (the merge box's "bypass rules"). Scorecard v5.6.0 scores this 9. 10
   needs no bypass actor in any ruleset (it reads one as "doesn't apply to admins"), and one maintainer, who can't
@@ -946,6 +967,101 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   rather than write one, and its tests check the committed annotations as the tracker does; 35 of 35 mutations
   caught. v0.3.0's CHANGELOG.md section gives 15 changes. Left: check the page after the first release that carries
   the annotations (license, CRDs with examples, a security report), then close #90
+- [ ] Upgrade tests and breaking CRD changes ([#86](https://github.com/JonathanGraniero/kflare/issues/86),
+  `ci/upgrade-test`): CI installed only the branch's chart, never an upgrade, which is what users do most
+  - `hack/crdcompat` (`make crd-compat`, a step of CI's Build & Test, whose checkout now fetches the history for the
+    tags) compares `config/crd/bases` with the CRDs of the newest vX.Y.Z tag in HEAD's history, for each version that
+    release served: what is removed, a new type, kind or scope, a field newly required without a default, a default
+    added, changed or removed, a tighter enum, bound, length or count, a pattern, format or CEL rule added or changed,
+    null or unknown fields no longer accepted, and list or map types or keys that change. The issue's decision, to
+    fail or to ask for a changelog entry while the API is an alpha, GOVERNANCE.md had made: a breaking change to a
+    released CRD ships once CHANGELOG.md lists it with how to upgrade. So an alpha's change passes when a `### Breaking
+    changes` section above the release's own section names each kind, and a beta's or GA version's always fails.
+    OpenShift's crd-schema-checker, the issue's other option, checks no pattern, bound or CEL rule, has no tagged
+    release, and would add k8s.io/apiserver, cli-runtime, cobra and OpenShift's admission server to go.mod. Against
+    v0.2.1, it reports v0.3.0's three rule kinds, as that release's notes do, and nothing since v0.3.0
+  - The e2e suite's upgrade specs (`upgrade_test.go`, `make test-e2e-upgrade`): with KFLARE_E2E_UPGRADE_FROM,
+    BeforeSuite installs that release's chart from GHCR, and the specs apply its copy of
+    `test/e2e/testdata/upgrade.yaml` (a resource of each kind; this checkout's copy until a release has the file),
+    upgrade to the branch's chart and check the served CRDs, the branch's image holding the lease, a server-side apply
+    of the branch's copy with strict field validation, a dry-run create of it (validation ratcheting lets an update
+    through that a create fails), and a pause and resume of every resource, after which each keeps the labels,
+    annotations, finalizers, spec and status the release stored. With credentials, each is Ready before and after, the
+    new manager's `kflare_cloudflare_api_requests_total` counts nothing but GETs for a kind whose resource did not
+    change, and deleting them leaves nothing in Cloudflare. A resource the branch changes or adds is applied after the
+    upgrade, as the migration its notes describe, and only checked to reconcile
+  - E2E: the job `Upgrade from the last release (Kubernetes v1.37.0)` on pull requests and pushes; Live E2E: a step
+    after the suite in the live job, as a job of its own would join the `e2e-cloudflare` group, which keeps one pending
+    job and cancels the one before. Tag release waits for every E2E job, so a release is tagged only once it passes.
+    Not required by `protect main` at first, the user's call; required since 2026-11-06, at the user's request
+  - Checked on an envtest API server (1.34.1, no pods): v0.4.2's chart from GHCR takes the suite's values, the 21
+    resources apply to its CRDs with strict validation, and after `helm upgrade` the served CRDs are
+    `config/crd/bases`; the reapply and the dry-run create pass. With `spec.comment` removed from DNSRecord's CRD, the
+    reapply is refused (`field not declared in schema`) and the stored value reads back without it. For a stored
+    DNSRecord that a tightened CRD refuses, ratcheting lets its reapply, metadata patches, status writes and deletion
+    through, and refuses a create; a new CEL rule on `spec` also refuses a change to another of its fields, as the
+    rule's object changed, and a `maxLength` on `spec.content` does not. The API server warns of the rule it let
+    through, which controller-runtime logs at info level
+  - Checked in CI: `hack/crdcompat`'s tests (every field of each of the 20 CRDs removed in turn, 603, is the one change
+    reported) and 80 of 80 mutations; the upgrade specs' helpers, 18 of 18. On `4ca4c7d` every check passed: the CRD
+    check said "No breaking change to the CRDs since v0.4.2" (CI run 41953587389), and the upgrade job ran its 8
+    specs without credentials (E2E run 41953587375). A deliberately breaking commit (`dbde485`, reverted in
+    `95206a4`), a CEL rule on CloudflareAccount that only the upgrade specs' namespaces fail, failed Build & Test at
+    the CRD check, which named CloudflareAccount (CI run 41955570160), and the upgrade job at the create of the
+    same manifests, after the reapply passed (E2E run 41955570097); every other job passed
+  - The first live run (E2E run 41959507810): the suite passed, 28 specs; the upgrade specs stopped at
+    ManagedTransform's `kflare.dev/creating`, gone after the new manager's reconcile. A settings kind has no claim
+    label, so it drops the annotation on the reconcile after the one whose status records the zone, which v0.4.2's
+    had not come to; the check lets that annotation go, and now reports every resource and controller at once.
+    Nothing was left in Cloudflare. On `f2332ca` the live run passed (E2E run 42151057925): the suite's 28 specs,
+    then the upgrade's 9, with credentials
+  - That review's run also skipped the upgrade job, whose name had the version written out, so the pull request
+    showed it skipped instead of the push's pass: GitHub shows the latest check of a name. A matrix of one gives a
+    skipped job the unexpanded name, as the smoke job's has
+  - The live job then moved to a workflow of its own, `live-e2e.yml` (`ci/live-e2e-workflow`). In one workflow, a run
+    made a check for each job, so a pull request showed the live job skipped, and each `/live-e2e` review the smoke and
+    upgrade jobs, two skipped checks under unexpanded names, which read as a run that had not finished, though it had
+    passed (E2E run 42258172292: the suite's 28 specs, then the upgrade's 9). Without them, the upgrade job's name
+    needs no matrix. A review without `/live-e2e` still makes one skipped `Live E2E` check: no trigger filters a
+    review's body
+- [ ] Release branches ([#157](https://github.com/JonathanGraniero/kflare/issues/157), `ci/release-branches`), before
+  v0.5.0: #87's policy gives the minor release before the latest three months of security fixes, as patch releases
+  from its `release-0.Y` branch, which CI, the release scan and branch protection did not cover
+  - CI and the dependency review run on pull requests to `release-*` and on pushes to them, and E2E on pushes too. A
+    branch runs the workflows its own files hold, so a release branch runs its tag's CI, and its upgrade job and
+    `make crd-compat` compare with the newest tag in its history, the minor release's newest patch. v0.4.2's
+    workflows run CI on `main` only: the user chose, on 2026-11-08, a v0.4.3 from `main` once this merges and before
+    anything breaking lands (`main` has no product change since v0.4.2), so that `release-0.4` is cut from it
+  - `release-scan.yml` is a matrix from `hack/supportedreleases`: the published releases (drafts, prereleases and
+    tags other than vX.Y.Z left out), the latest by version, and the newest patch of the minor before it until three
+    months after the latest minor's first published release (`AddDate`, so November 30 runs to March 2), none before
+    v0.4. Categories `release-image` and `release-image-previous-minor`; once a window ends, the second keeps its last
+    report until the next minor's. 38 of 38 mutations caught
+  - `release.yml`'s first step refuses a tag whose commit is in the history of neither `main` nor `release-X.Y` (the
+    compare API: `identical` or `behind`), and one on `main` that is older than the newest tag, the likeliest
+    backport mistake; the draft gets `--target <branch>`. Every release so far recorded `main`, and Scorecard's
+    Branch-Protection reads only branches a release names, so it reads `release-0.4` once a release comes from it
+    (cert-manager's releases show that GitHub stores a target given for an existing tag)
+  - Rulesets, applied 2026-11-08 at the user's OK through `gh api`: `protect release branches` (id 26821783) has
+    `protect main`'s rules and its 6 required checks on `refs/heads/release-*`, with `do_not_enforce_on_create`, since
+    a tag's commit never has the `review` check; `require reviews` (26086768) also includes `release-*`. One ruleset
+    for release branches rather than `release-*` in `protect main`: the checks' names hold Kubernetes versions, which
+    a release branch keeps from its tag while `main`'s change. Two release branches whose checks are named otherwise
+    need a ruleset each. Rollback: delete 26821783, drop `release-*` from 26086768
+  - Checked: `hack/supportedreleases`' tests, and the command on the live releases (v0.4.2 alone today; with a v0.5.0
+    page added, v0.4.2 too until 2027-04-10 and not after). Release's new step, taken from the YAML and run against this
+    repository with only "not published" faked: a tag on `main`, one in a release branch's history, one on neither, and
+    one on `main` older than a newer tag faked in. A dry run on 2026-11-08, the user's OK: `release-0.4-dryrun` pushed
+    from the branch's head, which the ruleset let through; a direct push to it was refused ("Changes must be made
+    through a pull request", "6 of 6 required status checks are expected"), and so was its deletion ("Cannot delete this
+    branch"). Draft PR #161 against it, a fix cherry-picked with `-x` and a 0.4.3 bump, ran the six required checks,
+    each `isRequired`, and stayed `BLOCKED` until they passed, then on `require reviews`' approvals, as `main` does. Its
+    CRD check said "No breaking change to the CRDs since v0.4.2", and its upgrade job installed v0.4.2's chart and
+    passed 8 of 8. CodeQL's default setup ran no analysis on #161, only on pull requests to `main`, which SECURITY.md
+    now says. #161 was closed unmerged and both branches deleted, the ruleset's exclude set for the delete and then
+    restored. Not run: a force-push to the branch (the auto mode classifier refused it), actionlint and shellcheck, and
+    a release from a branch, which v0.4's first backport makes
+  - Left: the merge, then v0.4.3 from `main` (the first release through Tag release), after which #157 can close
 - [ ] Open question: a Terraform `infra/` root for `kflare.dev` (zone, CI token, GitHub secrets)
 
 ---
@@ -965,11 +1081,13 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - Verified by installing on kind with a live token: account Ready, Secret protection finalizer, upgrade,
     uninstall keeping CRDs
 - [x] Chart listed on ArtifactHub (L6, 2026-10-21; verified publisher)
-- [ ] Argo CD and Flux health checks (#83, `feat/argocd-health-checks`): deploy.md's Lua script for `argocd-cm` and
-  `healthCheckExprs` for Flux, tested in CI in Argo CD's format and on the conditions the shared specs' controllers
-  write. Tried on an Argo CD and a Flux on kind on 2026-11-01, against a stand-in for Cloudflare's API
-  ([design notes](docs/design-notes.md#health-checks-in-argo-cd-and-flux)). Left: a run against Cloudflare itself, one
-  on Kubernetes 1.34 or newer, and, the maintainer's call, contributing the script to Argo CD
+- [x] Argo CD and Flux health checks (#83, `feat/argocd-health-checks`, finished in `test/gitops-health-live`):
+  deploy.md's Lua script for `argocd-cm` and `healthCheckExprs` for Flux, tested in CI in Argo CD's format and on the
+  conditions the shared specs' controllers write, and on each live run on what kflare writes against Cloudflare. Tried
+  on an Argo CD and a Flux on kind on 2026-11-01, against a stand-in for Cloudflare's API, and on 2026-11-06 on
+  Kubernetes 1.34.11 against Cloudflare itself, kflare installed by deploy.md's Argo CD `Application`
+  ([design notes](docs/design-notes.md#health-checks-in-argo-cd-and-flux)). Contributing the script to Argo CD waits
+  until the API is `v1beta1` (the maintainer, 2026-11-06)
 - [ ] Kustomize component overlays for common patterns (tunnel + DNS combo, zero-trust stack)
 - [ ] Docusaurus documentation site
   - Getting Started

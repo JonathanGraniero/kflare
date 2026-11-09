@@ -24,7 +24,8 @@ account, and covers running it in production, upgrades, uninstalling and trouble
 
 ## Requirements
 
-- Kubernetes 1.34 or newer. The chart refuses to install on older clusters.
+- Kubernetes 1.34 to 1.37: each release supports the four newest minors (see
+  [Kubernetes versions](versioning.md#kubernetes-versions)). The chart refuses to install on older clusters.
 - Helm 3.8 or newer (OCI chart support), or a GitOps tool that installs Helm charts from an OCI registry, such as
   Argo CD or Flux.
 - One kflare installation per cluster. A second release would reconcile the same resources.
@@ -190,6 +191,10 @@ Things to know:
 - **On a new cluster, kflare resources need the CRDs first.** In Argo CD, an application holding kflare resources
   fails its first sync until the CRDs exist; `syncPolicy.retry` lets it try again. In Flux, put the `HelmRelease` in
   a `Kustomization` that the ones holding kflare resources list under `dependsOn`.
+- **Without the metrics API, Argo CD reports kflare's application Degraded**, though the controller runs. The chart's
+  HorizontalPodAutoscaler cannot read the controller's CPU then (its `ScalingActive` condition is `False`), and Argo
+  CD's health check for an autoscaler takes that for Degraded. Install metrics-server (see
+  [Requirements](#requirements)), or set `autoscaling.enabled: false`.
 - **Upgrade by changing the version in git**, after reading the release notes (see [Upgrading](#upgrading)).
 
 ### Health checks in Argo CD and Flux
@@ -946,7 +951,8 @@ the autoscaler adds while the leader is busy are standbys: they shorten a failov
 capacity and do not make the leader's work go faster.
 
 - **It needs the metrics API**, which metrics-server provides. Without it, `kubectl get hpa` shows the target as
-  `<unknown>`, and the Deployment keeps `autoscaling.minReplicas` replicas.
+  `<unknown>`, the Deployment keeps `autoscaling.minReplicas` replicas, and Argo CD reports the autoscaler Degraded
+  (see [With Argo CD or Flux](#with-argo-cd-or-flux)).
 - **To keep a standby at all times**, set `autoscaling.minReplicas: 2`. `replicaCount` is ignored while autoscaling
   is on; with `autoscaling.enabled: false`, it sets the replicas again.
 - **Memory is left out by default.** The leader caches every Secret in the cluster and a standby caches nothing, so
@@ -1284,8 +1290,12 @@ The CRDs are part of the chart's templates, so `helm upgrade` upgrades them too.
 would only install them once.) To manage CRDs yourself, for example through GitOps with a separate sync
 wave, set `crds.enabled=false` and apply `config/crd/bases` from the matching release first.
 
-kflare's API is `v1alpha1`: read the release notes before upgrading, as fields can still change between
-releases.
+kflare's API is `v1alpha1`: a minor release can change fields, so read its notes before upgrading, while a patch
+release needs no change ([Versioning and support](versioning.md)). A change to a CRD that a manifest written for the
+release before may not fit is listed under "Breaking changes" in the notes, with how to upgrade. Each release is
+tested upgrading from the one before: CI installs that release's chart with a resource of each kind, upgrades it to
+the new chart, and checks that every resource is kept, still applies, and is reconciled again. So to skip a minor
+release, read its notes too.
 
 ## Uninstalling
 

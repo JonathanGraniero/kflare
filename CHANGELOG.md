@@ -1,7 +1,14 @@
 # Changelog
 
-kflare follows [semantic versioning](https://semver.org). While its API is `v1alpha1`, any release can change it:
-read the notes before upgrading. The chart and the controller image share one version.
+kflare follows [semantic versioning](https://semver.org), as [Versioning and support](docs/versioning.md) applies it
+before 1.0.0: a patch release needs no change to upgrade, and a minor release can make breaking changes. The chart and
+the controller image share one version.
+
+Each release's section opens by saying whether manifests written for the release before apply unchanged. A breaking
+change is listed under a `### Breaking changes` heading in the section of the release that makes it, with how to
+upgrade, and one to a CRD names each kind it changes, which CI checks (`make crd-compat`). The steps to upgrade are
+under "Upgrading from" the release before, and a deprecation is under "Deprecated", with the earliest release that may
+remove it. Releases up to v0.4.2 describe their breaking changes in their opening paragraph and "Upgrading from".
 
 ## Unreleased
 
@@ -12,6 +19,37 @@ read the notes before upgrading. The chart and the controller image share one ve
   the deploy guide's [Verifying a release](docs/deploy.md#verifying-a-release) does. The notes now keep each paragraph
   on one line and link to CHANGELOG.md at the tag: a release page shows every line break, and gives its headings no
   anchors for a link to go to
+- **Upgrades from the last release are tested in CI.** The `E2E` workflow installs the last release's chart with a
+  resource of each kind, upgrades it to the new chart and checks that every resource is kept, still applies as a GitOps
+  sync would, and is reconciled again. A release is tagged only once it passes. The `Live E2E` workflow runs it against
+  Cloudflare too, where the new controller must find each resource in sync and write nothing to Cloudflare
+- **A breaking change to a CRD is listed under "Breaking changes".** CI compares the CRDs with the last release's and
+  fails on a change that a manifest written for it may not fit, such as a field removed or a tighter enum, unless the
+  release notes name its kind under that heading and say how to upgrade
+- **A versioning and support policy.** [Versioning and support](docs/versioning.md) says what a patch and a minor
+  release may change, which Kubernetes versions a release supports (the four newest minors), how long a release gets
+  fixes (the minor before the latest gets security fixes for three months after the latest comes out), how kflare's API
+  versions are deprecated, and what a kind needs to become `v1beta1`
+  ([#87](https://github.com/JonathanGraniero/kflare/issues/87))
+- **Security fixes for the minor release before the latest.** Its patch releases come from a `release-0.Y` branch,
+  protected as `main` is, whose pull requests CI, the dependency review and the E2E tests check, the upgrade from the
+  minor release's last patch included. The weekly scan of the released images now covers the newest patch of the minor
+  release before the latest during its three months of security fixes, and the `Release` workflow refuses a tag on a
+  commit that is on neither `main` nor its minor release's branch
+  ([#157](https://github.com/JonathanGraniero/kflare/issues/157))
+
+### GitOps
+
+- **Argo CD without the metrics API.** On a cluster without metrics-server, Argo CD reports the application that
+  installs kflare Degraded, though the controller runs: the chart's autoscaler cannot read its CPU. The deploy guide
+  now says so, and how to avoid it ([deploy guide](docs/deploy.md#with-argo-cd-or-flux))
+
+### Development
+
+- **The live suite checks the Argo CD and Flux health checks.** Every resource the live specs wait for must be Healthy
+  and Current for its current generation, and one Cloudflare refuses or that exists without an adoption policy
+  Degraded and Failed, so both checks are tested on what kflare writes against Cloudflare. Their test inputs hold
+  statuses from a run against Cloudflare ([#83](https://github.com/JonathanGraniero/kflare/issues/83))
 
 ## v0.4.2 (alpha)
 

@@ -31,62 +31,28 @@ var _ = Describe("controller-manager", func() {
 		if externalManager() {
 			Skip("KFLARE_E2E_MANAGER=external: the manager is not deployed by this suite")
 		}
+		if upgradeFrom() != "" {
+			Skip("KFLARE_E2E_UPGRADE_FROM is set: the suite runs only the upgrade specs")
+		}
 	})
 
 	It("runs one pod whose containers are all ready and have not restarted", func() {
 		Eventually(func() error {
-			out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", managerNamespace,
-				"-l", managerSelector, "-o",
-				`go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}`+
-					`{{ .metadata.name }} {{ .status.phase }}{{ range .status.containerStatuses }}`+
-					` {{ .ready }}/{{ .restartCount }}{{ end }}{{ "\n" }}{{ end }}{{ end }}`))
-			if err != nil {
-				return err
-			}
-			pods := utils.GetNonEmptyLines(string(out))
-			if len(pods) != 1 {
-				return fmt.Errorf("expected 1 controller pod, got %d: %v", len(pods), pods)
-			}
-			fields := strings.Fields(pods[0])
-			if fields[1] != "Running" {
-				return fmt.Errorf("controller pod is %s", fields[1])
-			}
-			for _, c := range fields[2:] {
-				if c != "true/0" {
-					return fmt.Errorf("container not ready or restarted (ready/restarts = %s)", c)
-				}
-			}
-			return nil
+			_, err := runningController()
+			return err
 		}, 2*time.Minute, time.Second).Should(Succeed())
 	})
 
 	It("reaches the API server and becomes leader", func() {
 		// A ready pod only proves the probes answer; holding the lease proves
 		// the manager can talk to the API server and has started its
-		// controllers. It must be the running pod: a pod that is gone keeps
-		// its name in the lease until the lease expires.
+		// controllers.
 		Eventually(func() error {
-			out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", managerNamespace,
-				"-l", managerSelector, "-o",
-				`go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}`+
-					`{{ .metadata.name }}{{ "\n" }}{{ end }}{{ end }}`))
+			pod, err := runningController()
 			if err != nil {
 				return err
 			}
-			pods := utils.GetNonEmptyLines(string(out))
-			if len(pods) != 1 {
-				return fmt.Errorf("expected 1 controller pod, got %d: %v", len(pods), pods)
-			}
-			out, err = utils.Run(exec.Command("kubectl", "get", "lease", leaderElectionID, "-n", managerNamespace,
-				"-o", "jsonpath={.spec.holderIdentity}"))
-			if err != nil {
-				return err
-			}
-			// The holder identity is the pod's name, then "_" and a UUID.
-			if holder := string(out); !strings.HasPrefix(holder, pods[0]+"_") {
-				return fmt.Errorf("the lease is held by %q, not by the running pod %s", holder, pods[0])
-			}
-			return nil
+			return holdsLease(pod)
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 
@@ -276,6 +242,48 @@ var _ = Describe("controller-manager", func() {
 		Eventually(connect("api.cloudflare.com:443"), 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 })
+
+// runningController returns the name of the one controller pod that is not
+// being deleted, once it runs with every container ready and none restarted.
+func runningController() (string, error) {
+	out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", managerNamespace,
+		"-l", managerSelector, "-o",
+		`go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}`+
+			`{{ .metadata.name }} {{ .status.phase }}{{ range .status.containerStatuses }}`+
+			` {{ .ready }}/{{ .restartCount }}{{ end }}{{ "\n" }}{{ end }}{{ end }}`))
+	if err != nil {
+		return "", err
+	}
+	pods := utils.GetNonEmptyLines(string(out))
+	if len(pods) != 1 {
+		return "", fmt.Errorf("expected 1 controller pod, got %d: %v", len(pods), pods)
+	}
+	fields := strings.Fields(pods[0])
+	if fields[1] != "Running" {
+		return "", fmt.Errorf("controller pod is %s", fields[1])
+	}
+	for _, c := range fields[2:] {
+		if c != "true/0" {
+			return "", fmt.Errorf("container not ready or restarted (ready/restarts = %s)", c)
+		}
+	}
+	return fields[0], nil
+}
+
+// holdsLease checks that pod holds the manager's lease. It must be the running
+// pod: a pod that is gone keeps its name in the lease until the lease expires.
+func holdsLease(pod string) error {
+	out, err := utils.Run(exec.Command("kubectl", "get", "lease", leaderElectionID, "-n", managerNamespace,
+		"-o", "jsonpath={.spec.holderIdentity}"))
+	if err != nil {
+		return err
+	}
+	// The holder identity is the pod's name, then "_" and a UUID.
+	if holder := string(out); !strings.HasPrefix(holder, pod+"_") {
+		return fmt.Errorf("the lease is held by %q, not by the running pod %s", holder, pod)
+	}
+	return nil
+}
 
 // cpuUtilization returns a HorizontalPodAutoscaler's CPU target and the pods'
 // current average, both as percentages of their CPU request, or nil for one it

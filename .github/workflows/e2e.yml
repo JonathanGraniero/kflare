@@ -1,23 +1,15 @@
 name: E2E
 
+# The live suite, against Cloudflare, is the Live E2E workflow (live-e2e.yml).
+# Pushes to main and to the release-X.Y branches run it, so that a release's
+# merge commit has passed it before its tag.
 on:
   pull_request:
   push:
-    branches: [main]
-  # A maintainer's review comment starting with /live-e2e runs the live job on
-  # the pull request as it was when reviewed. A review, unlike a plain comment,
-  # pins the commit reviewed, and runs like a pull_request event: from the pull
-  # request's own copy of this file, and without secrets for a fork.
-  pull_request_review:
-    types: [submitted]
+    branches: [main, "release-*"]
   workflow_dispatch:
-    inputs:
-      live:
-        description: "Also run the live Cloudflare specs on the selected branch"
-        type: boolean
-        default: false
 
-# Read-only by default: the smoke job only checks out and tests.
+# Read-only by default: the jobs only check out and test.
 permissions:
   contents: read
 
@@ -27,14 +19,14 @@ jobs:
   # live specs skip.
   smoke:
     name: E2E Tests (Kubernetes ${{ matrix.kubernetes }})
-    if: github.event_name != 'pull_request_review'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         # The oldest supported release and the newest one. The `protect main`
-        # ruleset requires each job by name: change its versions there too.
+        # ruleset requires each job by name, and `protect release branches` as
+        # the release branch names them: change its versions there too.
         kubernetes: [v1.34.11, v1.37.0]
     env:
       GOTOOLCHAIN: local
@@ -65,31 +57,20 @@ jobs:
           KIND_CLUSTER: kflare-e2e
         run: make test-e2e
 
-  # The whole suite against the Cloudflare account in the CF_API_TOKEN and
-  # CF_ACCOUNT_ID secrets and the zone in the CF_E2E_ZONE variable (a zone the
-  # token can edit, adopted and never deleted). It runs when the owner, a
-  # member or a collaborator submits a review on a pull request whose comment
-  # starts with /live-e2e (gh pr review <number> --comment -b /live-e2e), or by
-  # hand with the live input. It tests the pull request merged into its base,
-  # as of the review. A pull request from a fork gets no secrets, so it fails:
-  # push its branch to this repository first.
-  live:
-    name: Live E2E (Kubernetes v1.37.0)
-    if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.live) ||
-      (github.event_name == 'pull_request_review' &&
-       startsWith(github.event.review.body, '/live-e2e') &&
-       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.review.author_association))
+  # Installs the last release's chart from its registry and applies the
+  # resources of test/e2e/testdata/upgrade.yaml as that release has them, then
+  # upgrades the chart to this checkout's and checks that the CRDs and the
+  # manager are its, that every resource still applies as GitOps would sync it,
+  # and that the new manager reconciles each one and keeps what the release
+  # stored. Without Cloudflare credentials, the resources wait for them; the
+  # Live E2E workflow runs the same specs against Cloudflare. On a release
+  # branch, the last release is the newest patch of its minor release. The
+  # `protect main` and `protect release branches` rulesets require the job by
+  # name, which holds its Kubernetes version: change it there too.
+  upgrade:
+    name: Upgrade from the last release (Kubernetes v1.37.0)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    # One live run at a time across every run of this workflow, never
-    # cancelled halfway: the specs share one zone and account, whose Free plan
-    # holds one rate limiting rule and one IP list, and a cancelled run cannot
-    # clean up. Local live runs (hack/e2e-live.sh) must not overlap with it
-    # either.
-    concurrency:
-      group: e2e-cloudflare
-      cancel-in-progress: false
+    timeout-minutes: 30
     env:
       GOTOOLCHAIN: local
     steps:
@@ -97,6 +78,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The release tags, and the last release's copy of the resources.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -104,7 +87,6 @@ jobs:
           go-version: "1.26"
           cache: true
 
-      # The suite installs the manager with the Helm chart.
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
@@ -116,16 +98,7 @@ jobs:
           cluster_name: kflare-e2e
           config: local/kind-config.yaml
 
-      - name: Run e2e tests
+      - name: Run the upgrade specs
         env:
           KIND_CLUSTER: kflare-e2e
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_E2E_ZONE: ${{ vars.CF_E2E_ZONE }}
-        run: |
-          if [[ -z "$CF_API_TOKEN" || -z "$CF_ACCOUNT_ID" || -z "$CF_E2E_ZONE" ]]; then
-            echo "::error::The CF_API_TOKEN and CF_ACCOUNT_ID secrets and the CF_E2E_ZONE variable are not set" \
-              "(a pull request from a fork gets no secrets): without them every live spec skips"
-            exit 1
-          fi
-          make test-e2e
+        run: make test-e2e-upgrade

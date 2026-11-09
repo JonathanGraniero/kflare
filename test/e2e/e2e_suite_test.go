@@ -44,6 +44,9 @@ const (
 	managerImageRepository = "example.com/kflare"
 	managerImageTag        = "e2e"
 
+	// releasedChart is where the released charts are, each at its version.
+	releasedChart = "oci://ghcr.io/jonathangraniero/charts/kflare"
+
 	// metricsCertSecret holds the metrics server's certificate (metrics.certSecret).
 	metricsCertSecret = "kflare-metrics-tls"
 	// metricsServerName is the metrics Service's name, which the certificate is for.
@@ -67,12 +70,24 @@ var metricsCA *x509.CertPool
 // removes it afterwards; one the cluster already ran is left alone.
 var installedMetricsServer bool
 
+// chartValues are the values the suite installs the chart with, and the
+// upgrade specs upgrade it with, as a user passes the same values again.
+var chartValues string
+
 // externalManager reports whether KFLARE_E2E_MANAGER=external asks the suite
 // to use a manager that is already running (for example `make run` against
 // the current cluster) instead of building and deploying one. The suite then
 // only installs the CRDs, and the deployment smoke specs are skipped.
 func externalManager() bool {
 	return os.Getenv("KFLARE_E2E_MANAGER") == "external"
+}
+
+// upgradeFrom returns the release tag in KFLARE_E2E_UPGRADE_FROM, such as
+// v0.4.2. With one, the suite installs that release's chart instead, and runs
+// only the upgrade specs, which upgrade it to this checkout's
+// (upgrade_test.go); make test-e2e-upgrade sets the last release.
+func upgradeFrom() string {
+	return os.Getenv("KFLARE_E2E_UPGRADE_FROM")
 }
 
 // TestE2E runs the e2e suite against the kind cluster in the current
@@ -91,8 +106,12 @@ func TestE2E(t *testing.T) {
 // server's certificate comes from a Secret, signed by a CA the suite makes, so
 // that the metrics spec verifies it. On a cluster with the Prometheus
 // Operator, as local/prometheus.sh installs it, the chart's ServiceMonitor is
-// on too, so that Grafana's kflare dashboard shows the run.
+// on too, so that Grafana's kflare dashboard shows the run. For the upgrade
+// specs, the suite installs the release KFLARE_E2E_UPGRADE_FROM names, with the
+// same values, and loads this checkout's image for the upgrade.
 var _ = BeforeSuite(func() {
+	Expect(upgradeFrom() == "" || !externalManager()).To(BeTrue(),
+		"the upgrade specs upgrade the chart: they need the manager the suite deploys, not an external one")
 	if externalManager() {
 		By("installing CRDs for the externally running manager")
 		_, err := utils.Run(exec.Command("make", "install"))
@@ -130,18 +149,25 @@ var _ = BeforeSuite(func() {
 	}
 
 	// Uninstalling removes the CRDs too, so that the cluster is left as it was.
-	values := "crds.keep=false,networkPolicy.enabled=true,metrics.certSecret=" + metricsCertSecret
+	chartValues = "crds.keep=false,networkPolicy.enabled=true,metrics.certSecret=" + metricsCertSecret
 	if _, err := utils.Run(exec.Command("kubectl", "get", "crd", serviceMonitorCRD)); err == nil {
 		By("turning the chart's ServiceMonitor on, for the cluster's Prometheus")
-		values += ",metrics.serviceMonitor.enabled=true,metrics.serviceMonitor.interval=10s"
+		chartValues += ",metrics.serviceMonitor.enabled=true,metrics.serviceMonitor.interval=10s"
 	}
 
-	By("installing the chart, which installs the CRDs, and waiting for the controller")
-	_, err = utils.Run(exec.Command("helm", "install", releaseName, "helm/kflare",
-		"--namespace", managerNamespace,
-		"--set", "image.repository="+managerImageRepository+",image.tag="+managerImageTag,
-		"--set", values,
-		"--wait", "--timeout", "3m"))
+	// This checkout's chart and image, or a release's chart, whose image is the
+	// release's own.
+	chart := []string{"helm/kflare", "--set", "image.repository=" + managerImageRepository + ",image.tag=" +
+		managerImageTag}
+	if release := upgradeFrom(); release != "" {
+		By("installing the chart of " + release + ", from its registry, which the upgrade specs upgrade")
+		chart = []string{releasedChart, "--version", strings.TrimPrefix(release, "v")}
+	} else {
+		By("installing the chart, which installs the CRDs, and waiting for the controller")
+	}
+	args := append([]string{"install", releaseName}, chart...)
+	_, err = utils.Run(exec.Command("helm", append(args, "--namespace", managerNamespace, "--set", chartValues,
+		"--wait", "--timeout", "3m")...))
 	Expect(err).NotTo(HaveOccurred())
 })
 

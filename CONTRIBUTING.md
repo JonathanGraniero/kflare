@@ -31,9 +31,11 @@ make build   # runs codegen, manifests, generate, fmt, fix and vet, then builds 
 make test    # the same generators, then the unit and envtest suites (Kubernetes 1.34.1)
 make lint    # golangci-lint
 make vulncheck  # govulncheck: known vulnerabilities in the modules and the Go standard library the code calls
+make crd-compat # breaking changes to the CRDs since the last release (see Changing a CRD; needs the tags)
 ```
 
-CI runs `make test`, `make lint`, `make helm-lint`, `make vulncheck` and a Docker build, scans the image with Grype
+CI runs `make test`, `make lint`, `make helm-lint`, `make vulncheck`, `make crd-compat` and a Docker build, scans the
+image with Grype
 (failing on a fixable vulnerability of high or critical severity), runs the envtest suites again on the newest
 Kubernetes (`make test ENVTEST_K8S_VERSION=1.37.0`), and fails if `git diff` shows anything afterwards: commit what
 the generators write, and run `go fix ./...` (part of `make test`) before you push. [SECURITY.md](SECURITY.md) lists
@@ -58,9 +60,10 @@ The health checks the deploy guide gives Argo CD and Flux are tested the way tho
 (`test/gitopshealth`): Argo CD's Lua with the libraries it opens, and Flux's CEL in its environment. Their cases are
 in `config/argocd/health_test.yaml`, in the format of Argo CD's built-in checks, and `config/flux/health_test.yaml`,
 with inputs the API server accepts for their kinds. The shared specs check both on the conditions the controllers
-write. A new `Ready` reason goes into `readyReasons`, and, if a person must act on it, into both checks' lists and
-deploy.md's copies of them; the tests fail on a reason the controllers set that `readyReasons` lacks, and on a
-deploy.md that does not hold the checks as they are.
+write, and the live specs on each status they wait for, against Cloudflare. A new `Ready` reason goes into
+`readyReasons`, and, if a person must act on it, into both checks' lists and deploy.md's copies of them; the tests
+fail on a reason the controllers set that `readyReasons` lacks, and on a deploy.md that does not hold the checks as
+they are.
 
 ## Generated code
 
@@ -168,11 +171,41 @@ metrics, install Prometheus on the cluster first (`./local/prometheus.sh`, see
 - Runs leave empty ruleset entry points in some of the zone's phases. They hold no rules and change nothing; delete
   them if you like
 
-The same suite runs in GitHub Actions against the project's test account, on Kubernetes 1.37 (the `E2E` workflow).
-Pull requests and pushes to `main` run only a smoke test of the deployment, with no Cloudflare credentials. A
-maintainer runs the live suite on a pull request with a review comment starting with `/live-e2e`. A pull request from
-a fork gets no secrets, so the live suite cannot run on it: describe what you ran against your own account instead.
-Runs never overlap.
+The same suite runs in GitHub Actions against the project's test account, on Kubernetes 1.37, in the `Live E2E`
+workflow: a maintainer runs it on a pull request with a review comment starting with `/live-e2e`, and the upgrade
+specs against the account after it. Pull requests and pushes to `main` run the `E2E` workflow instead: only a smoke
+test of the deployment, with no Cloudflare credentials, and the upgrade from the last release
+([Changing a CRD](#changing-a-crd)). A pull request from a fork gets no secrets, so the live suite cannot run on it:
+describe what you ran against your own account instead. Runs never overlap.
+
+## Changing a CRD
+
+A change to a CRD can break an upgrade with every test passing: the API server goes on serving the stored resources,
+but a manifest written for the last release may no longer apply, a stored resource can lose a field, and the same
+manifests may fail on a new cluster. `make crd-compat`, which CI runs, compares `config/crd/bases` with the CRDs of
+the newest release tag in your branch's history (`hack/crdcompat`). For each version that release served, it reports:
+
+- a CRD, a version or a field removed or renamed, a version no longer served, and a new kind or scope
+- a field's new type, a field newly required without a default, and a default added, changed or removed
+- a tighter enum, bound, length or count, a pattern, format or CEL rule added or changed, and null or unknown fields
+  no longer accepted
+- a list or map whose type or keys change, which changes how a server-side apply merges it
+
+While the API is an alpha, such a change can ship as [GOVERNANCE.md](GOVERNANCE.md) describes: list it in
+CHANGELOG.md's Unreleased section, under a `### Breaking changes` heading that names each kind the check reports and
+says how to upgrade. A version that is not an alpha cannot break: serve the change in a new version. For a tighter
+rule, the notes should say what validation ratcheting leaves of a stored resource that fails it (checked on
+Kubernetes 1.34): it can still be reapplied, write its status and be deleted, but its manifest no longer creates a
+resource, and under a new CEL rule on an object, no other field of that object can change until the value is fixed.
+
+The `E2E` workflow's `Upgrade from the last release` job (`make test-e2e-upgrade`) installs the last release's chart
+on kind, applies a resource of each kind from `test/e2e/testdata/upgrade.yaml` as that release has it, and upgrades
+the chart to your branch's. Every resource must then still apply as a GitOps sync would, also as a new resource on a
+new cluster, and be reconciled again by the new manager, keeping what the release stored. Under `/live-e2e` the
+resources reach Cloudflare first, and the new manager must find each one in sync and write nothing to Cloudflare.
+Your branch's copy of the file is applied after the upgrade, so a resource that differs from the release's is the
+migration your release notes describe: change one only along with its "Breaking changes" entry, and add one for a
+new kind.
 
 ## Changing a controller
 
@@ -196,18 +229,23 @@ A change to how a controller behaves comes with:
 ## Branches and pull requests
 
 - Branch from `main`: `feat/<name>` for features, `fix/<name>` for fixes, `docs/<name>` for documentation
-- One change per pull request, against `main`. Don't base a pull request on another open one; wait for it to merge
+- One change per pull request, against `main`, or against a release branch for a fix to an older minor release
+  ([Patch releases from a release branch](#patch-releases-from-a-release-branch)). Don't base a pull request on another
+  open one; wait for it to merge
 - Merge `main` into your branch if it falls behind, rather than rebasing a branch others may have pulled
 - Describe what changed and how you checked it: the tests, and for live behavior, what you ran against Cloudflare.
   The pull request template ([.github/pull_request_template.md](.github/pull_request_template.md)) lists the checks
-- `main` is protected: every change lands through a pull request whose checks (CI, the E2E smoke tests and the
-  dependency review) pass on a branch up to date with `main`. A code owner ([.github/CODEOWNERS](.github/CODEOWNERS))
-  reviews and merges it
+- `main` and the release branches are protected: every change lands through a pull request whose checks (CI, the E2E
+  smoke and upgrade tests, and the dependency review) pass on a branch up to date with the one it targets. A code
+  owner ([.github/CODEOWNERS](.github/CODEOWNERS)) reviews and merges it
 
 ## Releasing
 
 Maintainers release through a pull request that bumps `version` and `appVersion` in `helm/kflare/Chart.yaml`, adds the
-release's section to [CHANGELOG.md](CHANGELOG.md) and runs `make helm`. Merging it releases that version:
+release's section to [CHANGELOG.md](CHANGELOG.md) and runs `make helm`. The version follows
+[Versioning and support](docs/versioning.md#release-versions): a minor release when Unreleased lists a breaking
+change, a patch release otherwise. Unreleased's "Breaking changes" stay under that heading in the release's section,
+where the CRD check finds them until the tag exists. Merging it releases that version:
 
 1. The `Tag release` workflow waits for every job of CI and E2E on the merge commit, then tags it `vX.Y.Z` and starts
    the `Release` workflow on the tag. It releases only a merge that changes the version, to one newer than every tag,
@@ -225,8 +263,67 @@ nested in it joins its text), whose links Artifact Hub lists below it.
 
 If a job of CI or E2E fails on the merge commit, nothing is tagged: rerun the failed jobs, then rerun `Tag release`. A
 `vX.Y.Z` tag pushed by hand starts `Release` too, as does running it on a tag from the Actions tab. `Release` refuses a
-tag that does not match `Chart.yaml`, and a release that is published already; rerun after a failed step, it goes on
-with its draft.
+tag that does not match `Chart.yaml`, a release that is published already, and a tag on a commit that is in the history
+of neither `main` nor its minor release's branch, or on `main` but older than the newest version; rerun after a failed
+step, it goes on with its draft.
+
+CI tests the oldest and the newest Kubernetes minor kflare supports
+([Kubernetes versions](docs/versioning.md#kubernetes-versions)). Supporting a new one changes CI's newest envtest
+version (`ci.yml`), the kind images in `e2e.yml` and `live-e2e.yml`, and `HELM_KUBE_VERSIONS`. Dropping the oldest, in
+a minor release only, changes `kubeVersion` in `Chart.yaml`, `ENVTEST_K8S_VERSION`, the smoke tests' matrix in
+`e2e.yml`, `local/kind-config.yaml`, and the docs that name the version, which `git grep` finds. The jobs' names hold
+their Kubernetes versions, so `main`'s required checks change with them.
+
+### Patch releases from a release branch
+
+A patch release that `main` cannot make comes from its minor release's `release-0.Y` branch: a security fix for the
+minor release before the latest ([Supported releases](docs/versioning.md#supported-releases)), or a fix for the latest
+once `main` holds a breaking change for the next one. The `protect release branches` ruleset protects the branch as
+`protect main` protects `main`, and `require reviews` covers it too: changes come through pull requests, which merge
+once CI's, E2E's and the dependency review's checks pass on a branch up to date with it.
+
+1. **Cut the branch**, once for the minor release, from its newest patch's tag:
+
+   ```sh
+   git fetch --tags origin
+   git push origin 'v0.4.3^{commit}:refs/heads/release-0.4'
+   ```
+
+   A branch runs the workflows its own files hold, so its checks take their names from the tag's, Kubernetes versions
+   included. v0.4.2 and older run CI on `main` only, so `release-0.4` is cut from v0.4.3 or newer, which `main`
+   releases before v0.5.0. `protect release branches` must require the branch's check names, which
+   `gh api repos/JonathanGraniero/kflare/rules/branches/release-0.4` lists: change its checks to the new branch's, or,
+   while an older release branch whose checks are named otherwise still gets fixes, give the new one a ruleset of its
+   own
+2. **Cherry-pick the fix** onto a branch from `release-0.4` (`git cherry-pick -x <commit>`), and open the pull request
+   against `release-0.4`. Fix `main` first, unless only the older minor release needs the fix: CodeQL analyzes pull
+   requests to `main` only. CI checks it as it checks `main`, comparing the CRDs with the minor release's newest patch
+   and testing the upgrade from it: a patch release's notes list no breaking change, so the CRD check fails on any. A
+   vulnerability in the Go standard library or in the image's base files needs no change, since the release builds the
+   image with the newest Go 1.26 patch and base files. One in a Go module needs its fixed version on the branch
+   (`go get <module>@<version>`, then `go mod tidy`): Dependabot opens pull requests for `main` only
+3. **Prepare the release** as for `main`, in a pull request against `release-0.4`: the next patch version in
+   `Chart.yaml`, its section in CHANGELOG.md above the branch's last release's, and `make helm`. A `/live-e2e` review
+   runs the live suite on it
+4. **Tag its merge commit** by hand, once every job of CI and E2E has passed on it: `Tag release` releases only merges
+   to `main`.
+
+   ```sh
+   git fetch origin release-0.4
+   git tag -a v0.4.4 -m "kflare v0.4.4" <merge commit>
+   git push origin v0.4.4
+   ```
+
+   `Release` publishes it as it does a release from `main`, with `release-0.4` as its target and as latest only if no
+   newer version is tagged, then starts `Release scan`, which scans its image every week for as long as its minor
+   release gets fixes
+5. **Record it on `main`**, in a pull request: the release's section in main's CHANGELOG.md, below the newer minor
+   release's sections. For a security fix, the GitHub security advisory names the fixed release of each supported
+   minor release
+
+The branch stays once its minor release gets no more fixes. The release scan's `release-image-previous-minor`
+category then keeps the release's last report until the next minor release's turn: dismiss what it still shows as
+won't fix.
 
 ## License
 
