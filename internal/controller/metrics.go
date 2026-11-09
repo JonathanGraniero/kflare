@@ -74,16 +74,21 @@ func withControllerName(kind string, rec reconcile.Reconciler) reconcile.Reconci
 // Only the leader answers. A standby has none of these informers, and a list
 // would start them all, on a pod meant to sit idle; and a sum across pods
 // would count each resource once per replica.
+//
+// It counts what the installation manages: the cache holds nothing else, but
+// for the CloudflareAccounts of other installations, which scope leaves out.
 type resourceCollector struct {
 	reader client.Reader
 	// lists holds an empty list of each kind with a Ready condition, by kind.
 	lists map[string]client.ObjectList
 	// elected closes once this manager leads.
 	elected <-chan struct{}
+	scope   WatchScope
 }
 
-func newResourceCollector(reader client.Reader, scheme *runtime.Scheme, elected <-chan struct{}) *resourceCollector {
-	return &resourceCollector{reader: reader, lists: resourceLists(scheme), elected: elected}
+func newResourceCollector(reader client.Reader, scheme *runtime.Scheme, elected <-chan struct{},
+	scope WatchScope) *resourceCollector {
+	return &resourceCollector{reader: reader, lists: resourceLists(scheme), elected: elected, scope: scope}
 }
 
 // resourceLists returns an empty list of each kind with a Ready condition in
@@ -148,6 +153,9 @@ func (c *resourceCollector) count(ctx context.Context, kind string) (map[readySt
 	}
 	counts := map[readyState]int{}
 	err := meta.EachListItem(list, func(item runtime.Object) error {
+		if account, ok := item.(*cloudflarev1alpha1.CloudflareAccount); ok && c.scope.accountOutside(account) != "" {
+			return nil
+		}
 		state := readyState{status: string(metav1.ConditionUnknown)}
 		conditions := item.(conditionedObject).GetConditions()
 		if ready := meta.FindStatusCondition(conditions, cloudflarev1alpha1.ConditionReady); ready != nil {
@@ -159,12 +167,12 @@ func (c *resourceCollector) count(ctx context.Context, kind string) (map[readySt
 	return counts, err
 }
 
-// SetupMetrics serves kflare_resources from mgr's cache, and starts
-// kflare_drift_corrections_total at 0 for every kind, so that a rule on its
-// increase sees the first correction. cmd/main.go calls it once, before the
-// manager starts.
-func SetupMetrics(mgr ctrl.Manager) error {
-	collector := newResourceCollector(mgr.GetClient(), mgr.GetScheme(), mgr.Elected())
+// SetupMetrics serves kflare_resources from mgr's cache, counting what scope,
+// the installation's, manages, and starts kflare_drift_corrections_total at 0
+// for every kind, so that a rule on its increase sees the first correction.
+// cmd/main.go calls it once, before the manager starts.
+func SetupMetrics(mgr ctrl.Manager, scope WatchScope) error {
+	collector := newResourceCollector(mgr.GetClient(), mgr.GetScheme(), mgr.Elected(), scope)
 	for kind := range collector.lists {
 		driftCorrections.WithLabelValues(kind)
 	}

@@ -133,6 +133,20 @@ var _ = Describe("WorkerScript kvNamespaceRef bindings", func() {
 		Entry("when the KVNamespace is in another account", func() { createKV("wskv-other-account", "kv-1") }, "AccountMismatch"),
 	)
 
+	It("waits without uploading while the KVNamespace is outside its installation's selector", func() {
+		createKV(accountName, "kv-1")
+		acct := &cloudflarev1alpha1.CloudflareAccount{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: accountName}, acct)).To(Succeed())
+		acct.Labels = map[string]string{instanceLabel: "a"}
+		Expect(k8sClient.Update(ctx, acct)).To(Succeed())
+
+		scope := mustWatchScope("", instanceLabel+"=a", k8sClient)
+		_, err := r.Reconcile(WithWatchScope(ctx, scope), reconcile.Request{NamespacedName: wsKey})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(readyReason()).To(Equal(reasonNotWatched))
+		Expect(fake.uploads).To(BeEmpty())
+	})
+
 	It("binds the namespace by its Cloudflare ID", func() {
 		createKV(accountName, "kv-1")
 		_, err := reconcileWorker()

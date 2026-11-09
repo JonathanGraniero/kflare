@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -538,6 +539,107 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			Expect(calls).To(BeZero(), "a namespace the account leaves out reached Cloudflare")
 			Expect(holdsRule(sample.phase, "denied-deleted")).To(BeTrue())
 			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("denied-deleted"), specs.newObject()))).To(BeTrue(),
+				"the resource kept its finalizer")
+		})
+
+		// reconcileOutside reconciles the resource name in an installation of
+		// scope, and checks that it made no Cloudflare call.
+		reconcileOutside := func(name string, scope WatchScope) {
+			GinkgoHelper()
+			calls := 0
+			fake.before = func(string) { calls++ }
+			defer func() { fake.before = nil }()
+			_, err := r.Reconcile(WithWatchScope(ctx, scope), reconcile.Request{NamespacedName: key(name)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(calls).To(BeZero(), "a resource outside its installation's scope reached Cloudflare")
+		}
+		// moveToken points the CloudflareAccount's token at a Secret in
+		// namespace, of the same name.
+		moveToken := func(namespace string) {
+			GinkgoHelper()
+			account := &cloudflarev1alpha1.CloudflareAccount{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: accountName}, account)).To(Succeed())
+			account.Spec.TokenSecretRef.Namespace = namespace
+			Expect(k8sClient.Update(ctx, account)).To(Succeed())
+		}
+		// labelZone gives the Zone labels.
+		labelZone := func(labels map[string]string) {
+			GinkgoHelper()
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, key(zoneName), zone)).To(Succeed())
+			zone.Labels = labels
+			Expect(k8sClient.Update(ctx, zone)).To(Succeed())
+		}
+		watching := func() WatchScope { return mustWatchScope(ns, "", k8sClient) }
+		selecting := func() WatchScope { return mustWatchScope("", instanceLabel+"=a", k8sClient) }
+
+		It("calls Cloudflare for nothing while its account's token is in a namespace its installation does not "+
+			"watch, and writes the rule once it is in one", func() {
+			sample := specs.samples[0]
+			obj := object("unwatched", sample.spec)
+			obj.SetFinalizers([]string{reconciler.Finalizer})
+			create(obj)
+			moveToken("scope-elsewhere")
+			reconcileOutside("unwatched", watching())
+			Expect(readyOf("unwatched").Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyOf("unwatched").Reason).To(Equal(reasonNotWatched))
+			Expect(readyOf("unwatched").Message).To(ContainSubstring(
+				`its token Secret is in namespace "scope-elsewhere", which this installation does not watch`))
+
+			By("writing it once the token is back in a namespace it watches")
+			moveToken(ns)
+			_, err := r.Reconcile(WithWatchScope(ctx, watching()), reconcile.Request{NamespacedName: key("unwatched")})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(holdsRule(sample.phase, "unwatched")).To(BeTrue())
+			Expect(readyOf("unwatched").Reason).To(Equal("Synced"))
+		})
+
+		It("calls Cloudflare for nothing while its Zone is outside its installation's selector", func() {
+			sample := specs.samples[0]
+			obj := object("unselected", sample.spec)
+			obj.SetFinalizers([]string{reconciler.Finalizer})
+			create(obj)
+			reconcileOutside("unselected", selecting())
+			Expect(readyOf("unselected").Reason).To(Equal(reasonNotWatched))
+			Expect(readyOf("unselected").Message).To(Equal(fmt.Sprintf(`Zone %q is outside what this kflare `+
+				`installation watches: its labels do not match this installation's selector kflare.dev/instance=a`,
+				zoneName)))
+			Expect(holdsRule(sample.phase, "unselected")).To(BeFalse())
+		})
+
+		It("deletes a rule's resource whose account left its installation's scope, and leaves the rule, with a "+
+			"Warning Event", func() {
+			recorder := events.NewFakeRecorder(10)
+			SetEventRecorder(recorder)
+			DeferCleanup(func() { SetEventRecorder(nil) })
+			sample := specs.samples[0]
+			createSynced("unwatched-deleted", sample.spec)
+			for len(recorder.Events) > 0 {
+				<-recorder.Events
+			}
+			moveToken("scope-elsewhere")
+			Expect(k8sClient.Delete(ctx, get("unwatched-deleted"))).To(Succeed())
+			reconcileOutside("unwatched-deleted", watching())
+			Expect(holdsRule(sample.phase, "unwatched-deleted")).To(BeTrue())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("unwatched-deleted"), specs.newObject()))).To(BeTrue(),
+				"the resource kept its finalizer")
+			Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+reasonNotWatched),
+				ContainSubstring("stays in Cloudflare"))))
+		})
+
+		It("deletes a rule's resource whose Zone left its installation's selector, and leaves the rule", func() {
+			sample := specs.samples[0]
+			createSynced("unselected-deleted", sample.spec)
+			// The account is inside the scope: only the Zone keeps the rule.
+			account := &cloudflarev1alpha1.CloudflareAccount{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: accountName}, account)).To(Succeed())
+			account.Labels = map[string]string{instanceLabel: "a"}
+			Expect(k8sClient.Update(ctx, account)).To(Succeed())
+			labelZone(map[string]string{instanceLabel: "b"})
+			Expect(k8sClient.Delete(ctx, get("unselected-deleted"))).To(Succeed())
+			reconcileOutside("unselected-deleted", selecting())
+			Expect(holdsRule(sample.phase, "unselected-deleted")).To(BeTrue())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("unselected-deleted"), specs.newObject()))).To(BeTrue(),
 				"the resource kept its finalizer")
 		})
 

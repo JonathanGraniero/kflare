@@ -1121,6 +1121,196 @@ func describeCRUDAllowedNamespaces[O conditionedObject, A any, R any, L any](e *
 	})
 }
 
+// describeCRUDWatchScope adds the specs of a generated kind's resources whose
+// CloudflareAccount, Zone or referenced resource is outside what their
+// installation watches (watchscope.go). A spec's reconciler reads the API
+// server, as the manager's cache would read a resource inside the scope: the
+// labels of what it finds tell it that it is outside.
+func describeCRUDWatchScope[O conditionedObject, A any, R any, L any](e *crudSpecEnv[O, A, R, L]) {
+	ctx, k, key, t := e.ctx, e.t.kind, e.key, e.t
+	get, ready, create, synced := e.get, e.ready, e.create, e.synced
+
+	Describe("its installation's scope", func() {
+		// elsewhere is a namespace that the installation watching the
+		// resources' namespace alone does not watch.
+		const elsewhere = "scope-elsewhere"
+		watching := func() WatchScope { return mustWatchScope(crudSpecNamespace, "", k8sClient) }
+		selecting := func() WatchScope { return mustWatchScope("", instanceLabel+"=a", k8sClient) }
+
+		reconcileIn := func(scope WatchScope) {
+			GinkgoHelper()
+			_, err := e.r.Reconcile(WithWatchScope(ctx, scope), reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		// reconcileOutside reconciles the resource, and checks that it made no
+		// Cloudflare call, which the fake records the parent's ID of.
+		reconcileOutside := func(scope WatchScope) {
+			GinkgoHelper()
+			calls := len(e.store.parentIDs)
+			reconcileIn(scope)
+			Expect(e.store.parentIDs).To(HaveLen(calls), "a resource outside the scope reached Cloudflare")
+		}
+		// moveToken points the CloudflareAccount's token at a Secret in
+		// namespace, of the same name.
+		moveToken := func(namespace string) {
+			GinkgoHelper()
+			account := &cloudflarev1alpha1.CloudflareAccount{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: e.accountName}, account)).To(Succeed())
+			account.Spec.TokenSecretRef.Namespace = namespace
+			Expect(k8sClient.Update(ctx, account)).To(Succeed())
+		}
+		label := func(obj client.Object, at types.NamespacedName) {
+			GinkgoHelper()
+			Expect(k8sClient.Get(ctx, at, obj)).To(Succeed())
+			obj.SetLabels(map[string]string{instanceLabel: "a"})
+			Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+		}
+		// selectParents gives the selector's label to the CloudflareAccount, the
+		// Zone of a zone's kind and, with references, the resources the sample
+		// references.
+		selectParents := func(references bool) {
+			GinkgoHelper()
+			label(&cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: e.accountName})
+			if e.zoned {
+				label(&cloudflarev1alpha1.Zone{}, types.NamespacedName{Name: e.zoneName, Namespace: crudSpecNamespace})
+			}
+			for _, ref := range t.references {
+				if references && ref.name != "" {
+					obj, _ := crudReferencedKinds[ref.kind](types.NamespacedName{}, "")
+					label(obj, types.NamespacedName{Name: ref.name, Namespace: crudSpecNamespace})
+				}
+			}
+		}
+		drained := func() *events.FakeRecorder {
+			recorder := events.NewFakeRecorder(10)
+			SetEventRecorder(recorder)
+			DeferCleanup(func() { SetEventRecorder(nil) })
+			return recorder
+		}
+
+		It("calls Cloudflare for nothing while its account's token is in a namespace the installation does not "+
+			"watch, and carries on once it is in one", func() {
+			e.createParent(true)
+			create(key, nil)
+			moveToken(elsewhere)
+			reconcileOutside(watching())
+			Expect(ready().Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready().Reason).To(Equal(reasonNotWatched))
+			Expect(ready().Message).To(Equal(fmt.Sprintf(`CloudflareAccount %q is outside what this kflare `+
+				`installation watches: its token Secret is in namespace %q, which this installation does not `+
+				`watch (it watches %s)`, e.accountName, elsewhere, crudSpecNamespace)))
+			Expect(e.store.objects).To(BeEmpty())
+
+			By("creating the " + k.noun + " once the token is back in a namespace it watches")
+			moveToken(crudSpecNamespace)
+			reconcileIn(watching())
+			Expect(e.store.objects).To(HaveLen(1))
+			Expect(ready().Reason).To(Equal("Synced"))
+		})
+
+		It("stops at a parent its installation's selector no longer matches", func() {
+			id := synced(nil)
+			before := e.store.objects[id]
+			reconcileOutside(selecting())
+			Expect(ready().Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready().Reason).To(Equal(reasonNotWatched))
+			Expect(e.store.objects[id]).To(Equal(before))
+
+			By("going on once the selector matches them")
+			selectParents(true)
+			reconcileIn(selecting())
+			Expect(ready().Reason).To(Equal("Synced"))
+		})
+
+		It("deletes a resource whose account left its installation's scope, and leaves its "+k.noun+
+			", with a Warning Event", func() {
+			recorder := drained()
+			id := synced(nil)
+			for len(recorder.Events) > 0 {
+				<-recorder.Events
+			}
+			moveToken(elsewhere)
+			Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+			reconcileOutside(watching())
+
+			Expect(e.store.objects).To(HaveKey(id), "a resource outside the scope deleted an object")
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue(),
+				"the resource kept its finalizer")
+			Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+reasonNotWatched),
+				ContainSubstring(fmt.Sprintf(`CloudflareAccount %q is outside`, e.accountName)),
+				ContainSubstring("stays in Cloudflare"))))
+		})
+
+		if e.zoned {
+			It("calls Cloudflare for nothing while its Zone is outside the selector, and carries on once inside", func() {
+				e.createParent(true)
+				create(key, nil)
+				// Everything but the Zone is inside.
+				selectParents(true)
+				zone := &cloudflarev1alpha1.Zone{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: e.zoneName, Namespace: crudSpecNamespace},
+					zone)).To(Succeed())
+				zone.Labels = map[string]string{instanceLabel: "b"}
+				Expect(k8sClient.Update(ctx, zone)).To(Succeed())
+
+				reconcileOutside(selecting())
+				Expect(ready().Reason).To(Equal(reasonNotWatched))
+				Expect(ready().Message).To(Equal(fmt.Sprintf(`Zone %q is outside what this kflare installation `+
+					`watches: its labels do not match this installation's selector kflare.dev/instance=a`, e.zoneName)))
+				Expect(e.store.objects).To(BeEmpty())
+
+				selectParents(true)
+				reconcileIn(selecting())
+				Expect(ready().Reason).To(Equal("Synced"))
+			})
+
+			It("deletes a resource whose Zone left the selector, and leaves its "+k.noun+", with a Warning Event",
+				func() {
+					recorder := drained()
+					id := synced(nil)
+					selectParents(true)
+					for len(recorder.Events) > 0 {
+						<-recorder.Events
+					}
+					zone := &cloudflarev1alpha1.Zone{}
+					Expect(k8sClient.Get(ctx, types.NamespacedName{Name: e.zoneName, Namespace: crudSpecNamespace},
+						zone)).To(Succeed())
+					zone.Labels = nil
+					Expect(k8sClient.Update(ctx, zone)).To(Succeed())
+					Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+					reconcileOutside(selecting())
+
+					Expect(e.store.objects).To(HaveKey(id))
+					Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, k.newObject()))).To(BeTrue(),
+						"the resource kept its finalizer")
+					Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+reasonNotWatched),
+						ContainSubstring(fmt.Sprintf(`Zone %q is outside`, e.zoneName)),
+						ContainSubstring("stays in Cloudflare"))))
+				})
+		}
+
+		for _, ref := range t.references {
+			if ref.name == "" {
+				continue
+			}
+			It("calls Cloudflare for nothing while the "+ref.kind+" it references is outside the selector", func() {
+				e.createParent(true)
+				create(key, nil)
+				selectParents(false)
+				reconcileOutside(selecting())
+				Expect(ready().Reason).To(Equal(reasonNotWatched))
+				Expect(ready().Message).To(Equal(fmt.Sprintf(`%s %q is outside what this kflare installation `+
+					`watches: its labels do not match this installation's selector kflare.dev/instance=a`,
+					ref.kind, ref.name)))
+
+				selectParents(true)
+				reconcileIn(selecting())
+				Expect(ready().Reason).To(Equal("Synced"))
+			})
+		}
+	})
+}
+
 // describeCRUDKind runs the shared specs on a generated kind's table.
 func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[O, A, R, L]) bool {
 	return Describe(t.kind.name+" (generated specs)", func() {
@@ -2126,6 +2316,8 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		describeCRUDRateLimit(e)
 
 		describeCRUDAllowedNamespaces(e)
+
+		describeCRUDWatchScope(e)
 
 		describeCRUDGitOpsHealth(e)
 

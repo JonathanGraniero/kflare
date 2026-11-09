@@ -60,6 +60,14 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Every installation caches every account, and manages only those in its
+	// scope: another installation's is left to it, status, finalizer and
+	// token Secret included.
+	if why := watchScopeFrom(ctx).accountOutside(account); why != "" {
+		logger.V(1).Info("Leaving a CloudflareAccount outside what this installation watches", "reason", why)
+		return ctrl.Result{}, nil
+	}
+
 	// A paused resource is left as it is, deletion included, until its
 	// kflare.dev/paused annotation is removed.
 	if reconciler.Paused(account) {
@@ -124,7 +132,9 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 // SetupWithManager sets up the controller with the Manager. It also watches
 // Secrets, so creating, fixing or rotating an account's API token
-// re-validates the account straight away.
+// re-validates the account straight away. An account outside the
+// installation's scope is reconciled on its events all the same, and left
+// alone (Reconcile): no predicate has the context that carries the scope.
 //
 // While an account is being deleted, the deletion of each resource that uses
 // it re-triggers the account, so it is released as soon as the last one is

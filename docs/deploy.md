@@ -11,6 +11,7 @@ account, and covers running it in production, upgrades, uninstalling and trouble
 - [3. Connect your Cloudflare account](#3-connect-your-cloudflare-account)
 - [4. Manage Cloudflare resources](#4-manage-cloudflare-resources)
 - [Configuration](#configuration)
+  - [Scoping an installation](#scoping-an-installation)
 - [Security model](#security-model)
 - [Verifying a release](#verifying-a-release)
 - [Running in production](#running-in-production)
@@ -28,7 +29,8 @@ account, and covers running it in production, upgrades, uninstalling and trouble
   [Kubernetes versions](versioning.md#kubernetes-versions)). The chart refuses to install on older clusters.
 - Helm 3.8 or newer (OCI chart support), or a GitOps tool that installs Helm charts from an OCI registry, such as
   Argo CD or Flux.
-- One kflare installation per cluster. A second release would reconcile the same resources.
+- One kflare installation per cluster, or several, each limited to namespaces or labels of its own (see
+  [Several installations in one cluster](#several-installations-in-one-cluster)).
 - Outbound HTTPS from the controller to `api.cloudflare.com` (see [Network access](#network-access)).
 - For the HorizontalPodAutoscaler the chart creates, the metrics API, which metrics-server provides. Without it, the
   autoscaler cannot scale on use, and a new install runs `autoscaling.minReplicas` replicas (see
@@ -94,7 +96,9 @@ The chart installs:
 
 - the kflare CRDs (kept on uninstall, see [Uninstalling](#uninstalling))
 - the controller Deployment, ServiceAccount and a Service for metrics
-- a ClusterRole for the controller, plus a Role for leader election in the release namespace
+- a ClusterRole for the controller, plus a Role for leader election in the release namespace; with `watchNamespaces`,
+  a Role in each of those namespaces holds what the ClusterRole would on them (see
+  [Scoping an installation](#scoping-an-installation))
 - a `kflare-metrics-reader` ClusterRole for whoever scrapes the metrics (see [Monitoring](#monitoring))
 - a HorizontalPodAutoscaler, from 1 to 10 replicas (see [Scaling and resources](#scaling-and-resources))
 - a PodDisruptionBudget, when the Deployment can run more than one replica
@@ -219,8 +223,9 @@ Cloudflare object or configures the same settings (`NameConflict`, `TitleConflic
 `RulesetConflict`, `CredentialsSecretConflict`, `AlreadyConfigured`, `TunnelAlreadyConfigured`); the object exists,
 or is missing, against the adoption policy (`AlreadyExists`, `NotFound`, `InvalidAdoptionPolicy`); a setting is wrong
 (`AccountNotAllowed`, `AccountMismatch`, `InvalidAllowedNamespaces`, `R2BucketJurisdictionUnsupported`,
-`TokenKeyMissing`, `ScriptKeyMissing`, `BindingSecretKeyMissing`). kflare retries any other reason, or waits for what
-it names to appear or become ready.
+`TokenKeyMissing`, `ScriptKeyMissing`, `BindingSecretKeyMissing`); the account, or a resource referenced, is outside
+what the installation watches (`NotWatched`). kflare retries any other reason, or waits for what it names to appear
+or become ready.
 
 [kstatus]: https://github.com/kubernetes-sigs/cli-utils/tree/master/pkg/kstatus
 
@@ -265,8 +270,9 @@ data:
           -- Cloudflare refused the request (4xx), or kflare cannot build a client from the token
           TerminalError = true,
           InvalidToken = true,
-          -- The CloudflareAccount, or a reference, does not fit
+          -- The CloudflareAccount, or a reference, does not fit, or is outside the installation's scope
           AccountNotAllowed = true,
+          NotWatched = true,
           AccountMismatch = true,
           InvalidAllowedNamespaces = true,
           R2BucketJurisdictionUnsupported = true,
@@ -457,11 +463,11 @@ spec:
     - apiVersion: kflare.dev/v1alpha1
       failed: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
-        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'AccountMismatch',
-        'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
-        'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
-        'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',
-        'TunnelAlreadyConfigured'])
+        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'NotWatched',
+        'AccountMismatch', 'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing',
+        'ScriptKeyMissing', 'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy',
+        'NameConflict', 'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict',
+        'AlreadyConfigured', 'TunnelAlreadyConfigured'])
       current: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
         metadata.generation)
@@ -484,11 +490,11 @@ spec:
     - apiVersion: kflare.dev/v1alpha1
       failed: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
-        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'AccountMismatch',
-        'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
-        'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
-        'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',
-        'TunnelAlreadyConfigured'])
+        metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'NotWatched',
+        'AccountMismatch', 'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing',
+        'ScriptKeyMissing', 'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy',
+        'NameConflict', 'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict',
+        'AlreadyConfigured', 'TunnelAlreadyConfigured'])
       current: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
         metadata.generation)
@@ -690,9 +696,10 @@ logging:
   level: info               # debug, info or error
   format: json              # json or console
 
-# The controller caches every Secret in the cluster (token and credential Secrets
-# are looked up by reference). On a cluster with many, size its memory from them
-# (see Scaling and resources), such as:
+# The controller caches every Secret it watches, the whole cluster's unless
+# watchNamespaces limits it (token and credential Secrets are looked up by
+# reference). On a cluster with many, size its memory from them (see Scaling and
+# resources), such as:
 resources:
   requests:
     memory: 256Mi
@@ -787,10 +794,90 @@ spec:
 kind reconciles one resource at a time however many accounts it serves, so with many busy accounts, that is the ceiling
 to watch rather than Cloudflare's limits (`workqueue_depth`, by `name`).
 
+### Scoping an installation
+
+By default an installation manages the kflare resources of every namespace, and its ClusterRole lets it read every
+Secret in the cluster. To limit it to some namespaces, list them:
+
+```yaml
+watchNamespaces:
+  - kflare-system    # where the CloudflareAccounts' token Secrets are
+  - team-a
+  - team-b
+```
+
+- **The controller neither watches nor caches anything in other namespaces, Secrets included.** Its memory follows the
+  Secrets of the namespaces listed (see [Scaling and resources](#scaling-and-resources)).
+- **Its permissions follow.** The chart grants what the controller needs on Secrets, ConfigMaps and the kflare kinds
+  with a Role and a RoleBinding in each namespace listed, and keeps its ClusterRole to what is cluster-wide:
+  `CloudflareAccount`s, reading Namespaces (for `spec.allowedNamespaces`), creating Events (a `CloudflareAccount`'s go
+  to the `default` namespace), and the metrics reviews with `metrics.secure`. The namespaces must exist before the
+  chart is installed: for namespaces created later, `rbac.namespaced: false` grants everything with the ClusterRole, as
+  without `watchNamespaces`.
+- **It manages the `CloudflareAccount`s whose token Secret is in a namespace it watches**, the only tokens it can read,
+  so list the namespace of each token Secret too, such as `kflare-system` above. A resource that names another account
+  reports reason `NotWatched`, and kflare makes no Cloudflare call for it. An account's `spec.allowedNamespaces` still
+  applies on top.
+
+To pick resources by their labels instead, or as well, set a selector in the syntax of `kubectl --selector`:
+
+```yaml
+watchSelector: kflare.dev/instance=team-a
+```
+
+The installation then manages only the kflare resources and `CloudflareAccount`s whose labels match it, and leaves
+the others alone, their finalizers included. Label every resource it should manage, its `CloudflareAccount`s, `Zone`s
+and `Tunnel`s among them: a resource whose account, Zone or other reference does not match reports reason
+`NotWatched`, and kflare makes no Cloudflare call for it.
+
+The controller logs its scope when it starts (`managing kflare resources`), and `NotWatched`'s message says what is
+outside it, and why.
+
+#### Several installations in one cluster
+
+Installations whose scopes do not overlap can share a cluster, such as one for each team, each with its own API
+token, permissions and blast radius:
+
+```yaml
+# helm install kflare-team-a oci://ghcr.io/jonathangraniero/charts/kflare --namespace kflare-team-a ...
+watchNamespaces:
+  - team-a          # its resources, and its CloudflareAccount's token Secret
+crds:
+  enabled: false    # another release installs and upgrades the CRDs
+```
+
+- **One release installs the CRDs**, which are cluster-wide: every other sets `crds.enabled: false`. Upgrade that one
+  first, so that the CRDs are the newest release's, and uninstall it last: with `crds.keep: false`, its uninstall
+  deletes the CRDs, and with them every installation's resources.
+- **Each holds a leader election Lease of its own.** The chart names a scoped installation's after the prefix of the
+  release's resources, such as `kflare-team-a.kflare.dev`, so that installations in one namespace do not take turns;
+  `leaderElectionID` names it yourself. An installation without `watchNamespaces` or `watchSelector` keeps
+  `a634e97e.kflare.dev`, the name earlier releases used, so that upgrading it never runs two leaders at once. Scoping
+  an installation that already runs changes its Lease: during that upgrade, the old pod and the new one may both
+  reconcile the resources they share for a few seconds. To keep one leader throughout, set `leaderElectionID` to
+  `a634e97e.kflare.dev`.
+- **Their scopes must not overlap.** Installations that share namespaces need selectors that no labels match both:
+  kflare cannot tell, and both would reconcile what both select. An installation without `watchNamespaces` or
+  `watchSelector` manages everything, so it cannot share a cluster with another.
+- **Each keeps its own rate limit budgets.** Installations whose accounts use the same token, or tokens of one
+  Cloudflare user, share Cloudflare's limit for it: split `cloudflareRateLimit` between them (see
+  [Cloudflare's API rate limit](#cloudflares-api-rate-limit)), or give each installation its own account API token.
+- **kflare keeps two resources from managing one Cloudflare object only within an installation.** Two installations
+  that manage the same Cloudflare account or zone can each adopt an object the other manages, configure the same
+  zone's settings, or order their rules in one phase without regard to each other's. Give each installation its own
+  zones.
+- **A resource moves to another installation with its finalizer**, when its labels change, or the installations'
+  scopes do: the installation that now selects it carries on, its deletion included. One that no installation selects
+  keeps its finalizer, so deleting it waits until one does. Move a parent, a `Zone` or a `Tunnel`, together with what uses it: a
+  resource being deleted whose parent is outside its installation's scope is released, its Cloudflare object left as
+  it is, with a Warning Event with reason `NotWatched`.
+- **Metrics are each installation's own**: `kflare_resources` counts what it manages.
+
 ## Security model
 
-- **The controller can read every Secret in the cluster.** It needs to read token Secrets wherever
-  `CloudflareAccount`s point, `WorkerScript` secret bindings, and to manage Tunnel credential Secrets.
+- **The controller can read every Secret in the cluster**, unless `watchNamespaces` limits it to some namespaces (see
+  [Scoping an installation](#scoping-an-installation)). It needs to read token Secrets wherever `CloudflareAccount`s
+  point, `WorkerScript` secret bindings, and to manage Tunnel credential Secrets.
 - **A CloudflareAccount is open to every namespace until it says otherwise.** Any namespaced resource can reference any
   `CloudflareAccount` by name, unless the account sets `spec.allowedNamespaces`. Without it, treat permission to create
   kflare resources as permission to use every account's token. See
@@ -843,9 +930,10 @@ one without it, since an account that looks restricted would otherwise be open t
 - **The selector trusts whoever may label namespaces.** The built-in `edit` role cannot, but anyone who can `patch`
   namespaces can move one into a selector. To name namespaces, as above, match `kubernetes.io/metadata.name`, which the
   API server sets and nobody can change. An empty selector (`selector: {}`) matches every namespace.
-- **It limits who may use a token, not what the controller can reach.** The controller still reads every Secret, and
-  namespaces an account allows can adopt each other's objects in it. Give each team its own account where that matters.
-  For a tenant that must not share a controller at all, use a cluster of its own.
+- **It limits who may use a token, not what the controller can reach.** The controller still reads every Secret it
+  watches, and namespaces an account allows can adopt each other's objects in it. Give each team its own account where
+  that matters. For a tenant that must not share a controller at all, give it an installation of its own (see
+  [Several installations in one cluster](#several-installations-in-one-cluster)), or a cluster of its own.
 
 ## Verifying a release
 
@@ -955,7 +1043,7 @@ capacity and do not make the leader's work go faster.
   (see [With Argo CD or Flux](#with-argo-cd-or-flux)).
 - **To keep a standby at all times**, set `autoscaling.minReplicas: 2`. `replicaCount` is ignored while autoscaling
   is on; with `autoscaling.enabled: false`, it sets the replicas again.
-- **Memory is left out by default.** The leader caches every Secret in the cluster and a standby caches nothing, so
+- **Memory is left out by default.** The leader caches every Secret it watches and a standby caches nothing, so
   on a cluster with many Secrets a memory target (`autoscaling.targetMemoryUtilizationPercentage`) adds standbys that
   stay, as the leader's memory does not go down when they start.
 - **Tune it** with `autoscaling.behavior`, a HorizontalPodAutoscaler's [scaling behavior][hpa-behavior].
@@ -993,8 +1081,9 @@ about 12 seconds, as without them.
   leader, last seconds to a minute, and the autoscaler waits 2 minutes above its target before it adds a replica
   (`autoscaling.behavior`). The limit of 1 CPU is above every burst but a takeover's peak of a few seconds, which it
   slows a little. Go sizes its threads from the limit: 2 under a limit of 1 CPU.
-- **Memory** is mostly the cache of every Secret in the cluster. The leader needs about 16 MiB, plus one and a half
-  times the size of the cluster's Secrets as `kubectl get secrets -A -o json | wc -c` counts them, plus about 15 KiB
+- **Memory** is mostly the cache of every Secret the leader watches: the cluster's, or those of `watchNamespaces`. The
+  leader needs about 16 MiB, plus one and a half times the size of those Secrets as
+  `kubectl get secrets -A -o json | wc -c` counts them (`-n <namespace>` for each namespace listed), plus about 15 KiB
   for each kflare resource. Helm keeps each release's history in Secrets, often most of a cluster's. The 100 MiB of
   Secrets above came to 134 MiB that way, and the leader used 220 MiB of the 512Mi limit, which fits about 250 MiB of
   Secrets. For more, raise `resources.limits.memory` to at least a quarter above what the leader needs, and
@@ -1359,6 +1448,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `RateLimited` | The resource has work to do, but its API token's budget is used up, or Cloudflare asked kflare to stop | Nothing: kflare carries on by itself. If it lasts, see [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
 | `AccountNotAllowed` | The `CloudflareAccount`'s `spec.allowedNamespaces` leaves out the resource's namespace | Move the resource, or have a cluster administrator [allow the namespace](#limiting-which-namespaces-may-use-an-account) |
+| `NotWatched` | The resource's `CloudflareAccount`, or a resource it references, is outside what its installation watches: the account's token Secret is in a namespace it does not watch, or labels do not match its `watchSelector`. A resource being deleted then leaves its Cloudflare object, with a Warning Event | The message says which, and why: list the namespace in `watchNamespaces`, or label the resource (see [Scoping an installation](#scoping-an-installation)) |
 | `InvalidAllowedNamespaces` | A `CloudflareAccount`'s `spec.allowedNamespaces.selector` is invalid, such as `In` with no values. Until it is fixed, it allows no namespace | Fix the selector |
 | `SecretNotFound`, `TokenKeyMissing`, `InvalidToken` | The token Secret is missing, lacks the key, or is empty | Fix the Secret; the account re-validates immediately |
 | `ZoneNotFound`, `ZoneNotReady`, `TunnelNotFound`, `TunnelNotReady` | The referenced parent is missing or not ready | Check the parent resource |

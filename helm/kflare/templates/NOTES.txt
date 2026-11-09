@@ -16,10 +16,37 @@ replicas, set autoscaling.minReplicas instead.
 {{- end }}
 {{- end }}
 
+{{- /* The token Secret goes where this installation reads it: a watched namespace. */}}
+{{- $secretNamespace := .Release.Namespace }}
+{{- if and .Values.watchNamespaces (not (has .Release.Namespace .Values.watchNamespaces)) }}
+{{- $secretNamespace = first .Values.watchNamespaces }}
+{{- end }}
+{{- /* A selector of one key=value gives the example account its label. */}}
+{{- $label := "" }}
+{{- with .Values.watchSelector }}
+{{- if regexMatch "^ *[A-Za-z0-9./_-]+ *==? *[A-Za-z0-9._-]+ *$" . }}
+{{- $parts := regexSplit " *==? *" (trim .) 2 }}
+{{- $label = printf "%s: %s" (index $parts 0) (index $parts 1 | quote) }}
+{{- end }}
+{{- end }}
+{{- if or .Values.watchNamespaces .Values.watchSelector }}
+
+This installation manages:
+  - the kflare resources {{- with .Values.watchSelector }} that match {{ . }},{{ end }}
+    {{- with .Values.watchNamespaces }} in {{ join ", " . }}{{ else }} in any namespace{{ end }}
+  - the CloudflareAccounts {{- with .Values.watchSelector }} that match it{{ end }}
+    {{- if .Values.watchNamespaces }}
+    {{- if .Values.watchSelector }},{{ end }} whose token Secret is in one of those namespaces
+    {{- end }}
+{{- end }}
+
 Next, connect a Cloudflare account. Store an API token in a Secret and point a
 CloudflareAccount at it:
+{{- if and .Values.watchSelector (not $label) }}
+(give the account labels that match {{ .Values.watchSelector }})
+{{- end }}
 
-  kubectl -n {{ .Release.Namespace }} create secret generic cloudflare-token \
+  kubectl -n {{ $secretNamespace }} create secret generic cloudflare-token \
     --from-literal=CF_API_TOKEN=<your-api-token>
 
   cat <<YAML | kubectl apply -f -
@@ -27,11 +54,15 @@ CloudflareAccount at it:
   kind: CloudflareAccount
   metadata:
     name: my-account
+    {{- with $label }}
+    labels:
+      {{ . }}
+    {{- end }}
   spec:
     accountID: <your-account-id>
     tokenSecretRef:
       name: cloudflare-token
-      namespace: {{ .Release.Namespace }}
+      namespace: {{ $secretNamespace }}
   YAML
 
   kubectl get cloudflareaccounts   # READY should become True

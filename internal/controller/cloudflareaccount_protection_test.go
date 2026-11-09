@@ -225,7 +225,8 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 	})
 
 	It("ignores a token Secret that no longer exists when releasing it", func() {
-		Expect(r.releaseTokenSecret(ctx, corev1.SecretReference{Name: "gone", Namespace: ns}, acctName)).To(Succeed())
+		Expect(r.releaseTokenSecret(ctx, corev1.SecretReference{Name: "gone", Namespace: ns},
+			newAccount(acctName, secretName))).To(Succeed())
 	})
 
 	It("releases both the recorded and the referenced Secret when they differ", func() {

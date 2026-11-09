@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -294,6 +295,18 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			Expect(fake.calls).To(BeEmpty())
 			expectReady(configKey, metav1.ConditionFalse, "TunnelNotFound")
 		})
+
+		It("sets Ready=False NotWatched, without calling CF, when its Tunnel is outside its installation's selector",
+			func() {
+				readyEnv(nil)
+				fake := &fakeTunnelConfigurationAPI{}
+				scope := mustWatchScope("", instanceLabel+"=a", k8sClient)
+				_, err := reconcilerWithFakeTunnelConfigurationAPI(fake).Reconcile(WithWatchScope(ctx, scope),
+					reconcile.Request{NamespacedName: configKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fake.calls).To(BeEmpty())
+				expectReady(configKey, metav1.ConditionFalse, reasonNotWatched)
+			})
 
 		It("sets Ready=False TunnelNotReady until the Tunnel has an ID", func() {
 			createTunnel("")
@@ -665,6 +678,26 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			Entry("nothing was ever written", nil, "", false),
 			Entry("the Tunnel resource is gone", nil, fakeTunnelID, true),
 		)
+
+		It("removes the finalizer of a configuration whose Tunnel left its installation's selector, and leaves the "+
+			"tunnel's rules, with a Warning Event", func() {
+			recorder := events.NewFakeRecorder(10)
+			SetEventRecorder(recorder)
+			DeferCleanup(func() { SetEventRecorder(nil) })
+			readyEnv(nil)
+			setStatusTunnelID(fakeTunnelID)
+			startDeletion()
+
+			fake := &fakeTunnelConfigurationAPI{}
+			scope := mustWatchScope("", instanceLabel+"=a", k8sClient)
+			_, err := reconcilerWithFakeTunnelConfigurationAPI(fake).Reconcile(WithWatchScope(ctx, scope),
+				reconcile.Request{NamespacedName: configKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(BeEmpty())
+			expectConfigGone()
+			Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+reasonNotWatched),
+				ContainSubstring(`Tunnel "`+tunnelCRName+`" is outside`), ContainSubstring("stays in Cloudflare"))))
+		})
 
 		It("treats a tunnel already gone from Cloudflare as reset", func() {
 			readyEnv(nil)

@@ -324,8 +324,8 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 func (r *crudResourceReconciler[O, A, R, L]) zone(ctx context.Context, obj O) (*cloudflarev1alpha1.Zone, *conditionError) {
 	zone := &cloudflarev1alpha1.Zone{}
 	key := types.NamespacedName{Name: r.kind.zoneRef(obj), Namespace: obj.GetNamespace()}
-	if err := r.Get(ctx, key, zone); err != nil {
-		return nil, &conditionError{Reason: "ZoneNotFound", Message: fmt.Sprintf("Zone %q not found: %v", key.Name, err)}
+	if condErr := getReference(ctx, r.Client, key, zone, fmt.Sprintf("Zone %q", key.Name), "ZoneNotFound"); condErr != nil {
+		return nil, condErr
 	}
 	if !isZoneReady(zone) {
 		return nil, &conditionError{Reason: "ZoneNotReady", Message: fmt.Sprintf("Zone %q is not ready", key.Name)}
@@ -348,11 +348,10 @@ func (r *crudResourceReconciler[O, A, R, L]) resolveReferences(ctx context.Conte
 			continue
 		}
 		target := ref.newObject()
-		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: obj.GetNamespace()}, target); err != nil {
-			return nil, &conditionError{
-				Reason:  ref.kind + "NotFound",
-				Message: fmt.Sprintf("%s %q not found: %v", ref.kind, name, err),
-			}
+		key := types.NamespacedName{Name: name, Namespace: obj.GetNamespace()}
+		if condErr := getReference(ctx, r.Client, key, target, fmt.Sprintf("%s %q", ref.kind, name),
+			ref.kind+"NotFound"); condErr != nil {
+			return nil, condErr
 		}
 		if account := ref.account(target); account != accountName {
 			return nil, &conditionError{
@@ -794,11 +793,16 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 // its status records. A zone's kind's Zone waits for its resources before it
 // is deleted, so it is normally still there; if it is gone anyway (its
 // finalizer was removed by hand), there are no credentials to delete with,
-// the object stays in Cloudflare and gone is set.
+// the object stays in Cloudflare and gone is set. A parent outside what the
+// installation watches ends the same way, with a Warning Event
+// (leaveCloudflareObject).
 func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context, obj O) (accountName, zoneID string,
 	gone bool, err error) {
 	if account := r.kind.hooks.account; account != nil {
 		name, gone, condErr := account(ctx, r.Client, obj)
+		if condErr != nil && condErr.Reason == reasonNotWatched {
+			return "", "", true, leaveCloudflareObject(ctx, obj, condErr)
+		}
 		if condErr != nil && !gone {
 			return "", "", false, condErr
 		}
@@ -809,7 +813,11 @@ func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context,
 	}
 	zone := &cloudflarev1alpha1.Zone{}
 	key := types.NamespacedName{Name: r.kind.zoneRef(obj), Namespace: obj.GetNamespace()}
-	if err := r.Get(ctx, key, zone); err != nil {
+	err = r.Get(ctx, key, zone)
+	if condErr := outsideReference(ctx, key, zone, fmt.Sprintf("Zone %q", key.Name), err); condErr != nil {
+		return "", "", true, leaveCloudflareObject(ctx, obj, condErr)
+	}
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.FromContext(ctx).Info("Zone is gone, skipping Cloudflare deletion", "zone", key.Name)
 			return "", "", true, nil

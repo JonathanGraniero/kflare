@@ -246,8 +246,15 @@ var _ = Describe("controller-manager", func() {
 // runningController returns the name of the one controller pod that is not
 // being deleted, once it runs with every container ready and none restarted.
 func runningController() (string, error) {
-	out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", managerNamespace,
-		"-l", managerSelector, "-o",
+	return runningControllerIn(managerNamespace, managerSelector)
+}
+
+// runningControllerIn returns the name of the one controller pod in
+// namespace that selector selects, once it runs with every container ready
+// and none restarted.
+func runningControllerIn(namespace, selector string) (string, error) {
+	out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", namespace,
+		"-l", selector, "-o",
 		`go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}`+
 			`{{ .metadata.name }} {{ .status.phase }}{{ range .status.containerStatuses }}`+
 			` {{ .ready }}/{{ .restartCount }}{{ end }}{{ "\n" }}{{ end }}{{ end }}`))
@@ -273,7 +280,12 @@ func runningController() (string, error) {
 // holdsLease checks that pod holds the manager's lease. It must be the running
 // pod: a pod that is gone keeps its name in the lease until the lease expires.
 func holdsLease(pod string) error {
-	out, err := utils.Run(exec.Command("kubectl", "get", "lease", leaderElectionID, "-n", managerNamespace,
+	return holdsLeaseIn(managerNamespace, leaderElectionID, pod)
+}
+
+// holdsLeaseIn checks that pod holds the Lease lease in namespace.
+func holdsLeaseIn(namespace, lease, pod string) error {
+	out, err := utils.Run(exec.Command("kubectl", "get", "lease", lease, "-n", namespace,
 		"-o", "jsonpath={.spec.holderIdentity}"))
 	if err != nil {
 		return err

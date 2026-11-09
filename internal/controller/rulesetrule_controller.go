@@ -140,9 +140,9 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	// becomes ready.
 	zone := &cloudflarev1alpha1.Zone{}
 	zoneKey := types.NamespacedName{Name: obj.GetRulesetRuleSpec().ZoneRef.Name, Namespace: obj.GetNamespace()}
-	if err := r.Get(ctx, zoneKey, zone); err != nil {
-		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, "ZoneNotFound",
-			fmt.Sprintf("Zone %q not found: %v", zoneKey.Name, err))
+	if condErr := getReference(ctx, r.Client, zoneKey, zone, fmt.Sprintf("Zone %q", zoneKey.Name),
+		"ZoneNotFound"); condErr != nil {
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
 	}
 	if !isZoneReady(zone) {
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, "ZoneNotReady",
@@ -285,11 +285,17 @@ func (r *rulesetRuleReconciler) reconcileDelete(ctx context.Context, obj ruleset
 //
 // The Zone waits for its rules before it is deleted, so it is normally still
 // there. If it is gone anyway (its finalizer was removed by hand), there are
-// no credentials to delete with and the rule stays in Cloudflare.
+// no credentials to delete with and the rule stays in Cloudflare. A Zone
+// outside what the installation watches ends the same way, with a Warning
+// Event (leaveCloudflareObject).
 func (r *rulesetRuleReconciler) deleteCloudflareRule(ctx context.Context, obj rulesetRuleObject) error {
 	zone := &cloudflarev1alpha1.Zone{}
 	zoneKey := types.NamespacedName{Name: obj.GetRulesetRuleSpec().ZoneRef.Name, Namespace: obj.GetNamespace()}
-	if err := r.Get(ctx, zoneKey, zone); err != nil {
+	err := r.Get(ctx, zoneKey, zone)
+	if condErr := outsideReference(ctx, zoneKey, zone, fmt.Sprintf("Zone %q", zoneKey.Name), err); condErr != nil {
+		return leaveCloudflareObject(ctx, obj, condErr)
+	}
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.FromContext(ctx).Info("Zone is gone, skipping Cloudflare deletion", "zone", zoneKey.Name)
 			return nil

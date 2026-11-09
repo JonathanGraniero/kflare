@@ -139,6 +139,20 @@ var _ = Describe("WorkerScript r2BucketRef bindings", func() {
 		}, "R2BucketJurisdictionUnsupported"),
 	)
 
+	It("waits without uploading while the R2Bucket is outside its installation's selector", func() {
+		createR2(accountName, true)
+		acct := &cloudflarev1alpha1.CloudflareAccount{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: accountName}, acct)).To(Succeed())
+		acct.Labels = map[string]string{instanceLabel: "a"}
+		Expect(k8sClient.Update(ctx, acct)).To(Succeed())
+
+		scope := mustWatchScope("", instanceLabel+"=a", k8sClient)
+		_, err := r.Reconcile(WithWatchScope(ctx, scope), reconcile.Request{NamespacedName: wsKey})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(readyReason()).To(Equal(reasonNotWatched))
+		Expect(fake.uploads).To(BeEmpty())
+	})
+
 	It("binds the bucket by its Cloudflare name", func() {
 		createR2(accountName, true)
 		_, err := reconcileWorker()

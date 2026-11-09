@@ -185,6 +185,7 @@ HELM_KUBE_VERSIONS ?= 1.34.0 1.37.0
 .PHONY: helm
 helm: manifests ## Regenerate the chart's CRDs and RBAC rules from config/, and its Artifact Hub annotations.
 	./hack/sync-helm-chart.sh
+	go run ./hack/chartrbac
 	go run ./hack/chartannotations
 
 .PHONY: helm-lint
@@ -208,6 +209,11 @@ helm-lint: helm ## Lint the chart and render it with default and non-default val
 		$(HELM) template kflare helm/kflare --kube-version $$v \
 			--set trustedCA.secret=corporate-ca,metrics.certSecret=kflare-metrics-tls \
 			--set 'extraEnv[0].name=HTTPS_PROXY,extraEnv[0].value=http://proxy:3128' > /dev/null; \
+		$(HELM) template kflare helm/kflare --kube-version $$v \
+			--set 'watchNamespaces={kflare-system,team-a}',crds.enabled=false \
+			--set-string 'watchSelector=kflare.dev/instance in (team-a)' > /dev/null; \
+		$(HELM) template kflare helm/kflare --kube-version $$v \
+			--set 'watchNamespaces={team-a}',rbac.namespaced=false,leaderElectionID=kflare-team-a > /dev/null; \
 		$(HELM) template kflare helm/kflare --kube-version $$v \
 			--set autoscaling.minReplicas=2,autoscaling.maxReplicas=4 \
 			--set autoscaling.targetCPUUtilizationPercentage=null,autoscaling.targetMemoryUtilizationPercentage=90 \

@@ -1763,3 +1763,65 @@ Decisions behind the deploy guide's health checks (#83), and what was checked, o
   signed-off pull request (DCO). The files follow Argo CD's layout for a wildcard check
   (`resource_customizations/kflare.dev/_/`), and built-in checks get the standard libraries, so the script would work
   there unchanged
+
+## Scoping an installation
+
+Decisions behind `--watch-namespaces`, `--watch-selector` and `--leader-election-id` (#79), and the chart's
+`watchNamespaces`, `watchSelector`, `rbac.namespaced` and `leaderElectionID`, for an installation per team or
+environment in a shared cluster:
+
+- **Labels pick an installation's resources, not a field** (the issue's first decision): the cache can filter on them,
+  so an installation never holds another's resources, and the API does not change
+- **The namespaces and their RBAC come together** (the issue's second): a namespace list whose controller could still
+  read every Secret would miss the reason most platform teams scope an operator
+- **The cache holds only the scope, but for CloudflareAccounts.** Every installation caches every account: releasing a
+  token Secret must see every account that uses it, whichever installation's, and a resource naming another
+  installation's account can then say so
+- **An installation manages the accounts whose token Secret is in a namespace it watches**, and whose labels match its
+  selector. The issue had the selector alone decide: two installations scoped by namespaces, with no selector, would
+  then both manage every account, and the one that cannot read a token would turn the account `Ready=False` while the
+  other turned it `True`. The token's namespace gives each account one installation, the one that can read its token
+- **A resource uses only an account its installation manages.** An account's deletion waits for the resources that use
+  it, which its installation sees only in its own scope; a resource of another installation using it would lose its
+  credentials mid-cleanup
+- **One reason, `NotWatched`, for every reference outside the scope**, rather than one per kind as `ZoneNotFound` is,
+  so that the deploy guide's Argo CD and Flux checks, which users copy, gain one entry. The message names the kind and
+  says why. A reference the selector leaves out is missing from the cache: a read past it (the manager's own client, as
+  `upToDate`'s) tells the two apart, on that error path only. A found reference's labels are checked too, so the check
+  holds whatever reads it
+- **Deleting a resource whose account or parent left the scope leaves its object**, as `AccountNotAllowed` does, with
+  a Warning Event: the installation has lost the token, and holding the finalizer would leave a namespace stuck
+  terminating
+- **The scope travels in the context**, from the manager's `BaseContext`, which controller-runtime gives every runnable,
+  so every reconcile and watch handler has it. A field on each reconciler would mean generator changes for every kind,
+  and a package-level value, as the rate limit's is, would keep the specs from running two installations at once
+- **A scoped installation's Lease is named after its release; an unscoped one keeps `a634e97e.kflare.dev`.** Upgrading
+  to a release whose Lease is named differently runs two leaders while the old pod and the new one overlap, for a few
+  seconds in a rolling update. Naming every installation's after its release would do that to every upgrade from
+  v0.4; keeping one name for all would leave the second installation in a namespace a standby for good, with nothing
+  to say why. Scoping a running installation changes its Lease once, which the deploy guide says how to avoid
+- **The chart's two rule files come from the markers** (`hack/chartrbac`), so that a new marker cannot reach the
+  ClusterRole of a scoped installation unnoticed: a kflare kind goes by its CRD's scope, any other resource must be
+  listed, or `make helm` fails. Events are granted across the cluster: a CloudflareAccount's go to `default`
+- **Overlapping scopes are not detected.** An installation cannot see another's scope, and a check through a shared
+  object would need an API change; the deploy guide says that scopes must not overlap
+
+Checked on 2026-11-09:
+
+- envtest (`watchscope_manager_test.go`): a manager scoped to a namespace reconciles the resources there, and validates
+  the account whose token Secret is there, and leaves another namespace's resources and accounts without a finalizer or
+  a status; one scoped by a selector does the same by labels, and reports `NotWatched` for a Zone it leaves out, which
+  its cache does not hold, then reads it once it is labelled. Two managers with disjoint selectors, sharing a namespace,
+  run at once as users that hold only the chart's rules (a ClusterRole from `manager-cluster-rules.yaml`, a Role from
+  `manager-namespaced-rules.yaml` in each namespace they watch): each validates and calls Cloudflare with its own
+  accounts only, and deletes its own resource's object. The shared specs report `NotWatched` for every generated kind
+  whose account, Zone or reference is outside the scope, and leave its object when it is deleted
+- `hack/mutate.sh`: 47 of 47 mutations caught, of the scope, the credentials, the account controller, the release of a
+  token Secret, the metrics, every reference that reads through the scope, and `hack/chartrbac`
+- On kind (`kflare-dev`, Kubernetes 1.34.11, the image built from the branch): two releases in one namespace, each
+  watching its own team namespace with the chart's namespaced RBAC. Each held its own Lease (`team-a-kflare.kflare.dev`,
+  `team-b-kflare.kflare.dev`), started all 20 controllers with no `forbidden` in its log, and could list Secrets in its
+  team's namespace only. Each account was validated by its own installation's pod (the Events' `reportingInstance`)
+  with the dev token, its token Secret protected; a resource in team A naming team B's account reported `NotWatched`,
+  and paused resources `Paused`. Deleting everything went through the controllers; the cluster was left as found. No
+  Cloudflare object was created: the run's only calls were the accounts' validations

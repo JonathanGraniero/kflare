@@ -58,6 +58,15 @@ spec:
           command: ["/manager"]
           args:
             - --leader-elect={{ .Values.leaderElection }}
+            {{- with include "kflare.leaderElectionID" . }}
+            - --leader-election-id={{ . }}
+            {{- end }}
+            {{- with .Values.watchNamespaces }}
+            - --watch-namespaces={{ join "," . }}
+            {{- end }}
+            {{- with .Values.watchSelector }}
+            - {{ printf "--watch-selector=%s" . | quote }}
+            {{- end }}
             - --default-deletion-policy={{ .Values.defaultDeletionPolicy }}
             - --reconcile-timeout={{ .Values.reconcileTimeout }}
             {{- with .Values.driftCheckInterval }}

@@ -99,8 +99,9 @@ With:
 │                          #   its CLAUDE.md holds the generator's design
 ├── hack/                  # sync-helm-chart.sh, chartannotations (Artifact Hub annotations), releasenotes (a
 │                          #   GitHub release's notes), crdcompat (breaking CRD changes since the last release),
-│                          #   supportedreleases (the releases that get fixes, for the release scan), mutate.sh
-│                          #   (mutations), e2e-live.sh (live e2e), license header
+│                          #   supportedreleases (the releases that get fixes, for the release scan), chartrbac
+│                          #   (the chart's rules for a scoped installation), mutate.sh (mutations), e2e-live.sh
+│                          #   (live e2e), license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
 ├── ARCHITECTURE.md        # How the controllers behave: drift, adoption, errors, deletion, known limitations
@@ -122,7 +123,8 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    is returned so controller-runtime backs off); `RateLimited` (waiting for the token's budget, and only on a resource
    that was not `Ready`: see `internal/controller/ratelimit.go`); credential reasons from `credentials.go`
    (`AccountNotFound`, `AccountNotAllowed`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a
-   minute); `Paused`
+   minute); `NotWatched` (an account or a reference outside the installation's scope, `watchscope.go`: a reference is
+   read with `getReference`); `Paused`
    (the status kept, see convention 11). A new reason goes into `readyReasons` (`test/gitopshealth`), and, if a person
    must act on it, into the Argo CD and Flux health checks' lists (`config/argocd/health.lua`,
    `config/flux/health-check-exprs.yaml`, and deploy.md's copies); its test finds a reason the controllers set that
@@ -691,6 +693,31 @@ sizing guidance; its concurrent reconciles are still open
   autoscaling off with `replicaCount: 2`) against envtest's API server; `make helm-lint`. Not here: kind cannot start
   pods in this session's container (runc cannot set `oom_score_adj`), so the e2e spec first runs in CI
 - Done when: CI's E2E passes on 1.34 and 1.37, the autoscaler reading the controller's CPU
+
+### Scoping an installation (#79, `feat/watch-namespaces`)
+**Status:** 🚧 Built 2026-11-09 at the user's request ("a param in the helm chart to be able to list namespaces pretty
+easily"), as one pull request; awaits review. On 2026-10-31 #79 was out of scope (one management cluster serving many
+accounts, #73 and #77); the user picked it up now. The issue's two decisions as it proposed them: labels, not a field,
+pick an installation's resources, and the namespaced RBAC comes with the namespace list
+([design notes](docs/design-notes.md#scoping-an-installation))
+- [x] The controller: `--watch-namespaces`, `--watch-selector`, `--leader-election-id` (`cmd/main.go`); a
+  `WatchScope` (`internal/controller/watchscope.go`) sets the cache (`DefaultNamespaces`, a label filter on every kind
+  but CloudflareAccount) and reaches reconciles through the manager's `BaseContext`. An installation manages the
+  accounts whose token Secret it watches and whose labels match (the issue had the selector alone decide, under which
+  two namespace-scoped installations would both validate every account), and a resource uses only those. `NotWatched`,
+  one reason for an account or reference outside the scope (`getReference`), needs a person in the health checks; a
+  deletion whose account or parent is outside the scope leaves the object, as `AccountNotAllowed` does
+- [x] The chart: `watchNamespaces`, `watchSelector`, `rbac.namespaced` (a Role per namespace; the ClusterRole keeps
+  CloudflareAccounts, Namespaces, Events and the reviews; `hack/chartrbac` splits the markers' rules) and
+  `leaderElectionID` (a scoped release's Lease is named after it, an unscoped one keeps `a634e97e.kflare.dev`). The
+  default render is byte-identical to main's
+- [x] Tests: envtest managers scoped by namespaces and by a selector, two at once as users holding only the chart's
+  rules; `NotWatched` in the shared specs of every generated kind, TunnelConfiguration's and the WorkerScript bindings';
+  47 of 47 mutations; an e2e smoke spec installs a scoped release beside the suite's (first run in CI)
+- [x] On kind (`kflare-dev`, 1.34.11): two releases in one namespace with namespaced RBAC, both healthy, each with its
+  own Lease and accounts; details in the design notes
+- Left: the e2e spec's first CI run; a Reconciler error seen on kind, `not found` on an account being deleted, is
+  `RemoveFinalizer` on a stale cached copy, a path unchanged since main (`pkg/reconciler`), retried and harmless
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first

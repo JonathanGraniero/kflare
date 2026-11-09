@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -58,7 +59,7 @@ func (r *CloudflareAccountReconciler) reconcileDelete(
 	}
 
 	for _, ref := range protectedSecrets(account) {
-		if err := r.releaseTokenSecret(ctx, ref, account.Name); err != nil {
+		if err := r.releaseTokenSecret(ctx, ref, account); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -87,7 +88,7 @@ func (r *CloudflareAccountReconciler) protectTokenSecret(
 		Namespace: account.Spec.TokenSecretRef.Namespace,
 	}
 	if previous := account.Status.ProtectedTokenSecret; previous != nil && *previous != desired {
-		if err := r.releaseTokenSecret(ctx, *previous, account.Name); err != nil {
+		if err := r.releaseTokenSecret(ctx, *previous, account); err != nil {
 			return err
 		}
 		account.Status.ProtectedTokenSecret = nil
@@ -109,11 +110,18 @@ func (r *CloudflareAccountReconciler) protectTokenSecret(
 }
 
 // releaseTokenSecret removes tokenSecretFinalizer from the Secret ref unless
-// a CloudflareAccount other than releasingAccount still references it.
+// a CloudflareAccount other than releasing still references it. Every
+// installation caches every account, so that holds for the accounts of other
+// installations too.
+//
+// A Secret in a namespace the installation does not watch, which an account
+// protected before its spec.tokenSecretRef moved there from another
+// installation's scope, is out of reach: it keeps the finalizer, and a Warning
+// Event on the account says so.
 func (r *CloudflareAccountReconciler) releaseTokenSecret(
 	ctx context.Context,
 	ref corev1.SecretReference,
-	releasingAccount string,
+	releasing *cloudflarev1alpha1.CloudflareAccount,
 ) error {
 	accounts := &cloudflarev1alpha1.CloudflareAccountList{}
 	if err := r.List(ctx, accounts); err != nil {
@@ -121,9 +129,19 @@ func (r *CloudflareAccountReconciler) releaseTokenSecret(
 	}
 	for _, other := range accounts.Items {
 		otherRef := other.Spec.TokenSecretRef
-		if other.Name != releasingAccount && otherRef.Name == ref.Name && otherRef.Namespace == ref.Namespace {
+		if other.Name != releasing.Name && otherRef.Name == ref.Name && otherRef.Namespace == ref.Namespace {
 			return nil
 		}
+	}
+
+	if scope := watchScopeFrom(ctx); !scope.watches(ref.Namespace) {
+		message := fmt.Sprintf("Token Secret %s/%s keeps its %s finalizer: it is in namespace %q, which %s. "+
+			"Remove the finalizer by hand once nothing uses the Secret", ref.Namespace, ref.Name, tokenSecretFinalizer,
+			ref.Namespace, scope.namespacesOutside())
+		log.FromContext(ctx).Info("Leaving the finalizer of a token Secret outside what this installation watches",
+			"secret", ref.Namespace+"/"+ref.Name)
+		recordWarning(releasing, reasonNotWatched, "Release", message)
+		return nil
 	}
 
 	secret := &corev1.Secret{}

@@ -121,14 +121,20 @@ var tunnelConfigurationKind = crudResourceKind[*cloudflarev1alpha1.TunnelConfigu
 // TunnelConfiguration names. The Tunnel waits for its configurations before it
 // is deleted, so it is normally still there. If it is gone anyway (its finalizer
 // was removed by hand), there are no credentials to reset with and the rules
-// are left.
+// are left. A Tunnel outside what the installation watches reports reason
+// NotWatched, and is not gone.
 func tunnelConfigurationAccount(ctx context.Context, c client.Client,
 	tc *cloudflarev1alpha1.TunnelConfiguration) (string, bool, *conditionError) {
 	tunnel := &cloudflarev1alpha1.Tunnel{}
 	key := types.NamespacedName{Name: tc.Spec.TunnelRef.Name, Namespace: tc.Namespace}
-	if err := c.Get(ctx, key, tunnel); err != nil {
+	what := fmt.Sprintf("Tunnel %q", key.Name)
+	err := c.Get(ctx, key, tunnel)
+	if condErr := outsideReference(ctx, key, tunnel, what, err); condErr != nil {
+		return "", false, condErr
+	}
+	if err != nil {
 		return "", apierrors.IsNotFound(err), &conditionError{
-			Reason: "TunnelNotFound", Message: fmt.Sprintf("Tunnel %q not found: %v", key.Name, err),
+			Reason: "TunnelNotFound", Message: fmt.Sprintf("%s not found: %v", what, err),
 		}
 	}
 	return tunnel.Spec.AccountRef.Name, false, nil

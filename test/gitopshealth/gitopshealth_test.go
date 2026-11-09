@@ -442,6 +442,8 @@ var readyReasons = []struct {
 	{"False", "TokenKeyMissing", ArgoCDDegraded},
 	{"False", "AccountNotAllowed", ArgoCDDegraded},
 	{"False", "InvalidAllowedNamespaces", ArgoCDDegraded},
+	// The account, or a resource referenced, is outside what the installation watches (watchscope.go).
+	{"False", "NotWatched", ArgoCDDegraded},
 
 	// Parents and references.
 	{"False", "ZoneNotFound", ArgoCDProgressing},
@@ -564,7 +566,7 @@ func TestHealthWithoutReady(t *testing.T) {
 }
 
 // readyReasonCalls are the status helpers of internal/controller that take a Ready reason, with the index of its
-// argument.
+// argument, and getReference, which takes the reason of a reference it cannot read.
 var readyReasonCalls = map[string]int{
 	"updateNotReady":       3,
 	"updateReady":          3,
@@ -572,6 +574,7 @@ var readyReasonCalls = map[string]int{
 	"updateReadyCondition": 4,
 	"setReady":             2,
 	"recordReadyChange":    2,
+	"getReference":         5,
 }
 
 // readyReasonFields are the fields of internal/controller's types that hold a Ready reason: a conditionError's or a

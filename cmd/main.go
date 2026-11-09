@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -19,8 +20,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -40,6 +43,11 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+// defaultLeaderElectionID is the Lease that every release before
+// --leader-election-id held, so that upgrading an installation that keeps it
+// never runs two leaders at once.
+const defaultLeaderElectionID = "a634e97e.kflare.dev"
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
@@ -58,11 +66,25 @@ func main() {
 	var reconcileTimeout time.Duration
 	var driftCheckInterval time.Duration
 	var cloudflareRateLimit int
+	var leaderElectionID string
+	var watchNamespaces string
+	var watchSelector string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.StringVar(&leaderElectionID, "leader-election-id", defaultLeaderElectionID,
+		"The name of the Lease, in the manager's namespace, that leader election holds. Installations that share a "+
+			"namespace need one each.")
+	flag.StringVar(&watchNamespaces, "watch-namespaces", "",
+		"The namespaces whose kflare resources this installation manages, separated by commas: it neither watches "+
+			"nor caches anything in other namespaces, Secrets included. It manages a CloudflareAccount only if the "+
+			"account's token Secret is in one of them. Empty manages every namespace.")
+	flag.StringVar(&watchSelector, "watch-selector", "",
+		"A label selector, such as kflare.dev/instance=team-a, that the kflare resources and CloudflareAccounts this "+
+			"installation manages must match: it leaves the others alone, their finalizers included. Empty manages "+
+			"all of them.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", false,
 		"If set, the metrics endpoint is served over HTTPS, and each request must carry a token that the API server "+
 			"authenticates (TokenReview) and authorizes for GET on /metrics (SubjectAccessReview)")
@@ -112,6 +134,25 @@ func main() {
 		setupLog.Error(err, "invalid --cloudflare-rate-limit")
 		os.Exit(1)
 	}
+	if problems := validation.IsDNS1123Subdomain(leaderElectionID); len(problems) > 0 {
+		setupLog.Error(nil, "invalid --leader-election-id", "value", leaderElectionID, "problems", problems)
+		os.Exit(1)
+	}
+
+	restConfig := ctrl.GetConfigOrDie()
+	// The scope reads past the manager's cache, which holds only what the
+	// installation manages, to tell a reference outside it from a missing one.
+	apiReader, err := client.New(restConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		setupLog.Error(err, "unable to create a Kubernetes client")
+		os.Exit(1)
+	}
+	scope, err := controller.NewWatchScope(watchNamespaces, watchSelector, apiReader)
+	if err != nil {
+		setupLog.Error(err, "invalid --watch-namespaces or --watch-selector")
+		os.Exit(1)
+	}
+	setupLog.Info("managing kflare resources", "scope", scope.String())
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -160,17 +201,21 @@ func main() {
 		metricsServerOptions.CertDir = metricsCertPath
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
+		// The cache holds only what the installation manages, and every
+		// reconcile and watch handler gets the scope in its context.
+		Cache:       scope.CacheOptions(scheme),
+		BaseContext: func() context.Context { return controller.WithWatchScope(context.Background(), scope) },
 		// Every controller cancels a reconcile's context after
 		// --reconcile-timeout, which both Cloudflare SDKs and the Kubernetes
 		// client honor.
 		Controller:       config.Controller{ReconciliationTimeout: reconcileTimeout},
 		LeaderElection:   enableLeaderElection,
-		LeaderElectionID: "a634e97e.kflare.dev",
+		LeaderElectionID: leaderElectionID,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -203,7 +248,7 @@ func main() {
 	}
 	//+kubebuilder:scaffold:builder
 
-	if err := controller.SetupMetrics(mgr); err != nil {
+	if err := controller.SetupMetrics(mgr, scope); err != nil {
 		setupLog.Error(err, "unable to set up metrics")
 		os.Exit(1)
 	}

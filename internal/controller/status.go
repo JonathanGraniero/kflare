@@ -226,8 +226,14 @@ func recordReadyChange(obj conditionedObject, status metav1.ConditionStatus, rea
 // recordDeletionWarning records a Warning Event about what deleting obj left
 // undone, for kubectl get events: obj itself is about to go.
 func recordDeletionWarning(obj conditionedObject, reason, message string) {
+	recordWarning(obj, reason, "Delete", message)
+}
+
+// recordWarning records a Warning Event about what action on obj left undone,
+// which obj's Ready condition does not show.
+func recordWarning(obj conditionedObject, reason, action, message string) {
 	if recorder := readyEvents.Load(); recorder != nil && *recorder != nil {
-		(*recorder).Eventf(obj, nil, corev1.EventTypeWarning, reason, "Delete", "%s", eventNote(message))
+		(*recorder).Eventf(obj, nil, corev1.EventTypeWarning, reason, action, "%s", eventNote(message))
 	}
 }
 

@@ -300,11 +300,9 @@ func bindingKVNamespace(ctx context.Context, c client.Client, ws *cloudflarev1al
 	b cloudflarev1alpha1.WorkerBinding) (string, *conditionError) {
 	ref := b.KVNamespaceRef
 	kv := &cloudflarev1alpha1.KVNamespace{}
-	if err := c.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ws.Namespace}, kv); err != nil {
-		return "", &conditionError{
-			Reason:  "KVNamespaceNotFound",
-			Message: fmt.Sprintf("KVNamespace %q for binding %q not found: %v", ref.Name, b.Name, err),
-		}
+	if condErr := getReference(ctx, c, types.NamespacedName{Name: ref.Name, Namespace: ws.Namespace}, kv,
+		fmt.Sprintf("KVNamespace %q for binding %q", ref.Name, b.Name), "KVNamespaceNotFound"); condErr != nil {
+		return "", condErr
 	}
 	if kv.Spec.AccountRef.Name != ws.Spec.AccountRef.Name {
 		return "", &conditionError{
@@ -359,11 +357,9 @@ func bindingR2Bucket(ctx context.Context, c client.Client, ws *cloudflarev1alpha
 	b cloudflarev1alpha1.WorkerBinding) (string, *conditionError) {
 	ref := b.R2BucketRef
 	bucket := &cloudflarev1alpha1.R2Bucket{}
-	if err := c.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ws.Namespace}, bucket); err != nil {
-		return "", &conditionError{
-			Reason:  "R2BucketNotFound",
-			Message: fmt.Sprintf("R2Bucket %q for binding %q not found: %v", ref.Name, b.Name, err),
-		}
+	if condErr := getReference(ctx, c, types.NamespacedName{Name: ref.Name, Namespace: ws.Namespace}, bucket,
+		fmt.Sprintf("R2Bucket %q for binding %q", ref.Name, b.Name), "R2BucketNotFound"); condErr != nil {
+		return "", condErr
 	}
 	if bucket.Spec.AccountRef.Name != ws.Spec.AccountRef.Name {
 		return "", &conditionError{

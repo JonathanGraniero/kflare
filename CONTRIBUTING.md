@@ -129,6 +129,13 @@ sudo sysctl fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288
 sync. `make helm-lint` lints and renders the chart. A new value goes in `values.yaml`, with a comment, and in
 `values.schema.json`.
 
+An installation scoped by `watchNamespaces` grants the RBAC markers' rules in two parts: those on what is cluster-wide
+with its ClusterRole, and the others with a Role in each namespace it watches. `make helm` writes both from
+`config/rbac/role.yaml` with `hack/chartrbac`, into `files/manager-cluster-rules.yaml` and
+`files/manager-namespaced-rules.yaml`. A kflare kind goes by its CRD's scope; a marker on another resource makes the
+command fail until `coreResources` there says where the chart grants it. The controller's envtest specs run managers
+as users that hold only those rules, so a rule a scoped installation lacks fails them.
+
 Artifact Hub lists the chart from its OCI repository. `helm/artifacthub-repo.yml` holds Artifact Hub's ID for that
 repository, which makes kflare a verified publisher there; the `Artifact Hub` workflow pushes it to the chart's
 `artifacthub.io` tag whenever it changes on `main`.

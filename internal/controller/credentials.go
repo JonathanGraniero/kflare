@@ -35,6 +35,9 @@ const reasonAccountNotAllowed = "AccountNotAllowed"
 // in namespace, which the account must allow. This is the only way a resource
 // reaches a token, so what spec.allowedNamespaces says holds for every kind:
 // those that reach an account through a parent use one in their own namespace.
+// So does the installation's scope: a resource uses only an account its
+// installation manages, so that the installation's deletion checks see every
+// resource using the account.
 //
 // When requireReady is true, an account without a Ready=True condition is
 // rejected. Deletion paths pass false so that cleanup can proceed while the
@@ -54,6 +57,10 @@ func resolveAccountToken(
 			Reason:  "AccountNotFound",
 			Message: fmt.Sprintf("CloudflareAccount %q not found: %v", accountName, err),
 		}
+	}
+
+	if why := watchScopeFrom(ctx).accountOutside(account); why != "" {
+		return nil, "", notWatched(fmt.Sprintf("CloudflareAccount %q", accountName), why)
 	}
 
 	if condErr := checkNamespaceAllowed(ctx, c, account, namespace); condErr != nil {
@@ -118,10 +125,12 @@ func restrictsNamespaces(account *cloudflarev1alpha1.CloudflareAccount) bool {
 // nothing waiting: the resource goes, and a Warning Event says that its
 // Cloudflare object stays. Holding the finalizer until someone allows the
 // namespace again would leave the namespace stuck terminating, and calling
-// Cloudflare would use a token the namespace has lost. Anything else is
-// returned for a retry.
+// Cloudflare would use a token the namespace has lost. An account or parent
+// outside what the installation watches ends the same way, for the same
+// reasons: the installation has lost the token. Anything else is returned for
+// a retry.
 func leaveCloudflareObject(ctx context.Context, obj conditionedObject, credErr *conditionError) error {
-	if credErr.Reason != reasonAccountNotAllowed {
+	if credErr.Reason != reasonAccountNotAllowed && credErr.Reason != reasonNotWatched {
 		return credErr
 	}
 	log.FromContext(ctx).Info("Leaving the Cloudflare object of a resource being deleted", "reason", credErr.Message)

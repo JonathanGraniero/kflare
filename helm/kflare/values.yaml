@@ -25,8 +25,8 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
   # -- Average memory use across the pods, as a percentage of
   # resources.requests.memory, above which replicas are added. Empty (the
-  # default) leaves memory out: the leader caches every Secret in the cluster
-  # and the standbys cache nothing, so on a cluster with many Secrets a memory
+  # default) leaves memory out: the leader caches every Secret it watches and
+  # the standbys cache nothing, so on a cluster with many Secrets a memory
   # target adds standbys that stay, as the leader's memory does not go down.
   targetMemoryUtilizationPercentage:
   # -- The autoscaler's scaling behavior (a HorizontalPodAutoscalerBehavior).
@@ -76,9 +76,32 @@ serviceAccount:
   # -- Annotations for the ServiceAccount.
   annotations: {}
 
+# -- Namespaces whose kflare resources this installation manages, such as
+# [team-a, team-b]. The controller neither watches nor caches anything in
+# other namespaces, Secrets included, and with rbac.namespaced it holds its
+# permissions on Secrets in these namespaces only. It manages a
+# CloudflareAccount only if the account's token Secret is in one of them, so
+# list the namespace of each token Secret too. Empty manages every namespace.
+# See the deploy guide's Scoping an installation.
+watchNamespaces: []
+
+# -- A label selector, in kubectl's --selector syntax, that the kflare
+# resources and CloudflareAccounts this installation manages must match, such
+# as kflare.dev/instance=team-a. It leaves the others alone, their finalizers
+# included, so that several installations can share a cluster and its
+# namespaces. Empty manages all of them.
+watchSelector: ""
+
 rbac:
   # -- Create the ClusterRole/Role and bindings the controller needs.
   create: true
+  # -- With watchNamespaces, grant the controller its permissions on Secrets,
+  # ConfigMaps and kflare's namespaced kinds with a Role and a RoleBinding in
+  # each of those namespaces, which must exist before the chart is installed,
+  # and keep its ClusterRole to what is cluster-wide: CloudflareAccounts,
+  # reading Namespaces, Events and the metrics reviews. false grants
+  # everything with the ClusterRole, as without watchNamespaces.
+  namespaced: true
   # -- Create ClusterRoles that add read access to kflare resources to the
   # built-in `view` role, and write access to the namespaced kinds to `edit`
   # and `admin`. CloudflareAccount is never aggregated into `edit`: it points
@@ -88,6 +111,12 @@ rbac:
 # -- Run with leader election. Keep it on whenever replicaCount > 1, and when
 # rolling updates can briefly run two pods.
 leaderElection: true
+# -- The name of the Lease, in the release namespace, that leader election
+# holds. Empty: a634e97e.kflare.dev, the name earlier releases used, for an
+# installation without watchNamespaces or watchSelector, so that upgrading
+# it never runs two leaders at once; `<fullname>.kflare.dev` for one with
+# either, so that installations sharing a namespace each have their own.
+leaderElectionID: ""
 
 # -- What deleting a kflare resource without a kflare.dev/deletion-policy
 # annotation does to the Cloudflare object kflare created for it: delete it,
@@ -210,9 +239,11 @@ healthPort: 8081
 # of: an idle leader uses about 4m, and one with 5,000 resources reconciled
 # every minute about 50m. The CPU limit is above every burst measured but
 # one of a few seconds, and Go runs 2 threads under it. The leader caches
-# every Secret in the cluster: it needs about 16Mi, plus one and a half times
-# the size of `kubectl get secrets -A -o json`, plus 15Ki per kflare resource.
-# The memory limit fits about 250Mi of Secrets; raise both for more.
+# every Secret in the namespaces it watches (watchNamespaces; the whole
+# cluster without them): it needs about 16Mi, plus one and a half times the
+# size of `kubectl get secrets -A -o json` (or -n for each namespace), plus
+# 15Ki per kflare resource. The memory limit fits about 250Mi of Secrets;
+# raise both for more.
 resources:
   requests:
     cpu: 100m

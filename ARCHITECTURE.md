@@ -45,6 +45,19 @@ selector also turns the account `Ready=False` with reason `InvalidAllowedNamespa
 check one. A kind that names its account follows the account and the labels of its namespace through watches. A zone's
 kind follows its Zone, which does the same. Without a selector, relabelling a namespace reconciles nothing.
 
+An installation can be scoped, so that several share a cluster: to the namespaces `--watch-namespaces` lists, and to
+the resources whose labels match `--watch-selector` (`internal/controller/watchscope.go`). The manager's cache then
+holds only the kflare resources of its scope, and the Secrets and ConfigMaps of the namespaces it watches, so its
+controllers never see another installation's resources, nor their finalizers. Every installation caches every
+`CloudflareAccount`, and manages those whose labels match its selector and whose token Secret is in a namespace it
+watches: the tokens it can read. Two installations whose scopes do not overlap therefore never manage one account. A
+resource uses only an account its installation manages, which `resolveAccountToken` checks first: so the account's
+deletion, which waits for every resource that uses it, sees them all, and releasing its token Secret sees every account
+of every installation that uses the Secret. A reference to a resource the selector leaves out, which the cache does not
+hold, is told from a missing one by a read past the cache (`getReference`). Either way the resource reports
+`NotWatched`, and kflare makes no Cloudflare call for it. The scope reaches every reconcile and watch handler through
+their context, which derives from the manager's base context.
+
 Each controller declares a narrow interface over the Cloudflare SDK (for example `DNSRecordAPI`) holding only the calls it
 makes. The production client (`pkg/cloudflare.Client`) embeds cloudflare-go v0 and satisfies all of them, except those of
 the generated kinds, such as `KVNamespaceAPI`, and of the rule kinds (`RulesetRuleAPI`): each is part of a cloudflare-go
@@ -58,7 +71,8 @@ Every controller follows the same shape:
 2. Handle deletion if the resource is being deleted (see [Deletion](#deletion)).
 3. Add the `kflare.dev/finalizer` finalizer and return; the update re-triggers the reconcile.
 4. Resolve the parent resource and credentials. If the parent is missing or not ready, report `Ready=False` and wait
-   for the parent's watch event.
+   for the parent's watch event; if it, or the account, is outside the installation's scope, report `NotWatched`
+   (see [Resource model](#resource-model)).
 5. Observe: fetch the Cloudflare resource by the ID stored in status (a rule: by its ref, see [Rules](#rules)). If there
    is no ID, or Cloudflare says it no longer exists, look for an existing resource with the same key: the resource's
    own, one to adopt if its adoption policy allows, or none, and then create one (see
@@ -416,7 +430,8 @@ plan allows) as a 400, often without an error code. These are terminal like any 
 Cloudflare's message.
 
 Failures caused by something a resource does not watch, such as a missing account or token Secret, retry every minute
-with reason `AccountNotFound`, `AccountNotReady`, `SecretNotFound` or `TokenKeyMissing`. So does a managed ruleset that
+with reason `AccountNotFound`, `AccountNotReady`, `SecretNotFound` or `TokenKeyMissing`, and so does an account outside
+the installation's scope, with reason `NotWatched`. So does a managed ruleset that
 another rule already deploys, with reason `RulesetConflict`, and a ManagedTransform whose zone another one configures,
 with reason `AlreadyConfigured`. Terminal errors are also
 retried by the 10-hour resync.
@@ -581,6 +596,11 @@ its Cloudflare object stays. A Warning Event with reason `AccountNotAllowed` say
 someone allows the namespace again would leave the namespace stuck terminating, and calling Cloudflare would use a token
 the namespace has lost.
 
+So does a resource whose account, or whose Zone or Tunnel, is outside its installation's scope, for the same reasons,
+with a Warning Event with reason `NotWatched`: the installation has lost the token. A token Secret in a namespace the
+installation no longer watches, which an account protected before its `spec.tokenSecretRef` moved, cannot be released
+by it: the Secret keeps `kflare.dev/token-protection`, and a Warning Event on the account says so.
+
 ## Known limitations
 
 - **Drift is corrected promptly only with a drift check interval.** Without `--drift-check-interval`, the default,
@@ -601,6 +621,10 @@ the namespace has lost.
   ref marks them (see [Rules](#rules)).
 - **Rule order covers kflare's rules only.** A rule created outside kflare keeps its place, so it cannot be ordered
   relative to kflare's rules.
+- **An installation sees its own scope only.** What keeps two resources from managing one Cloudflare object (claims,
+  settings owners, a phase's rule order) compares resources of one installation, so two installations managing the
+  same account or zone can each adopt an object, configure the zone's settings, or order their rules without regard to
+  each other's. Overlapping scopes are not detected either: both installations reconcile what both select.
 - **Three kinds are pinned to the legacy SDK.** Zone, TunnelConfiguration and WorkerScript call cloudflare-go v0.119,
   the newest of the v0 line; every other kind uses the generated SDK, v7. Some limitations come from v0.119:
   `originRequest` timeouts are not exposed because `TunnelDuration` does not round-trip, and a WorkerScript binds only

@@ -69,11 +69,26 @@
         }
       }
     },
+    "watchNamespaces": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 63,
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+      }
+    },
+    "watchSelector": {
+      "type": "string"
+    },
     "rbac": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "create": {
+          "type": "boolean"
+        },
+        "namespaced": {
           "type": "boolean"
         },
         "aggregateToDefaultRoles": {
@@ -83,6 +98,11 @@
     },
     "leaderElection": {
       "type": "boolean"
+    },
+    "leaderElectionID": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
     },
     "defaultDeletionPolicy": {
       "type": "string",

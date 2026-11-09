@@ -9,7 +9,9 @@ helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
   --version <version> --namespace kflare-system --create-namespace
 ```
 
-Requires Kubernetes 1.34 or newer and Helm 3.8 or newer. Install one release per cluster.
+Requires Kubernetes 1.34 or newer and Helm 3.8 or newer. Install one release per cluster, or several, each limited to
+namespaces or labels of its own with `watchNamespaces` and `watchSelector`
+([deploy guide](https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#scoping-an-installation)).
 
 From 0.2.1, the chart and the controller image are signed with cosign, keyless, and the image comes
 with SBOMs and provenance. The deploy guide's
@@ -24,7 +26,8 @@ accounts, installing with Argo CD or Flux, running in production, upgrades and u
 
 - The kflare CRDs, as templates so that upgrades upgrade them, kept on uninstall (`crds.keep`)
 - The controller Deployment and its ServiceAccount, under the restricted Pod Security Standard
-- A ClusterRole for the controller, and a Role for leader election in the release namespace
+- A ClusterRole for the controller, and a Role for leader election in the release namespace; with `watchNamespaces`,
+  a Role in each of them instead for what is not cluster-wide
 - Optionally, ClusterRoles that add kflare's kinds to the built-in `view`, `edit` and `admin` roles
 - A Service for metrics, served over HTTPS to callers allowed by the `<release>-metrics-reader` ClusterRole, and
   optionally a Prometheus Operator ServiceMonitor
@@ -54,10 +57,14 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `autoscaling.targetCPUUtilizationPercentage` | `80` | Average CPU use, as a share of `resources.requests.cpu`, above which replicas are added |
 | `autoscaling.targetMemoryUtilizationPercentage` | unset | The same for memory, off by default |
 | `autoscaling.behavior` | scale up after 2 minutes above target | The autoscaler's scale-up and scale-down behavior |
-| `crds.enabled` | `true` | Install and upgrade the CRDs with the chart |
+| `crds.enabled` | `true` | Install and upgrade the CRDs with the chart; `false` for every release but one in a cluster |
 | `crds.keep` | `true` | Keep the CRDs on uninstall |
+| `watchNamespaces` | `[]` (all) | Namespaces whose kflare resources the release manages, and whose Secrets alone it reads |
+| `watchSelector` | unset (all) | A label selector, such as `kflare.dev/instance=team-a`, that its resources and accounts must match |
+| `rbac.namespaced` | `true` | With `watchNamespaces`, grant the controller its permissions with a Role in each namespace |
 | `rbac.aggregateToDefaultRoles` | `true` | Extend the built-in `view`/`edit`/`admin` roles |
 | `leaderElection` | `true` | Run with leader election |
+| `leaderElectionID` | the release's, when scoped | The leader election Lease's name |
 | `defaultDeletionPolicy` | `delete` | `retain` keeps the Cloudflare objects of deleted resources, unless they say `delete` |
 | `reconcileTimeout` | `5m` | How long a reconcile may run before it ends with `APIError` and is retried; `0s` turns it off |
 | `driftCheckInterval` | unset (off) | Check each resource against Cloudflare this often, such as `30m`, to correct changes made outside kflare |

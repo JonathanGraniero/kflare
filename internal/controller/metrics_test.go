@@ -357,7 +357,7 @@ var _ = Describe("kflare's metrics", func() {
 				return nil
 			})
 			registry := prometheus.NewPedanticRegistry()
-			registry.MustRegister(newResourceCollector(reader, scheme.Scheme, closedChannel()))
+			registry.MustRegister(newResourceCollector(reader, scheme.Scheme, closedChannel(), WatchScope{}))
 			series := func() map[string]float64 { return resourceSeries(registry, "KVNamespace") }
 			Eventually(series, "20s").Should(BeEmpty(), "another spec left KVNamespaces behind")
 
@@ -399,7 +399,7 @@ var _ = Describe("kflare's metrics", func() {
 				options = opts
 				return k8sClient.List(ctx, list)
 			})
-			Expect(resourceSeries(testGatherer(newResourceCollector(reader, scheme.Scheme, closedChannel())),
+			Expect(resourceSeries(testGatherer(newResourceCollector(reader, scheme.Scheme, closedChannel(), WatchScope{})),
 				"KVNamespace")).To(HaveKey("Unknown/"))
 			Expect(options).To(ContainElement(client.UnsafeDisableDeepCopy),
 				"a scrape would copy every resource to read one condition of each")
@@ -416,7 +416,7 @@ var _ = Describe("kflare's metrics", func() {
 				return k8sClient.List(ctx, list)
 			})
 			elected := make(chan struct{})
-			collector := newResourceCollector(reader, scheme.Scheme, elected)
+			collector := newResourceCollector(reader, scheme.Scheme, elected, WatchScope{})
 
 			Expect(resourceSeries(testGatherer(collector), "KVNamespace")).To(BeEmpty())
 			Expect(lists).To(BeZero(), "a list on a standby starts an informer for every kind")
@@ -444,7 +444,7 @@ var _ = Describe("kflare's metrics", func() {
 				}
 				return k8sClient.List(ctx, list)
 			})
-			gatherer := testGatherer(newResourceCollector(reader, scheme.Scheme, closedChannel()))
+			gatherer := testGatherer(newResourceCollector(reader, scheme.Scheme, closedChannel(), WatchScope{}))
 			Expect(resourceSeries(gatherer, "D1Database")).To(BeEmpty())
 			Expect(resourceSeries(gatherer, "KVNamespace")).To(HaveKey("Unknown/"))
 		})
@@ -456,7 +456,7 @@ var _ = Describe("kflare's metrics", func() {
 				return ctx.Err()
 			})
 			start := time.Now()
-			_, err := testGatherer(newResourceCollector(reader, scheme.Scheme, closedChannel())).Gather()
+			_, err := testGatherer(newResourceCollector(reader, scheme.Scheme, closedChannel(), WatchScope{})).Gather()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(deadline).To(BeTemporally("~", start.Add(collectTimeout), time.Second))
 		})
@@ -479,12 +479,12 @@ var _ = Describe("kflare's metrics", func() {
 
 		It("is served once with the others, and starts every kind's corrections at 0", func() {
 			startManager(ctx, func(mgr manager.Manager) error {
-				Expect(SetupMetrics(mgr)).To(Succeed())
+				Expect(SetupMetrics(mgr, WatchScope{})).To(Succeed())
 				DeferCleanup(func() {
-					metrics.Registry.Unregister(newResourceCollector(mgr.GetClient(), mgr.GetScheme(), mgr.Elected()))
+					metrics.Registry.Unregister(newResourceCollector(mgr.GetClient(), mgr.GetScheme(), mgr.Elected(), WatchScope{}))
 				})
 				var registered prometheus.AlreadyRegisteredError
-				Expect(errors.As(SetupMetrics(mgr), &registered)).To(BeTrue(), "the second call must say so")
+				Expect(errors.As(SetupMetrics(mgr, WatchScope{}), &registered)).To(BeTrue(), "the second call must say so")
 				return nil
 			})
 			obj := kvNamespace("metrics-served")

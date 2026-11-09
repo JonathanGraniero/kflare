@@ -20,8 +20,9 @@ local needsPerson = {
   -- Cloudflare refused the request (4xx), or kflare cannot build a client from the token
   TerminalError = true,
   InvalidToken = true,
-  -- The CloudflareAccount, or a reference, does not fit
+  -- The CloudflareAccount, or a reference, does not fit, or is outside the installation's scope
   AccountNotAllowed = true,
+  NotWatched = true,
   AccountMismatch = true,
   InvalidAllowedNamespaces = true,
   R2BucketJurisdictionUnsupported = true,

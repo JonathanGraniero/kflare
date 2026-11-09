@@ -12,6 +12,28 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 
 ## Unreleased
 
+### Scoping an installation
+
+- **An installation can be limited to some namespaces.** The chart's `watchNamespaces` lists them (the controller's
+  `--watch-namespaces`): the controller neither watches nor caches anything elsewhere, Secrets included, and the chart
+  grants its permissions on Secrets, ConfigMaps and the kflare kinds with a Role in each of them, keeping its
+  ClusterRole to `CloudflareAccount`s, reading Namespaces and creating Events (`rbac.namespaced`, on by default). It
+  manages the `CloudflareAccount`s whose token Secret is in one of them
+  ([deploy guide](docs/deploy.md#scoping-an-installation), [#79](https://github.com/JonathanGraniero/kflare/issues/79))
+- **Or to the resources that carry some labels.** With `watchSelector` (`--watch-selector`), such as
+  `kflare.dev/instance=team-a`, an installation manages only the kflare resources and `CloudflareAccount`s whose labels
+  match, and leaves the others alone, their finalizers included
+- **Several installations can share a cluster**, each scoped to namespaces or labels of its own, for a team's or an
+  environment's own token, permissions and blast radius. Every release but one sets `crds.enabled: false`, and the
+  chart names a scoped installation's leader election Lease after its release, so that installations sharing a
+  namespace each lead: `leaderElectionID` (`--leader-election-id`) names it yourself
+  ([deploy guide](docs/deploy.md#several-installations-in-one-cluster))
+- **A new reason, `NotWatched`,** reports a resource whose `CloudflareAccount`, `Zone` or other reference is outside
+  its installation's scope, and kflare makes no Cloudflare call for it. The deploy guide's Argo CD and Flux health
+  checks report it Degraded and Failed: update your copies of them before you scope an installation
+- **Nothing changes without them.** An installation with neither value renders as before, and keeps its leader
+  election Lease, so upgrading it never runs two leaders
+
 ### Releases
 
 - **Merging a version bump releases it.** Once CI and E2E pass on the merge commit, the `Tag release` workflow tags

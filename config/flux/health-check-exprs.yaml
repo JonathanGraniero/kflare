@@ -10,7 +10,7 @@
   failed: >-
     status.conditions.exists(c, c.type == 'Ready' && c.status == 'False'
     && c.observedGeneration == metadata.generation
-    && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'AccountMismatch',
+    && c.reason in ['TerminalError', 'InvalidToken', 'AccountNotAllowed', 'NotWatched', 'AccountMismatch',
     'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing',
     'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict',
     'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured',

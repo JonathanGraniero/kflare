@@ -122,8 +122,11 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
   waves wait for one to be ready.
 - **Releases are signed** (from v0.2.1): the image and the chart with cosign, keyless, with SBOMs
   and provenance, so that cosign, an admission policy or Flux can check them; the guide has a Kyverno policy.
-- **One installation per cluster**, with leader election. A HorizontalPodAutoscaler adds standby replicas while the
-  leader is busy, and `autoscaling.minReplicas: 2` keeps one at all times for a quick failover.
+- **One installation per cluster, or one per team.** An installation can be limited to some namespaces, with
+  permissions on those alone, or to resources with some labels, so that several share a cluster
+  ([deploy guide](docs/deploy.md#scoping-an-installation)). Each runs with leader election: a HorizontalPodAutoscaler
+  adds standby replicas while the leader is busy, and `autoscaling.minReplicas: 2` keeps one at all times for a quick
+  failover.
 - **kflare never takes over what it did not create**, unless a resource asks with the
   `kflare.dev/adoption-policy` annotation. Objects it adopted are kept when their resource is deleted, and
   `kflare.dev/deletion-policy: retain` keeps any object, for zones and storage that must outlive a manifest.
