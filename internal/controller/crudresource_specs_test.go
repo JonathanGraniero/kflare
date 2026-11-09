@@ -601,6 +601,22 @@ func (e *crudSpecEnv[O, A, R, L]) failGets(name string, err error) {
 	e.r = e.t.newReconciler(failing, func(string) (A, error) { return e.t.newFake(e.store), nil })
 }
 
+// failAccountLists gives the spec a reconciler whose lists of
+// CloudflareAccounts fail with err.
+func (e *crudSpecEnv[O, A, R, L]) failAccountLists(err error) {
+	base, clientErr := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+	Expect(clientErr).NotTo(HaveOccurred())
+	failing := interceptor.NewClient(base, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*cloudflarev1alpha1.CloudflareAccountList); ok {
+				return err
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+	e.r = e.t.newReconciler(failing, func(string) (A, error) { return e.t.newFake(e.store), nil })
+}
+
 // runManager runs the kind's reconciler in a manager, on the spec's fake
 // store, until the spec ends, so that its watches reconcile the resource.
 func (e *crudSpecEnv[O, A, R, L]) runManager() {
@@ -1206,6 +1222,54 @@ func describeCRUDWatchScope[O conditionedObject, A any, R any, L any](e *crudSpe
 			reconcileIn(watching())
 			Expect(e.store.objects).To(HaveLen(1))
 			Expect(ready().Reason).To(Equal("Synced"))
+		})
+
+		It("names, in AlreadyExists, the account through which another installation may manage the "+k.noun,
+			func() {
+				e.createParent(true)
+				// Another CloudflareAccount for the same Cloudflare account, whose
+				// token Secret is in a namespace this installation does not watch.
+				other := &cloudflarev1alpha1.CloudflareAccount{
+					ObjectMeta: metav1.ObjectMeta{Name: e.otherAccountName},
+					Spec: cloudflarev1alpha1.CloudflareAccountSpec{
+						AccountID: e.accountID,
+						TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: e.secretName, Namespace: elsewhere,
+							Key: "CF_API_TOKEN"},
+					},
+				}
+				Expect(k8sClient.Create(ctx, other)).To(Succeed())
+				obj := create(key, nil)
+				e.seed("existing", k.key(obj))
+				reconcileIn(watching())
+				Expect(ready().Reason).To(Equal(reasonAlreadyExists))
+				Expect(ready().Message).To(ContainSubstring(k.key(obj)))
+				Expect(ready().Message).To(HaveSuffix(fmt.Sprintf(` already exists, and this kflare installation `+
+					`did not create it. Another installation may manage it through CloudflareAccount %q, which uses `+
+					`the same Cloudflare account but is outside what this installation watches. Set the annotation `+
+					`%s: %s to manage it here only if none does: two installations would then manage it`,
+					e.otherAccountName, reconciler.AdoptionPolicyAnnotation, reconciler.AdoptionPolicyAdopt)))
+				Expect(e.store.writes).To(BeZero())
+				Expect(get().GetLabels()).NotTo(HaveKey(k.claimLabel))
+
+				By("saying only that kflare did not create it once this installation manages that account too")
+				other.Spec.TokenSecretRef.Namespace = crudSpecNamespace
+				Expect(k8sClient.Update(ctx, other)).To(Succeed())
+				reconcileIn(watching())
+				Expect(ready().Reason).To(Equal(reasonAlreadyExists))
+				Expect(ready().Message).To(HaveSuffix(fmt.Sprintf(" already exists and kflare did not create it. To "+
+					"manage it, set the annotation %s: %s", reconciler.AdoptionPolicyAnnotation,
+					reconciler.AdoptionPolicyAdopt)))
+				Expect(e.store.writes).To(BeZero())
+			})
+
+		It("returns the error of listing the CloudflareAccounts when it may not adopt the "+k.noun, func() {
+			e.createParent(true)
+			obj := create(key, nil)
+			e.seed("existing", k.key(obj))
+			e.failAccountLists(errors.New("accounts unavailable"))
+			_, err := e.r.Reconcile(WithWatchScope(ctx, watching()), reconcile.Request{NamespacedName: key})
+			Expect(err).To(MatchError("accounts unavailable"))
+			Expect(e.store.writes).To(BeZero())
 		})
 
 		It("stops at a parent its installation's selector no longer matches", func() {

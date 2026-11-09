@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,8 +30,9 @@ import (
 // installation's, or nobody's.
 const reasonNotWatched = "NotWatched"
 
-// maxListedNamespaces caps how many watched namespaces a message names.
-const maxListedNamespaces = 5
+// maxListed caps how many names, of namespaces or CloudflareAccounts, a
+// message lists.
+const maxListed = 5
 
 // WatchScope is what one kflare installation manages, so that several can
 // share a cluster: the resources in the namespaces it watches whose labels
@@ -176,10 +178,50 @@ func (s WatchScope) labelsOutside() string {
 func (s WatchScope) namespacesOutside() string {
 	listed := s.namespaces
 	more := ""
-	if len(listed) > maxListedNamespaces {
-		listed, more = listed[:maxListedNamespaces], fmt.Sprintf(" and %d more", len(s.namespaces)-maxListedNamespaces)
+	if len(listed) > maxListed {
+		listed, more = listed[:maxListed], fmt.Sprintf(" and %d more", len(s.namespaces)-maxListed)
 	}
 	return fmt.Sprintf("this installation does not watch (it watches %s%s)", strings.Join(listed, ", "), more)
+}
+
+// accountsElsewhere returns the names of the CloudflareAccounts for the
+// Cloudflare account accountID that this installation does not manage,
+// sorted. Another installation may manage objects of that Cloudflare account
+// through one of them, which this one cannot tell: what keeps two resources
+// from managing one object, a claim or a settings owner, counts the resources
+// of one installation only. Every installation caches every account.
+func (s WatchScope) accountsElsewhere(ctx context.Context, c client.Reader, accountID string) ([]string, error) {
+	accounts := &cloudflarev1alpha1.CloudflareAccountList{}
+	if err := c.List(ctx, accounts); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(accounts.Items))
+	for i := range accounts.Items {
+		if account := &accounts.Items[i]; account.Spec.AccountID == accountID && s.accountOutside(account) != "" {
+			names = append(names, account.Name)
+		}
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
+// eitherOf lists names, quoted, for a sentence that means any one of them:
+// "a", "a" or "b", "a", "b" or "c". It lists maxListed of them at most, and
+// then how many more there are.
+func eitherOf(names []string) string {
+	listed := names[:min(len(names), maxListed)]
+	quoted := make([]string, len(listed))
+	for i, name := range listed {
+		quoted[i] = strconv.Quote(name)
+	}
+	if more := len(names) - len(listed); more > 0 {
+		return fmt.Sprintf("%s or %d more", strings.Join(quoted, ", "), more)
+	}
+	last := len(quoted) - 1
+	if last < 1 {
+		return strings.Join(quoted, "")
+	}
+	return strings.Join(quoted[:last], ", ") + " or " + quoted[last]
 }
 
 // notWatched returns the condition of a resource that needs what, such as

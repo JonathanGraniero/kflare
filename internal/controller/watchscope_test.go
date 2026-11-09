@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -22,6 +23,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -305,6 +307,67 @@ var _ = Describe("An installation's scope and its CloudflareAccounts", func() {
 			Entry("by its token Secret's namespace", "team-a", "", scopedAccount("scoped", nil, "kflare-system"),
 				`its token Secret is in namespace "kflare-system", which this installation does not watch (it `+
 					`watches team-a)`),
+		)
+	})
+
+	Describe("accountsElsewhere", func() {
+		// account returns the CloudflareAccount name for the Cloudflare account
+		// id, with labels and its token Secret in secretNamespace.
+		account := func(name, id string, labels map[string]string,
+			secretNamespace string) cloudflarev1alpha1.CloudflareAccount {
+			account := scopedAccount(name, labels, secretNamespace)
+			account.Spec.AccountID = id
+			return *account
+		}
+		// listing returns a client whose list of CloudflareAccounts gives
+		// accounts in their order, or err.
+		listing := func(err error, accounts ...cloudflarev1alpha1.CloudflareAccount) client.Client {
+			return interceptor.NewClient(fake.NewClientBuilder().WithScheme(scheme.Scheme).Build(), interceptor.Funcs{
+				List: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
+					list.(*cloudflarev1alpha1.CloudflareAccountList).Items = accounts
+					return err
+				},
+			})
+		}
+
+		It("names the other accounts for the Cloudflare account that the installation does not manage, sorted",
+			func() {
+				c := listing(nil,
+					account("theirs-z", "acct-1", labelled, "team-b"),
+					account("mine", "acct-1", labelled, "team-a"),
+					account("unlabelled", "acct-1", nil, "team-a"),
+					account("theirs-a", "acct-1", labelled, "kflare-system"),
+					account("other-cloudflare-account", "acct-2", labelled, "team-b"),
+				)
+				scope := mustWatchScope("team-a", instanceLabel+"=a", nil)
+				names, err := scope.accountsElsewhere(ctx, c, "acct-1")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(names).To(Equal([]string{"theirs-a", "theirs-z", "unlabelled"}))
+			})
+
+		It("names none in the zero scope, which manages every account", func() {
+			c := listing(nil, account("mine", "acct-1", nil, "team-a"), account("other", "acct-1", nil, "team-b"))
+			names, err := WatchScope{}.accountsElsewhere(ctx, c, "acct-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(names).To(BeEmpty())
+		})
+
+		It("returns the list error", func() {
+			_, err := mustWatchScope("team-a", "", nil).accountsElsewhere(ctx, listing(errors.New("no list")),
+				"acct-1")
+			Expect(err).To(MatchError("no list"))
+		})
+
+		DescribeTable("lists names for a sentence that means any one of them",
+			func(names []string, want string) {
+				Expect(eitherOf(names)).To(Equal(want))
+			},
+			Entry("none", nil, ""),
+			Entry("one", []string{"a"}, `"a"`),
+			Entry("two", []string{"a", "b"}, `"a" or "b"`),
+			Entry("five", []string{"a", "b", "c", "d", "e"}, `"a", "b", "c", "d" or "e"`),
+			Entry("five at most, and how many more", []string{"a", "b", "c", "d", "e", "f", "g"},
+				`"a", "b", "c", "d", "e" or 2 more`),
 		)
 	})
 

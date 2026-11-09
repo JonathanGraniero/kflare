@@ -592,8 +592,14 @@ var _ = Describe("Ruleset rules", func() {
 		api = newFakeRulesetAPI()
 	})
 
+	// sync syncs rule with peers, which with rule are the resources the
+	// installation manages.
 	sync := func(rule rulesets.RulesetNewParamsRule, peers ...rulesetRulePeer) (rulesetRuleState, error) {
-		return syncRulesetRule(ctx, api.api(), rulesTestZone, rulesTestPhase, rule, peers)
+		known := map[string]bool{rule.Ref.Value: true}
+		for _, peer := range peers {
+			known[peer.ref] = true
+		}
+		return syncRulesetRule(ctx, api.api(), rulesTestZone, rulesTestPhase, rule, peers, known)
 	}
 
 	Describe("refs", func() {
@@ -691,13 +697,14 @@ var _ = Describe("Ruleset rules", func() {
 
 		It("counts the latest version, which Cloudflare records for an execute rule, as set", func() {
 			deploy := executeRule("kflare-managed", freeManagedRulesetID)
-			_, err := syncRulesetRule(ctx, api.api(), rulesTestZone, managedPhase, deploy, nil)
+			known := map[string]bool{"kflare-managed": true}
+			_, err := syncRulesetRule(ctx, api.api(), rulesTestZone, managedPhase, deploy, nil, known)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(api.entrypointIn(managedPhase).rules[0].jsonOf("action_parameters")).To(
 				MatchJSON(`{"id":"` + freeManagedRulesetID + `","version":"latest"}`))
 			writes := api.writes
 
-			state, err := syncRulesetRule(ctx, api.api(), rulesTestZone, managedPhase, deploy, nil)
+			state, err := syncRulesetRule(ctx, api.api(), rulesTestZone, managedPhase, deploy, nil, known)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.wrote).To(BeFalse())
 			Expect(api.writes).To(Equal(writes))
@@ -721,6 +728,21 @@ var _ = Describe("Ruleset rules", func() {
 			Expect(rule).To(HaveKeyWithValue("expression", `http.request.uri.path eq "/a"`))
 			Expect(rule).To(HaveKeyWithValue("enabled", true))
 		})
+
+		It("reports the rules kflare wrote for resources the installation does not manage, and leaves them in place",
+			func() {
+				api.seed(blockRule("kflare-other", "/other"), blockRule("someone-else", "/x"))
+				state, err := sync(blockRule("kflare-a", "/a"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state.others).To(BeTrue())
+				Expect(refs(api.entrypoint().rules)).To(Equal([]string{"kflare-other", "someone-else", "kflare-a"}))
+
+				By("leaving out the rules it knows, as a paused resource's, and rules created outside kflare")
+				state, err = syncRulesetRule(ctx, api.api(), rulesTestZone, rulesTestPhase, blockRule("kflare-a", "/a"),
+					nil, map[string]bool{"kflare-a": true, "kflare-other": true})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state.others).To(BeFalse())
+			})
 
 		It("adds its rule when another resource created the entry point first", func() {
 			api.before = func(call string) {

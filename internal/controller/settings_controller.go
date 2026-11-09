@@ -183,14 +183,14 @@ func (r *settingsReconciler[A]) reconcile(ctx context.Context, req ctrl.Request)
 		return invalidToken(ctx, r.Client, obj, err)
 	}
 
-	return r.sync(ctx, obj, zoneID, api)
+	return r.sync(ctx, obj, account.Spec.AccountID, zoneID, api)
 }
 
 // sync drives the desired→observed→delta→reconcile loop for one resource: it
-// reads the zone's settings and writes those the spec sets only when they
-// differ.
-func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, zoneID string, api A) (ctrl.Result,
-	error) {
+// reads the settings of the zone zoneID, of the Cloudflare account accountID,
+// and writes those the spec sets only when they differ.
+func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, accountID, zoneID string,
+	api A) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	k := r.kind
 
@@ -221,7 +221,11 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, zo
 				return ctrl.Result{}, err
 			}
 		case !creating(obj, zoneID):
-			if condErr := mayAdopt(obj, what); condErr != nil {
+			elsewhere, err := watchScopeFrom(ctx).accountsElsewhere(ctx, r.Client, accountID)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if condErr := mayAdopt(obj, what, elsewhere); condErr != nil {
 				return notReadyRetryAfter(ctx, r.Client, obj, condErr)
 			}
 			adopting = true

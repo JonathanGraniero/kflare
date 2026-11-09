@@ -41,6 +41,11 @@ import (
 // rules at the same time, from an older view of the cluster.
 const rulesetRuleRecheckInterval = 10 * time.Second
 
+// reasonOtherKflareRules is the reason of the Warning Event of a resource
+// whose phase holds rules kflare wrote for resources its installation does
+// not manage, which kflare leaves in place rather than order with its rule.
+const reasonOtherKflareRules = "OtherKflareRules"
+
 // rulesetRuleObject is a kflare resource that manages one rule in a zone's
 // Rulesets phase. Every rule kind's API type implements it.
 type rulesetRuleObject interface {
@@ -162,14 +167,14 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	zoneID, phase := zone.Status.CloudflareMetadata.ZoneID, r.kind.phase(obj)
-	peers, err := r.peers(ctx, zoneID, phase)
+	peers, known, err := r.peers(ctx, zoneID, phase)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	ref := rulesetRuleRef(r.kind.name, obj.GetNamespace(), obj.GetName())
 	rule := r.kind.definition(obj)
 	rule.Ref.Value, rule.Ref.Present = ref, true
-	state, err := syncRulesetRule(ctx, cfAPI, zoneID, phase, rule, peers)
+	state, err := syncRulesetRule(ctx, cfAPI, zoneID, phase, rule, peers, known)
 	if reason, ok := r.kind.conflict(err); ok {
 		return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
 			Reason:  reason,
@@ -187,6 +192,12 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	}
 	if state.wrote || state.moved {
 		recordDriftCorrection(r.kind.name, obj)
+	}
+	if state.others {
+		recordWarning(obj, reasonOtherKflareRules, "Order", fmt.Sprintf("Zone %q's %s phase also holds rules that "+
+			"kflare wrote for resources this installation does not manage: another installation's, which may run in "+
+			"another cluster, or rules kept by a deletion with the retain policy. kflare orders this rule only among "+
+			"this installation's rules, and leaves those where they are", zoneKey.Name, phase))
 	}
 
 	obj.GetRulesetRuleStatus().CloudflareMetadata = cloudflarev1alpha1.RulesetRuleCloudflareMetadata{
@@ -211,9 +222,15 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 // are left out: their rules are about to go. So are paused resources, whose
 // rules kflare leaves alone: they keep their place, as rules created outside
 // kflare do, rather than being moved by another rule's sync.
+//
+// known holds the refs of the rules of every resource of those kinds that the
+// installation manages, whatever its zone, paused and being deleted ones
+// included: a rule kflare wrote whose ref is not among them is another
+// installation's, or was kept by a deletion with the retain policy.
 func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase rulesets.Phase) ([]rulesetRulePeer,
-	error) {
+	map[string]bool, error) {
 	var peers []rulesetRulePeer
+	known := map[string]bool{}
 	zoneIDs := map[types.NamespacedName]string{}
 	for _, kind := range rulesetRuleKinds {
 		if !slices.Contains(kind.phases, phase) {
@@ -221,17 +238,19 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 		}
 		list := kind.newList()
 		if err := r.List(ctx, list); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		items, err := meta.ExtractList(list)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, item := range items {
 			obj, ok := item.(rulesetRuleObject)
 			if !ok {
-				return nil, fmt.Errorf("unexpected %T in a %s list", item, kind.name)
+				return nil, nil, fmt.Errorf("unexpected %T in a %s list", item, kind.name)
 			}
+			ref := rulesetRuleRef(kind.name, obj.GetNamespace(), obj.GetName())
+			known[ref] = true
 			if !obj.GetDeletionTimestamp().IsZero() || reconciler.Paused(obj) || kind.phase(obj) != phase {
 				continue
 			}
@@ -241,7 +260,7 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 			if !seen {
 				zone := &cloudflarev1alpha1.Zone{}
 				if err := r.Get(ctx, key, zone); err != nil && !apierrors.IsNotFound(err) {
-					return nil, err
+					return nil, nil, err
 				}
 				id = zone.Status.CloudflareMetadata.ZoneID
 				zoneIDs[key] = id
@@ -250,7 +269,7 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 				continue
 			}
 			peers = append(peers, rulesetRulePeer{
-				ref:       rulesetRuleRef(kind.name, obj.GetNamespace(), obj.GetName()),
+				ref:       ref,
 				priority:  spec.Priority,
 				namespace: obj.GetNamespace(),
 				name:      obj.GetName(),
@@ -258,7 +277,7 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 			})
 		}
 	}
-	return peers, nil
+	return peers, known, nil
 }
 
 // reconcileDelete handles the deletion lifecycle: unless the retain policy is
@@ -329,7 +348,7 @@ func (r *rulesetRuleReconciler) deleteCloudflareRule(ctx context.Context, obj ru
 	// another resource is about to write its rule there.
 	phase, peersRemain := r.kind.phase(obj), false
 	if emptiedEntrypointPhases[phase] {
-		peers, err := r.peers(ctx, zoneID, phase)
+		peers, _, err := r.peers(ctx, zoneID, phase)
 		if err != nil {
 			return err
 		}

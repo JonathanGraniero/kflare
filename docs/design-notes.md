@@ -1803,6 +1803,17 @@ environment in a shared cluster:
 - **The chart's two rule files come from the markers** (`hack/chartrbac`), so that a new marker cannot reach the
   ClusterRole of a scoped installation unnoticed: a kflare kind goes by its CRD's scope, any other resource must be
   listed, or `make helm` fails. Events are granted across the cluster: a CloudflareAccount's go to `default`
+- **Where two installations meet, kflare says so as far as one can tell without seeing the other** (the user's request
+  on 2026-11-09, after the first review). An installation cannot read another's resources, so their claims and
+  settings owners stay apart. It sees two things: every `CloudflareAccount`, which every installation caches, and a
+  phase's rules, whose refs kflare derives. So `AlreadyExists` names the accounts for the same Cloudflare account
+  that the installation does not manage (`accountsElsewhere`), instead of only advising to adopt the object, which
+  would have two installations manage it. It says "may": such an account may be another installation's, or nobody's.
+  And a rule resource whose phase holds a rule with a `kflare-` ref that none of its installation's resources has,
+  paused and being deleted ones included, records a Warning Event, `OtherKflareRules`: another installation's rule,
+  another cluster's, or one a deletion with the retain policy kept. An Event, not a Ready reason: the resource's own
+  rule is synced, and the health checks should not report it Degraded for rules that are not its own. Every
+  installation records it, scoped or not, as a phase can hold another cluster's rules too
 - **Overlapping scopes are not detected.** An installation cannot see another's scope, and a check through a shared
   object would need an API change; the deploy guide says that scopes must not overlap
 

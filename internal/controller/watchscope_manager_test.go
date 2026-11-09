@@ -414,4 +414,57 @@ var _ = Describe("Installations scoped to some namespaces or a label selector", 
 				g.Expect(kvsB.objects()).To(BeZero())
 			}, timeout, interval).Should(Succeed())
 		})
+
+	It("names, in AlreadyExists, the account through which another installation may manage an object of the "+
+		"same Cloudflare account, with only the chart's namespaced RBAC", func() {
+		const homeA, homeB = "scope-same-a", "scope-same-b"
+		createNamespace(homeA)
+		createNamespace(homeB)
+		createAccount("scope-same-a", nil, homeA)
+		createAccount("scope-same-b", nil, homeB)
+		// Both accounts are for one Cloudflare account, which both
+		// installations call.
+		for _, name := range []string{"scope-same-a", "scope-same-b"} {
+			account := &cloudflarev1alpha1.CloudflareAccount{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, account)).To(Succeed())
+			account.Spec.AccountID = "acct-scope-same"
+			Expect(k8sClient.Update(ctx, account)).To(Succeed())
+		}
+		kvs := newScopedKV()
+		// createTitled creates a KVNamespace at key, titled "scope-same", which
+		// uses account.
+		createTitled := func(key types.NamespacedName, account string) {
+			GinkgoHelper()
+			Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.KVNamespace{
+				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+				Spec: cloudflarev1alpha1.KVNamespaceSpec{AccountRef: corev1.LocalObjectReference{Name: account},
+					Title: "scope-same"},
+			})).To(Succeed())
+			DeferCleanup(forceDelete, ctx, &cloudflarev1alpha1.KVNamespace{}, key)
+		}
+		start := func(home, user, name string) {
+			GinkgoHelper()
+			config := installationUser(ctx, user, home)
+			reader, err := client.New(config, client.Options{Scheme: scheme.Scheme})
+			Expect(err).NotTo(HaveOccurred())
+			startScopedManager(ctx, config, mustWatchScope(home, "", reader), setupInstallation(name, kvs))
+		}
+
+		kvA := types.NamespacedName{Name: "kv", Namespace: homeA}
+		start(homeA, "kflare-scope-same-a", "Installation A")
+		createTitled(kvA, "scope-same-a")
+		expectReady(&cloudflarev1alpha1.KVNamespace{}, kvA, "Synced")
+
+		By("refusing a KV namespace of the same title in the other installation, naming the account")
+		kvB := types.NamespacedName{Name: "kv", Namespace: homeB}
+		start(homeB, "kflare-scope-same-b", "Installation B")
+		createTitled(kvB, "scope-same-b")
+		exists := expectReady(&cloudflarev1alpha1.KVNamespace{}, kvB, reasonAlreadyExists)
+		Expect(exists.Message).To(Equal(`KV namespace "scope-same" already exists, and this kflare installation ` +
+			`did not create it. Another installation may manage it through CloudflareAccount "scope-same-a", which ` +
+			`uses the same Cloudflare account but is outside what this installation watches. Set the annotation ` +
+			`kflare.dev/adoption-policy: adopt to manage it here only if none does: two installations would then ` +
+			`manage it`))
+		Expect(kvs.objects()).To(Equal(1))
+	})
 })

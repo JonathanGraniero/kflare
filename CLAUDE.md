@@ -718,6 +718,10 @@ pick an installation's resources, and the namespaced RBAC comes with the namespa
   warning before the answer for a cluster-scoped resource asked about in a namespace)
 - [x] On kind (`kflare-dev`, 1.34.11): two releases in one namespace with namespaced RBAC, both healthy, each with its
   own Lease and accounts; details in the design notes
+- [x] Where installations meet (the user's request on 2026-11-09, after the review): `AlreadyExists` names the
+  accounts for the same Cloudflare account through which another installation may manage the object
+  (`accountsElsewhere`), and a rule resource records a Warning Event, `OtherKflareRules`, when its phase holds rules
+  kflare wrote for resources its installation does not manage. Overlapping scopes stay undetected
 - Left: the merge. A Reconciler error seen on kind, `not found` on an account being deleted, is `RemoveFinalizer` on
   a stale cached copy, a path unchanged since main (`pkg/reconciler`), retried and harmless
 

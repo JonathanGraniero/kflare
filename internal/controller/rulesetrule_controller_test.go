@@ -9,6 +9,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/cloudflare/cloudflare-go/v7/rulesets"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -350,6 +352,69 @@ var _ = Describe("Rule controller", func() {
 			Expect(order()).To(Equal([]string{"b", "a"}))
 		})
 
+		Describe("rules kflare wrote for resources the installation does not manage", func() {
+			var recorder *events.FakeRecorder
+			BeforeEach(func() {
+				recorder = events.NewFakeRecorder(10)
+				SetEventRecorder(recorder)
+				DeferCleanup(func() { SetEventRecorder(nil) })
+			})
+			// recorded returns the Events recorded so far.
+			recorded := func() []string {
+				var all []string
+				for len(recorder.Events) > 0 {
+					all = append(all, <-recorder.Events)
+				}
+				return all
+			}
+
+			It("are left where they are, with a Warning Event", func() {
+				readyEnv()
+				// The rule of a resource in a namespace another installation watches.
+				elsewhere := rulesetRuleRef("WAFCustomRule", "team-b", "block")
+				fake.seed(blockRule(elsewhere, "/b"))
+				createRule(ns, "a", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 10 })
+				_, err := reconcileRule(key("a"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(readyCondition(key("a")).Reason).To(Equal("Synced"))
+				Expect(refs(fake.entrypoint().rules)).To(Equal([]string{elsewhere,
+					rulesetRuleRef("WAFCustomRule", ns, "a")}))
+				Expect(fake.moves).To(BeZero())
+				Expect(recorded()).To(ContainElement(fmt.Sprintf("Warning OtherKflareRules Zone %q's %s phase also "+
+					"holds rules that kflare wrote for resources this installation does not manage: another "+
+					"installation's, which may run in another cluster, or rules kept by a deletion with the retain "+
+					"policy. kflare orders this rule only among this installation's rules, and leaves those where "+
+					"they are", zoneCRName, rulesTestPhase)))
+			})
+
+			It("do not include the rules of its paused resources, of those being deleted, nor rules created "+
+				"outside kflare", func() {
+				readyEnv()
+				fake.seed(blockRule("someone-else", "/x"))
+				createRule(ns, "a", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 1 })
+				createRule(ns, "b", func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) { spec.Priority = 2 })
+				for _, k := range []types.NamespacedName{key("a"), key("b")} {
+					_, err := reconcileRule(k)
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				By("knowing the rule of b while it is paused")
+				setPaused(ctx, getRule(key("b")), true)
+				_, err := reconcileRule(key("a"))
+				Expect(err).NotTo(HaveOccurred())
+
+				By("knowing it while b is deleted, until its rule is")
+				setPaused(ctx, getRule(key("b")), false)
+				Expect(k8sClient.Delete(ctx, getRule(key("b")))).To(Succeed())
+				_, err = reconcileRule(key("a"))
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(refs(fake.entrypoint().rules)).To(ContainElements("someone-else",
+					rulesetRuleRef("WAFCustomRule", ns, "b")))
+				Expect(recorded()).NotTo(ContainElement(ContainSubstring(reasonOtherKflareRules)))
+			})
+		})
+
 		It("sets TerminalError without requeueing when Cloudflare rejects the rule", func() {
 			readyEnv()
 			createRule(ns, "a", nil)
@@ -531,7 +596,7 @@ var _ = Describe("Rule controller peers", func() {
 		}, true)
 
 		rules := (&WAFCustomRuleReconciler{Client: k8sClient}).rules()
-		peers, err := rules.peers(ctx, "zone-peers", rulesets.PhaseHTTPRequestFirewallCustom)
+		peers, known, err := rules.peers(ctx, "zone-peers", rulesets.PhaseHTTPRequestFirewallCustom)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(peers).To(ConsistOf(
 			rulesetRulePeer{
@@ -543,13 +608,23 @@ var _ = Describe("Rule controller peers", func() {
 				namespace: "kube-public", name: "peers-b", kind: "WAFCustomRule",
 			},
 		))
+
+		By("knowing the rules of all of them, whatever their zone, being deleted or paused")
+		for _, k := range []types.NamespacedName{
+			{Namespace: "default", Name: "peers-a"}, {Namespace: "kube-public", Name: "peers-b"},
+			{Namespace: "default", Name: "peers-elsewhere"}, {Namespace: "default", Name: "peers-no-zone"},
+			{Namespace: "default", Name: "peers-deleting"}, {Namespace: "default", Name: "peers-paused"},
+		} {
+			Expect(known).To(HaveKeyWithValue(rulesetRuleRef("WAFCustomRule", k.Namespace, k.Name), true), "%s", k)
+		}
+		Expect(known).NotTo(HaveKey(rulesetRuleRef("WAFCustomRule", "default", "peers-missing")))
 	})
 
 	It("returns the list error", func() {
 		cancelled, cancel := context.WithCancel(ctx)
 		cancel()
 		rules := (&WAFCustomRuleReconciler{Client: k8sClient}).rules()
-		_, err := rules.peers(cancelled, "zone-peers", rulesets.PhaseHTTPRequestFirewallCustom)
+		_, _, err := rules.peers(cancelled, "zone-peers", rulesets.PhaseHTTPRequestFirewallCustom)
 		Expect(err).To(HaveOccurred())
 	})
 })

@@ -30,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -1104,6 +1105,54 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(ready("unselected").Message).To(Equal(fmt.Sprintf(`Zone %q is outside what this kflare `+
 				`installation watches: its labels do not match this installation's selector kflare.dev/instance=a`,
 				zoneName)))
+		})
+
+		It("names, in AlreadyExists, the account through which another installation may manage the settings",
+			func() {
+				// Another CloudflareAccount for the same Cloudflare account, whose
+				// token Secret is in a namespace this installation does not watch.
+				other := &cloudflarev1alpha1.CloudflareAccount{
+					ObjectMeta: metav1.ObjectMeta{Name: accountName + "-elsewhere"},
+					Spec: cloudflarev1alpha1.CloudflareAccountSpec{
+						AccountID: "acct-" + prefix,
+						TokenSecretRef: cloudflarev1alpha1.SecretReference{Name: secretName,
+							Namespace: "scope-elsewhere", Key: "CF_API_TOKEN"},
+					},
+				}
+				create(other)
+				fake.seed(zoneID, configuredOutside())
+				withFinalizer("configured-elsewhere", specs.samples[0].spec, nil)
+				reconcileIn("configured-elsewhere", watching())
+				Expect(ready("configured-elsewhere").Reason).To(Equal(reasonAlreadyExists))
+				Expect(ready("configured-elsewhere").Message).To(Equal(fmt.Sprintf(`A configuration of the %s of `+
+					`zone %s already exists, and this kflare installation did not create it. Another installation may `+
+					`manage it through CloudflareAccount %q, which uses the same Cloudflare account but is outside `+
+					`what this installation watches. Set the annotation %s: %s to manage it here only if none does: `+
+					`two installations would then manage it`, specs.kind.noun, zoneID, other.Name,
+					reconciler.AdoptionPolicyAnnotation, reconciler.AdoptionPolicyAdopt)))
+				Expect(fake.writes).To(BeEmpty())
+				deleteAndReconcile("configured-elsewhere")
+			})
+
+		It("returns the error of listing the CloudflareAccounts when it may not take over the settings", func() {
+			base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			failing := interceptor.NewClient(base, interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList,
+					opts ...client.ListOption) error {
+					if _, ok := list.(*cloudflarev1alpha1.CloudflareAccountList); ok {
+						return errors.New("accounts unavailable")
+					}
+					return c.List(ctx, list, opts...)
+				},
+			})
+			r = specs.newReconciler(failing, func(string) (A, error) { return specs.newFake(fake), nil })
+			fake.seed(zoneID, configuredOutside())
+			withFinalizer("accounts-unavailable", specs.samples[0].spec, nil)
+			_, err = r.Reconcile(WithWatchScope(ctx, watching()),
+				reconcile.Request{NamespacedName: key("accounts-unavailable")})
+			Expect(err).To(MatchError("accounts unavailable"))
+			Expect(fake.writes).To(BeEmpty())
 		})
 
 		It("deletes a resource whose account left its installation's scope, and leaves its settings, with a "+

@@ -214,7 +214,9 @@ annotation:
 | `adopt-or-create` | adopted | created |
 
 Any other value reports `InvalidAdoptionPolicy` and changes nothing. Adding or changing the annotation reconciles the
-resource straight away.
+resource straight away. When another `CloudflareAccount` for the same Cloudflare account is outside the installation's
+scope (see [Resource model](#resource-model)), `AlreadyExists` names it: another installation may have created the
+object through it, and adopting the object would have both manage it.
 
 ```yaml
 metadata:
@@ -321,7 +323,10 @@ or not, so kflare:
 - Keeps its own rules in a zone and phase in order of `spec.priority`, lower first, with ties broken by namespace and
   name, across namespaces (two Zones in different namespaces can point at the same Cloudflare zone). Each phase is
   its own list: a WAF custom rule's priority does not order rate limiting rules. Rules created outside kflare keep
-  their place, and so do the rules of paused resources (see [Pausing a resource](#pausing-a-resource)). Reordering
+  their place, and so do the rules of paused resources (see [Pausing a resource](#pausing-a-resource)), and the rules
+  kflare wrote for resources its installation does not manage, which the ref tells: another installation's, or rules
+  kept by a deletion with the retain policy. A resource whose phase holds those records a Warning Event with reason
+  `OtherKflareRules`, as nothing keeps their order with its rule. Reordering
   moves rules without changing them: Cloudflare keeps a moved rule's definition and version (verified live). A
   reconcile that moved rules checks the order again 10 seconds later, in case another resource was reordering the
   same rules at the same time.
@@ -622,9 +627,11 @@ by it: the Secret keeps `kflare.dev/token-protection`, and a Warning Event on th
 - **Rule order covers kflare's rules only.** A rule created outside kflare keeps its place, so it cannot be ordered
   relative to kflare's rules.
 - **An installation sees its own scope only.** What keeps two resources from managing one Cloudflare object (claims,
-  settings owners, a phase's rule order) compares resources of one installation, so two installations managing the
-  same account or zone can each adopt an object, configure the zone's settings, or order their rules without regard to
-  each other's. Overlapping scopes are not detected either: both installations reconcile what both select.
+  settings owners, a phase's rule order) compares resources of one installation. Without the adoption annotation, a
+  resource still never takes over what another installation created: it reports `AlreadyExists`, naming the
+  `CloudflareAccount` the other may use. With the annotation, though, two installations can each manage one object or
+  one zone's settings, and each orders only its own rules in a phase, with a Warning Event (`OtherKflareRules`) where
+  their rules share one. Overlapping scopes are not detected: both installations reconcile what both select.
 - **Three kinds are pinned to the legacy SDK.** Zone, TunnelConfiguration and WorkerScript call cloudflare-go v0.119,
   the newest of the v0 line; every other kind uses the generated SDK, v7. Some limitations come from v0.119:
   `originRequest` timeouts are not exposed because `TunnelDuration` does not round-trip, and a WorkerScript binds only

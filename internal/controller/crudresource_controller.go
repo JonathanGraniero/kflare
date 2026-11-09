@@ -316,7 +316,7 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 	if zone != nil {
 		parentID = zone.Status.CloudflareMetadata.ZoneID
 	}
-	return r.sync(ctx, obj, parentID, refs, api)
+	return r.sync(ctx, obj, account.Spec.AccountID, parentID, refs, api)
 }
 
 // zone returns the ready Zone a resource of a zone's kind belongs to, or why
@@ -377,8 +377,8 @@ func (r *crudResourceReconciler[O, A, R, L]) references() []crudReference[O] {
 }
 
 // sync drives the desired→observed→delta→reconcile loop for one resource, in
-// the account or zone parentID.
-func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, parentID string,
+// the account or zone parentID, of the Cloudflare account accountID.
+func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, accountID, parentID string,
 	refs map[string]string, api A) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	k := r.kind
@@ -407,7 +407,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, pa
 		if fresh, err := r.upToDate(ctx, obj); !fresh || err != nil {
 			return ctrl.Result{}, err
 		}
-		found, adopted, done, result, err := r.findOrCreate(ctx, obj, parentID, refs, api)
+		found, adopted, done, result, err := r.findOrCreate(ctx, obj, accountID, parentID, refs, api)
 		if done {
 			return result, err
 		}
@@ -486,8 +486,11 @@ func (r *crudResourceReconciler[O, A, R, L]) upToDate(ctx context.Context, obj O
 // status), or which it adopts, as its adoption policy allows, unless another
 // resource of the kind claims it. Without one, it creates the object, unless the
 // policy is adopt. An object found in the list is read by its ID, for all that
-// the list leaves out. done ends the reconcile with result and err.
-func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, obj O, parentID string,
+// the list leaves out. An object the resource may not adopt is reported with
+// the accounts of the Cloudflare account accountID through which another
+// installation may manage it (mayAdopt). done ends the reconcile with result
+// and err.
+func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, obj O, accountID, parentID string,
 	refs map[string]string, api A) (current *R, adopting, done bool, result ctrl.Result, err error) {
 	logger := log.FromContext(ctx)
 	k := r.kind
@@ -517,7 +520,11 @@ func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, o
 		}
 		own := ownsID(obj, k.claimLabel, id) || creating(obj, key)
 		if !own {
-			if condErr := mayAdopt(obj, what); condErr != nil {
+			elsewhere, err := watchScopeFrom(ctx).accountsElsewhere(ctx, r.Client, accountID)
+			if err != nil {
+				return stop(ctrl.Result{}, err)
+			}
+			if condErr := mayAdopt(obj, what, elsewhere); condErr != nil {
 				return stop(notReadyRetryAfter(ctx, r.Client, obj, condErr))
 			}
 		}

@@ -65,20 +65,35 @@ func adoptionPolicy(obj client.Object) (string, *conditionError) {
 
 // mayAdopt returns nil when obj's adoption policy lets it adopt the existing
 // object that what describes (for example `KV namespace "cache"`), and the
-// condition to report otherwise.
-func mayAdopt(obj client.Object, what string) *conditionError {
+// condition to report otherwise. elsewhere names the CloudflareAccounts for
+// the object's Cloudflare account that this installation does not manage
+// (WatchScope.accountsElsewhere): another installation may have created the
+// object through one of them, so AlreadyExists says so, and that adopting it
+// would have two installations manage it.
+func mayAdopt(obj client.Object, what string, elsewhere []string) *conditionError {
 	policy, condErr := adoptionPolicy(obj)
 	if condErr != nil {
 		return condErr
 	}
-	if policy == "" {
+	switch {
+	case policy != "":
+		return nil
+	case len(elsewhere) > 0:
+		return &conditionError{
+			Reason: reasonAlreadyExists,
+			Message: fmt.Sprintf("%s already exists, and this kflare installation did not create it. Another "+
+				"installation may manage it through CloudflareAccount %s, which uses the same Cloudflare account but "+
+				"is outside what this installation watches. Set the annotation %s: %s to manage it here only if "+
+				"none does: two installations would then manage it", what, eitherOf(elsewhere),
+				reconciler.AdoptionPolicyAnnotation, reconciler.AdoptionPolicyAdopt),
+		}
+	default:
 		return &conditionError{
 			Reason: reasonAlreadyExists,
 			Message: fmt.Sprintf("%s already exists and kflare did not create it. To manage it, set the annotation "+
 				"%s: %s", what, reconciler.AdoptionPolicyAnnotation, reconciler.AdoptionPolicyAdopt),
 		}
 	}
-	return nil
 }
 
 // mayCreate returns nil when obj's adoption policy lets it create the object

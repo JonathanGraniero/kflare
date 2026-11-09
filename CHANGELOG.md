@@ -31,7 +31,12 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **A new reason, `NotWatched`,** reports a resource whose `CloudflareAccount`, `Zone` or other reference is outside
   its installation's scope, and kflare makes no Cloudflare call for it. The deploy guide's Argo CD and Flux health
   checks report it Degraded and Failed: update your copies of them before you scope an installation
-- **Nothing changes without them.** An installation with neither value renders as before, and keeps its leader
+- **Where two installations of one Cloudflare account meet, kflare says so.** `AlreadyExists` names the
+  `CloudflareAccount` through which another installation may manage the object, rather than only advising to adopt
+  it, which would have both manage it. A rule resource whose phase holds rules kflare wrote for resources its
+  installation does not manage records a Warning Event with reason `OtherKflareRules`: kflare orders only its own rules
+  in a phase. Any installation records it, for another cluster's rules or those a deletion with the retain policy kept
+- **Nothing else changes without them.** An installation with neither value renders as before, and keeps its leader
   election Lease, so upgrading it never runs two leaders
 
 ### Releases

@@ -271,7 +271,7 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			for i, sample := range specs.samples {
 				name := fmt.Sprintf("sample-%d", i)
 				Expect(refs(fake.entrypointIn(sample.phase).rules)).To(ContainElement(rulesetRuleRef(kind, ns, name)))
-				peers, err := r.rules().peers(ctx, rulesTestZone, sample.phase)
+				peers, _, err := r.rules().peers(ctx, rulesTestZone, sample.phase)
 				Expect(err).NotTo(HaveOccurred())
 				var names []string
 				for _, peer := range peers {

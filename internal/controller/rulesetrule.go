@@ -38,7 +38,11 @@ import (
 //     manage.
 //   - kflare keeps the rules it manages in a zone and phase in priority
 //     order, moving them with position-only updates. Rules created outside
-//     kflare keep their place, and so do the rules of paused resources.
+//     kflare keep their place, and so do the rules of paused resources, and
+//     rules kflare wrote for resources its installation does not manage:
+//     another installation's, or rules kept by a deletion with the retain
+//     policy. A resource whose phase holds those records a Warning Event
+//     (reasonOtherKflareRules), as their order is nobody's.
 //   - An emptied entry point stays, except in the phases where an entry point
 //     changes what Cloudflare runs even without rules
 //     (emptiedEntrypointPhases).
@@ -113,6 +117,9 @@ type RulesetRuleAPI struct {
 	Rules    RulesetRulesAPI
 }
 
+// kflareRefPrefix starts the ref of every rule kflare writes.
+const kflareRefPrefix = "kflare-"
+
 // rulesetRuleRef returns the ref of the rule a resource manages: "kflare-"
 // and the first 32 hex characters of the SHA-256 of kind/namespace/name.
 // Deriving it from the resource's identity rather than its UID lets a
@@ -121,7 +128,7 @@ type RulesetRuleAPI struct {
 // bytes long, and refuses to change an existing rule's ref.
 func rulesetRuleRef(kind, namespace, name string) string {
 	sum := sha256.Sum256([]byte(kind + "/" + namespace + "/" + name))
-	return "kflare-" + hex.EncodeToString(sum[:16])
+	return kflareRefPrefix + hex.EncodeToString(sum[:16])
 }
 
 // rulesetRulePeer is a rule kflare manages in a zone and phase, with what
@@ -162,14 +169,20 @@ type rulesetRuleState struct {
 	// because a rule disappeared. Another resource may have been reordering
 	// the same rules at the same time, so the caller checks again shortly.
 	moved bool
+	// others is true when the entry point holds rules kflare wrote for
+	// resources the sync does not know (syncRulesetRule's known), which keep
+	// their place.
+	others bool
 }
 
 // syncRulesetRule makes the zone's entry point ruleset for phase hold rule,
 // which rule.Ref identifies, and keeps the rules kflare manages there in
 // order. peers lists those rules, this one included; without peers nothing
-// is reordered and a new rule goes last. The rule is written whole, so it
-// must set every field it wants: Cloudflare resets a field an update leaves
-// out.
+// is reordered and a new rule goes last. known holds the refs of the rules
+// of every resource the installation manages, peers included: a rule kflare
+// wrote for any other resource is reported in the state. The rule is written
+// whole, so it must set every field it wants: Cloudflare resets a field an
+// update leaves out.
 func syncRulesetRule(
 	ctx context.Context,
 	api RulesetRuleAPI,
@@ -177,6 +190,7 @@ func syncRulesetRule(
 	phase rulesets.Phase,
 	rule rulesets.RulesetNewParamsRule,
 	peers []rulesetRulePeer,
+	known map[string]bool,
 ) (rulesetRuleState, error) {
 	zone := zoneRulesets{api: api, zoneID: zoneID}
 	ruleset, wrote, err := writeRulesetRule(ctx, zone, phase, rule, peers)
@@ -201,6 +215,7 @@ func syncRulesetRule(
 	}
 	return rulesetRuleState{
 		rulesetID: ruleset.id, ruleID: current.id, version: current.version, wrote: wrote, moved: moved,
+		others: ruleset.holdsOtherKflareRules(known),
 	}, nil
 }
 
@@ -385,6 +400,14 @@ func (e entrypoint) rule(ref string) (entrypointRule, bool) {
 // index returns the position of the rule with id, or -1.
 func (e entrypoint) index(id string) int {
 	return slices.IndexFunc(e.rules, func(rule entrypointRule) bool { return rule.id == id })
+}
+
+// holdsOtherKflareRules reports whether the entry point holds a rule kflare
+// wrote, as its ref tells, whose ref is not in known.
+func (e entrypoint) holdsOtherKflareRules(known map[string]bool) bool {
+	return slices.ContainsFunc(e.rules, func(rule entrypointRule) bool {
+		return strings.HasPrefix(rule.ref, kflareRefPrefix) && !known[rule.ref]
+	})
 }
 
 // rulePosition places a rule right before or right after another rule of the

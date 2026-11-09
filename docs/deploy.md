@@ -862,10 +862,13 @@ crds:
 - **Each keeps its own rate limit budgets.** Installations whose accounts use the same token, or tokens of one
   Cloudflare user, share Cloudflare's limit for it: split `cloudflareRateLimit` between them (see
   [Cloudflare's API rate limit](#cloudflares-api-rate-limit)), or give each installation its own account API token.
-- **kflare keeps two resources from managing one Cloudflare object only within an installation.** Two installations
-  that manage the same Cloudflare account or zone can each adopt an object the other manages, configure the same
-  zone's settings, or order their rules in one phase without regard to each other's. Give each installation its own
-  zones.
+- **kflare keeps two installations apart only as far as one can see the other.** A resource never takes over an
+  object, or a zone's settings, that it did not create without the `kflare.dev/adoption-policy` annotation, so
+  another installation's resource for the same object reports `AlreadyExists`, and names the `CloudflareAccount`
+  through which the other installation may manage it: adopting it would have both manage it. Rules never collide,
+  each resource's rule having a ref of its own, but each installation orders only its own rules in a phase and leaves
+  the others' where they are. A rule resource whose phase holds rules kflare wrote for resources its installation
+  does not manage records a Warning Event with reason `OtherKflareRules`. Give each installation its own zones.
 - **A resource moves to another installation with its finalizer**, when its labels change, or the installations'
   scopes do: the installation that now selects it carries on, its deletion included. One that no installation selects
   keeps its finalizer, so deleting it waits until one does. Move a parent, a `Zone` or a `Tunnel`, together with what uses it: a
@@ -1455,7 +1458,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `TunnelAlreadyConfigured` | Another `TunnelConfiguration` owns this tunnel | Keep one configuration per tunnel |
 | `AlreadyConfigured` | Another resource of the kind, in any namespace, configures the same Cloudflare zone's settings | Keep one per zone; kflare checks again every minute, and when the other is deleted |
 | `CredentialsSecretConflict` | A Secret with the tunnel's `credentialsSecretRef` name exists and kflare does not own it | Delete it or pick another name |
-| `AlreadyExists` | The Cloudflare object the resource names (a zone, record, tunnel, Worker, bucket, ...) exists and kflare did not create it | Annotate the resource `kflare.dev/adoption-policy: adopt` to manage it, or pick another name |
+| `AlreadyExists` | The Cloudflare object the resource names (a zone, record, tunnel, Worker, bucket, ...) exists and kflare did not create it, or not this installation: the message then names the `CloudflareAccount` through which another installation may manage it | Annotate the resource `kflare.dev/adoption-policy: adopt` to manage it, or pick another name. Leave an object another installation manages to it: adopting it would have both manage it |
 | `NotFound` | The resource's adoption policy is `adopt` and there is nothing to adopt | Check the name, or use `adopt-or-create` to create one |
 | `InvalidAdoptionPolicy` | `kflare.dev/adoption-policy` holds a value other than `adopt` and `adopt-or-create` | Fix or remove the annotation |
 | `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern in the same Cloudflare zone | Keep one WorkerRoute per pattern |
