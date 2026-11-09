@@ -20,10 +20,11 @@ supports.
 
 ## How kflare is checked
 
-- **On every pull request:** [govulncheck](https://go.dev/doc/security/vuln/) fails on a known vulnerability in the
-  modules or the Go standard library that kflare's code calls, and [Grype](https://github.com/anchore/grype) fails on
-  a fixable vulnerability of high or critical severity in the controller image CI builds. CodeQL analyzes the code,
-  and dependency review refuses a new dependency with a known vulnerability.
+- **On every pull request**, to `main` or to a release branch: [govulncheck](https://go.dev/doc/security/vuln/)
+  fails on a known vulnerability in the modules or the Go standard library that kflare's code calls, and
+  [Grype](https://github.com/anchore/grype) fails on a fixable vulnerability of high or critical severity in the
+  controller image CI builds. Dependency review refuses a new dependency with a known vulnerability. CodeQL analyzes
+  the code of pull requests to `main`, where a fix for a release branch is made first.
 - **Fuzz tests** cover the code that reads input kflare does not control: the metrics endpoint's authentication,
   which serves any client that can reach its port, and the reading of the errors Cloudflare's API returns. `make test`
   runs their seed inputs and every input that once failed.

@@ -290,17 +290,18 @@ once CI's, E2E's and the dependency review's checks pass on a branch up to date 
    ```
 
    A branch runs the workflows its own files hold, so its checks take their names from the tag's, Kubernetes versions
-   included. `protect release branches` must require those names, which
+   included. v0.4.2 and older run CI on `main` only, so `release-0.4` is cut from v0.4.3 or newer, which `main`
+   releases before v0.5.0. `protect release branches` must require the branch's check names, which
    `gh api repos/JonathanGraniero/kflare/rules/branches/release-0.4` lists: change its checks to the new branch's, or,
    while an older release branch whose checks are named otherwise still gets fixes, give the new one a ruleset of its
    own
 2. **Cherry-pick the fix** onto a branch from `release-0.4` (`git cherry-pick -x <commit>`), and open the pull request
-   against `release-0.4`. Fix `main` first, unless only the older minor release needs the fix. CI checks it as it checks
-   `main`, comparing the CRDs with the minor release's newest patch and testing the upgrade from it: a patch release's
-   notes list no breaking change, so the CRD check fails on any. A vulnerability in the Go standard library or in the
-   image's base files needs no change, since the release builds the image with the newest Go 1.26 patch and base
-   files. One in a Go module needs its fixed version on the branch (`go get <module>@<version>`, then `go mod tidy`):
-   Dependabot opens pull requests for `main` only
+   against `release-0.4`. Fix `main` first, unless only the older minor release needs the fix: CodeQL analyzes pull
+   requests to `main` only. CI checks it as it checks `main`, comparing the CRDs with the minor release's newest patch
+   and testing the upgrade from it: a patch release's notes list no breaking change, so the CRD check fails on any. A
+   vulnerability in the Go standard library or in the image's base files needs no change, since the release builds the
+   image with the newest Go 1.26 patch and base files. One in a Go module needs its fixed version on the branch
+   (`go get <module>@<version>`, then `go mod tidy`): Dependabot opens pull requests for `main` only
 3. **Prepare the release** as for `main`, in a pull request against `release-0.4`: the next patch version in
    `Chart.yaml`, its section in CHANGELOG.md above the branch's last release's, and `make helm`. A `/live-e2e` review
    runs the live suite on it
