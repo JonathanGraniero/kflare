@@ -721,7 +721,8 @@ pick an installation's resources, and the namespaced RBAC comes with the namespa
 - [x] Where installations meet (the user's request on 2026-11-09, after the review): `AlreadyExists` names the
   accounts for the same Cloudflare account through which another installation may manage the object
   (`accountsElsewhere`), and a rule resource records a Warning Event, `OtherKflareRules`, when its phase holds rules
-  kflare wrote for resources its installation does not manage. Overlapping scopes stay undetected
+  kflare wrote for resources its installation does not manage. Overlapping scopes stay undetected. Checked: the
+  shared specs, two managers holding only the chart's rules, 31 of 31 mutations; CI passed on #162's `000c16d`
 - Left: the merge. A Reconciler error seen on kind, `not found` on an account being deleted, is `RemoveFinalizer` on
   a stale cached copy, a path unchanged since main (`pkg/reconciler`), retried and harmless
 

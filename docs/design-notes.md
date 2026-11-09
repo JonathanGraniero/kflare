@@ -1829,6 +1829,13 @@ Checked on 2026-11-09:
   whose account, Zone or reference is outside the scope, and leave its object when it is deleted
 - `hack/mutate.sh`: 47 of 47 mutations caught, of the scope, the credentials, the account controller, the release of a
   token Secret, the metrics, every reference that reads through the scope, and `hack/chartrbac`
+- Where installations meet: the shared specs of every generated CRUD and settings kind name, in `AlreadyExists`, an
+  account for the same Cloudflare account outside the scope, and not one inside it. Two managers as users holding only
+  the chart's rules, whose accounts are for one Cloudflare account: the second's KV namespace with the first's title
+  reports `AlreadyExists` naming the first's account, and creates nothing. The rule controller records
+  `OtherKflareRules` for a rule whose resource it does not have, and not for the rules of its paused resources, of
+  those being deleted, or rules made outside kflare. `hack/mutate.sh`: 31 of 31 caught, 4 of them rewritten first, as
+  they left a variable unused and did not compile. CI passed on #162's `000c16d`
 - On kind (`kflare-dev`, Kubernetes 1.34.11, the image built from the branch): two releases in one namespace, each
   watching its own team namespace with the chart's namespaced RBAC. Each held its own Lease (`team-a-kflare.kflare.dev`,
   `team-b-kflare.kflare.dev`), started all 20 controllers with no `forbidden` in its log, and could list Secrets in its
