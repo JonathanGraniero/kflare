@@ -1391,6 +1391,75 @@ To make keeping objects the rule for the whole cluster, set the chart's `default
 a resource then leaves the object it created in Cloudflare too, unless the resource is annotated
 `kflare.dev/deletion-policy: delete`.
 
+### Renaming a resource
+
+Changing a resource's `metadata.name` makes a new resource and deletes the old one. Tools do it without being asked: a
+kustomize `namePrefix` or `nameSuffix`, a Helm `fullnameOverride`, a cdk8s construct ID, moving a manifest to another
+chart. kflare keeps the Cloudflare object through such a rename when the new resource is in the same namespace and its
+spec still describes the same object:
+
+| Kind | The new resource describes the same object when it has the same |
+|---|---|
+| `DNSRecord` | `zoneRef`'s zone, `name`, `type` and `content` (or `data`, or `tunnelRef`'s tunnel) |
+| `WorkerRoute` | `zoneRef`'s zone and `pattern` |
+| `Tunnel`, `KVNamespace`, `D1Database`, `IPList`, `WorkerScript` | account and `name` (a KVNamespace's `title`) |
+| `R2Bucket` | account, `name` and `jurisdiction` |
+| `TunnelConfiguration` | `tunnelRef`'s tunnel |
+
+What happens, in the order a GitOps tool that applies first and prunes afterwards does it (applying and deleting in one
+step works the same way):
+
+1. The new resource is created. It reports `Ready=False` with the kind's conflict reason (`NameConflict`,
+   `TitleConflict`, `PatternConflict` or `TunnelAlreadyConfigured`) and changes nothing while the old one manages the
+   object. Argo CD shows it Degraded and Flux as failed until the old resource is pruned
+2. The old resource is deleted. Instead of deleting the object, kflare hands it to the new resource and records an Event
+   with reason `HandedOff` on both. Nothing is written to Cloudflare: a DNS record keeps resolving and keeps its ID, a
+   KV namespace or a D1 database keeps its data, a tunnel keeps its ID, token and connections
+3. The new resource goes `Ready` within seconds, with the same ID in its status. A field that differs between the two
+   manifests, such as a record's `ttl`, is then updated in place. A `WorkerScript` uploads its Worker once more, in
+   place
+
+The new resource owns the object as the old one did: an object kflare created is deleted with it, and one the old
+resource adopted is kept. The old resource's `kflare.dev/deletion-policy` does not stop the hand-off, `delete` included;
+from then on the new resource's own annotation counts, so keep `kflare.dev/deletion-policy: retain` in the manifest if
+it was there. The new resource needs no adoption policy.
+
+Resources that reference each other can be renamed in one change, such as a Tunnel with its TunnelConfiguration and the
+DNSRecords that point at it: kflare deletes them in the order they depend on each other, and each object goes to its new
+resource. Two things to know about a Tunnel:
+
+- cloudflared's Deployment mounts the Secret that `spec.credentialsSecretRef` names. Kubernetes deletes the old Tunnel's
+  Secret with it, and the new Tunnel then writes its own, with the same token. Running pods keep working; a pod that
+  starts in between waits for the Secret. Under a new Secret name there is no such moment
+- a renamed Tunnel is `Ready` only once the old one is gone, and the old one waits for everything that references it.
+  Rename the resources that reference it in the same change, or point them at the new Tunnel first
+
+If several new resources describe the object, the oldest gets it and the others keep reporting the conflict.
+
+kflare deletes and recreates the object, as before, when the rename also changes what the table lists, or moves the
+resource to another namespace. And three kinds are not handed off:
+
+- a **`Zone`** kflare created deletes its zone, and every record in it, once nothing references it: a renamed `Zone`
+  reports `AlreadyExists` and does not take the zone over
+- a **`ManagedTransform`** turns the zone's managed transforms off when it is deleted, and the new one turns them back
+  on
+- **rules** (`WAFCustomRule`, `RateLimitRule`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule`,
+  `OriginRule`) need nothing: the new resource writes its rule before the old one's is deleted. A `ManagedRuleset`
+  is the exception among them: a zone deploys a managed ruleset once, so the new one reports `RulesetConflict` until
+  the old one's deployment is deleted, and deploys its own on its next retry, up to a minute later
+
+For a `Zone`, a `ManagedTransform`, a move to another namespace, and any kind with a release before this one, rename
+in three steps:
+
+1. Annotate the old resource `kflare.dev/deletion-policy: retain` and let it sync
+2. Rename it, with `kflare.dev/adoption-policy: adopt` on the new resource, and let the old resource be pruned: its
+   object stays, and the new resource adopts it
+3. Take the adoption policy out of the manifest again, so that a fresh install of the same manifests does not adopt an
+   object it finds. An adopted object is kept when its resource is deleted: annotate the new resource
+   `kflare.dev/deletion-policy: delete` if kflare should delete it as before
+
+See [Renaming a resource](../ARCHITECTURE.md#renaming-a-resource) for the rules.
+
 ### Pausing a resource
 
 To stop kflare from changing one resource's Cloudflare object for a while, for example during an incident, while
@@ -1537,13 +1606,13 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `AlreadyExists` | The Cloudflare object the resource names (a zone, record, tunnel, Worker, bucket, ...) exists and kflare did not create it, or not this installation: the message then names the `CloudflareAccount` through which another installation may manage it | Annotate the resource `kflare.dev/adoption-policy: adopt` to manage it, or pick another name. Leave an object another installation manages to it: adopting it would have both manage it |
 | `NotFound` | The resource's adoption policy is `adopt` and there is nothing to adopt | Check the name, or use `adopt-or-create` to create one |
 | `InvalidAdoptionPolicy` | `kflare.dev/adoption-policy` holds a value other than `adopt` and `adopt-or-create` | Fix or remove the annotation |
-| `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern in the same Cloudflare zone | Keep one WorkerRoute per pattern |
+| `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern in the same Cloudflare zone | Keep one WorkerRoute per pattern. After a rename, the new resource reports it until the old one is deleted ([Renaming a resource](#renaming-a-resource)) |
 | `TerminalError` (WorkerRoute) | A message with `Route pattern must include zone name` (10022): the pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |
 | `WorkerScriptNotFound`, `WorkerScriptNotReady`, `AccountMismatch` | The route's WorkerScript is missing, not uploaded yet, or in a different account than the zone | Check the WorkerScript; it must use the zone's account |
 | `AccountMismatch` (DNSRecord) | The Tunnel the record's `tunnelRef` names uses another `CloudflareAccount` than the record's Zone | Use the zone's account for the Tunnel: Cloudflare routes a tunnel's traffic only for DNS records in the tunnel's account |
-| `TitleConflict` | Another `KVNamespace` already manages a namespace with this title | Keep one KVNamespace per title |
+| `TitleConflict` | Another `KVNamespace` already manages a namespace with this title | Keep one KVNamespace per title. After a rename, the new resource reports it until the old one is deleted ([Renaming a resource](#renaming-a-resource)) |
 | `KVNamespaceNotFound`, `KVNamespaceNotReady` | A WorkerScript's `kvNamespaceRef` names a missing or not-yet-ready KVNamespace | Check the KVNamespace; it must use the Worker's account |
-| `NameConflict` | Another `R2Bucket` already manages a bucket with this name in the same Cloudflare account and jurisdiction, another `IPList` a list with this name, another `D1Database` a database with this name, or the account has a list of another kind with this name | Keep one R2Bucket per bucket, one IPList per list and one D1Database per database; list names are unique across list kinds |
+| `NameConflict` | Another `R2Bucket` already manages a bucket with this name in the same Cloudflare account and jurisdiction, another `IPList` a list with this name, another `D1Database` a database with this name, or the account has a list of another kind with this name | Keep one R2Bucket per bucket, one IPList per list and one D1Database per database; list names are unique across list kinds. After a rename, the new resource reports it until the old one is deleted ([Renaming a resource](#renaming-a-resource)) |
 | `R2BucketNotFound`, `R2BucketNotReady` | A WorkerScript's `r2BucketRef` names a missing or not-yet-ready R2Bucket | Check the R2Bucket; it must use the Worker's account |
 | `R2BucketJurisdictionUnsupported` | A WorkerScript's `r2BucketRef` names an R2Bucket outside the default jurisdiction, which kflare cannot bind yet | Bind a bucket in the default jurisdiction |
 | `ScriptConfigMapNotFound`, `ScriptKeyMissing` | A WorkerScript's `scriptConfigMapRef` names a missing ConfigMap, or a key that is missing or empty in it | Fix the ConfigMap or the reference |

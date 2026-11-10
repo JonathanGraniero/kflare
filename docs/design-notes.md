@@ -1975,3 +1975,42 @@ credentials:
 - a metadata-only watch of Secrets, with each token Secret read from the API server when its resource version changes
   and kept in memory: the cache would hold about a kilobyte of metadata per Secret instead of its data, so Helm's
   release Secrets would stop counting, at the cost of one read per change of a token Secret
+
+## Renames
+
+Decisions behind the hand-off of a renamed resource's object
+([#153](https://github.com/JonathanGraniero/kflare/issues/153); ARCHITECTURE.md's
+[Renaming a resource](../ARCHITECTURE.md#renaming-a-resource)). The issue left four open, and the user asked for it to
+be picked up without answering them, so each went as the issue proposed, or as noted.
+
+- **Automatic, by key, in the same namespace,** as proposed, with no `kflare.dev/replaces` annotation: generated
+  names are the case that matters, and they come with no way to name a predecessor. A move across namespaces still
+  deletes and recreates; the annotation is the way to add it later
+- **The hand-off wins over `kflare.dev/deletion-policy: delete` on the old resource,** as proposed, and over `retain`
+  too: a retained object without a claim would leave the new resource reporting `AlreadyExists` for good
+- **Several successors: the oldest takes the object,** and the others report the conflict against it. The issue
+  proposed to keep the object and report a conflict on both. Keeping it without an owner would have both report
+  `AlreadyExists`, which only an adoption policy ends, and an adoption marks the object adopted, so a rename would
+  turn an object kflare created into one it keeps. With the oldest as owner, the result is what creating the two
+  resources in that order gives without the old one
+- **The hooked kinds:** `TunnelConfiguration` and `WorkerScript` have claim labels, contrary to the issue's reading,
+  and go through the same deletion path, so they are covered, each with a spec of its own. `Zone` is not: its objects
+  are shared (`sharedObjects`), so a second Zone never waits for a zone, and a hand-off would also have to carry the
+  Zone's children, whose `zoneRef` is immutable. deploy.md gives the `retain` sequence for it
+- **A successor is told by its spec, not by its status.** Requiring it to report the conflict against the old
+  resource would miss one applied in the same instant as the deletion (`kubectl apply --prune`), which has not
+  reconciled yet. It must manage no other object: an empty claim label and status, or this object's ID
+- **Renames of resources that reference each other** needed more than the issue said. A Tunnel waits for the
+  DNSRecords and TunnelConfigurations that point at it, so they are deleted while the renamed Tunnel has no tunnel
+  ID, and their successors point at that Tunnel. Comparing `tunnelRef` names would delete the record and reset the
+  rules of every chart renamed whole. `sameTunnel` takes two Tunnels for one when they name one tunnel of one
+  `CloudflareAccount` and do not manage two
+- **A Tunnel's credentials Secret** is deleted by the garbage collector with the old Tunnel, and nothing re-triggered a
+  Tunnel reporting `CredentialsSecretConflict` but its retry. The Tunnel controller now watches Secret deletions for
+  the Tunnels whose `credentialsSecretRef` names the Secret
+- **The deletion watch enqueues every resource of the kind that reports its conflict reason,** not only those whose
+  message names the deleted resource: the message is prose, a TunnelConfiguration's has another form, and such
+  resources are few and retry every minute anyway
+- **Not verified live yet:** the live spec renames a `DNSRecord` and polls the zone through it; it has not run
+  against Cloudflare. The other kinds' hand-offs call Cloudflare for nothing, so the fake API's record of no delete
+  and no create is what the shared specs check

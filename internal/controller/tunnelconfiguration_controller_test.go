@@ -629,6 +629,92 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			expectConfigGone()
 		})
 
+		It("hands a tunnel's rules to the configuration that replaces it, without resetting them", func() {
+			readyEnv(nil)
+			fake := &fakeTunnelConfigurationAPI{}
+			r := reconcilerWithFakeTunnelConfigurationAPI(fake)
+			_, err := reconcileConfig(r, configKey)
+			Expect(err).NotTo(HaveOccurred())
+			expectReady(configKey, metav1.ConditionTrue, "Synced")
+			fake.getResult.Config = fake.updates[0].Config
+			createConfig(otherConfig, nil, true)
+			otherKey := types.NamespacedName{Name: otherConfig, Namespace: ns}
+			_, err = reconcileConfig(r, otherKey)
+			Expect(err).NotTo(HaveOccurred())
+			expectReady(otherKey, metav1.ConditionFalse, "TunnelAlreadyConfigured")
+
+			startDeletion()
+			_, err = reconcileConfig(r, configKey)
+			Expect(err).NotTo(HaveOccurred())
+			expectConfigGone()
+			Expect(fake.updates).To(HaveLen(1), "the rules are not reset")
+			renamed := &cloudflarev1alpha1.TunnelConfiguration{}
+			Expect(k8sClient.Get(ctx, otherKey, renamed)).To(Succeed())
+			Expect(renamed.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.TunnelConfigurationIDLabel, fakeTunnelID))
+			Expect(renamed.Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+
+			By("finding the rules as its own, and writing nothing")
+			_, err = reconcileConfig(r, otherKey)
+			Expect(err).NotTo(HaveOccurred())
+			expectReady(otherKey, metav1.ConditionTrue, "Synced")
+			Expect(fake.updates).To(HaveLen(1))
+		})
+
+		It("hands a tunnel's rules to a configuration for the Tunnel that replaces its own", func() {
+			readyEnv(nil)
+			setStatusTunnelID(fakeTunnelID)
+			// A renamed Tunnel names the same tunnel, and waits for it.
+			renamedTunnel := &cloudflarev1alpha1.Tunnel{
+				ObjectMeta: metav1.ObjectMeta{Name: tunnelCRName + "-renamed", Namespace: ns},
+				Spec: cloudflarev1alpha1.TunnelSpec{
+					Name:       "tc-cf-tunnel",
+					AccountRef: corev1.LocalObjectReference{Name: accountName},
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{
+						CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: "tc-renamed-token"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, renamedTunnel)).To(Succeed())
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, renamedTunnel)).To(Succeed()) })
+			Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.TunnelConfiguration{
+				ObjectMeta: metav1.ObjectMeta{Name: otherConfig, Namespace: ns},
+				Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
+					TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+						TunnelRef: corev1.LocalObjectReference{Name: renamedTunnel.Name},
+						Ingress:   []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "o.example.com", Service: "http://o:80"}},
+					},
+				},
+			})).To(Succeed())
+			startDeletion()
+			fake := &fakeTunnelConfigurationAPI{}
+			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(BeEmpty(), "the rules are not reset")
+			expectConfigGone()
+			renamed := &cloudflarev1alpha1.TunnelConfiguration{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: otherConfig, Namespace: ns}, renamed)).To(Succeed())
+			Expect(renamed.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.TunnelConfigurationIDLabel, fakeTunnelID))
+		})
+
+		It("resets the rules when the other configuration is for another tunnel", func() {
+			readyEnv(nil)
+			setStatusTunnelID(fakeTunnelID)
+			Expect(k8sClient.Create(ctx, &cloudflarev1alpha1.TunnelConfiguration{
+				ObjectMeta: metav1.ObjectMeta{Name: otherConfig, Namespace: ns},
+				Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
+					TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+						TunnelRef: corev1.LocalObjectReference{Name: "some-other-tunnel"},
+						Ingress:   []cloudflarev1alpha1.TunnelIngressRule{{Hostname: "o.example.com", Service: "http://o:80"}},
+					},
+				},
+			})).To(Succeed())
+			startDeletion()
+			fake := &fakeTunnelConfigurationAPI{}
+			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.calls).To(Equal([]string{"UpdateTunnelConfiguration"}))
+			expectConfigGone()
+		})
+
 		It("resets an adopted configuration with deletion-policy=delete", func() {
 			readyEnv(map[string]string{reconciler.AdoptedAnnotation: "true", deletionPolicy: "delete"})
 			setStatusTunnelID(fakeTunnelID)

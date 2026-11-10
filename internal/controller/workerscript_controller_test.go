@@ -18,6 +18,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -638,6 +639,52 @@ var _ = Describe("WorkerScript Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.deletes).To(Equal([]string{scriptName}))
 			expectWorkerGone()
+		})
+
+		It("hands its Worker to the WorkerScript that replaces it, which uploads it in place", func() {
+			readyEnv(nil)
+			fake := syncedFake()
+			r := reconcilerWithFakeWorkerScriptAPI(fake)
+			_, err := reconcileWorker(r)
+			Expect(err).NotTo(HaveOccurred())
+			expectReady(metav1.ConditionTrue, "Synced")
+			renamedKey := types.NamespacedName{Name: wsName + "-renamed", Namespace: ns}
+			renamed := &cloudflarev1alpha1.WorkerScript{
+				ObjectMeta: metav1.ObjectMeta{Name: renamedKey.Name, Namespace: ns, Finalizers: []string{reconciler.Finalizer}},
+				Spec:       baseSpec(),
+			}
+			Expect(k8sClient.Create(ctx, renamed)).To(Succeed())
+			DeferCleanup(func() { forceDelete(ctx, &cloudflarev1alpha1.WorkerScript{}, renamedKey) })
+			reconcileRenamed := func() *cloudflarev1alpha1.WorkerScript {
+				GinkgoHelper()
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: renamedKey})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(k8sClient.Get(ctx, renamedKey, renamed)).To(Succeed())
+				return renamed
+			}
+			Expect(meta.FindStatusCondition(reconcileRenamed().Status.Conditions, cloudflarev1alpha1.ConditionReady).Reason).
+				To(Equal(reasonNameConflict))
+
+			startDeletion()
+			_, err = reconcileWorker(r)
+			Expect(err).NotTo(HaveOccurred())
+			expectWorkerGone()
+			Expect(fake.deletes).To(BeEmpty(), "the Worker is not deleted")
+			Expect(k8sClient.Get(ctx, renamedKey, renamed)).To(Succeed())
+			Expect(renamed.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.WorkerScriptIDLabel, scriptName))
+
+			By("uploading the Worker again as its own, with no moment without it")
+			Expect(meta.IsStatusConditionTrue(reconcileRenamed().Status.Conditions, cloudflarev1alpha1.ConditionReady)).
+				To(BeTrue())
+			Expect(renamed.Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			Expect(fake.uploads).To(HaveLen(2))
+			Expect(fake.deletes).To(BeEmpty())
+
+			By("deleting the Worker with the WorkerScript that took it")
+			Expect(k8sClient.Delete(ctx, renamed)).To(Succeed())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: renamedKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.deletes).To(Equal([]string{scriptName}))
 		})
 
 		It("deletes the Worker from Cloudflare and removes the finalizer", func() {

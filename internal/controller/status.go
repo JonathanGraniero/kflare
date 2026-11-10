@@ -237,6 +237,14 @@ func recordWarning(obj conditionedObject, reason, action, message string) {
 	}
 }
 
+// recordNormal records a Normal Event about what action did with obj, which
+// obj's Ready condition does not show.
+func recordNormal(obj conditionedObject, reason, action, message string) {
+	if recorder := readyEvents.Load(); recorder != nil && *recorder != nil {
+		(*recorder).Eventf(obj, nil, corev1.EventTypeNormal, reason, action, "%s", eventNote(message))
+	}
+}
+
 // eventNote is message, shortened at a character boundary to fit an Event's
 // note, and then ending in "...".
 func eventNote(message string) string {

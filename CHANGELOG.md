@@ -12,6 +12,25 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 
 ## Unreleased
 
+### Renaming a resource
+
+- **A renamed resource keeps its Cloudflare object.** Changing a resource's `metadata.name`, as a kustomize
+  `namePrefix`, a Helm `fullnameOverride` or a cdk8s construct ID does, used to delete the object with the old resource
+  and create it again for the new one, up to a minute later: a DNS record left its zone, a tunnel got a new ID and
+  token, and a KV namespace or a D1 database lost its data. kflare now hands the object to the new resource when the old
+  one is deleted, if the new one is in the same namespace and describes the same object. Nothing is written to
+  Cloudflare, the object keeps its ID, and the new resource is `Ready` within seconds. It applies to `DNSRecord`,
+  `WorkerRoute`, `Tunnel`, `TunnelConfiguration`, `WorkerScript`, `KVNamespace`, `D1Database`, `R2Bucket` and `IPList`.
+  An Event with reason `HandedOff` on both resources records it ([deploy guide](docs/deploy.md#renaming-a-resource),
+  [#153](https://github.com/JonathanGraniero/kflare/issues/153))
+- **The new resource owns the object as the old one did**: one kflare created is deleted with it, one it adopted is
+  kept. The old resource's `kflare.dev/deletion-policy` does not stop the hand-off, `delete` included
+- **A resource waiting for another's object no longer waits a minute.** When the resource it conflicts with is deleted,
+  a resource reporting `NameConflict`, `TitleConflict`, `PatternConflict` or `TunnelAlreadyConfigured` is reconciled at
+  once. A renamed `IPList` whose list a rule uses no longer blocks the old one's deletion with `ListInUse`
+- **Not handed off:** a `Zone` and a `ManagedTransform`, and a rename that moves a resource to another namespace. The
+  deploy guide gives the steps for those
+
 ### Scoping an installation
 
 - **An installation can be limited to some namespaces.** The chart's `watchNamespaces` lists them (the controller's

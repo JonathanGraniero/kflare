@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -40,9 +41,10 @@ import (
 // (adoption.go), adopts the account's or zone's object with the same key,
 // unless another resource of the kind claims it. It claims the object, updates
 // it when it differs from the spec, and deletes it with the resource once
-// nothing depends on it, unless it is retained. A kind supplies only what
-// differs: a crudResourceKind, which calls the kind's cloudflare-go v7
-// service.
+// nothing depends on it, unless it is retained, or another resource in its
+// namespace describes the same object: a renamed resource's object goes to its
+// successor instead (handOff). A kind supplies only what differs: a
+// crudResourceKind, which calls the kind's cloudflare-go v7 service.
 //
 // Some objects have no ID of their own: their key is their ID, as an R2
 // bucket's name is. Such a kind reads the object by its key, where another
@@ -180,6 +182,11 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// resource ready.
 	synced func(ctx context.Context, c client.Client, api A, obj O, parentID string, current *R) (result ctrl.Result,
 		stop bool, err error)
+	// describes replaces the comparison of two resources' keys that tells
+	// whether other describes the object obj manages, and so takes it over when
+	// obj is deleted (successor): a kind whose key alone does not name its
+	// object, as a DNS record's content tells it from the others of its name.
+	describes func(ctx context.Context, c client.Client, obj, other O) (bool, error)
 	// beforeDelete runs before the object is deleted from Cloudflare, with the
 	// retain policy unset. An object that is already gone is no failure.
 	beforeDelete func(ctx context.Context, api A, obj O, parentID, id string) error
@@ -741,7 +748,8 @@ func findInPages[R any](
 }
 
 // reconcileDelete handles the deletion lifecycle. Once nothing depends on the
-// resource, it deletes the object from Cloudflare (unless the retain policy is
+// resource, it hands the object to the resource's successor, if it has one
+// (handOff), or else deletes it from Cloudflare (unless the retain policy is
 // set), then removes the finalizer. An object that one of the kind's deletion
 // blockers keeps is kept with the finalizer, and the resource reports why
 // until the delete goes through.
@@ -765,14 +773,20 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 	if id == "" {
 		id = obj.GetLabels()[r.kind.claimLabel]
 	}
-	if id != "" && !reconciler.RetainOnDelete(obj) {
-		accountName, zoneID, gone, err := r.deletionParent(ctx, obj)
+	if id != "" {
+		handed, err := r.handOff(ctx, obj, id)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if !gone {
-			if result, err := r.deleteObject(ctx, obj, accountName, zoneID, id); err != nil || !result.IsZero() {
-				return result, err
+		if !handed && !reconciler.RetainOnDelete(obj) {
+			accountName, zoneID, gone, err := r.deletionParent(ctx, obj)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if !gone {
+				if result, err := r.deleteObject(ctx, obj, accountName, zoneID, id); err != nil || !result.IsZero() {
+					return result, err
+				}
 			}
 		}
 	}
@@ -780,6 +794,148 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 	// Remove the finalizer to allow Kubernetes to complete the deletion.
 	_, err = reconciler.RemoveFinalizer(ctx, r.Client, obj)
 	return ctrl.Result{}, err
+}
+
+// reasonHandedOff is the reason of the Events of a hand-off (handOff), on the
+// resource that gave its object and on the one that took it.
+const reasonHandedOff = "HandedOff"
+
+// handOff gives the object id of obj, which is being deleted, to obj's
+// successor, and reports whether there was one. Renaming a resource makes a
+// new one with the same spec, which reports the kind's conflict reason while
+// the old one manages the object, and deletes the old one: deleting the
+// object for the new resource to create it again would take a DNS record out
+// of its zone for a while, and a KV namespace's or a D1 database's data for
+// good. So the successor's claim replaces obj's, with what obj knew of the
+// object: one kflare created is still deleted with the successor, and one it
+// adopted still kept. No deletion policy on obj changes that, since the
+// successor's spec asks for the object. Nothing is written to Cloudflare, and
+// deleting obj re-triggers the successor (resourcesInConflict), which finds
+// the object by its claim.
+//
+// The claim is written before obj's finalizer goes, so the object is never
+// without one: a hand-off that fails halfway is made again.
+func (r *crudResourceReconciler[O, A, R, L]) handOff(ctx context.Context, obj O, id string) (bool, error) {
+	k := r.kind
+	successor, found, err := r.successor(ctx, obj, id)
+	if err != nil || !found {
+		return false, err
+	}
+	if err := handClaim(ctx, r.Client, obj, successor, k.claimLabel, id); err != nil {
+		return false, err
+	}
+	message := fmt.Sprintf("%s %s/%s handed %s %s to %s %s/%s", k.name, obj.GetNamespace(), obj.GetName(), k.noun, id,
+		k.name, successor.GetNamespace(), successor.GetName())
+	recordNormal(obj, reasonHandedOff, "Delete", message)
+	recordNormal(successor, reasonHandedOff, "Claim", message)
+	log.FromContext(ctx).Info("Handed the "+k.noun+" to the resource that replaces this one", "id", id,
+		"successor", successor.GetName())
+	return true, nil
+}
+
+// successor returns the resource that takes over the object id when obj is
+// deleted: another resource of the kind in obj's namespace that is not being
+// deleted, describes the same object at the same address, in the same
+// Cloudflare account or zone (sameParent), and manages no other object. A
+// resource in another namespace is no successor: its owner may be someone
+// else, to whom deleting obj must not give the object. Of several, the oldest
+// is it, the name breaking ties, and the others report the kind's conflict
+// reason against it, as resources created with one key do. A kind whose
+// resources share their objects has none (sharedObjects): nothing waits for
+// such an object.
+func (r *crudResourceReconciler[O, A, R, L]) successor(ctx context.Context, obj O, id string) (O, bool, error) {
+	k := r.kind
+	var none O
+	if k.sharedObjects {
+		return none, false, nil
+	}
+	list := k.newList()
+	if err := r.List(ctx, list, client.InNamespace(obj.GetNamespace())); err != nil {
+		return none, false, err
+	}
+	items, err := meta.ExtractList(list)
+	if err != nil {
+		return none, false, err
+	}
+	var candidates []O
+	for _, item := range items {
+		other, ok := item.(O)
+		if !ok {
+			return none, false, fmt.Errorf("unexpected list item %T", item)
+		}
+		// obj itself is being deleted.
+		if !other.GetDeletionTimestamp().IsZero() ||
+			(k.address != nil && !slices.Equal(k.address(other), k.address(obj))) {
+			continue
+		}
+		// A resource that manages another object keeps that one.
+		if claim := other.GetLabels()[k.claimLabel]; claim != "" && claim != id {
+			continue
+		}
+		if recorded := k.statusID(other); recorded != "" && recorded != id {
+			continue
+		}
+		describes, err := r.describes(ctx, obj, other)
+		if err != nil {
+			return none, false, err
+		}
+		if describes {
+			candidates = append(candidates, other)
+		}
+	}
+	if len(candidates) == 0 {
+		return none, false, nil
+	}
+	// A resource whose parent is gone manages nothing, so it hands nothing on.
+	// An ID that a kind's resources reach through another resource is unique,
+	// and needs no parent to compare (sameParent).
+	parentID := ""
+	if k.zoneRef != nil || k.accountRef != nil {
+		if parentID, err = r.parentID(ctx, obj); err != nil || parentID == "" {
+			return none, false, err
+		}
+	}
+	slices.SortFunc(candidates, func(a, b O) int {
+		return cmp.Or(a.GetCreationTimestamp().Compare(b.GetCreationTimestamp().Time), cmp.Compare(a.GetName(), b.GetName()))
+	})
+	for _, candidate := range candidates {
+		same, err := r.sameParent(ctx, obj, candidate, parentID)
+		if err != nil {
+			return none, false, err
+		}
+		if same {
+			return candidate, true, nil
+		}
+	}
+	return none, false, nil
+}
+
+// describes reports whether other's spec describes the object obj manages:
+// by the kind's describes hook, or else when their keys are the same.
+func (r *crudResourceReconciler[O, A, R, L]) describes(ctx context.Context, obj, other O) (bool, error) {
+	if r.kind.hooks.describes != nil {
+		return r.kind.hooks.describes(ctx, r.Client, obj, other)
+	}
+	return r.kind.key(other) == r.kind.key(obj), nil
+}
+
+// parentID returns the ID of the Cloudflare account, or zone, that holds the
+// object of obj, which is being deleted: the zone its status records, or its
+// Zone's; the account its CloudflareAccount names. It is "" when that one is
+// gone, or has no zone yet.
+func (r *crudResourceReconciler[O, A, R, L]) parentID(ctx context.Context, obj O) (string, error) {
+	k := r.kind
+	if k.zoneRef == nil {
+		account := &cloudflarev1alpha1.CloudflareAccount{}
+		err := r.Get(ctx, types.NamespacedName{Name: k.accountRef(obj)}, account)
+		return account.Spec.AccountID, client.IgnoreNotFound(err)
+	}
+	if id := *k.statusZoneID(obj); id != "" {
+		return id, nil
+	}
+	zone := &cloudflarev1alpha1.Zone{}
+	err := r.Get(ctx, types.NamespacedName{Name: k.zoneRef(obj), Namespace: obj.GetNamespace()}, zone)
+	return zone.Status.CloudflareMetadata.ZoneID, client.IgnoreNotFound(err)
 }
 
 // deleteObject deletes a resource's object id from Cloudflare, with the token
@@ -876,8 +1032,9 @@ func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context,
 // of Namespaces, so a kind that names its account follows what the account's
 // spec.allowedNamespaces says of them (a zone's kind follows its Zone); the
 // kinds its spec references, so a resource waiting for one is reconciled once
-// it is ready; and the deletion of the kind's dependents, so a resource
-// waiting for them is released once they are gone.
+// it is ready; the deletion of the kind's dependents, so a resource waiting
+// for them is released once they are gone; and the deletion of the kind's own
+// resources, so one waiting for another's object takes it at once.
 func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconcile.Reconciler) error {
 	b := ctrl.NewControllerManagedBy(mgr).For(r.kind.newObject())
 	switch {
@@ -893,6 +1050,10 @@ func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconci
 	}
 	for _, dependent := range r.kind.dependents {
 		b = b.Watches(dependent.newObject(), handler.EnqueueRequestsFromMapFunc(r.deletingResourcesOf),
+			builder.WithPredicates(deletesOnly))
+	}
+	if !r.kind.sharedObjects {
+		b = b.Watches(r.kind.newObject(), handler.EnqueueRequestsFromMapFunc(r.resourcesInConflict),
 			builder.WithPredicates(deletesOnly))
 	}
 	if r.kind.hooks.watch != nil {
@@ -937,6 +1098,18 @@ func (r *crudResourceReconciler[O, A, R, L]) resourcesReferencing(ref crudRefere
 		return r.resourcesWhere(ctx, []client.ListOption{client.InNamespace(target.GetNamespace())},
 			func(obj O) bool { return ref.name(obj) == target.GetName() })
 	}
+}
+
+// resourcesInConflict maps the deletion of a resource of the kind to the
+// kind's resources that report its conflict reason, in every namespace: one of
+// them may have waited for the deleted resource's object, which is now its
+// own (handOff), or free to adopt or to create again. Without the watch it
+// would only find out on its retry, a minute later.
+func (r *crudResourceReconciler[O, A, R, L]) resourcesInConflict(ctx context.Context, _ client.Object) []reconcile.Request {
+	return r.resourcesWhere(ctx, nil, func(obj O) bool {
+		ready := meta.FindStatusCondition(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
+		return ready != nil && ready.Reason == r.kind.conflictReason
+	})
 }
 
 // resourcesWhere returns a request for each of the kind's resources that opts

@@ -24,6 +24,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 )
@@ -199,13 +201,66 @@ func disconnectTunnel(ctx context.Context, api TunnelAPI, _ *cloudflarev1alpha1.
 }
 
 // watchTokenSecrets watches the Secrets a Tunnel owns, so a deleted or edited
-// token Secret is restored.
-func watchTokenSecrets(b *builder.Builder, _ client.Client) *builder.Builder {
-	return b.Owns(&corev1.Secret{})
+// token Secret is restored, and the deletion of any Secret, for the Tunnels
+// whose credentialsSecretRef names it: a Tunnel that replaces another (handOff)
+// under the same Secret name waits, with CredentialsSecretConflict, until the
+// garbage collector has deleted the first one's Secret, which names no owner
+// that is still there.
+func watchTokenSecrets(b *builder.Builder, c client.Client) *builder.Builder {
+	return b.Owns(&corev1.Secret{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(tunnelsNamingSecret(c)),
+			builder.WithPredicates(deletesOnly))
+}
+
+// tunnelsNamingSecret returns what maps a Secret to the Tunnels in its
+// namespace whose credentialsSecretRef names it.
+func tunnelsNamingSecret(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, secret client.Object) []reconcile.Request {
+		tunnels := &cloudflarev1alpha1.TunnelList{}
+		if err := c.List(ctx, tunnels, client.InNamespace(secret.GetNamespace())); err != nil {
+			return nil
+		}
+		var reqs []reconcile.Request
+		for i := range tunnels.Items {
+			if tunnels.Items[i].Spec.CredentialsSecretRef.Name == secret.GetName() {
+				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&tunnels.Items[i])})
+			}
+		}
+		return reqs
+	}
 }
 
 // isTunnelReady returns true if the Tunnel has a Ready=True condition and a tunnel ID.
 func isTunnelReady(tunnel *cloudflarev1alpha1.Tunnel) bool {
 	return tunnel.Status.CloudflareMetadata.TunnelID != "" &&
 		meta.IsStatusConditionTrue(tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+}
+
+// sameTunnel reports whether the Tunnels named a and b in namespace are one
+// Cloudflare tunnel, or will be, "" naming none. Two Tunnels are when they
+// name one tunnel of one CloudflareAccount and do not manage two: the one
+// that waits takes the other's tunnel when that one is deleted (handOff). So
+// what points at a renamed Tunnel, itself renamed, still describes the same
+// object: a DNSRecord's record, a TunnelConfiguration's rules.
+func sameTunnel(ctx context.Context, c client.Reader, namespace, a, b string) (bool, error) {
+	if a == b {
+		return true, nil
+	}
+	if a == "" || b == "" {
+		return false, nil
+	}
+	var tunnels [2]cloudflarev1alpha1.Tunnel
+	for i, name := range []string{a, b} {
+		err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &tunnels[i])
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	first, second := tunnels[0].Status.CloudflareMetadata.TunnelID, tunnels[1].Status.CloudflareMetadata.TunnelID
+	return tunnels[0].Spec.Name == tunnels[1].Spec.Name &&
+		tunnels[0].Spec.AccountRef.Name == tunnels[1].Spec.AccountRef.Name &&
+		(first == "" || second == "" || first == second), nil
 }

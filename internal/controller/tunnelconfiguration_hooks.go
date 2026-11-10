@@ -114,6 +114,11 @@ var tunnelConfigurationKind = crudResourceKind[*cloudflarev1alpha1.TunnelConfigu
 		},
 		resolve: resolveTunnelOwner,
 		find:    findTunnelConfiguration,
+		// Another resource configures the same tunnel when its Tunnel is the
+		// same one, or the one that replaces it.
+		describes: func(ctx context.Context, c client.Client, tc, other *cloudflarev1alpha1.TunnelConfiguration) (bool, error) {
+			return sameTunnel(ctx, c, tc.Namespace, tc.Spec.TunnelRef.Name, other.Spec.TunnelRef.Name)
+		},
 	},
 }
 

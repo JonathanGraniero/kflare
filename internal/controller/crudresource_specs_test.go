@@ -871,6 +871,512 @@ func describeCRUDAtOnce[O conditionedObject, A any, R any, L any](e *crudSpecEnv
 	})
 }
 
+// describeCRUDHandOff runs the specs of a rename: a resource that is deleted
+// hands its object to the resource in its namespace that describes the same
+// one, and deletes it when there is none.
+func describeCRUDHandOff[O conditionedObject, A any, R any, L any](e *crudSpecEnv[O, A, R, L]) {
+	t, k, ctx := e.t, e.t.kind, e.ctx
+	key, otherKey := e.key, e.otherKey
+
+	// getAt reads the resource at at, and gone reports whether it is deleted.
+	getAt := func(at types.NamespacedName) O {
+		GinkgoHelper()
+		obj := k.newObject()
+		Expect(k8sClient.Get(ctx, at, obj)).To(Succeed())
+		return obj
+	}
+	gone := func(at types.NamespacedName) bool {
+		return apierrors.IsNotFound(k8sClient.Get(ctx, at, k.newObject()))
+	}
+	reconcileAt := func(at types.NamespacedName) {
+		GinkgoHelper()
+		_, err := e.r.Reconcile(ctx, reconcile.Request{NamespacedName: at})
+		Expect(err).NotTo(HaveOccurred())
+	}
+	readyAt := func(at types.NamespacedName) metav1.Condition {
+		GinkgoHelper()
+		cond := meta.FindStatusCondition(getAt(at).GetConditions(), cloudflarev1alpha1.ConditionReady)
+		Expect(cond).NotTo(BeNil())
+		return *cond
+	}
+	// collectGarbage deletes what a kind's hooks made for a resource that is
+	// gone, as the garbage collector does: envtest runs none.
+	collectGarbage := func() {
+		GinkgoHelper()
+		secrets := &corev1.SecretList{}
+		Expect(k8sClient.List(ctx, secrets, client.InNamespace(crudSpecNamespace))).To(Succeed())
+		for i := range secrets.Items {
+			for _, owner := range secrets.Items[i].OwnerReferences {
+				if gone(types.NamespacedName{Name: owner.Name, Namespace: crudSpecNamespace}) {
+					Expect(k8sClient.Delete(ctx, &secrets.Items[i])).To(Succeed())
+				}
+			}
+		}
+	}
+	// deleteIt deletes the resource at at and reconciles its deletion.
+	deleteIt := func(at types.NamespacedName) {
+		GinkgoHelper()
+		Expect(k8sClient.Delete(ctx, getAt(at))).To(Succeed())
+		reconcileAt(at)
+		Expect(gone(at)).To(BeTrue(), "the finalizer is removed")
+		collectGarbage()
+	}
+	// rename creates, at otherKey, a resource with the spec of the one at
+	// key, as renaming that one does, after edit, if any, and reconciles it.
+	rename := func(edit func(O)) O {
+		GinkgoHelper()
+		renamed := t.newResource(otherKey, e.parentName)
+		renamed.SetFinalizers([]string{reconciler.Finalizer})
+		if edit != nil {
+			edit(renamed)
+		}
+		Expect(k8sClient.Create(ctx, renamed)).To(Succeed())
+		return renamed
+	}
+	// keyEdit changes the field a resource adopts an object by.
+	keyEdit := func() func(O) {
+		GinkgoHelper()
+		for _, edit := range slices.Concat(t.changes, t.immutable) {
+			if edit.field == t.keyField {
+				return edit.edit
+			}
+		}
+		Fail("the table has no edit of " + t.keyField)
+		return nil
+	}
+	// expectDeleted deletes the resource at key, and expects it to delete its
+	// object and to leave the resource at otherKey without a claim to it.
+	expectDeleted := func(id string) {
+		GinkgoHelper()
+		deleteIt(key)
+		Expect(e.store.objects).NotTo(HaveKey(id), "the "+k.noun+" is deleted")
+		if !gone(otherKey) {
+			Expect(getAt(otherKey).GetLabels()[k.claimLabel]).NotTo(Equal(id))
+		}
+	}
+
+	if k.sharedObjects {
+		It("hands its "+k.noun+" to no other resource with the same "+t.keyField+", which may name it as it is",
+			func() {
+				id := e.synced(nil)
+				rename(nil)
+				expectDeleted(id)
+			})
+		return
+	}
+
+	Describe("a rename", func() {
+		It("hands its "+k.noun+" to the resource that replaces it, with nothing written to Cloudflare", func() {
+			recorder := events.NewFakeRecorder(20)
+			SetEventRecorder(recorder)
+			DeferCleanup(func() { SetEventRecorder(nil) })
+			id := e.synced(nil)
+			rename(nil)
+			reconcileAt(otherKey)
+			Expect(readyAt(otherKey).Reason).To(Equal(k.conflictReason))
+			Expect(e.r.crud().resourcesInConflict(ctx, e.get())).To(ConsistOf(reconcile.Request{NamespacedName: otherKey}),
+				"a deletion reconciles the resources that report "+k.conflictReason+", and no other")
+			writes, sent, before := e.store.writes, len(e.store.sent), corrections(k.name)
+			for len(recorder.Events) > 0 {
+				<-recorder.Events
+			}
+
+			deleteIt(key)
+			Expect(e.store.objects).To(HaveKey(id), "the "+k.noun+" is kept")
+			renamed := getAt(otherKey)
+			Expect(renamed.GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+			Expect(renamed.GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			handedOff := fmt.Sprintf("Normal HandedOff %s %s handed %s %s to %s %s", k.name, key, k.noun, id, k.name,
+				otherKey)
+			Expect(recorder.Events).To(Receive(Equal(handedOff)), "on the resource that is deleted")
+			Expect(recorder.Events).To(Receive(Equal(handedOff)), "on the one that replaces it")
+
+			By("finding the " + k.noun + " as its own")
+			reconcileAt(otherKey)
+			Expect(readyAt(otherKey).Status).To(Equal(metav1.ConditionTrue), readyAt(otherKey).Message)
+			Expect(k.statusID(getAt(otherKey))).To(Equal(id))
+			Expect(e.store.writes).To(Equal(writes), "no delete, and no create")
+			Expect(e.store.sent).To(HaveLen(sent))
+			Expect(corrections(k.name)).To(Equal(before), "a hand-off corrects nothing")
+
+			By("deleting the " + k.noun + " with the resource that took it, as one kflare created")
+			deleteIt(otherKey)
+			Expect(e.store.objects).To(BeEmpty())
+		})
+
+		It("hands on a "+k.noun+" it adopted as an adopted one, which is kept", func() {
+			e.createParent(true)
+			obj := e.create(key, map[string]string{
+				reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt})
+			id := e.seed("existing", k.key(obj))
+			reconcileAt(key)
+			rename(nil)
+
+			deleteIt(key)
+			Expect(getAt(otherKey).GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+			reconcileAt(otherKey)
+			Expect(k.statusID(getAt(otherKey))).To(Equal(id))
+			deleteIt(otherKey)
+			Expect(e.store.objects).To(HaveKey(id), "an adopted "+k.noun+" outlives the resource")
+			Expect(e.store.writes).To(BeZero())
+		})
+
+		It("hands on a "+k.noun+" it created as a created one, whatever the resource that takes it said", func() {
+			id := e.synced(nil)
+			rename(func(renamed O) {
+				renamed.SetAnnotations(map[string]string{reconciler.AdoptedAnnotation: "true",
+					reconciler.CreatingAnnotation: k.key(renamed)})
+			})
+			deleteIt(key)
+			Expect(getAt(otherKey).GetAnnotations()).NotTo(Or(HaveKey(reconciler.AdoptedAnnotation),
+				HaveKey(reconciler.CreatingAnnotation)))
+			reconcileAt(otherKey)
+			deleteIt(otherKey)
+			Expect(e.store.objects).NotTo(HaveKey(id))
+		})
+
+		for _, policy := range []string{reconciler.DeletionPolicyDelete, reconciler.DeletionPolicyRetain} {
+			It("hands its "+k.noun+" on with the "+policy+" policy too", func() {
+				id := e.synced(map[string]string{reconciler.DeletionPolicyAnnotation: policy})
+				rename(nil)
+				writes := e.store.writes
+				deleteIt(key)
+				Expect(e.store.objects).To(HaveKey(id))
+				Expect(e.store.writes).To(Equal(writes))
+				reconcileAt(otherKey)
+				Expect(readyAt(otherKey).Status).To(Equal(metav1.ConditionTrue), readyAt(otherKey).Message)
+				Expect(k.statusID(getAt(otherKey))).To(Equal(id))
+			})
+		}
+
+		It("hands on the "+k.noun+" its claim names when no status recorded it", func() {
+			id := e.synced(nil)
+			Expect(k8sClient.Status().Update(ctx, clearedStatus(k, e.get()))).To(Succeed())
+			rename(nil)
+			deleteIt(key)
+			Expect(e.store.objects).To(HaveKey(id))
+			Expect(getAt(otherKey).GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+		})
+
+		It("hands its "+k.noun+" to a resource that names another "+e.parentKind+" for the same "+e.cloudflareParent,
+			func() {
+				id := e.synced(nil)
+				e.createOtherParent(true)
+				rename(func(renamed O) {
+					reflect.ValueOf(renamed).Elem().Set(reflect.ValueOf(t.newResource(otherKey, e.otherParent)).Elem())
+					renamed.SetFinalizers([]string{reconciler.Finalizer})
+				})
+				deleteIt(key)
+				Expect(e.store.objects).To(HaveKey(id))
+				Expect(getAt(otherKey).GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+			})
+
+		It("makes a hand-off again that stopped after the claim was written", func() {
+			id := e.synced(nil)
+			rename(func(renamed O) { renamed.SetLabels(map[string]string{k.claimLabel: id}) })
+			writes := e.store.writes
+			deleteIt(key)
+			Expect(e.store.objects).To(HaveKey(id))
+			Expect(e.store.writes).To(Equal(writes))
+			reconcileAt(otherKey)
+			Expect(readyAt(otherKey).Status).To(Equal(metav1.ConditionTrue), readyAt(otherKey).Message)
+		})
+
+		It("hands its "+k.noun+" to a resource whose status already records it", func() {
+			id := e.synced(nil)
+			renamed := rename(func(renamed O) { renamed.SetLabels(map[string]string{k.claimLabel: id}) })
+			object := e.store.objects[id]
+			k.observe(renamed, &object)
+			Expect(k8sClient.Status().Update(ctx, renamed)).To(Succeed())
+			Expect(k.statusID(getAt(otherKey))).To(Equal(id))
+			writes := e.store.writes
+			deleteIt(key)
+			Expect(e.store.objects).To(HaveKey(id))
+			Expect(e.store.writes).To(Equal(writes))
+		})
+
+		It("hands its "+k.noun+" to a paused resource too, which calls Cloudflare for nothing until it is unpaused",
+			func() {
+				id := e.synced(nil)
+				rename(func(renamed O) {
+					renamed.SetAnnotations(map[string]string{reconciler.PausedAnnotation: "true"})
+				})
+				calls := len(e.store.parentIDs)
+				deleteIt(key)
+				reconcileAt(otherKey)
+				Expect(e.store.objects).To(HaveKey(id))
+				Expect(e.store.parentIDs).To(HaveLen(calls))
+				Expect(getAt(otherKey).GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+			})
+
+		It("keeps its finalizer when its "+e.parentKind+" cannot be read, with the retain policy too", func() {
+			id := e.synced(map[string]string{reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyRetain})
+			if e.zoned {
+				// Without the zone its status records, only the Zone names it.
+				Expect(k8sClient.Status().Update(ctx, clearedStatus(k, e.get()))).To(Succeed())
+			}
+			rename(nil)
+			e.failGets(e.parentName, errors.New("parent unavailable"))
+			Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+			_, err := e.reconcileIt()
+			Expect(err).To(MatchError("parent unavailable"))
+			Expect(e.get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+			Expect(e.store.objects).To(HaveKey(id))
+			Expect(getAt(otherKey).GetLabels()).NotTo(HaveKey(k.claimLabel))
+		})
+
+		It("hands its "+k.noun+" to the oldest of several, and the others report "+k.conflictReason, func() {
+			id := e.synced(nil)
+			// The older one's name sorts last. Creation times have a second's
+			// precision.
+			older := rename(nil)
+			time.Sleep(1100 * time.Millisecond)
+			newerKey := types.NamespacedName{Name: e.base + "-a-newer", Namespace: crudSpecNamespace}
+			newer := t.newResource(newerKey, e.parentName)
+			newer.SetFinalizers([]string{reconciler.Finalizer})
+			Expect(k8sClient.Create(ctx, newer)).To(Succeed())
+			DeferCleanup(forceDelete, ctx, client.Object(k.newObject()), newerKey)
+			Expect(newer.GetName() < older.GetName()).To(BeTrue())
+
+			deleteIt(key)
+			Expect(e.store.objects).To(HaveKey(id))
+			Expect(getAt(otherKey).GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+			Expect(getAt(newerKey).GetLabels()).NotTo(HaveKey(k.claimLabel))
+			reconcileAt(newerKey)
+			Expect(readyAt(newerKey).Reason).To(Equal(k.conflictReason))
+			Expect(readyAt(newerKey).Message).To(ContainSubstring(otherKey.String()))
+		})
+
+		It("keeps its "+k.noun+", its claim and its finalizer when the hand-off cannot be written", func() {
+			id := e.synced(nil)
+			rename(nil)
+			base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			failing := interceptor.NewClient(base, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch,
+					opts ...client.PatchOption) error {
+					if client.ObjectKeyFromObject(obj) == otherKey {
+						return errors.New("patch refused")
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			})
+			e.r = t.newReconciler(failing, func(string) (A, error) { return t.newFake(e.store), nil })
+			writes := e.store.writes
+			Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+			_, err = e.reconcileIt()
+			Expect(err).To(MatchError("patch refused"))
+			Expect(e.get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+			Expect(e.store.objects).To(HaveKey(id))
+			Expect(e.store.writes).To(Equal(writes))
+		})
+
+		It("returns a failed list of the resources that could replace it for back-off", func() {
+			id := e.synced(nil)
+			base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			failing := interceptor.NewClient(base, interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if reflect.TypeOf(list) == reflect.TypeOf(k.newList()) {
+						return errors.New("list unavailable")
+					}
+					return c.List(ctx, list, opts...)
+				},
+			})
+			e.r = t.newReconciler(failing, func(string) (A, error) { return t.newFake(e.store), nil })
+			Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+			_, err = e.reconcileIt()
+			Expect(err).To(MatchError("list unavailable"))
+			Expect(e.store.objects).To(HaveKey(id))
+		})
+
+		It("returns a failed read of its "+e.parentKind+" for back-off, when another resource could replace it",
+			func() {
+				id := e.synced(nil)
+				e.createOtherParent(true)
+				rename(func(renamed O) {
+					reflect.ValueOf(renamed).Elem().Set(reflect.ValueOf(t.newResource(otherKey, e.otherParent)).Elem())
+					renamed.SetFinalizers([]string{reconciler.Finalizer})
+				})
+				e.failGets(e.otherParent, errors.New("parent unavailable"))
+				Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+				_, err := e.reconcileIt()
+				Expect(err).To(MatchError("parent unavailable"))
+				Expect(e.store.objects).To(HaveKey(id))
+				Expect(e.get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+			})
+
+		It("is reconciled at once when the resource whose "+k.noun+" it waits for is deleted, which it watches",
+			func() {
+				id := e.synced(nil)
+				rename(nil)
+				reconcileAt(otherKey)
+				Expect(readyAt(otherKey).Reason).To(Equal(k.conflictReason))
+				writes := e.store.writes
+				e.runManager()
+				Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+				Eventually(func(g Gomega) {
+					g.Expect(gone(key)).To(BeTrue())
+					// What the garbage collector does once the resource is gone.
+					secrets := &corev1.SecretList{}
+					g.Expect(k8sClient.List(ctx, secrets, client.InNamespace(crudSpecNamespace))).To(Succeed())
+					for i := range secrets.Items {
+						if owners := secrets.Items[i].OwnerReferences; len(owners) > 0 && owners[0].Name == key.Name {
+							g.Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &secrets.Items[i]))).To(Succeed())
+						}
+					}
+					renamed := k.newObject()
+					g.Expect(k8sClient.Get(ctx, otherKey, renamed)).To(Succeed())
+					g.Expect(meta.IsStatusConditionTrue(renamed.GetConditions(), cloudflarev1alpha1.ConditionReady)).
+						To(BeTrue())
+					g.Expect(k.statusID(renamed)).To(Equal(id))
+				}).WithTimeout(10*time.Second).Should(Succeed(), "well before its retry, a minute later")
+				Expect(e.store.writes).To(Equal(writes), "no delete, and no create")
+			})
+	})
+
+	Describe("no rename", func() {
+		It("deletes its "+k.noun+" though a resource in another namespace has the same "+t.keyField, func() {
+			id := e.synced(nil)
+			elsewhere := types.NamespacedName{Name: otherKey.Name, Namespace: "handoff-elsewhere"}
+			err := k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: elsewhere.Namespace}})
+			Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
+			Expect(k8sClient.Create(ctx, t.newResource(elsewhere, e.parentName))).To(Succeed())
+			DeferCleanup(forceDelete, ctx, client.Object(k.newObject()), elsewhere)
+			expectDeleted(id)
+			Expect(getAt(elsewhere).GetLabels()).NotTo(HaveKey(k.claimLabel))
+		})
+
+		It("creates its "+k.noun+" at once when the resource in another namespace that managed one with its "+
+			t.keyField+" is deleted, which it watches", func() {
+			e.synced(nil)
+			elsewhere := types.NamespacedName{Name: otherKey.Name, Namespace: "handoff-elsewhere"}
+			err := k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: elsewhere.Namespace}})
+			Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
+			if e.zoned {
+				zoneAt := types.NamespacedName{Name: e.zoneName, Namespace: elsewhere.Namespace}
+				e.createZone(zoneAt, e.zoneID, true)
+				DeferCleanup(forceDelete, ctx, client.Object(&cloudflarev1alpha1.Zone{}), zoneAt)
+			}
+			waiting := t.newResource(elsewhere, e.parentName)
+			waiting.SetFinalizers([]string{reconciler.Finalizer})
+			// What it references is in the other namespace.
+			for _, ref := range t.references {
+				if !ref.optional {
+					Skip("its " + ref.field + " names a resource of the other namespace")
+				}
+				ref.set(waiting, "")
+			}
+			Expect(k8sClient.Create(ctx, waiting)).To(Succeed())
+			DeferCleanup(func() {
+				forceDelete(ctx, k.newObject(), elsewhere)
+				Expect(k8sClient.DeleteAllOf(ctx, &corev1.Secret{}, client.InNamespace(elsewhere.Namespace))).To(Succeed())
+			})
+			reconcileAt(elsewhere)
+			Expect(readyAt(elsewhere).Reason).To(Equal(k.conflictReason))
+
+			// The manager reconciles every resource as it starts: wait for that
+			// reconcile, which reports the conflict again, so that only the
+			// deletion can bring the next one before the retry.
+			waiting = getAt(elsewhere)
+			waiting.SetConditions(nil)
+			Expect(k8sClient.Status().Update(ctx, waiting)).To(Succeed())
+			e.runManager()
+			Eventually(func(g Gomega) {
+				got := k.newObject()
+				g.Expect(k8sClient.Get(ctx, elsewhere, got)).To(Succeed())
+				ready := meta.FindStatusCondition(got.GetConditions(), cloudflarev1alpha1.ConditionReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Reason).To(Equal(k.conflictReason))
+			}).WithTimeout(10 * time.Second).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(gone(key)).To(BeTrue())
+				got := k.newObject()
+				g.Expect(k8sClient.Get(ctx, elsewhere, got)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(got.GetConditions(), cloudflarev1alpha1.ConditionReady)).To(BeTrue())
+				g.Expect(got.GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			}).WithTimeout(10*time.Second).Should(Succeed(), "well before its retry, a minute later")
+			Expect(e.store.objects).To(HaveLen(1), "the first one's is deleted, and its own created")
+		})
+
+		It("deletes its "+k.noun+" though another resource is there, with another "+t.keyField, func() {
+			id := e.synced(nil)
+			rename(keyEdit())
+			expectDeleted(id)
+		})
+
+		It("deletes its "+k.noun+" when the resource with the same "+t.keyField+" is being deleted too", func() {
+			id := e.synced(nil)
+			Expect(k8sClient.Delete(ctx, rename(nil))).To(Succeed())
+			expectDeleted(id)
+		})
+
+		It("deletes its "+k.noun+" when the resource with the same "+t.keyField+" claims another", func() {
+			id := e.synced(nil)
+			rename(func(renamed O) { renamed.SetLabels(map[string]string{k.claimLabel: "another"}) })
+			expectDeleted(id)
+			Expect(getAt(otherKey).GetLabels()).To(HaveKeyWithValue(k.claimLabel, "another"))
+		})
+
+		It("deletes its "+k.noun+" when the status of the resource with the same "+t.keyField+" records another",
+			func() {
+				id := e.synced(nil)
+				renamed := rename(nil)
+				another := t.seed("another", k.key(renamed)+"-other", e.refs)
+				k.observe(renamed, &another)
+				Expect(k8sClient.Status().Update(ctx, renamed)).To(Succeed())
+				if k.statusID(getAt(otherKey)) == id {
+					Skip("the " + k.noun + "'s " + t.keyField + " is its ID: status cannot record another")
+				}
+				expectDeleted(id)
+			})
+
+		It("deletes its "+k.noun+" when the resource with the same "+t.keyField+" is in another "+e.cloudflareParent,
+			func() {
+				id := e.synced(nil)
+				e.createOtherParent(false)
+				rename(func(renamed O) {
+					reflect.ValueOf(renamed).Elem().Set(reflect.ValueOf(t.newResource(otherKey, e.otherParent)).Elem())
+				})
+				expectDeleted(id)
+			})
+
+		if move := t.elsewhere; move != nil {
+			It("deletes its "+k.noun+" when the resource with the same "+t.keyField+" is there after "+move.what,
+				func() {
+					id := e.synced(nil)
+					rename(move.edit)
+					expectDeleted(id)
+				})
+		}
+
+		It("hands nothing on once its "+e.parentKind+" is gone, though the other resource names it too", func() {
+			e.synced(nil)
+			if e.zoned {
+				// Without the zone its status records, only the Zone names it.
+				Expect(k8sClient.Status().Update(ctx, clearedStatus(k, e.get()))).To(Succeed())
+			}
+			rename(nil)
+			forceDelete(ctx, &cloudflarev1alpha1.Zone{},
+				types.NamespacedName{Name: e.zoneName, Namespace: crudSpecNamespace})
+			forceDelete(ctx, &cloudflarev1alpha1.CloudflareAccount{}, types.NamespacedName{Name: e.accountName})
+			Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+			// Its deletion ends as it does without the other resource: a zone's
+			// kind leaves its object, and an account's has no token to delete with.
+			_, err := e.reconcileIt()
+			if e.zoned {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(gone(key)).To(BeTrue())
+			} else {
+				Expect(err).To(HaveOccurred())
+				Expect(apierrors.IsNotFound(err)).To(BeFalse(), "the missing account is no failed read")
+			}
+			Expect(getAt(otherKey).GetLabels()).NotTo(HaveKey(k.claimLabel))
+		})
+	})
+}
+
 // describeCRUDReferences runs the specs of a kind's references to resources of
 // other kinds: a resource waits for each, sends what it gives, follows it to
 // another resource or, unset, sends nothing.
@@ -1563,6 +2069,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		}
 		describeCRUDReferences(e)
 		describeCRUDAtOnce(e)
+		describeCRUDHandOff(e)
 
 		Describe("Reconcile", func() {
 			It("returns no error when the resource does not exist", func() {

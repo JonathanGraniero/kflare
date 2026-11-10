@@ -37,8 +37,9 @@ var dnsRecordHooks = crudHooks[*cloudflarev1alpha1.DNSRecord, DNSRecordAPI, dns.
 			func(ref *cloudflarev1alpha1.Tunnel) string { return ref.Spec.AccountRef.Name },
 			func(ref *cloudflarev1alpha1.Tunnel) string { return ref.Status.CloudflareMetadata.TunnelID }),
 	},
-	find:    findDNSRecord,
-	matches: dnsRecordMatches,
+	find:      findDNSRecord,
+	matches:   dnsRecordMatches,
+	describes: dnsRecordDescribes,
 }
 
 // dnsRecordTunnelName returns the Tunnel a DNSRecord's tunnelRef names: "" when
@@ -243,6 +244,26 @@ func dnsRecordHolds(record *cloudflarev1alpha1.DNSRecord, current *dns.RecordRes
 		return reflect.DeepEqual(dnsRecordData(record), readDNSRecord(current).Data)
 	}
 	return dnsRecordContent(record, refs) == current.Content
+}
+
+// dnsRecordDescribes reports whether other describes the record that record
+// manages, and so takes it over when record is deleted: a record of the same
+// name and type that holds the same value, which is the one findDNSRecord
+// picks for other. The value is the data when either sets it, and otherwise
+// the content, or the tunnel a tunnelRef names (sameTunnel). A member of the
+// set with another value is another record.
+func dnsRecordDescribes(ctx context.Context, c client.Client, record, other *cloudflarev1alpha1.DNSRecord) (bool, error) {
+	// Cloudflare's names ignore case, as listDNSRecordSet does.
+	if !strings.EqualFold(other.Spec.Name, record.Spec.Name) || other.Spec.Type != record.Spec.Type {
+		return false, nil
+	}
+	if record.Spec.Data != nil || other.Spec.Data != nil {
+		return reflect.DeepEqual(dnsRecordData(other), dnsRecordData(record)), nil
+	}
+	if other.Spec.Content != record.Spec.Content {
+		return false, nil
+	}
+	return sameTunnel(ctx, c, record.Namespace, dnsRecordTunnelName(record), dnsRecordTunnelName(other))
 }
 
 // isZoneReady returns true if the Zone has a Ready=True condition and a zone ID.

@@ -326,6 +326,16 @@ var _ = Describe("Tunnel hooks", func() {
 		}, 10*time.Second, 50*time.Millisecond).Should(Succeed())
 	})
 
+	It("maps a deleted Secret to the Tunnels whose credentialsSecretRef names it, whoever owned it", func() {
+		createTunnel(nil)
+		named := tunnelsNamingSecret(k8sClient)
+		Expect(named(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: tokenSecret, Namespace: ns}})).
+			To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(getTunnel())}))
+		Expect(named(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "another", Namespace: ns}})).To(BeEmpty())
+		Expect(named(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: tokenSecret, Namespace: "elsewhere"}})).
+			To(BeEmpty())
+	})
+
 	It("disconnects the tunnel's connectors before deleting it", func() {
 		createTunnel(nil)
 		sync()

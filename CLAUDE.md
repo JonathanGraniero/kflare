@@ -752,6 +752,26 @@ half of #70 came with #124; this is the rest ([design notes](docs/design-notes.m
 - Left: the merge. Not done, for its own pull request: caching only the Secrets kflare reads (the issue says
   "consider"; the design notes weigh a label selector against a metadata-only watch)
 
+### Renames (#153, `feat/rename-handoff`)
+**Status:** 🚧 Built 2026-11-10 at the user's request ("pickup #153"), as one pull request; awaits review. The issue's
+four decisions went as it proposed, or as the [design notes](docs/design-notes.md#renames) say
+- [x] The hand-off, in the shared CRUD reconciler's `reconcileDelete` (`handOff`, `successor`, `handClaim`): a deleted
+  resource's object goes to the resource in its namespace that describes it, with its created or adopted state, and
+  no call to Cloudflare. Covers every kind on that reconciler but `Zone` (`sharedObjects`); a `describes` hook for
+  `DNSRecord` (name, type and value) and `TunnelConfiguration` (its tunnel), and `sameTunnel` for a Tunnel renamed
+  with what points at it
+- [x] A kind's controller watches its own deletions and reconciles the resources reporting its conflict reason; the
+  Tunnel's watches the deletion of the Secret its `credentialsSecretRef` names. Events with reason `HandedOff`
+- [x] Specs: shared ones for every generated CRUD kind (the hand-off, its states and policies, the watch in a manager,
+  and each case that must still delete), DNSRecord's, TunnelConfiguration's and WorkerScript's own; 53 of 53
+  mutations caught
+- [x] Docs: ARCHITECTURE.md's and deploy.md's Renaming a resource, with the three-step sequence for a `Zone`, a
+  `ManagedTransform`, a move across namespaces and earlier releases
+- [ ] The live spec (a `DNSRecord` renamed, its record listed under its ID on every poll) has not run: a `/live-e2e`
+  review on the pull request, or `hack/e2e-live.sh`, both the user's call
+- Left: the merge. Not done, for later: a `Zone`'s hand-off (it must carry the Zone's children), the settings kinds,
+  and a `kflare.dev/replaces` annotation for moves across namespaces
+
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first
 (`feat/generator-singletons`, #92), then the kind (`feat/managed-transform-controller`, #96), verified live on

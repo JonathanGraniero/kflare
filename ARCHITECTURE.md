@@ -296,6 +296,68 @@ This prevents two DNSRecords from fighting over one record. Records created outs
 adoption policy above: without one, a DNSRecord never takes over a record it did not create. Tools such as external-dns
 keep a TXT ownership registry in the zone instead; kflare keeps its claims in the cluster.
 
+### Renaming a resource
+
+A resource's name is not what names its Cloudflare object: `spec.name`, a title or a pattern does. So a rename, a new
+resource with the old one's spec followed by the old one's deletion, describes no change in Cloudflare, and generated
+manifests rename often: a kustomize `namePrefix`, a Helm `fullnameOverride`, a cdk8s construct ID. While the old
+resource is there, the new one reports the kind's conflict reason (`NameConflict`, `TitleConflict`, `PatternConflict`,
+`TunnelAlreadyConfigured`), whatever its adoption policy. Deleting the object with the old resource, for the new one to
+create it again, would take a DNS record out of its zone for a while, and a KV namespace's or a D1 database's data for
+good.
+
+So when a resource of the shared CRUD reconciler's kinds is deleted, kflare first looks for its successor (`handOff` and
+`successor` in `internal/controller/crudresource_controller.go`): another resource of the kind
+
+- in the same namespace, and not being deleted itself
+- that describes the same object: the same key (`spec.name`, a KVNamespace's title, a WorkerRoute's pattern), and for an
+  R2Bucket the same jurisdiction. A DNSRecord's name does not tell the members of a record set apart, so its successor
+  has the same name, type and content (or data, or Tunnel). A TunnelConfiguration's has the same Tunnel
+- whose object is in the same Cloudflare account or zone, through the same `CloudflareAccount` or `Zone` or another one
+  for it
+- that manages no other object: its claim label and its status are empty, or name this one
+
+If there is one, kflare writes the object's ID into the successor's claim label and removes the old resource's
+finalizer, without a call to Cloudflare. The successor inherits what the old resource knew: an object kflare created is
+still deleted with the successor, and an adopted one is still kept (`kflare.dev/adopted` is set or removed to match).
+The old resource's `kflare.dev/deletion-policy` does not apply, `delete` included: the successor's spec asks for the
+object, so deleting it is never what the rename means. The policy that counts from then on is the successor's own
+annotation. Both resources get a Normal Event with reason `HandedOff`.
+
+The claim is written before the finalizer goes, so the object always has an owner, and a hand-off that fails halfway is
+made again. Each kind's controller watches the deletion of its own resources and reconciles those that report its
+conflict reason, so the successor finds the object by its claim at once rather than on its retry a minute later, and
+goes `Ready` with the object's ID. What differs between the two specs besides the key is then updated in place, as any
+spec change is. A WorkerScript uploads its Worker once more, in place, since the new resource has no record of the last
+upload.
+
+A paused successor takes the claim too, since the deletion that makes the hand-off is not its own, and finds the
+object once it is unpaused.
+
+Of several successors the oldest takes the object, the name breaking ties, and the others report the conflict reason
+against it, as resources created with one key do. A resource in another namespace is never a successor: its owner may be
+someone else, and deleting a resource must not give them its object. That rename deletes and recreates the object, as
+does one that changes the key.
+
+Resources that reference each other can be renamed together. A Tunnel waits for the DNSRecords and TunnelConfigurations
+that point at it, so they go first, while the renamed Tunnel still waits for the tunnel and has no ID to compare. A
+DNSRecord or TunnelConfiguration that points at another Tunnel is therefore a successor too when both Tunnels name one
+tunnel of one `CloudflareAccount` and do not manage two (`sameTunnel`): the renamed Tunnel takes the tunnel when the old
+one goes, and its record and rules were never touched. A renamed Tunnel under the same `spec.credentialsSecretRef`
+reports `CredentialsSecretConflict` until the garbage collector has deleted the old Tunnel's Secret, whose deletion it
+watches, and then writes its own with the same token.
+
+Not handed off:
+
+- **`Zone`**: two Zones may name one Cloudflare zone, so nothing waits for a Zone's zone, and a renamed Zone reports
+  `AlreadyExists`. A Zone kflare created deletes its zone when it is deleted; rename it with the retain policy
+  (deploy.md, Renaming a resource)
+- **The rule kinds**: a rule's ref is derived from its resource's kind, namespace and name, so a renamed resource writes
+  a second rule and the old one's deletion removes the first, with an overlap rather than a gap. A ManagedRuleset's
+  waits with `RulesetConflict` instead, and deploys on its retry after the old one's is deleted
+- **The settings kinds** (`ManagedTransform`): deleting the resource that configures the zone resets its settings, and
+  the next resource then writes them again
+
 ### Rules
 
 Each rule kind manages one rule per resource in its zone's entry point ruleset for a Rulesets API phase: `WAFCustomRule`
@@ -599,6 +661,10 @@ keeps one it adopted (see [Adoption and ownership](#adoption-and-ownership)), an
 `kflare.dev/deletion-policy` annotation overrides that: `retain` keeps the object either way, and `delete` deletes it
 either way, an adopted one included.
 
+Before any of that, a resource whose object another resource in its namespace describes hands the object to that
+one, whatever the policy: a renamed resource's object is neither deleted nor left without an owner (see
+[Renaming a resource](#renaming-a-resource)).
+
 ```yaml
 metadata:
   annotations:
@@ -635,7 +701,8 @@ Per-resource details:
   that does not configure the zone (`AlreadyConfigured`) changes nothing.
 - **IPList** deletion deletes the list. Cloudflare refuses while a rule uses it (400, code 10041): the IPList keeps its
   finalizer and reports `ListInUse`, checking again every minute, and straight away when a kflare rule that uses it is
-  deleted. A rule created outside kflare holds it until that rule changes or the retain policy is set.
+  deleted. A rule created outside kflare holds it until that rule changes or the retain policy is set. A renamed
+  IPList is handed its list, which is not deleted, so a rule that uses the list does not hold the rename up.
 - **R2Bucket** deletion deletes only an empty bucket: kflare never deletes objects. Cloudflare refuses to delete a bucket
   that holds objects (409, code 10008), so the R2Bucket keeps its finalizer and reports `BucketNotEmpty`, checking again
   every minute until the bucket is emptied or the retain policy is set. The refusal is a deletion blocker in R2Bucket's

@@ -9,6 +9,8 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/cloudflare/cloudflare-go/v7/dns"
 	. "github.com/onsi/ginkgo/v2"
@@ -20,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -609,6 +612,183 @@ var _ = Describe("DNSRecord hooks", func() {
 			ref := r.crud().references()[0]
 			tunnel := &cloudflarev1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: tunnelName, Namespace: ns}}
 			Expect(r.crud().resourcesReferencing(ref)(ctx, tunnel)).To(ConsistOf(reconcile.Request{NamespacedName: key}))
+		})
+	})
+
+	Describe("a rename", func() {
+		renamedKey := types.NamespacedName{Name: "www-renamed", Namespace: ns}
+		record := func(change func(*cloudflarev1alpha1.DNSRecord)) *cloudflarev1alpha1.DNSRecord {
+			record := &cloudflarev1alpha1.DNSRecord{
+				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
+				Spec:       cloudflarev1alpha1.DNSRecordSpec{Name: "www.example.com", Type: "A", Content: "192.0.2.1"},
+			}
+			if change != nil {
+				change(record)
+			}
+			return record
+		}
+		srv := func(port int) func(*cloudflarev1alpha1.DNSRecord) {
+			return func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Type, record.Spec.Content = "SRV", ""
+				record.Spec.Data = &apiextensionsv1.JSON{Raw: fmt.Appendf(nil, `{"port":%d,"target":"sip.example.com"}`, port)}
+			}
+		}
+		tunnel := func(name, account, tunnelName, id string) {
+			tunnel := &cloudflarev1alpha1.Tunnel{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+				Spec: cloudflarev1alpha1.TunnelSpec{
+					AccountRef: corev1.LocalObjectReference{Name: account}, Name: tunnelName,
+					TunnelSpecExtras: cloudflarev1alpha1.TunnelSpecExtras{
+						CredentialsSecretRef: cloudflarev1alpha1.TunnelCredentialsSecretReference{Name: name},
+					},
+				},
+			}
+			create(tunnel)
+			tunnel.Status.CloudflareMetadata.TunnelID = id
+			Expect(k8sClient.Status().Update(ctx, tunnel)).To(Succeed())
+		}
+		pointAt := func(name string) func(*cloudflarev1alpha1.DNSRecord) {
+			return func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Type, record.Spec.Content = "CNAME", ""
+				record.Spec.TunnelRef = &corev1.LocalObjectReference{Name: name}
+			}
+		}
+		describes := func(a, b *cloudflarev1alpha1.DNSRecord) bool {
+			GinkgoHelper()
+			forth, err := dnsRecordDescribes(ctx, k8sClient, a, b)
+			Expect(err).NotTo(HaveOccurred())
+			back, err := dnsRecordDescribes(ctx, k8sClient, b, a)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(back).To(Equal(forth), "either describes the other's record, or neither")
+			return forth
+		}
+
+		It("takes a DNSRecord with the same name, type and content for the same record", func() {
+			Expect(describes(record(nil), record(nil))).To(BeTrue())
+			Expect(describes(record(nil), record(func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Name = "WWW.example.com"
+				record.Spec.TTL, record.Spec.Comment = 300, "renamed"
+			}))).To(BeTrue(), "a name's case does not matter, nor what is not the record's value")
+		})
+
+		It("takes another member of the set for another record", func() {
+			Expect(describes(record(nil), record(func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Content = "192.0.2.2"
+			}))).To(BeFalse())
+			Expect(describes(record(nil), record(func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Name = "api.example.com"
+			}))).To(BeFalse())
+			Expect(describes(record(nil), record(func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Type = "TXT"
+			}))).To(BeFalse())
+		})
+
+		It("tells records that set data by their data", func() {
+			Expect(describes(record(srv(5060)), record(srv(5060)))).To(BeTrue())
+			Expect(describes(record(srv(5060)), record(srv(5061)))).To(BeFalse())
+			Expect(describes(record(srv(5060)), record(func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Type, record.Spec.Content = "SRV", ""
+			}))).To(BeFalse(), "one sets data, the other none")
+		})
+
+		It("tells records that point at a Tunnel by the tunnel", func() {
+			Expect(describes(record(pointAt("edge")), record(pointAt("edge")))).To(BeTrue())
+			Expect(describes(record(pointAt("edge")), record(func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Spec.Type, record.Spec.Content = "CNAME", ""
+			}))).To(BeFalse(), "one points at a Tunnel, the other at nothing")
+			Expect(describes(record(pointAt("edge")), record(pointAt("missing")))).To(BeFalse(),
+				"neither Tunnel exists")
+		})
+
+		It("takes two Tunnels for one tunnel when the second waits for the first's, as a renamed one does", func() {
+			tunnel("first", accountName, "edge", "tunnel-1")
+			tunnel("renamed", accountName, "edge", "")
+			tunnel("same", accountName, "edge", "tunnel-1")
+			tunnel("another", accountName, "edge", "tunnel-2")
+			tunnel("other-name", accountName, "internal", "")
+			tunnel("other-account", "another-account", "edge", "")
+			same := func(a, b string) bool {
+				GinkgoHelper()
+				forth, err := sameTunnel(ctx, k8sClient, ns, a, b)
+				Expect(err).NotTo(HaveOccurred())
+				back, err := sameTunnel(ctx, k8sClient, ns, b, a)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(back).To(Equal(forth))
+				return forth
+			}
+			Expect(same("first", "first")).To(BeTrue())
+			Expect(same("", "")).To(BeTrue(), "neither names a Tunnel")
+			Expect(same("first", "")).To(BeFalse())
+			Expect(same("first", "renamed")).To(BeTrue(), "the renamed one takes the first's tunnel")
+			Expect(same("first", "same")).To(BeTrue())
+			Expect(same("first", "another")).To(BeFalse(), "each manages a tunnel")
+			Expect(same("first", "other-name")).To(BeFalse())
+			Expect(same("first", "other-account")).To(BeFalse())
+			Expect(same("first", "missing")).To(BeFalse())
+			Expect(describes(record(pointAt("first")), record(pointAt("renamed")))).To(BeTrue())
+		})
+
+		It("returns a failed read of a Tunnel", func() {
+			base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			failing := interceptor.NewClient(base, interceptor.Funcs{
+				Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+					return errors.New("unavailable")
+				},
+			})
+			_, err = sameTunnel(ctx, failing, ns, "first", "renamed")
+			Expect(err).To(MatchError("unavailable"))
+		})
+
+		It("keeps the record and the finalizer when a Tunnel that tells its successor cannot be read", func() {
+			seed("mine", "edge.cfargotunnel.com", func(raw map[string]any) { raw["type"] = "CNAME" })
+			createRecord(key, func(record *cloudflarev1alpha1.DNSRecord) {
+				pointAt("first")(record)
+				record.Labels = map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "mine"}
+			})
+			createRecord(renamedKey, pointAt("renamed"))
+			base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			r.Client = interceptor.NewClient(base, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+					opts ...client.GetOption) error {
+					if _, ok := obj.(*cloudflarev1alpha1.Tunnel); ok {
+						return errors.New("tunnel unavailable")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			Expect(k8sClient.Delete(ctx, getRecord())).To(Succeed())
+			_, err = reconcileRecord()
+			Expect(err).To(MatchError("tunnel unavailable"))
+			Expect(getRecord().Finalizers).To(ContainElement(reconciler.Finalizer))
+			Expect(store.objects).To(HaveKey("mine"))
+		})
+
+		It("keeps the record of a renamed DNSRecord, and deletes the one of a member that left the set", func() {
+			createRecord(key, nil)
+			sync()
+			id := getRecord().Status.CloudflareMetadata.RecordID
+			createRecord(types.NamespacedName{Name: "another-member", Namespace: ns},
+				func(record *cloudflarev1alpha1.DNSRecord) { record.Spec.Content = "192.0.2.2" })
+			createRecord(renamedKey, nil)
+			writes := store.writes
+
+			By("handing the record to the DNSRecord with its content")
+			Expect(k8sClient.Delete(ctx, getRecord())).To(Succeed())
+			_, err := reconcileRecord()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.objects).To(HaveKey(id))
+			Expect(store.writes).To(Equal(writes))
+			renamed := &cloudflarev1alpha1.DNSRecord{}
+			Expect(k8sClient.Get(ctx, renamedKey, renamed)).To(Succeed())
+			Expect(renamed.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.DNSRecordIDLabel, id))
+
+			By("deleting it with that one, though another member of the set is left")
+			Expect(k8sClient.Delete(ctx, renamed)).To(Succeed())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: renamedKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.objects).NotTo(HaveKey(id))
 		})
 	})
 

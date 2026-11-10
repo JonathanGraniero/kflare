@@ -70,6 +70,23 @@ func claimID(ctx context.Context, c client.Writer, obj client.Object, label, id 
 	})
 }
 
+// handClaim records id in to's label, as claimID does, for the object that
+// from, which is being deleted, hands to it (handOff), with what from knows of
+// the object: adopted or not, whatever to said before, so that an object
+// kflare created is still deleted with to, and an adopted one still kept.
+func handClaim(ctx context.Context, c client.Writer, from, to client.Object, label, id string) error {
+	adopted := reconciler.Adopted(from)
+	return patchMetadata(ctx, c, to, func(labels, annotations map[string]string) {
+		labels[label] = id
+		if adopted {
+			annotations[reconciler.AdoptedAnnotation] = from.GetAnnotations()[reconciler.AdoptedAnnotation]
+		} else {
+			delete(annotations, reconciler.AdoptedAnnotation)
+		}
+		delete(annotations, reconciler.CreatingAnnotation)
+	})
+}
+
 // ownsID reports whether obj's claim label already holds id: the object is
 // the one obj created or adopted, even if its status does not say so yet.
 func ownsID(obj client.Object, label, id string) bool {
