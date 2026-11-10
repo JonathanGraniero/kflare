@@ -100,7 +100,8 @@ With:
 ├── hack/                  # sync-helm-chart.sh, chartannotations (Artifact Hub annotations), releasenotes (a
 │                          #   GitHub release's notes), crdcompat (breaking CRD changes since the last release),
 │                          #   supportedreleases (the releases that get fixes, for the release scan), chartrbac
-│                          #   (the chart's rules for a scoped installation), mutate.sh (mutations), e2e-live.sh
+│                          #   (the chart's rules for a scoped installation), sizing (CPU and memory), resync (a
+│                          #   full resync's time, by reconciles at once), mutate.sh (mutations), e2e-live.sh
 │                          #   (live e2e), license header
 ├── docs/deploy.md         # Deploy guide (Helm install, accounts, upgrade, uninstall, troubleshooting)
 ├── docs/design-notes.md   # What was decided and verified live, per phase and kind
@@ -326,6 +327,9 @@ make crd-compat
 
 # The same suite with the manager on this machine, against the current kind cluster (see the script's header)
 hack/e2e-live.sh
+
+# Time a full resync with one reconcile at a time and with several, against envtest and a stand-in for Cloudflare
+make resync RESYNC_ARGS="-accounts 20 -resources 1000 -workers 1,4,16"
 
 # Regenerate the Helm chart's CRDs/RBAC from config/ and its Artifact Hub annotations, and lint + render it
 make helm
@@ -666,7 +670,8 @@ The user asked for a HorizontalPodAutoscaler on 2026-10-30, from 1 to 10
 replicas, on by default with values to tune it, and for CPU and memory limits; told first that only the leader
 reconciles (#67's section 4), so that the replicas it adds are standbys, they chose it as asked. Its targets and the
 resources were left to me, from measurements. Covers [#70](https://github.com/JonathanGraniero/kflare/issues/70)'s
-sizing guidance; its concurrent reconciles are still open
+sizing guidance; its concurrent reconciles came later, in
+[Reconciles at once](#reconciles-at-once-70-featconcurrent-reconciles)
 - [x] `autoscaling` values and `templates/horizontalpodautoscaler.yaml` (autoscaling/v2): CPU at 80% of the request;
   memory off by default, since the leader caches every Secret and the standbys nothing, so a memory target would add
   standbys that stay; `behavior.scaleUp.stabilizationWindowSeconds: 120`, so that bursts of start-up, a takeover or a
@@ -726,6 +731,26 @@ pick an installation's resources, and the namespaced RBAC comes with the namespa
   shared specs, two managers holding only the chart's rules, 31 of 31 mutations; CI passed on #162's `000c16d`
 - Left: the merge. A Reconciler error seen on kind, `not found` on an account being deleted, is `RemoveFinalizer` on
   a stale cached copy, a path unchanged since main (`pkg/reconciler`), retried and harmless
+
+### Reconciles at once (#70, `feat/concurrent-reconciles`)
+**Status:** 🚧 Built 2026-11-09 at the user's request ("pickup #70"), as one pull request; awaits review. The sizing
+half of #70 came with #124; this is the rest ([design notes](docs/design-notes.md#reconciles-at-once))
+- [x] `--max-concurrent-reconciles` (`cmd/main.go`, every controller through `ctrl.Options.Controller`) and the chart's
+  `maxConcurrentReconciles`, 1 by default
+- [x] Rule kinds stay safe with a lock rather than pinned to 1, the issue's second option: `lockEntrypoint`
+  (`rulesetrule.go`, `keylock.go`) lets one sync or deletion at a time write to a zone's entry point for a phase,
+  whatever the kind. The issue's live probe was already in the design notes: concurrent rule POSTs both land
+  (2026-10-12)
+- [x] The CRUD kinds too, found by checking every shared reconciler: two resources with one key could each create an
+  object, or both own one through `kflare.dev/creating`; `lockObjectKey` runs the search, create and claim one at a
+  time. Settings kinds and accounts need none (design notes)
+- [x] Specs: the issue's envtest spec (six rules of one phase reconciled at once, one call at a time, in order, no
+  move), a shared CRUD spec for every generated kind, the lock's own; 17 of 17 mutations
+- [x] `hack/resync` (`make resync`) and deploy.md's [Reconciles at once](docs/deploy.md#reconciles-at-once): the real
+  manager against envtest and a stand-in for Cloudflare through a proxy that inspects TLS. 1,000 resources over 20
+  tokens at 200 ms a call: 204 s one at a time, 13 s at 16
+- Left: the merge. Not done, for its own pull request: caching only the Secrets kflare reads (the issue says
+  "consider"; the design notes weigh a label selector against a metadata-only watch)
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first

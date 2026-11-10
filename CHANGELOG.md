@@ -57,6 +57,21 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   `kflare_account_token_expiry_timestamp_seconds{account}` holds the expiry for an alert of your own
   ([Monitoring](docs/deploy.md#monitoring))
 
+### Reconciles at once
+
+- **Each controller can reconcile several resources at once.** The chart's `maxConcurrentReconciles` (the
+  controller's `--max-concurrent-reconciles`), 1 by default as before, sets how many resources of one kind a controller
+  reconciles at once. A restart or a change of leader then gets through many accounts' resources sooner: measured
+  against a stand-in for Cloudflare answering in 200 ms, 1,000 resources over 20 accounts with tokens of their own took
+  3 minutes 24 seconds one at a time and 13 seconds 16 at once. Every call still goes through its token's budget, so it
+  never sends more than `cloudflareRateLimit` allows ([deploy guide](docs/deploy.md#reconciles-at-once),
+  [#70](https://github.com/JonathanGraniero/kflare/issues/70))
+- **The rules of one zone and phase are still written one at a time,** whatever their kind, so that each goes where a
+  fresh read of the ruleset puts it, and resources of a kind that find, adopt or create an object by the same key take
+  turns, so that only one creates it and the other reports the conflict
+- **`hack/resync` (`make resync`) times a full resync** with each setting, running the manager against an envtest API
+  server and a stand-in for Cloudflare's API reached through a proxy, as the deploy guide's table was measured
+
 ### Releases
 
 - **Merging a version bump releases it.** Once CI and E2E pass on the merge commit, the `Tag release` workflow tags

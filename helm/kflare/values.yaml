@@ -158,6 +158,14 @@ tokenExpiryWarning: 336h
 # the token; past it, Cloudflare blocks every call for five minutes. 0 turns
 # the pacing off, though kflare still stops when Cloudflare asks it to.
 cloudflareRateLimit: 900
+# -- How many resources of one kind each controller reconciles at once. One
+# suits most installations. More lets reconciles that wait on Cloudflare
+# overlap, which speeds up a full resync, such as after a restart or a leader
+# change, when many accounts with tokens of their own have many resources of
+# one kind, or when Cloudflare answers slowly. It never sends more than a
+# token's rate limit allows, and the rules of one zone and phase are still
+# written one at a time. The deploy guide's Scaling and resources measures it.
+maxConcurrentReconciles: 1
 
 logging:
   # -- Log level: debug, info or error.

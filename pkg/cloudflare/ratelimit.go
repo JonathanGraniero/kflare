@@ -41,8 +41,9 @@ const (
 
 	// maxCallWait is the longest one call waits in the transport for its
 	// turn. A longer wait fails the call instead, unsent: a waiting call holds
-	// its controller's only worker, which every other account's resources of
-	// the kind are waiting for.
+	// one of its controller's few workers (one, unless
+	// --max-concurrent-reconciles says more), which every other account's
+	// resources of the kind are waiting for.
 	maxCallWait = 10 * time.Second
 
 	// defaultHold is how long a token's calls stop after a 429 that does not

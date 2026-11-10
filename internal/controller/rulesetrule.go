@@ -46,6 +46,10 @@ import (
 //   - An emptied entry point stays, except in the phases where an entry point
 //     changes what Cloudflare runs even without rules
 //     (emptiedEntrypointPhases).
+//   - One reconcile at a time writes to a zone's entry point for a phase
+//     (rulesetLocks), whatever the kind, however many reconciles run at once:
+//     each write goes where a read of the ruleset just put it, which a write
+//     made meanwhile would make stale.
 //
 // A rule is cloudflare-go v7's rulesets.RulesetNewParamsRule: the rule as
 // Rulesets.New takes it, whatever its action, with the action's parameters
@@ -115,6 +119,20 @@ type RulesetRuleAPI struct {
 	Phases   RulesetPhasesAPI
 	Rulesets RulesetsAPI
 	Rules    RulesetRulesAPI
+}
+
+// rulesetLocks holds a key per zone and phase whose entry point a reconcile is
+// reading and writing (lockEntrypoint).
+var rulesetLocks keyLock
+
+// lockEntrypoint waits until the reconcile is the only one writing to the
+// zone's entry point for phase, and returns the function that lets the next
+// one in. syncRulesetRule reads the entry point, then creates its rule at a
+// position worked out from that read and moves the rules into order; two
+// reconciles doing so at once would each act on a read the other just made
+// stale, and could leave the rules out of order.
+func lockEntrypoint(ctx context.Context, zoneID string, phase rulesets.Phase) (func(), error) {
+	return rulesetLocks.lock(ctx, zoneID+"/"+string(phase))
 }
 
 // kflareRefPrefix starts the ref of every rule kflare writes.
@@ -192,6 +210,11 @@ func syncRulesetRule(
 	peers []rulesetRulePeer,
 	known map[string]bool,
 ) (rulesetRuleState, error) {
+	release, err := lockEntrypoint(ctx, zoneID, phase)
+	if err != nil {
+		return rulesetRuleState{}, err
+	}
+	defer release()
 	zone := zoneRulesets{api: api, zoneID: zoneID}
 	ruleset, wrote, err := writeRulesetRule(ctx, zone, phase, rule, peers)
 	if cfpkg.IsNotFound(err) {
@@ -336,6 +359,11 @@ func deleteRulesetRule(
 	ref string,
 	peersRemain bool,
 ) error {
+	release, err := lockEntrypoint(ctx, zoneID, phase)
+	if err != nil {
+		return err
+	}
+	defer release()
 	zone := zoneRulesets{api: api, zoneID: zoneID}
 	ruleset, err := zone.getEntrypoint(ctx, phase)
 	if cfpkg.IsNotFound(err) {

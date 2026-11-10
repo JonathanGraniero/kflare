@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7/option"
@@ -58,6 +59,9 @@ const (
 // ruleset's latest version unless told otherwise, a zone executes a managed
 // ruleset at most once (400, code 20014), and deleting a ruleset removes it.
 type fakeRulesetAPI struct {
+	// zone is the zone whose rulesets the fake holds: rulesTestZone, unless a
+	// test sets another.
+	zone        string
 	entrypoints map[rulesets.Phase]*fakeRuleset
 	maxRules    int
 	nextID      int
@@ -73,6 +77,19 @@ type fakeRulesetAPI struct {
 
 	writes int // successful creates, updates and deletes
 	moves  int // successful moves
+
+	// mu makes the fake answer one call at a time, as Cloudflare applies each
+	// write to a ruleset whole, so that reconciles may call it at once.
+	mu sync.Mutex
+	// latency is how long each call takes, half before it reaches the
+	// rulesets and half after, as a request and its answer travel. arrive,
+	// when set, runs as each call starts, before it waits for another.
+	latency time.Duration
+	arrive  func(call string)
+	// inFlight counts the calls under way, and mostInFlight the most there
+	// were at once.
+	flight                 sync.Mutex
+	inFlight, mostInFlight int
 	// lastBody is the body of the last rule create or update, as v7 sent it.
 	lastBody map[string]any
 }
@@ -118,6 +135,7 @@ func (r fakeRule) clone() fakeRule {
 
 func newFakeRulesetAPI() *fakeRulesetAPI {
 	return &fakeRulesetAPI{
+		zone:        rulesTestZone,
 		entrypoints: map[rulesets.Phase]*fakeRuleset{},
 		maxRules:    10,
 		clock:       time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC),
@@ -130,11 +148,33 @@ func (f *fakeRulesetAPI) api() RulesetRuleAPI {
 	return RulesetRuleAPI{Phases: fakeRulesetPhases{f}, Rulesets: fakeRulesetsService{f}, Rules: fakeRulesetRules{f}}
 }
 
+// enter starts a call: it counts the call as under way, runs arrive, waits
+// half the latency and takes the fake for the call. The function it returns
+// ends the call.
+func (f *fakeRulesetAPI) enter(call string) (leave func()) {
+	f.flight.Lock()
+	f.inFlight++
+	f.mostInFlight = max(f.mostInFlight, f.inFlight)
+	f.flight.Unlock()
+	if f.arrive != nil {
+		f.arrive(call)
+	}
+	time.Sleep(f.latency / 2)
+	f.mu.Lock()
+	return func() {
+		f.mu.Unlock()
+		time.Sleep(f.latency / 2)
+		f.flight.Lock()
+		f.inFlight--
+		f.flight.Unlock()
+	}
+}
+
 // start checks that a call is for the fake's zone, runs before, and returns
 // the error errs holds for the call.
 func (f *fakeRulesetAPI) start(call, accountID, zoneID string) error {
-	if accountID != "" || zoneID != rulesTestZone {
-		return fmt.Errorf("fake: %s called for account %q and zone %q, want zone %s", call, accountID, zoneID, rulesTestZone)
+	if accountID != "" || zoneID != f.zone {
+		return fmt.Errorf("fake: %s called for account %q and zone %q, want zone %s", call, accountID, zoneID, f.zone)
 	}
 	if f.before != nil {
 		f.before(call)
@@ -278,6 +318,7 @@ type fakeRulesetPhases struct{ *fakeRulesetAPI }
 func (f fakeRulesetPhases) Get(
 	_ context.Context, phase rulesets.Phase, params rulesets.PhaseGetParams, _ ...option.RequestOption,
 ) (*rulesets.PhaseGetResponse, error) {
+	defer f.enter("Phases.Get")()
 	if err := f.start("Phases.Get", params.AccountID.Value, params.ZoneID.Value); err != nil {
 		return nil, err
 	}
@@ -294,6 +335,7 @@ type fakeRulesetsService struct{ *fakeRulesetAPI }
 func (f fakeRulesetsService) New(
 	_ context.Context, params rulesets.RulesetNewParams, _ ...option.RequestOption,
 ) (*rulesets.RulesetNewResponseEnvelopeResult, error) {
+	defer f.enter("Rulesets.New")()
 	if err := f.start("Rulesets.New", params.AccountID.Value, params.ZoneID.Value); err != nil {
 		return nil, err
 	}
@@ -329,6 +371,7 @@ func (f fakeRulesetsService) New(
 func (f fakeRulesetsService) Delete(
 	_ context.Context, rulesetID string, params rulesets.RulesetDeleteParams, _ ...option.RequestOption,
 ) error {
+	defer f.enter("Rulesets.Delete")()
 	if err := f.start("Rulesets.Delete", params.AccountID.Value, params.ZoneID.Value); err != nil {
 		return err
 	}
@@ -348,6 +391,7 @@ type fakeRulesetRules struct{ *fakeRulesetAPI }
 func (f fakeRulesetRules) New(
 	_ context.Context, rulesetID string, params rulesets.RuleNewParams, _ ...option.RequestOption,
 ) (*rulesets.RuleNewResponseEnvelopeResult, error) {
+	defer f.enter("Rules.New")()
 	if err := f.start("Rules.New", params.AccountID.Value, params.ZoneID.Value); err != nil {
 		return nil, err
 	}
@@ -388,6 +432,7 @@ func (f fakeRulesetRules) Edit(
 	if move {
 		call = "Rules.Edit position"
 	}
+	defer f.enter(call)()
 	if err := f.start(call, params.AccountID.Value, params.ZoneID.Value); err != nil {
 		return nil, err
 	}
@@ -434,6 +479,7 @@ func (f fakeRulesetRules) Edit(
 func (f fakeRulesetRules) Delete(
 	_ context.Context, rulesetID, ruleID string, params rulesets.RuleDeleteParams, _ ...option.RequestOption,
 ) (*rulesets.RuleDeleteResponseEnvelopeResult, error) {
+	defer f.enter("Rules.Delete")()
 	if err := f.start("Rules.Delete", params.AccountID.Value, params.ZoneID.Value); err != nil {
 		return nil, err
 	}
@@ -594,7 +640,7 @@ var _ = Describe("Ruleset rules", func() {
 
 	// sync syncs rule with peers, which with rule are the resources the
 	// installation manages.
-	sync := func(rule rulesets.RulesetNewParamsRule, peers ...rulesetRulePeer) (rulesetRuleState, error) {
+	syncRule := func(rule rulesets.RulesetNewParamsRule, peers ...rulesetRulePeer) (rulesetRuleState, error) {
 		known := map[string]bool{rule.Ref.Value: true}
 		for _, peer := range peers {
 			known[peer.ref] = true
@@ -623,7 +669,7 @@ var _ = Describe("Ruleset rules", func() {
 
 	Describe("syncing a rule", func() {
 		It("creates the zone's entry point, holding the rule, when there is none", func() {
-			state, err := sync(blockRule("kflare-a", "/a"))
+			state, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(err).NotTo(HaveOccurred())
 
 			rs := api.entrypoint()
@@ -639,7 +685,7 @@ var _ = Describe("Ruleset rules", func() {
 			api.seed(blockRule("someone-else", "/x"))
 			untouched := api.entrypoint().rules[0].clone()
 
-			state, err := sync(blockRule("kflare-a", "/a"))
+			state, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(err).NotTo(HaveOccurred())
 
 			rs := api.entrypoint()
@@ -664,14 +710,14 @@ var _ = Describe("Ruleset rules", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			api.seed(blockRule("kflare-b", "/b"))
-			_, err = sync(rule, peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
+			_, err = syncRule(rule, peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(api.lastBody).To(HaveKeyWithValue("position", map[string]any{"before": api.entrypoint().rules[1].id()}))
 			delete(api.lastBody, "position")
 			Expect(json.Marshal(api.lastBody)).To(MatchJSON(want))
 
 			api.entrypoint().rules[0]["description"] = "changed outside kflare"
-			_, err = sync(rule, peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
+			_, err = syncRule(rule, peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(json.Marshal(api.lastBody)).To(MatchJSON(want))
 
@@ -682,13 +728,13 @@ var _ = Describe("Ruleset rules", func() {
 		})
 
 		It("writes nothing when the rule is already as desired, counting Cloudflare's defaults as set", func() {
-			first, err := sync(skipRule())
+			first, err := syncRule(skipRule())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(api.entrypoint().rules[0].jsonOf("logging")).To(MatchJSON(`{"enabled":true}`),
 				"Cloudflare logs skip rules by default")
 			writes, version := api.writes, api.entrypoint().version
 
-			second, err := sync(skipRule())
+			second, err := syncRule(skipRule())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(second).To(Equal(rulesetRuleState{rulesetID: first.rulesetID, ruleID: first.ruleID, version: "1"}))
 			Expect(api.writes).To(Equal(writes))
@@ -717,7 +763,7 @@ var _ = Describe("Ruleset rules", func() {
 			rs.rules[1]["expression"] = `http.request.uri.path eq "/changed"`
 			rs.rules[1]["enabled"] = false
 
-			state, err := sync(blockRule("kflare-a", "/a"))
+			state, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.wrote).To(BeTrue())
 			Expect(state.ruleID).To(Equal(ruleID))
@@ -732,7 +778,7 @@ var _ = Describe("Ruleset rules", func() {
 		It("reports the rules kflare wrote for resources the installation does not manage, and leaves them in place",
 			func() {
 				api.seed(blockRule("kflare-other", "/other"), blockRule("someone-else", "/x"))
-				state, err := sync(blockRule("kflare-a", "/a"))
+				state, err := syncRule(blockRule("kflare-a", "/a"))
 				Expect(err).NotTo(HaveOccurred())
 				Expect(state.others).To(BeTrue())
 				Expect(refs(api.entrypoint().rules)).To(Equal([]string{"kflare-other", "someone-else", "kflare-a"}))
@@ -751,7 +797,7 @@ var _ = Describe("Ruleset rules", func() {
 				}
 			}
 
-			state, err := sync(blockRule("kflare-a", "/a"))
+			state, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.wrote).To(BeTrue())
 			Expect(refs(api.entrypoint().rules)).To(Equal([]string{"kflare-other", "kflare-a"}))
@@ -765,7 +811,7 @@ var _ = Describe("Ruleset rules", func() {
 				}
 			}
 
-			state, err := sync(blockRule("kflare-a", "/a"))
+			state, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.wrote).To(BeTrue())
 			Expect(api.entrypoint().rules).To(HaveLen(1))
@@ -775,17 +821,17 @@ var _ = Describe("Ruleset rules", func() {
 		It("reports Cloudflare's rejections", func() {
 			api.maxRules = 1
 			api.seed(blockRule("someone-else", "/x"))
-			_, err := sync(blockRule("kflare-a", "/a"))
+			_, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(cfpkg.HasErrorCode(err, 50001)).To(BeTrue(), "over the plan's rule quota")
 
 			api.errs["Phases.Get"] = forbidden()
-			_, err = sync(blockRule("kflare-a", "/a"))
+			_, err = syncRule(blockRule("kflare-a", "/a"))
 			Expect(cfpkg.IsTerminalError(err)).To(BeTrue())
 		})
 
 		It("reports a failure to create the entry point", func() {
 			api.errs["Rulesets.New"] = rulesetsError(http.StatusBadRequest, 20166)
-			_, err := sync(blockRule("kflare-a", "/a"))
+			_, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(cfpkg.HasErrorCode(err, 20166)).To(BeTrue())
 		})
 
@@ -796,21 +842,21 @@ var _ = Describe("Ruleset rules", func() {
 					api.errs["Phases.Get"] = forbidden()
 				}
 			}
-			_, err := sync(blockRule("kflare-a", "/a"))
+			_, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(cfpkg.IsTerminalError(err)).To(BeTrue())
 		})
 
 		It("reports a failed create", func() {
 			api.seed(blockRule("someone-else", "/x"))
 			api.errs["Rules.New"] = rulesetsError(http.StatusBadRequest, 20127)
-			_, err := sync(blockRule("kflare-a", "/a"))
+			_, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(cfpkg.HasErrorCode(err, 20127)).To(BeTrue())
 		})
 
 		It("reports a failed update", func() {
 			api.seed(blockRule("kflare-a", "/old"))
 			api.errs["Rules.Edit"] = rulesetsError(http.StatusBadRequest, 20023)
-			_, err := sync(blockRule("kflare-a", "/a"))
+			_, err := syncRule(blockRule("kflare-a", "/a"))
 			Expect(cfpkg.HasErrorCode(err, 20023)).To(BeTrue())
 		})
 
@@ -824,7 +870,7 @@ var _ = Describe("Ruleset rules", func() {
 				}
 			}
 
-			_, err := sync(blockRule("kflare-c", "/c"),
+			_, err := syncRule(blockRule("kflare-c", "/c"),
 				peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"), peer("kflare-c", 3, "c"))
 			Expect(err).To(MatchError(ContainSubstring("disappeared")))
 			Expect(api.moves).To(Equal(1))
@@ -835,7 +881,7 @@ var _ = Describe("Ruleset rules", func() {
 		It("places a new rule right after the closest peer that sorts before it", func() {
 			api.seed(blockRule("kflare-a", "/a"), blockRule("someone-else", "/x"), blockRule("kflare-c", "/c"))
 
-			state, err := sync(blockRule("kflare-b", "/b"),
+			state, err := syncRule(blockRule("kflare-b", "/b"),
 				peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"), peer("kflare-c", 3, "c"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.moved).To(BeFalse())
@@ -845,7 +891,7 @@ var _ = Describe("Ruleset rules", func() {
 		It("places a new rule right before the closest peer that sorts after it when none sorts before", func() {
 			api.seed(blockRule("someone-else", "/x"), blockRule("kflare-b", "/b"), blockRule("kflare-c", "/c"))
 
-			_, err := sync(blockRule("kflare-a", "/a"),
+			_, err := syncRule(blockRule("kflare-a", "/a"),
 				peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"), peer("kflare-c", 3, "c"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(refs(api.entrypoint().rules)).To(Equal([]string{"someone-else", "kflare-a", "kflare-b", "kflare-c"}))
@@ -854,7 +900,7 @@ var _ = Describe("Ruleset rules", func() {
 		It("appends a rule when none of its peers' rules exists yet", func() {
 			api.seed(blockRule("someone-else", "/x"))
 
-			_, err := sync(blockRule("kflare-b", "/b"), peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
+			_, err := syncRule(blockRule("kflare-b", "/b"), peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(refs(api.entrypoint().rules)).To(Equal([]string{"someone-else", "kflare-b"}))
 		})
@@ -872,7 +918,7 @@ var _ = Describe("Ruleset rules", func() {
 				before[rule.ref()] = rule.clone()
 			}
 
-			state, err := sync(blockRule("kflare-a", "/a"),
+			state, err := syncRule(blockRule("kflare-a", "/a"),
 				peer("kflare-c", 3, "c"), peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.wrote).To(BeFalse())
@@ -885,7 +931,7 @@ var _ = Describe("Ruleset rules", func() {
 			}
 
 			By("leaving rules that are already in order alone")
-			again, err := sync(blockRule("kflare-a", "/a"),
+			again, err := syncRule(blockRule("kflare-a", "/a"),
 				peer("kflare-c", 3, "c"), peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(again.moved).To(BeFalse())
@@ -904,7 +950,7 @@ var _ = Describe("Ruleset rules", func() {
 				{ref: "kflare-1", priority: 5, namespace: "a", name: "a", kind: "RateLimitRule"},
 			}
 
-			_, err := sync(blockRule("kflare-1", "/1"), peers...)
+			_, err := syncRule(blockRule("kflare-1", "/1"), peers...)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(refs(api.entrypoint().rules)).To(Equal([]string{"kflare-1", "kflare-2", "kflare-3", "kflare-4"}))
 		})
@@ -918,7 +964,7 @@ var _ = Describe("Ruleset rules", func() {
 				}
 			}
 
-			state, err := sync(blockRule("kflare-a", "/a"), peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
+			state, err := syncRule(blockRule("kflare-a", "/a"), peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.moved).To(BeTrue(), "the caller must check the order again")
 			Expect(refs(api.entrypoint().rules)).To(Equal([]string{"kflare-a"}))
@@ -928,8 +974,82 @@ var _ = Describe("Ruleset rules", func() {
 			api.seed(blockRule("kflare-b", "/b"), blockRule("kflare-a", "/a"))
 			api.errs["Rules.Edit position"] = rulesetsError(http.StatusBadRequest, 0)
 
-			_, err := sync(blockRule("kflare-a", "/a"), peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
+			_, err := syncRule(blockRule("kflare-a", "/a"), peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"))
 			Expect(cfpkg.IsTerminalError(err)).To(BeTrue())
+		})
+	})
+
+	Describe("writing at once", func() {
+		It("writes to a zone's entry point for a phase one sync or delete at a time, and keeps the rules in order",
+			func() {
+				api.latency = 10 * time.Millisecond
+				api.seed(blockRule("kflare-gone", "/gone"), blockRule("kflare-c", "/c"))
+				peers := []rulesetRulePeer{
+					peer("kflare-a", 1, "a"), peer("kflare-b", 2, "b"), peer("kflare-c", 3, "c"),
+					peer("kflare-d", 4, "d"), peer("kflare-e", 5, "e"),
+				}
+				var wg sync.WaitGroup
+				for _, name := range []string{"e", "a", "d", "b"} {
+					wg.Go(func() {
+						defer GinkgoRecover()
+						state, err := syncRule(blockRule("kflare-"+name, "/"+name), peers...)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(state.moved).To(BeFalse(), "a rule placed from a read no other write made stale needs no move")
+					})
+				}
+				wg.Go(func() {
+					defer GinkgoRecover()
+					Expect(deleteRulesetRule(ctx, api.api(), rulesTestZone, rulesTestPhase, "kflare-gone", false)).
+						To(Succeed())
+				})
+				wg.Wait()
+
+				Expect(api.mostInFlight).To(Equal(1), "no call to the entry point started while another was under way")
+				Expect(refs(api.entrypoint().rules)).To(Equal(
+					[]string{"kflare-a", "kflare-b", "kflare-c", "kflare-d", "kflare-e"}))
+				Expect(api.moves).To(BeZero())
+				Expect(rulesetLocks.held()).To(BeZero())
+			})
+
+		It("does not hold up a sync in another phase or another zone", func() {
+			other := newFakeRulesetAPI()
+			other.zone = "zone-rules-2"
+			arrive, met := meeting(3, "Phases.Get", time.Second)
+			api.arrive, other.arrive = arrive, arrive
+
+			var wg sync.WaitGroup
+			for _, write := range []struct {
+				api    *fakeRulesetAPI
+				zoneID string
+				phase  rulesets.Phase
+			}{
+				{api, rulesTestZone, rulesTestPhase},
+				{api, rulesTestZone, managedPhase},
+				{other, "zone-rules-2", rulesTestPhase},
+			} {
+				wg.Go(func() {
+					defer GinkgoRecover()
+					_, err := syncRulesetRule(ctx, write.api.api(), write.zoneID, write.phase, blockRule("kflare-a", "/a"),
+						nil, nil)
+					Expect(err).NotTo(HaveOccurred())
+				})
+			}
+			wg.Wait()
+			Expect(met()).To(BeTrue(), "the three syncs read their entry points at once")
+		})
+
+		It("stops waiting for the entry point when the reconcile's context is done", func() {
+			release, err := lockEntrypoint(ctx, rulesTestZone, rulesTestPhase)
+			Expect(err).NotTo(HaveOccurred())
+			defer release()
+			api.before = func(method string) { Fail("Cloudflare was called: " + method) }
+
+			done, cancel := context.WithCancel(ctx)
+			cancel()
+			_, err = syncRulesetRule(done, api.api(), rulesTestZone, rulesTestPhase, blockRule("kflare-a", "/a"), nil, nil)
+			Expect(err).To(MatchError(context.Canceled))
+			Expect(deleteRulesetRule(done, api.api(), rulesTestZone, rulesTestPhase, "kflare-a", false)).
+				To(MatchError(context.Canceled))
 		})
 	})
 

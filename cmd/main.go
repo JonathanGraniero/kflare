@@ -68,6 +68,7 @@ func main() {
 	var tokenCheckInterval time.Duration
 	var tokenExpiryWarning time.Duration
 	var cloudflareRateLimit int
+	var maxConcurrentReconciles int
 	var leaderElectionID string
 	var watchNamespaces string
 	var watchSelector string
@@ -119,6 +120,11 @@ func main() {
 		"How many requests per five minutes kflare sends with one Cloudflare API token, unless the token's "+
 			"CloudflareAccount sets spec.rateLimit. Cloudflare's global limit is 1,200, shared with everything else "+
 			"using the token. 0 turns the pacing off; kflare still stops when Cloudflare asks it to.")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 1,
+		"How many resources of one kind each controller reconciles at once. The rules of one zone and phase are "+
+			"still written one at a time, as are resources of a kind finding or creating an object with the same "+
+			"key. More at once take more CPU and Kubernetes API calls at a time, but no more of an API token's "+
+			"Cloudflare budget (--cloudflare-rate-limit), which still paces every call.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -147,6 +153,10 @@ func main() {
 	if tokenExpiryWarning < 0 {
 		setupLog.Error(nil, "--token-expiry-warning must be 0 (off) or a positive duration", "value",
 			tokenExpiryWarning)
+		os.Exit(1)
+	}
+	if maxConcurrentReconciles < 1 {
+		setupLog.Error(nil, "--max-concurrent-reconciles must be 1 or more", "value", maxConcurrentReconciles)
 		os.Exit(1)
 	}
 	if err := cfpkg.SetRateLimit(cloudflareRateLimit); err != nil {
@@ -231,8 +241,12 @@ func main() {
 		BaseContext: func() context.Context { return controller.WithWatchScope(context.Background(), scope) },
 		// Every controller cancels a reconcile's context after
 		// --reconcile-timeout, which both Cloudflare SDKs and the Kubernetes
-		// client honor.
-		Controller:       config.Controller{ReconciliationTimeout: reconcileTimeout},
+		// client honor, and runs --max-concurrent-reconciles at once: no
+		// controller sets a number of its own.
+		Controller: config.Controller{
+			ReconciliationTimeout:   reconcileTimeout,
+			MaxConcurrentReconciles: maxConcurrentReconciles,
+		},
 		LeaderElection:   enableLeaderElection,
 		LeaderElectionID: leaderElectionID,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily

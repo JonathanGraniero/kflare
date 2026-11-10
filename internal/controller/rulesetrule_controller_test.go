@@ -11,6 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7/rulesets"
 	. "github.com/onsi/ginkgo/v2"
@@ -278,6 +281,78 @@ var _ = Describe("Rule controller", func() {
 			Expect(order()).To(Equal([]string{"a", "b", "c"}))
 			Expect(fake.writes).To(Equal(3), "moving rules does not rewrite them")
 			Expect(corrections("WAFCustomRule")).To(Equal(before), "a changed spec is no drift")
+		})
+
+		It("writes the rules of one zone and phase one at a time when it reconciles several at once, in order", func() {
+			readyEnv()
+			createZone(otherNS, rulesTestZone)
+			// Their priorities give the order n1 to n6, which they are created
+			// out of, in two namespaces sharing the zone.
+			names := []string{"n4", "n1", "n6", "n3", "n5", "n2"}
+			keys := map[string]types.NamespacedName{}
+			for i, name := range names {
+				k := key(name)
+				if i%2 == 1 {
+					k.Namespace = otherNS
+				}
+				keys[name] = k
+				createRule(k.Namespace, name, func(spec *cloudflarev1alpha1.WAFCustomRuleSpec) {
+					spec.Priority = int32(name[1] - '0')
+				})
+				DeferCleanup(forceDelete, ctx, &cloudflarev1alpha1.WAFCustomRule{}, k)
+			}
+			inOrder := func() []string {
+				var out []string
+				for _, rule := range fake.entrypoint().rules {
+					for name, k := range keys {
+						if rule.ref() == rulesetRuleRef("WAFCustomRule", k.Namespace, k.Name) {
+							out = append(out, name)
+						}
+					}
+				}
+				return out
+			}
+			// reconcileAll reconciles the resources names at once, and returns
+			// how many moved rules.
+			reconcileAll := func(names ...string) int {
+				var wg sync.WaitGroup
+				var moved atomic.Int32
+				for _, name := range names {
+					wg.Go(func() {
+						defer GinkgoRecover()
+						result, err := reconcileRule(keys[name])
+						Expect(err).NotTo(HaveOccurred())
+						if result.RequeueAfter == rulesetRuleRecheckInterval {
+							moved.Add(1)
+						}
+					})
+				}
+				wg.Wait()
+				return int(moved.Load())
+			}
+
+			fake.latency = 10 * time.Millisecond
+			Expect(reconcileAll(names...)).To(BeZero(),
+				"a rule written from a read no other write made stale is placed, not moved")
+			Expect(fake.mostInFlight).To(Equal(1), "no call to the entry point started while another was under way")
+			Expect(inOrder()).To(Equal([]string{"n1", "n2", "n3", "n4", "n5", "n6"}))
+			Expect(fake.moves).To(BeZero())
+			for _, k := range keys {
+				Expect(readyCondition(k).Reason).To(Equal("Synced"))
+			}
+
+			By("deleting some while another changes places, all at once")
+			for _, name := range []string{"n2", "n5"} {
+				Expect(k8sClient.Delete(ctx, getRule(keys[name]))).To(Succeed())
+			}
+			rule := getRule(keys["n6"])
+			rule.Spec.Priority = 0
+			Expect(k8sClient.Update(ctx, rule)).To(Succeed())
+			fake.mostInFlight = 0
+			reconcileAll("n2", "n5", "n6", "n1", "n3", "n4")
+			Expect(fake.mostInFlight).To(Equal(1))
+			Expect(inOrder()).To(Equal([]string{"n6", "n1", "n3", "n4"}))
+			Expect(rulesetLocks.held()).To(BeZero())
 		})
 
 		It("counts putting rules back in order, after someone moved them, as a correction", func() {

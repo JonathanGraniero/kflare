@@ -401,9 +401,15 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 	}
 
 	// Without an object, the resource finds, adopts or creates one, unless
-	// it is a stale read (upToDate).
+	// it is a stale read (upToDate). It holds its key until the sync ends,
+	// its claim and status written (lockObjectKey).
 	adopting := false
 	if current == nil {
+		release, err := r.lockObjectKey(ctx, obj, parentID, refs)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		defer release()
 		if fresh, err := r.upToDate(ctx, obj); !fresh || err != nil {
 			return ctrl.Result{}, err
 		}
@@ -498,10 +504,7 @@ func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, o
 		return nil, false, true, result, err
 	}
 
-	key := k.key(obj)
-	if k.hooks.key != nil {
-		key = k.hooks.key(obj, refs)
-	}
+	key := r.objectKey(obj, refs)
 	what := fmt.Sprintf("%s %q", k.noun, key)
 	id, found, err := r.find(ctx, api, obj, parentID, key, refs)
 	if err != nil {
@@ -567,6 +570,33 @@ func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, o
 		logger.Info("Created "+k.noun, "key", key, "id", k.id(current))
 	}
 	return current, adopting, false, ctrl.Result{}, nil
+}
+
+// objectKey returns the key obj finds, adopts or creates its object by: its
+// kind's key, or what the kind's key hook makes of it with refs.
+func (r *crudResourceReconciler[O, A, R, L]) objectKey(obj O, refs map[string]string) string {
+	if r.kind.hooks.key != nil {
+		return r.kind.hooks.key(obj, refs)
+	}
+	return r.kind.key(obj)
+}
+
+// crudObjectLocks holds a key per kind, parent and object key that a resource
+// is finding, adopting or creating an object by (lockObjectKey).
+var crudObjectLocks keyLock
+
+// lockObjectKey waits until obj is the only resource of its kind finding,
+// adopting or creating the parent's object with its key, and returns the
+// function that lets the next one in. Two resources with one key that did so
+// at once would each find no object and create one, or the second would find
+// the first's new object before its claim and, its creating annotation naming
+// the key, take it for its own: two resources would then own one object, and
+// deleting either would delete it. One at a time, the second finds the first's
+// claim and reports the conflict, as a single worker always made it. The key
+// is held until the sync ends, which also covers the first's status write.
+func (r *crudResourceReconciler[O, A, R, L]) lockObjectKey(ctx context.Context, obj O, parentID string,
+	refs map[string]string) (func(), error) {
+	return crudObjectLocks.lock(ctx, r.kind.name+"/"+parentID+"/"+r.objectKey(obj, refs))
 }
 
 // find returns the ID of the parent's object with key, or "" when there is

@@ -159,6 +159,18 @@ cache, and update the table in the deploy guide's
 make docker-build sizing IMG=controller:latest SIZING_ARGS="-secrets 5000 -resources 5000 -samples /tmp/sizing.csv"
 ```
 
+The deploy guide's [Reconciles at once](docs/deploy.md#reconciles-at-once) comes from `hack/resync`, which builds the
+manager and times how long it takes to reconcile every resource once, as after a restart, with each
+`--max-concurrent-reconciles` value given. It runs the manager on this machine against an envtest API server, with
+`CloudflareAccount`s that each have a token of their own and `KVNamespace`s spread over them, and against a stand-in for
+Cloudflare's API that answers each call after a fixed latency, reached through a proxy that inspects TLS, so the
+manager's own client and rate limits run as in a cluster. Run it again after a change to the reconcilers' locks, the
+rate limiter or the HTTP client:
+
+```sh
+make resync RESYNC_ARGS="-accounts 20 -resources 1000 -latency 200ms -workers 1,2,4,8,16"
+```
+
 ## The live end-to-end suite
 
 `make test-e2e` installs the manager with the Helm chart on the kind cluster in your current context, with the

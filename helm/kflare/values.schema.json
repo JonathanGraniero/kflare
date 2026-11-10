@@ -131,6 +131,10 @@
       "type": "integer",
       "minimum": 0
     },
+    "maxConcurrentReconciles": {
+      "type": "integer",
+      "minimum": 1
+    },
     "logging": {
       "type": "object",
       "additionalProperties": false,

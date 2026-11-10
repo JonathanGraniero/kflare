@@ -75,6 +75,7 @@ spec:
             - --token-check-interval={{ .Values.tokenCheckInterval }}
             - --token-expiry-warning={{ .Values.tokenExpiryWarning }}
             - --cloudflare-rate-limit={{ int .Values.cloudflareRateLimit }}
+            - --max-concurrent-reconciles={{ int .Values.maxConcurrentReconciles }}
             - --health-probe-bind-address=:{{ .Values.healthPort }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}

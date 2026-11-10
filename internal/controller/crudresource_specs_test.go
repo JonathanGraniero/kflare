@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
@@ -78,6 +79,22 @@ type fakeCRUDStore[R any] struct {
 	sent []any
 	// extra holds what a kind's hooks' fake keeps.
 	extra any
+
+	// mu makes the store answer one call at a time, so that reconciles may
+	// call it at once. arrive, when set, runs as each call starts, with its
+	// name (create, get, list, update or delete), before it waits for another.
+	mu     sync.Mutex
+	arrive func(call string)
+}
+
+// enter starts a call: it runs arrive and takes the store for the call. The
+// function it returns ends the call.
+func (s *fakeCRUDStore[R]) enter(call string) (leave func()) {
+	if s.arrive != nil {
+		s.arrive(call)
+	}
+	s.mu.Lock()
+	return s.mu.Unlock
 }
 
 func newFakeCRUDStore[R any](pageSize int64, scope string) *fakeCRUDStore[R] {
@@ -113,6 +130,7 @@ func fakeCRUDNotFound(method, parentID, id string) error {
 // create stores the object build returns at scope, under id, or a new ID
 // when id is empty.
 func (s *fakeCRUDStore[R]) create(parentID, scope, id string, build func(id string) R) (*R, error) {
+	defer s.enter("create")()
 	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
@@ -134,6 +152,7 @@ func (s *fakeCRUDStore[R]) create(parentID, scope, id string, build func(id stri
 }
 
 func (s *fakeCRUDStore[R]) get(parentID, scope, id string) (*R, error) {
+	defer s.enter("get")()
 	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
@@ -151,6 +170,7 @@ func (s *fakeCRUDStore[R]) get(parentID, scope, id string) (*R, error) {
 // each as listed shows it.
 func fakeList[R any, L any](s *fakeCRUDStore[R], parentID, scope string, page, perPage int64,
 	listed func(*R) L) (*pagination.V4PagePaginationArray[L], error) {
+	defer s.enter("list")()
 	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
@@ -183,6 +203,7 @@ func fakeList[R any, L any](s *fakeCRUDStore[R], parentID, scope string, page, p
 // each as listed shows it, in the one page of a list that is never paged.
 func fakeListAll[R any, L any](s *fakeCRUDStore[R], parentID, scope string,
 	listed func(*R) L) (*pagination.SinglePage[L], error) {
+	defer s.enter("list")()
 	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
@@ -201,6 +222,7 @@ func fakeListAll[R any, L any](s *fakeCRUDStore[R], parentID, scope string,
 
 // update applies apply to the object id at scope.
 func (s *fakeCRUDStore[R]) update(parentID, scope, id string, apply func(*R)) (*R, error) {
+	defer s.enter("update")()
 	if err := s.parent(parentID); err != nil {
 		return nil, err
 	}
@@ -219,6 +241,7 @@ func (s *fakeCRUDStore[R]) update(parentID, scope, id string, apply func(*R)) (*
 }
 
 func (s *fakeCRUDStore[R]) delete(parentID, scope, id string) error {
+	defer s.enter("delete")()
 	if err := s.parent(parentID); err != nil {
 		return err
 	}
@@ -781,6 +804,70 @@ func describeCRUDZone[O conditionedObject, A any, R any, L any](e *crudSpecEnv[O
 			Expect(slices.ContainsFunc(accountDependents, func(d dependentKind) bool { return d.kind == k.name })).
 				To(BeFalse(), "it reaches its account through its Zone")
 		})
+	})
+}
+
+// describeCRUDAtOnce runs the specs of resources of the kind reconciled at once
+// (--max-concurrent-reconciles): two that would find, adopt or create an object
+// by the same key take turns (lockObjectKey).
+func describeCRUDAtOnce[O conditionedObject, A any, R any, L any](e *crudSpecEnv[O, A, R, L]) {
+	t, k, ctx := e.t, e.t.kind, e.ctx
+
+	It("creates one "+k.noun+" when two resources with the same "+t.keyField+" reconcile at once, which the other "+
+		"then finds taken", func() {
+		e.createParent(true)
+		obj, other := e.create(e.key, nil), e.create(e.otherKey, nil)
+		Expect(k.key(other)).To(Equal(k.key(obj)))
+		// A kind's hooks' fake makes what it keeps on its first use, so make it
+		// before the reconciles share it.
+		t.newFake(e.store)
+		// The call that finds the object waits for the other resource's. Both
+		// would find none if they could look at once.
+		find := "list"
+		if k.list == nil && k.listAll == nil {
+			find = "get"
+		}
+		arrive, met := meeting(2, find, 500*time.Millisecond)
+		e.store.arrive = arrive
+
+		var wg sync.WaitGroup
+		for _, at := range []types.NamespacedName{e.key, e.otherKey} {
+			wg.Go(func() {
+				defer GinkgoRecover()
+				_, err := e.r.Reconcile(ctx, reconcile.Request{NamespacedName: at})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+		wg.Wait()
+		Expect(met()).To(BeFalse(), "the resources looked for the "+k.noun+" one after the other")
+		Expect(e.store.objects).To(HaveLen(1))
+		Expect(e.store.sent).To(HaveLen(1), "one "+k.noun+" was created")
+
+		// The one that went first created and claimed it; the other found it
+		// claimed or, for a kind whose resources may share an object, an object
+		// it may not adopt without the adoption annotation.
+		conflict := k.conflictReason
+		if k.sharedObjects {
+			conflict = reasonAlreadyExists
+		}
+		reasons := make([]string, 0, 2)
+		claims := map[string]string{}
+		for _, at := range []types.NamespacedName{e.key, e.otherKey} {
+			got := k.newObject()
+			Expect(k8sClient.Get(ctx, at, got)).To(Succeed())
+			cond := meta.FindStatusCondition(got.GetConditions(), cloudflarev1alpha1.ConditionReady)
+			Expect(cond).NotTo(BeNil())
+			reasons = append(reasons, cond.Reason)
+			if id, ok := got.GetLabels()[k.claimLabel]; ok {
+				claims[at.String()] = id
+			}
+			Expect(got.GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation),
+				"%s marked no "+k.noun+" as its own to create", at)
+		}
+		Expect(reasons).To(ConsistOf("Synced", conflict))
+		Expect(claims).To(HaveLen(1), "one resource claims the "+k.noun)
+		Expect(slices.Collect(maps.Values(claims))).To(ConsistOf(slices.Collect(maps.Keys(e.store.objects))))
+		Expect(crudObjectLocks.held()).To(BeZero())
 	})
 }
 
@@ -1475,6 +1562,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			describeCRUDZone(e)
 		}
 		describeCRUDReferences(e)
+		describeCRUDAtOnce(e)
 
 		Describe("Reconcile", func() {
 			It("returns no error when the resource does not exist", func() {

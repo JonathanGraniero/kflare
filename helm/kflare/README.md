@@ -71,6 +71,7 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `tokenCheckInterval` | `1h` | Validate each `CloudflareAccount` this often, so a token revoked, disabled or expired in Cloudflare shows; `0s` turns it off |
 | `tokenExpiryWarning` | `336h` (14 days) | Record a `TokenExpiresSoon` Warning Event at each validation once the token expires within this; `0s` records none |
 | `cloudflareRateLimit` | `900` | Requests per five minutes per API token, unless its `CloudflareAccount` sets `spec.rateLimit`; `0` turns the pacing off |
+| `maxConcurrentReconciles` | `1` | Resources of one kind each controller reconciles at once; more speeds up a resync of many accounts' resources |
 | `logging.level` | `info` | `debug`, `info` or `error` |
 | `logging.format` | `json` | `json` or `console` |
 | `metrics.enabled` | `true` | Serve Prometheus metrics on `metrics.port` |

@@ -725,8 +725,9 @@ resources:
 `kflare.dev/deletion-policy: delete` (see
 [Protecting objects that must outlive their manifests](#protecting-objects-that-must-outlive-their-manifests)).
 
-Each controller reconciles one resource at a time, so kflare bounds every call to Cloudflare: one that gets no
-answer, from a proxy that goes silent or over a connection a network change broke, cannot stall the others. A
+Each controller reconciles one resource at a time by default (see [Reconciles at once](#reconciles-at-once)), so kflare
+bounds every call to Cloudflare: one that gets no answer, from a proxy that goes silent or over a connection a network
+change broke, cannot stall the others. A
 connection attempt gives up after 30 seconds, a TLS handshake after 10, the wait for a response to start after a
 minute, and a whole request, a Worker's upload included, after two. An HTTP/2 connection that goes 30 seconds without
 a frame from Cloudflare is pinged, and closed if the ping gets no answer within 15 seconds. `reconcileTimeout` (5
@@ -764,7 +765,9 @@ using the token's budget. `0s`, or leaving the value empty, turns the checks off
 kflare keeps each API token to 900 requests per five minutes, three quarters of the limit above, across all its
 controllers. A handful of changes goes out at once. A large one, or a restart, which reconciles every resource, is
 paced, and `kubectl get` shows the resources catching up. 900 requests take five minutes, so count on that many minutes
-per 900 resources for a restart with `Ready` resources, whose reconciles make one or two calls each.
+per 900 resources of one token for a restart with `Ready` resources, whose reconciles make one or two calls each. With
+several tokens, each paced on its own, the wait for Cloudflare's answers can take longer than the budgets: see
+[Reconciles at once](#reconciles-at-once).
 
 ```yaml
 cloudflareRateLimit: 900    # 0 turns the pacing off
@@ -805,8 +808,9 @@ spec:
 ```
 
 `CloudflareAccount`s sharing a token share its budget, so the lowest `requestsPerFiveMinutes` among them applies. Each
-kind reconciles one resource at a time however many accounts it serves, so with many busy accounts, that is the ceiling
-to watch rather than Cloudflare's limits (`workqueue_depth`, by `name`).
+kind reconciles one resource at a time however many accounts it serves, unless `maxConcurrentReconciles` says more, so
+with many busy accounts, that is the ceiling to watch rather than Cloudflare's limits (`workqueue_depth`, by `name`):
+see [Reconciles at once](#reconciles-at-once).
 
 ### Scoping an installation
 
@@ -1106,6 +1110,50 @@ about 12 seconds, as without them.
   Secrets. For more, raise `resources.limits.memory` to at least a quarter above what the leader needs, and
   `resources.requests.memory` to what it needs, so that the scheduler places it on a node with that much free. The
   standbys use about 9 MiB but get the same requests.
+
+#### Reconciles at once
+
+Each controller reconciles one resource of its kind at a time by default, which suits most installations. A reconcile
+that calls Cloudflare waits for the answers, though, and a kind's resources take turns across every account the
+installation manages. So after a restart or a change of leader, when every resource is reconciled, an installation with
+many accounts can take a while to get through them. To reconcile several resources of a kind at once:
+
+```yaml
+maxConcurrentReconciles: 8
+```
+
+How long reconciling every resource once took, measured with `hack/resync` in November 2026: the controller against an
+envtest API server and a stand-in for Cloudflare's API that answers each call after 200 ms, with 1,000 `KVNamespace`s
+in sync, spread over 20 `CloudflareAccount`s that each have an API token of their own, and the default
+`cloudflareRateLimit`:
+
+| At once | Time | Cloudflare calls a second |
+|---|---|---|
+| 1 | 3 min 24 s | 5 |
+| 2 | 1 min 42 s | 10 |
+| 4 | 51 s | 20 |
+| 8 | 26 s | 40 |
+| 16 | 13 s | 79 |
+
+Each made the same 1,040 calls: a read of each namespace, and a token check and a read of each account. The controller
+used 1.5 seconds of CPU for the whole resync one at a time, and under 1 second with more, and its memory peaked at 62 to
+66 MiB whatever the setting: more at once do the same work in less time.
+
+- **It shortens the wait for Cloudflare's answers, and nothing else.** A resync takes about the number of calls times
+  the time Cloudflare takes to answer one, divided by the setting, here 1,040 × 200 ms ÷ the setting, but never less
+  than each token's budget allows: every call still goes through its token's pacing (see
+  [Cloudflare's API rate limit](#cloudflares-api-rate-limit)). With a single token, 300 resources took 1 min 31 s
+  whatever the setting: its budget, 3 calls a second after a burst of 30, set the pace. Raise it when the installation
+  manages many accounts with tokens of their own, or when Cloudflare answers slowly
+  (`kflare_cloudflare_api_request_duration_seconds`), and `workqueue_depth` stays high for a kind after a restart
+- **Some writes still go one at a time.** The rules of one zone and phase are written one at a time, whatever their
+  kind, so that each goes where a fresh read of the ruleset puts it: many rules in one zone's phase gain nothing from
+  the setting. Resources of a kind that find, adopt or create an object by the same key, in the same account or zone,
+  also take turns, so that one creates it and the other reports the conflict
+- **It costs Kubernetes API calls at a time.** Each reconcile reads from the controller's cache and writes the
+  resource's status when it changes, so the setting multiplies the writes a resync sends the API server at once
+- **Keep the pacing on.** With `cloudflareRateLimit: 0`, more at once reach Cloudflare's limit of 1,200 calls per five
+  minutes sooner after a restart, and Cloudflare then refuses the token's calls for five minutes
 
 ### Monitoring
 

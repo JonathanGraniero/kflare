@@ -1900,3 +1900,78 @@ Account Settings Read, one expiring three minutes after it was made and one set 
 nothing changed in the cluster the account was validated again each minute, two calls each, all answered 200, its
 `Ready` condition's transition time unchanged. The log's one error was an optimistic-concurrency conflict at start,
 retried. The cluster was left as found, the CRD put back
+
+## Reconciles at once
+
+Decisions behind `--max-concurrent-reconciles` (the chart's `maxConcurrentReconciles`) and the locks that keep it safe
+([#70](https://github.com/JonathanGraniero/kflare/issues/70); ARCHITECTURE.md's
+[Reconciles at once](../ARCHITECTURE.md#reconciles-at-once)).
+
+- **One manager-wide setting, 1 by default,** as the issue proposed: `ctrl.Options.Controller.MaxConcurrentReconciles`,
+  which every controller takes since none sets its own. controller-runtime never reconciles one object in two workers
+  at once, and the controllers of different kinds always ran side by side, so the setting only lets resources of one
+  kind meet
+- **The rule kinds take a lock rather than staying at 1,** the issue's second option. A lock per zone and phase
+  (`lockEntrypoint`) keeps rules of different zones and phases in parallel, costs nothing at 1, and also covers kinds
+  that share a phase, which pinning each kind's controller would not: none do yet, but `ManagedRulesetException` would
+  share `http_request_firewall_managed` with `ManagedRuleset`. It sits in `syncRulesetRule` and `deleteRulesetRule`, the
+  rulesets foundation, so no rule path can write without it
+- **No new live probe.** The issue asked whether Cloudflare refuses concurrent writes to one ruleset; the Rulesets
+  API notes above answer it (2026-10-12): two concurrent rule POSTs both land. So the risk was never a refusal but
+  each sync placing its rule by a read another write had just made stale. With the lock, kflare never writes to one
+  entry point from two reconciles, whatever Cloudflare does with concurrent writes
+- **The CRUD kinds needed one too,** found while checking every shared reconciler for what one worker per kind had kept
+  from meeting. Two resources of a kind with one key would each find no object and create one, or, for an object
+  Cloudflare keeps unique, the second's create would fail with its `kflare.dev/creating` mark set, and its next
+  reconcile could find the first's object before the cache showed the first's claim and take it for the one it created:
+  both would then own it, and deleting either would delete it. `lockObjectKey`, per kind, parent and key, runs the
+  search, the create and the claim one resource at a time, as one worker did. It is held until the sync ends, which
+  also covers the status write; releasing it right after the claim changed nothing a test could see
+- **Settings kinds and accounts need none.** A settings kind's owner is the resource whose status records the zone,
+  else the oldest, worked out from the cache the same way in each reconcile, and an owner being deleted keeps the
+  settings until it is gone: no reset can follow another resource's write. A `CloudflareAccount` writes only its own
+  status and a finalizer on its token Secret, shared by every account using the Secret; a deletion that removes it
+  while another account starts using the Secret changes the Secret, which brings that account back to add it again
+- **A lock blocks its worker rather than requeueing.** A requeue would send every waiting resource round the queue each
+  time, counting reconciles that did nothing in `controller_runtime_reconcile_total`. A blocked worker waits for one
+  reconcile's calls, at most `--reconcile-timeout`, and only resources writing the same thing wait at all
+- **The rate limit is already the bound.** The issue feared that more at once reach Cloudflare's limit sooner after a
+  restart. Since #73 every call goes through its token's budget, so the setting cannot send more than the budget, and
+  a restart's burst is the budget's burst, a thirtieth of the limit. Only with the pacing off (`cloudflareRateLimit: 0`)
+  does the fear hold, which the deploy guide says
+- **The specs make concurrency deterministic.** The fakes answer one call at a time, as Cloudflare applies each write
+  whole, and count the calls under way; a rule spec reconciles six rules of one phase at once and expects one call at a
+  time and the rules in order with no move, and a shared CRUD spec makes the first search wait for the second, which
+  can only arrive once the first has claimed its object (`meeting`). Every lock and key was mutated: 17 of 17 caught.
+  Two mutants hung a spec (a release that is not idempotent, a key claimed after giving up on it) and were stopped
+  rather than left to the 10-minute test timeout, which counts as caught as well
+
+**Measured with `hack/resync`, 2026-11-09:** the branch's manager on this machine, against an envtest API server
+(1.34.1) and a stand-in for Cloudflare's KV and account endpoints that answers each call after 200 ms, reached through
+a proxy that inspects TLS (`HTTPS_PROXY`, the CA through `SSL_CERT_DIR`), so the manager's HTTP client, rate limiter and
+metrics ran as in a cluster. 1,000 `KVNamespace`s over 20 accounts, each with a token of its own, the default budget;
+created at 16 at once in 66 s (3,039 calls), then a restart per setting:
+
+| At once | Resync | Calls | Calls a second | CPU | Max RSS |
+|---|---|---|---|---|---|
+| 1 | 204 s | 1,040 | 5.1 | 1.5 s | 62 MiB |
+| 2 | 102 s | 1,040 | 10.2 | 1.1 s | 65 MiB |
+| 4 | 51 s | 1,040 | 20.3 | 0.9 s | 64 MiB |
+| 8 | 26 s | 1,040 | 40.3 | 0.9 s | 66 MiB |
+| 16 | 13 s | 1,040 | 79.0 | 0.9 s | 65 MiB |
+
+Each resync is 1,040 calls × 200 ms ÷ the setting, plus the manager's start: the latency, not the budgets, set the pace,
+as 20 budgets allow 600 calls at once and 60 a second after. With one token, 300 resources (created in 277 s, 604
+calls) resynced in 91.5 s at 1, 4 and 16 at once alike, 302 calls each time: the budget's burst of 30, then 3 a second,
+set the pace. The latency is a stand-in's: no recorded latency of Cloudflare's API was at hand (the local Prometheus held no
+`kflare_cloudflare_api_request_duration_seconds`), so the times scale with whatever Cloudflare takes.
+
+**Not done: caching only the Secrets kflare reads,** the issue's last sizing item. The manager caches every Secret it
+watches (all of them, or those of `watchNamespaces` since #79) because the CloudflareAccount controller watches Secrets
+and every reconcile reads its token Secret from the cache. Two ways out, each its own change to how kflare reads
+credentials:
+- a label selector on the Secret cache: every token Secret would need a label, a breaking change unless opt-in, and an
+  unlabeled one would read as missing
+- a metadata-only watch of Secrets, with each token Secret read from the API server when its resource version changes
+  and kept in memory: the cache would hold about a kilobyte of metadata per Secret instead of its data, so Helm's
+  release Secrets would stop counting, at the cost of one read per change of a token Secret

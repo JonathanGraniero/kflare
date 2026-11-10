@@ -289,6 +289,9 @@ WorkerRoute's within a Cloudflare zone: through the same Zone, or two Zones for 
 resource whose CloudflareAccount or Zone is gone manages nothing, so its claim does not count. An R2Bucket that never
 claimed its bucket, for example one reporting `NameConflict`, leaves the bucket alone when it is deleted.
 
+A resource finds, adopts or creates its object, and claims it, while no other resource of its kind does so with the
+same key in the same account or zone (see [Reconciles at once](#reconciles-at-once)).
+
 This prevents two DNSRecords from fighting over one record. Records created outside kflare are protected by the
 adoption policy above: without one, a DNSRecord never takes over a record it did not create. Tools such as external-dns
 keep a TXT ownership registry in the zone instead; kflare keeps its claims in the cluster.
@@ -331,7 +334,9 @@ or not, so kflare:
   `OtherKflareRules`, as nothing keeps their order with its rule. Reordering
   moves rules without changing them: Cloudflare keeps a moved rule's definition and version (verified live). A
   reconcile that moved rules checks the order again 10 seconds later, in case another resource was reordering the
-  same rules at the same time.
+  same rules at the same time from an older view of the cluster.
+- Writes to a zone's entry point for a phase one reconcile at a time, whatever the kind, however many reconciles run
+  at once (see [Reconciles at once](#reconciles-at-once)).
 - Leaves the entry point in place when its last rule is deleted, as Cloudflare does, except in the managed phase (see
   below).
 - Writes a rule that uses a custom list (`$name`, managed by an `IPList`) once the list exists. Cloudflare refuses the
@@ -413,8 +418,9 @@ calls a second (`docs/design-notes.md`, [Metrics](docs/design-notes.md#metrics))
 ID. v0 reports a 429 or a 5xx with a plain error once its retries run out, so a condition has an ID for those on v7's
 kinds only.
 
-Every controller reconciles one resource at a time, so a call that never returns would stall its kind. Two
-timeouts prevent that:
+Every controller reconciles one resource at a time, unless `--max-concurrent-reconciles` says more (see
+[Reconciles at once](#reconciles-at-once)), so a call that never returns would stall its kind. Two timeouts prevent
+that:
 
 - **Each request.** Both SDKs send their requests through one HTTP client in `pkg/cloudflare` (shared, so that
   connections are reused across reconciles), whose transport is a copy of Go's default: it keeps the standard proxy
@@ -490,8 +496,8 @@ Cloudflare counts API calls per user, across the dashboard, API keys and the use
 1,200 per five minutes
 ([Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/)). Past that it refuses
 every call for five minutes. One manager may serve many Cloudflare accounts, whose resources of a kind share that
-kind's one worker, so `pkg/cloudflare/ratelimit.go` has two jobs: keep kflare under the limit, and keep one account's
-limit from holding up the others.
+kind's workers, one unless `--max-concurrent-reconciles` says more, so `pkg/cloudflare/ratelimit.go` has two jobs:
+keep kflare under the limit, and keep one account's limit from holding up the others.
 
 - **One budget per API token.** Both SDKs send through one HTTP client, whose transport finds each request's token in
   its `Authorization` header and keeps a budget by a hash of it, so no caller has to pass anything and a Client needs
@@ -501,7 +507,7 @@ limit from holding up the others.
 - **Pacing.** A budget is a token bucket of `--cloudflare-rate-limit` requests per five minutes (900; the chart's
   `cloudflareRateLimit`), or the `CloudflareAccount`'s `spec.rateLimit`, the lowest if several share the token. It
   starts full, with a thirtieth of the limit, so a handful of changes never waits. A request waits in the transport for
-  its turn, up to 10 seconds, which holds its kind's worker only briefly. A longer wait fails it unsent.
+  its turn, up to 10 seconds, which holds a worker of its kind only briefly. A longer wait fails it unsent.
 - **Holds.** A 429 stops the token's calls for its `Retry-After`, or five minutes without one, and at most an hour. A
   response whose `Ratelimit` header shows a limit with a tenth of its quota or less left does the same for the header's
   `t` seconds, so that kflare gives way to whatever else spends the quota. Over 10 seconds, requests fail unsent rather
@@ -527,6 +533,40 @@ Cloudflare sends `Ratelimit` on most responses but not all: KV's carried none wh
 refills as it is spent rather than in fixed windows. So the header only ever slows kflare down, and pacing does not
 depend on it. A raised limit has to be set by hand, since the Free plan kflare is tested on cannot show one
 (`docs/design-notes.md`, [Rate limits](docs/design-notes.md#rate-limits)).
+
+## Reconciles at once
+
+Each controller reconciles one resource at a time by default. `--max-concurrent-reconciles` (the chart's
+`maxConcurrentReconciles`) lets every controller reconcile up to that many of its kind's resources at once;
+controller-runtime never reconciles one resource in two places at once, and the controllers of different kinds always
+ran side by side. So what it adds is resources of one kind acting together on the same thing in Cloudflare. Two
+places do, and take turns through a lock in the manager's memory (`internal/controller/keylock.go`), which is enough
+because only the leader reconciles:
+
+- **A zone's entry point for a phase** (`lockEntrypoint` in `rulesetrule.go`). A rule's sync reads the entry point,
+  creates its rule at a position worked out from that read, and moves kflare's rules into order. Cloudflare takes
+  writes that arrive at once (two concurrent rule POSTs both land, verified live 2026-10-12), so two syncs at once
+  would each place a rule by a read the other just made stale. One sync or deletion at a time writes to a zone's entry
+  point for a phase, whatever its kind, so each new rule goes straight to its place.
+- **Finding, adopting or creating a CRUD kind's object** (`lockObjectKey` in `crudresource_controller.go`). Two
+  resources of a kind with one key, in one account or zone, would each find no object and create one, or the second
+  would find the first's new object before its claim and, its `kflare.dev/creating` annotation naming the key, take it
+  for its own: deleting either resource would then delete the object. The lock is held from the search until the sync
+  ends, its claim and status written, so the second finds the claim and reports the conflict, as when one reconcile
+  ran at a time.
+
+The other kinds need no lock. A settings kind's owner (the resource whose status records the zone, else the oldest) is
+worked out the same way by each reconcile, and an owner being deleted keeps the settings until it is gone, so a reset
+cannot follow another resource's write. A `CloudflareAccount` writes its own status, and adds a finalizer to its token
+Secret that a deletion can remove while another account using the Secret adds it: any change to the Secret brings
+every account that references it back, and one adds the finalizer again. A reconcile waiting for a lock logs it at
+debug level; the wait lasts as long as the other reconcile's calls, and `--reconcile-timeout` bounds it.
+
+More reconciles at once never send more than a token's budget (see [Rate limits](#rate-limits)): every call is still
+paced, so the resources of one token take as long as its budget allows. What they change is the wait for Cloudflare's
+answers. With one reconcile at a time, a kind's resources take turns across every account, each waiting for its calls
+to come back, so many accounts with tokens of their own leave most of their budgets unspent, and a slow answer holds up
+every account. The deploy guide's [Scaling and resources](docs/deploy.md#scaling-and-resources) measures it.
 
 ## Metrics
 
@@ -649,9 +689,10 @@ by it: the Secret keeps `kflare.dev/token-protection`, and a Warning Event on th
   A new leader starts with full budgets, two installations sharing a token each spend their own, and two of a user's
   tokens have a budget each though Cloudflare counts them as one. All of these learn otherwise from `Ratelimit` and
   429s, or take a lower `--cloudflare-rate-limit`.
-- **One worker per kind.** A held account gives its worker back, but each kind still reconciles one resource at a time,
-  so many busy accounts together reach that ceiling before they reach Cloudflare's limits
-  ([#70](https://github.com/JonathanGraniero/kflare/issues/70)).
+- **One reconcile at a time per kind, by default.** A held account gives its worker back, but each kind reconciles one
+  resource at a time unless `--max-concurrent-reconciles` says more, so many busy accounts with tokens of their own
+  reach that ceiling before they reach Cloudflare's limits. More at once does not help the rules of one zone and phase,
+  which are written one at a time (see [Reconciles at once](#reconciles-at-once)).
 - **Adoption goes by key only.** A resource adopts the object with its key (a name, a title, a pattern), and there is
   no way to name an object by its ID. Tunnel names are not unique: a Tunnel adopts the first one listed with its name.
 - **No ownership marker on the Cloudflare side, except for rules.** kflare tracks what it owns only in Kubernetes, so if

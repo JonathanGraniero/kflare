@@ -112,6 +112,13 @@ test-e2e-upgrade: kind ## Run the e2e suite's upgrade from the last release agai
 sizing: envtest ## Measure the controller image's CPU and memory, for the chart's resources.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go run ./hack/sizing -image $(IMG) $(SIZING_ARGS)
 
+# Builds the manager and times how long it takes to reconcile every resource once, with one reconcile at a time and
+# with several, against an envtest API server and a stand-in for Cloudflare (hack/resync); RESYNC_ARGS adds the
+# command's flags (go run ./hack/resync -h lists them).
+.PHONY: resync
+resync: envtest build ## Time a full resync with one reconcile at a time and with several (hack/resync).
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go run ./hack/resync -manager bin/manager $(RESYNC_ARGS)
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
 	$(GOLANGCI_LINT) run

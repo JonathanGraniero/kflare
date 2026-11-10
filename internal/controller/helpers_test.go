@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/kv"
@@ -33,6 +35,45 @@ func forceDelete(ctx context.Context, obj client.Object, key types.NamespacedNam
 		Expect(client.IgnoreNotFound(k8sClient.Update(ctx, obj))).To(Succeed())
 	}
 	Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, obj))).To(Succeed())
+}
+
+// meeting returns an arrive hook for a fake, under which the first n calls
+// named call each wait, up to wait, until all n are under way at once, and a
+// function that reports whether they were. It tells reconciles that call
+// Cloudflare at once from reconciles that take turns: taking turns, the first
+// call waits in vain for the others.
+func meeting(n int, call string, wait time.Duration) (arrive func(string), met func() bool) {
+	var mu sync.Mutex
+	arrived, timedOut := 0, false
+	all := make(chan struct{})
+	arrive = func(c string) {
+		if c != call {
+			return
+		}
+		mu.Lock()
+		arrived++
+		if arrived == n {
+			close(all)
+		}
+		waits := arrived < n
+		mu.Unlock()
+		if !waits {
+			return
+		}
+		select {
+		case <-all:
+		case <-time.After(wait):
+			mu.Lock()
+			timedOut = true
+			mu.Unlock()
+		}
+	}
+	met = func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return arrived >= n && !timedOut
+	}
+	return arrive, met
 }
 
 // cloudflareError builds the error cloudflare-go returns for an API failure
