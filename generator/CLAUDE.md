@@ -555,6 +555,14 @@ kinds:
   reader's wiring. Mutations: 24 of the runtime, four kinds' generated glue and kflare-gen's emitters, all caught. The
   first run left WorkerScript's glue alive, which no generated table checks: its and TunnelConfiguration's setup specs
   now check the reader's wiring
+- **Claims read past the cache** (`fix/claim-race-fresh-read`, 2026-11-11, for #132, whose read-your-writes client
+  is still experimental upstream and does not support the several namespaces of a scoped installation, #79):
+  `claimant` lists the other resources' claims with `apiReader`, through `WatchScope.listUncached`, which lists what
+  the cache would hold: each watched namespace on its own, with the scope's selector. A shared spec runs two resources
+  with one key and `adopt-or-create` in a manager whose cache learns of the kind's events 150 ms late
+  (`cache.ByObject.Transform`): from the cache both ended up `Synced` and claiming the object, for all 7 kinds. Still
+  cached reads after kflare's own writes, from #132: IPList's `synced` hook (its operation ID) and the settings
+  reconciler's `recorded`
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

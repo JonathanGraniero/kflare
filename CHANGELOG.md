@@ -12,6 +12,15 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 
 ## Unreleased
 
+### The controller
+
+- **Two resources no longer adopt one object when the manager's cache is behind.** A resource with an adoption policy
+  looked for another resource's claim on the object in the manager's cache, which may not hold a claim written a
+  moment before. Two resources with one key, such as two KVNamespaces with one title and `adopt-or-create`, could then
+  both own the object, and deleting either would have deleted it for the other. The kinds of the shared CRUD
+  reconciler now read the claims from the API server, within the namespaces and the selector of the installation
+  ([#132](https://github.com/JonathanGraniero/kflare/issues/132))
+
 ### Monitoring
 
 - **Scraping kflare's metrics with Datadog.** The deploy guide has the annotation that has the Datadog Agent scrape

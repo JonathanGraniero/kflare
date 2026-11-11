@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
@@ -643,9 +644,15 @@ func (e *crudSpecEnv[O, A, R, L]) failAccountLists(err error) {
 // runManager runs the kind's reconciler in a manager, on the spec's fake
 // store, until the spec ends, so that its watches reconcile the resource.
 func (e *crudSpecEnv[O, A, R, L]) runManager() {
+	e.runManagerWithCache(cache.Options{})
+}
+
+// runManagerWithCache is runManager for a manager whose cache has opts.
+func (e *crudSpecEnv[O, A, R, L]) runManagerWithCache(opts cache.Options) {
 	mgr, err := manager.New(cfg, manager.Options{
 		Controller: config.Controller{SkipNameValidation: new(true)},
 		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Cache:      opts,
 	})
 	Expect(err).NotTo(HaveOccurred())
 	store := e.store
@@ -868,6 +875,60 @@ func describeCRUDAtOnce[O conditionedObject, A any, R any, L any](e *crudSpecEnv
 		Expect(claims).To(HaveLen(1), "one resource claims the "+k.noun)
 		Expect(slices.Collect(maps.Values(claims))).To(ConsistOf(slices.Collect(maps.Keys(e.store.objects))))
 		Expect(crudObjectLocks.held()).To(BeZero())
+	})
+
+	if k.sharedObjects {
+		return
+	}
+
+	It("lets one resource adopt a "+k.noun+" when its manager's cache is behind the claim of another with the same "+
+		t.keyField, func() {
+		e.createParent(true)
+		adoptOrCreate := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate}
+		obj, other := e.create(e.key, adoptOrCreate), e.create(e.otherKey, adoptOrCreate)
+		Expect(k.key(other)).To(Equal(k.key(obj)))
+		t.newFake(e.store)
+
+		// The cache learns of each change to the kind's resources late, so the
+		// resource that goes second lists the claims before the cache holds
+		// the first one's. From the cache, it would find the object unclaimed
+		// and adopt it: deleting either resource would then take the object
+		// from the other.
+		e.runManagerWithCache(cache.Options{ByObject: map[client.Object]cache.ByObject{
+			k.newObject(): {Transform: func(event any) (any, error) {
+				time.Sleep(150 * time.Millisecond)
+				return event, nil
+			}},
+		}})
+
+		keys := []types.NamespacedName{e.key, e.otherKey}
+		claims := func() map[string]string {
+			claimed := map[string]string{}
+			for _, at := range keys {
+				got := k.newObject()
+				Expect(k8sClient.Get(ctx, at, got)).To(Succeed())
+				if id, ok := got.GetLabels()[k.claimLabel]; ok {
+					claimed[at.String()] = id
+				}
+			}
+			return claimed
+		}
+		Eventually(func(g Gomega) {
+			reasons := make([]string, 0, len(keys))
+			for _, at := range keys {
+				got := k.newObject()
+				g.Expect(k8sClient.Get(ctx, at, got)).To(Succeed())
+				cond := meta.FindStatusCondition(got.GetConditions(), cloudflarev1alpha1.ConditionReady)
+				g.Expect(cond).NotTo(BeNil())
+				reasons = append(reasons, cond.Reason)
+			}
+			g.Expect(reasons).To(ConsistOf("Synced", k.conflictReason))
+		}).WithTimeout(10 * time.Second).Should(Succeed())
+		// A claim made on a late cache would come after the first: hold the
+		// count rather than pass the moment it is reached.
+		Consistently(claims).WithTimeout(2*time.Second).Should(HaveLen(1), "one resource claims the "+k.noun)
+		Expect(e.store.objects).To(HaveLen(1))
+		Expect(e.store.sent).To(HaveLen(1), "one "+k.noun+" was created")
 	})
 }
 

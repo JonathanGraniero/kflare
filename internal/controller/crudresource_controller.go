@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -238,7 +239,7 @@ type deletionBlocker struct {
 type crudResourceReconciler[O conditionedObject, A any, R any, L any] struct {
 	client.Client
 	// apiReader reads from the API server, past the manager's cache, which
-	// Client reads from (see upToDate).
+	// Client reads from (see upToDate and claimant).
 	apiReader client.Reader
 	kind      crudResourceKind[O, A, R, L]
 	newAPI    func(token string) (A, error)
@@ -657,16 +658,17 @@ func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, ob
 // address, or "" if none does. Resources in every namespace count, and an ID
 // is unique only within its parent (an R2 bucket's name), so a claim counts
 // only from a resource whose object is in the same parent (sameParent).
+//
+// The claims are read from the API server, not from the manager's cache
+// (WatchScope.listUncached): the resource that held the object's key just
+// before obj (lockObjectKey) may have claimed the object a moment ago, and a
+// cache that does not hold that claim yet would let obj adopt the object too.
 func (r *crudResourceReconciler[O, A, R, L]) claimant(ctx context.Context, obj O, parentID, id string) (string, error) {
 	k := r.kind
 	if k.sharedObjects {
 		return "", nil
 	}
-	list := k.newList()
-	if err := r.List(ctx, list, client.MatchingLabels{k.claimLabel: id}); err != nil {
-		return "", err
-	}
-	items, err := meta.ExtractList(list)
+	items, err := watchScopeFrom(ctx).listUncached(ctx, r.apiReader, k.newList, labels.Set{k.claimLabel: id})
 	if err != nil {
 		return "", err
 	}

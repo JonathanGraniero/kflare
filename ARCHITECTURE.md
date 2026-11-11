@@ -248,6 +248,14 @@ the object it had just created and write it again, or, with `adopt-or-create`, t
 WorkerScript that read its previous hash would upload its Worker a second time. A status write from a stale read fails
 on its resource version and is retried, so it needs no such check.
 
+The claims of other resources are read from the API server as well (`claimant`). Two resources with one key take turns
+(`lockObjectKey`), and the second looks for claims a moment after the first wrote its own: from a cache that did not
+hold that claim yet, a resource with an adoption policy would adopt the object too, and deleting either resource would
+then take the object from the other. A scoped installation lists only the namespaces it watches and the resources its
+selector picks, each namespace on its own, which its namespaced permissions allow. It is one more call to the API
+server for each resource that finds an object and has no ID in status: a new resource that adopts, or one whose
+reconcile failed before it recorded its object.
+
 | Resource | What counts as an existing object |
 |---|---|
 | `Zone` | A zone with `spec.name` in the referenced account. Zones in other accounts the token can reach are never adopted. |

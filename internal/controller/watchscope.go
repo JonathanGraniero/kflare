@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -203,6 +205,40 @@ func (s WatchScope) accountsElsewhere(ctx context.Context, c client.Reader, acco
 	}
 	slices.Sort(names)
 	return names, nil
+}
+
+// listUncached returns the resources of newList's kind that the manager's
+// cache holds or will hold, read with reader from the API server instead: those
+// with the labels matching, in the namespaces the scope watches, that its
+// selector picks. It lists each watched namespace on its own, as an
+// installation whose permissions are namespaced (the chart's rbac.namespaced)
+// may not list across the cluster. The kind is one the selector applies to:
+// not CloudflareAccount.
+func (s WatchScope) listUncached(ctx context.Context, reader client.Reader, newList func() client.ObjectList,
+	matching labels.Set) ([]runtime.Object, error) {
+	selector := labels.SelectorFromValidatedSet(matching)
+	if s.selector != nil {
+		requirements, _ := s.selector.Requirements()
+		selector = selector.Add(requirements...)
+	}
+	namespaces := s.namespaces
+	if namespaces == nil {
+		namespaces = []string{metav1.NamespaceAll}
+	}
+	var found []runtime.Object
+	for _, namespace := range namespaces {
+		list := newList()
+		err := reader.List(ctx, list, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector})
+		if err != nil {
+			return nil, err
+		}
+		items, err := meta.ExtractList(list)
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, items...)
+	}
+	return found, nil
 }
 
 // eitherOf lists names, quoted, for a sentence that means any one of them:

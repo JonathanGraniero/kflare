@@ -371,6 +371,80 @@ var _ = Describe("An installation's scope and its CloudflareAccounts", func() {
 		)
 	})
 
+	Describe("listUncached", func() {
+		claim := "kflare.dev/kv-namespace-id"
+		// kv returns a KVNamespace in namespace with labels.
+		kv := func(namespace, name string, labels map[string]string) *cloudflarev1alpha1.KVNamespace {
+			return &cloudflarev1alpha1.KVNamespace{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace,
+				Labels: labels}}
+		}
+		// reading returns a reader of the API server that holds the specs'
+		// KVNamespaces, and the namespaces of the lists made with it.
+		reading := func() (client.Reader, *[]string) {
+			var listed []string
+			return interceptor.NewClient(fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(
+				kv("team-a", "claims", map[string]string{claim: "id-1", instanceLabel: "a"}),
+				kv("team-a", "claims-another", map[string]string{claim: "id-2", instanceLabel: "a"}),
+				kv("team-a", "claims-unselected", map[string]string{claim: "id-1", instanceLabel: "b"}),
+				kv("team-b", "claims", map[string]string{claim: "id-1", instanceLabel: "a"}),
+				kv("team-c", "claims", map[string]string{claim: "id-1", instanceLabel: "a"}),
+				kv("team-c", "claims-nothing", map[string]string{instanceLabel: "a"}),
+			).Build(), interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList,
+					opts ...client.ListOption) error {
+					options := &client.ListOptions{}
+					options.ApplyOptions(opts)
+					listed = append(listed, options.Namespace)
+					return c.List(ctx, list, opts...)
+				},
+			}), &listed
+		}
+		newList := func() client.ObjectList { return &cloudflarev1alpha1.KVNamespaceList{} }
+		// names lists scope's KVNamespaces that claim id-1, as namespace/name.
+		names := func(scope WatchScope, reader client.Reader) []string {
+			GinkgoHelper()
+			items, err := scope.listUncached(ctx, reader, newList, map[string]string{claim: "id-1"})
+			Expect(err).NotTo(HaveOccurred())
+			found := make([]string, 0, len(items))
+			for _, item := range items {
+				found = append(found, client.ObjectKeyFromObject(item.(client.Object)).String())
+			}
+			return found
+		}
+
+		It("lists the resources with the labels across the cluster in the zero scope, in one call", func() {
+			reader, listed := reading()
+			Expect(names(WatchScope{}, reader)).To(ConsistOf("team-a/claims", "team-a/claims-unselected",
+				"team-b/claims", "team-c/claims"))
+			Expect(*listed).To(Equal([]string{metav1.NamespaceAll}))
+		})
+
+		It("lists each namespace the scope watches on its own, and no other", func() {
+			reader, listed := reading()
+			Expect(names(mustWatchScope("team-b,team-a", "", nil), reader)).To(Equal([]string{"team-a/claims",
+				"team-a/claims-unselected", "team-b/claims"}))
+			Expect(*listed).To(Equal([]string{"team-a", "team-b"}))
+		})
+
+		It("lists only the resources the scope's selector picks", func() {
+			reader, _ := reading()
+			Expect(names(mustWatchScope("", instanceLabel+"=a", nil), reader)).To(ConsistOf("team-a/claims",
+				"team-b/claims", "team-c/claims"))
+			Expect(names(mustWatchScope("team-a", instanceLabel+"=a", nil), reader)).To(Equal(
+				[]string{"team-a/claims"}))
+		})
+
+		It("returns the list error", func() {
+			failing := interceptor.NewClient(fake.NewClientBuilder().WithScheme(scheme.Scheme).Build(),
+				interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList,
+					...client.ListOption) error {
+					return errors.New("no list")
+				}})
+			_, err := mustWatchScope("team-a", "", nil).listUncached(ctx, failing, newList, nil)
+			Expect(err).To(MatchError("no list"))
+		})
+	})
+
 	Describe("leaveCloudflareObject", func() {
 		It("lets a deletion through without a call, with a Warning Event, for an account outside the scope", func() {
 			recorder := events.NewFakeRecorder(10)
