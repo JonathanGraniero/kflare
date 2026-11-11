@@ -1,8 +1,8 @@
 name: E2E
 
-# The live suite, against Cloudflare, is the Live E2E workflow (live-e2e.yml).
-# Pushes to main and to the release-X.Y branches run it, so that a release's
-# merge commit has passed it before its tag.
+# The live suite, against Cloudflare, is the Live E2E workflow (live-e2e.yml),
+# on the same events. Pushes to main and to the release-X.Y branches run this
+# one, so that a release's merge commit has passed it before its tag.
 on:
   pull_request:
   push:

@@ -1521,6 +1521,12 @@ should not need an ID copied from status to do the same: manifests must be writa
   each pull request showed the live job skipped, and each `/live-e2e` review the smoke and upgrade jobs, which read as
   a run that had not finished. A review's body cannot filter a trigger, so a review without `/live-e2e` still makes
   one skipped `Live E2E` check, which the pull request then shows in place of an earlier run's
+- The live suite runs without a review comment since 2026-11-11, at the user's request: on every pull request and
+  on pushes to main and the release branches, except changes to Markdown files and `docs/` alone. The `/live-e2e`
+  review trigger is gone, and with it the skipped check each other review made. A `pull_request` event has the
+  properties the review was chosen for: the pull request's own copy of the workflow, its merge commit, and no secrets
+  for a fork. The job skips where the secrets are missing (a fork's pull request, Dependabot's). The cost is the
+  queue: runs share one account, so one runs and one waits, and a third pushed meanwhile cancels the one waiting
 
 ## Rate limits
 

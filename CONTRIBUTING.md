@@ -191,11 +191,13 @@ metrics, install Prometheus on the cluster first (`./local/prometheus.sh`, see
   before the run stays, as does one that holds a rule the run did not write
 
 The same suite runs in GitHub Actions against the project's test account, on Kubernetes 1.37, in the `Live E2E`
-workflow: a maintainer runs it on a pull request with a review comment starting with `/live-e2e`, and the upgrade
-specs against the account after it. Pull requests and pushes to `main` run the `E2E` workflow instead: only a smoke
-test of the deployment, with no Cloudflare credentials, and the upgrade from the last release
-([Changing a CRD](#changing-a-crd)). A pull request from a fork gets no secrets, so the live suite cannot run on it:
-describe what you ran against your own account instead. Runs never overlap.
+workflow, and the upgrade specs against the account after it. It runs on every pull request from a branch of this
+repository and on every push to `main` and the release branches, unless only Markdown files or `docs/` changed, next
+to the `E2E` workflow: a smoke test of the deployment, with no Cloudflare credentials, and the upgrade from the last
+release ([Changing a CRD](#changing-a-crd)). A pull request from a fork gets no secrets, so the live suite skips on
+it: describe what you ran against your own account instead. It skips on Dependabot's pull requests too; a maintainer
+runs it on one by hand (`gh workflow run live-e2e.yml --ref <branch>`). Runs never overlap, and only one waits: when
+several are pushed at once, the older ones show as cancelled, and are re-run once the queue is empty.
 
 ## Changing a CRD
 
@@ -220,7 +222,7 @@ resource, and under a new CEL rule on an object, no other field of that object c
 The `E2E` workflow's `Upgrade from the last release` job (`make test-e2e-upgrade`) installs the last release's chart
 on kind, applies a resource of each kind from `test/e2e/testdata/upgrade.yaml` as that release has it, and upgrades
 the chart to your branch's. Every resource must then still apply as a GitOps sync would, also as a new resource on a
-new cluster, and be reconciled again by the new manager, keeping what the release stored. Under `/live-e2e` the
+new cluster, and be reconciled again by the new manager, keeping what the release stored. In the `Live E2E` workflow the
 resources reach Cloudflare first, and the new manager must find each one in sync and write nothing to Cloudflare.
 Your branch's copy of the file is applied after the upgrade, so a resource that differs from the release's is the
 migration your release notes describe: change one only along with its "Breaking changes" entry, and add one for a
@@ -322,8 +324,8 @@ once CI's, E2E's and the dependency review's checks pass on a branch up to date 
    image with the newest Go 1.26 patch and base files. One in a Go module needs its fixed version on the branch
    (`go get <module>@<version>`, then `go mod tidy`): Dependabot opens pull requests for `main` only
 3. **Prepare the release** as for `main`, in a pull request against `release-0.4`: the next patch version in
-   `Chart.yaml`, its section in CHANGELOG.md above the branch's last release's, and `make helm`. A `/live-e2e` review
-   runs the live suite on it
+   `Chart.yaml`, its section in CHANGELOG.md above the branch's last release's, and `make helm`. The `Live E2E`
+   workflow runs the live suite on it
 4. **Tag its merge commit** by hand, once every job of CI and E2E has passed on it: `Tag release` releases only merges
    to `main`.
 

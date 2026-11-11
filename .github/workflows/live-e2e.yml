@@ -4,16 +4,16 @@ name: Live E2E
 # CF_ACCOUNT_ID secrets and the zone in the CF_E2E_ZONE variable (a zone the
 # token can edit, adopted and never deleted), then the upgrade specs against the
 # same account. A workflow of its own, apart from the E2E workflow's smoke and
-# upgrade jobs: a run makes a check for every job of its workflow, skipped or
-# not, so in one workflow each pull request showed this job skipped, and each
-# /live-e2e review the other jobs.
+# upgrade jobs, so that its one-at-a-time queue holds up nothing else.
 on:
-  # A maintainer's review comment starting with /live-e2e runs it on the pull
-  # request as it was when reviewed. A review, unlike a plain comment, pins the
-  # commit reviewed, and runs like a pull_request event: from the pull request's
-  # own copy of this file, and without secrets for a fork.
-  pull_request_review:
-    types: [submitted]
+  # Every pull request, as merged into its base, and every push to main and to
+  # the release-X.Y branches. A change to the docs alone runs nothing: no spec
+  # reads them.
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  push:
+    branches: [main, "release-*"]
+    paths-ignore: ["**.md", "docs/**"]
   # By hand, on the selected branch: gh workflow run live-e2e.yml --ref <branch>
   workflow_dispatch:
 
@@ -22,30 +22,28 @@ permissions:
   contents: read
 
 jobs:
-  # It runs when the owner, a member or a collaborator submits a review on a
-  # pull request whose comment starts with /live-e2e (gh pr review <number>
-  # --comment -b /live-e2e), or by hand. It tests the pull request merged into
-  # its base, as of the review. A pull request from a fork gets no secrets, so
-  # it fails: push its branch to this repository first. Any other review skips
-  # it, and the pull request then shows that skipped check in place of an
-  # earlier run's; no ruleset requires it. The upgrade specs run after the
-  # suite: a step of this job rather than a job of its own, since a concurrency
-  # group keeps only one pending job, and a second live job pending in it would
-  # cancel another run's.
+  # A pull request event runs from the pull request's own copy of this file,
+  # with the secrets only when its branch is in this repository, which takes
+  # write access to push. So the job skips where the secrets are missing: a pull
+  # request from a fork (push its branch to this repository to run it) and one
+  # of Dependabot's (run it by hand on its branch). No ruleset requires the
+  # check. The upgrade specs run after the suite: a step of this job rather
+  # than a job of its own, since a concurrency group keeps only one pending
+  # job, and a second live job pending in it would cancel another run's.
   live:
     name: Live E2E (Kubernetes v1.37.0)
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request_review' &&
-       startsWith(github.event.review.body, '/live-e2e') &&
-       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.review.author_association))
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     # One live run at a time across every run of this workflow, never
     # cancelled halfway: the specs share one zone and account, whose Free plan
     # holds one rate limiting rule and one IP list, and a cancelled run cannot
-    # clean up. Local live runs (hack/e2e-live.sh) must not overlap with it
-    # either.
+    # clean up. Only one more run waits behind it: a newer one takes its place
+    # and the older shows as cancelled, to re-run once the queue is empty.
+    # Local live runs (hack/e2e-live.sh) must not overlap with it either.
     concurrency:
       group: e2e-cloudflare
       cancel-in-progress: false
@@ -86,7 +84,7 @@ jobs:
         run: |
           if [[ -z "$CF_API_TOKEN" || -z "$CF_ACCOUNT_ID" || -z "$CF_E2E_ZONE" ]]; then
             echo "::error::The CF_API_TOKEN and CF_ACCOUNT_ID secrets and the CF_E2E_ZONE variable are not set" \
-              "(a pull request from a fork gets no secrets): without them every live spec skips"
+              "(a run that Dependabot starts gets no secrets): without them every live spec skips"
             exit 1
           fi
           make test-e2e

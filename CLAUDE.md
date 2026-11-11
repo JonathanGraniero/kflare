@@ -264,10 +264,9 @@ why.
      suite against it and leaves the cluster as it found it (its header says how). Afterwards, check that Cloudflare
      holds nothing the run made. The suite deletes the entry points its rules made in the zone's phases (#57); a new
      rule kind's phase goes into `keptEntrypointPhases` for that.
-     Once the repo has its CI secrets (Release and CI below), a `/live-e2e` review comment on the pull request
-     (`gh pr review <number> --comment -b /live-e2e`) runs the same suite in GitHub Actions instead (the `Live E2E`
-     workflow; by hand, `gh workflow run live-e2e.yml --ref <branch>`). Never run both at once: the script's lock does
-     not see a CI run
+     The pull request runs the same suite in GitHub Actions (the `Live E2E` workflow, on every pull request and push
+     to main since 2026-11-11; by hand, `gh workflow run live-e2e.yml --ref <branch>`). Never run the script while one
+     of its runs is queued or running: the script's lock does not see a CI run
 7. **Docs.** Every place that lists the kinds names the last one of the same shape, so
    `git grep -n OriginRule -- '*.md' '*.yml'` (or `D1Database`, `ManagedTransform`) finds them: README's kinds,
    deploy.md's permission row (the label Cloudflare's docs give it), kinds table and uninstall command,
