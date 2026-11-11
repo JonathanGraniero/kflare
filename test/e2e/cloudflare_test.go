@@ -86,6 +86,15 @@ const (
 	e2ePoll    = 2 * time.Second
 )
 
+// keptEntrypointPhases are the phases the specs write rules in whose entry
+// point kflare creates when the zone has none and, as Cloudflare does, leaves
+// in place once its last rule is gone. managedPhase is not one of them: kflare
+// deletes that entry point itself.
+var keptEntrypointPhases = []string{
+	customRulesPhase, rateLimitPhase, urlRewritePhase, requestHeadersPhase, responseHeadersPhase,
+	redirectPhase, cachePhase, configurationPhase, originPhase,
+}
+
 // These specs drive the deployed manager against the real Cloudflare API.
 // They run only when CF_API_TOKEN and CF_ACCOUNT_ID are set. The Zone and
 // DNSRecord specs also need CF_E2E_ZONE: an existing zone the token can
@@ -101,6 +110,9 @@ const (
 // deploy the Free Managed Ruleset already. The ManagedTransform spec turns
 // some of the zone's managed transforms on and then all of them off, so they
 // must all be off before the run.
+//
+// A phase's entry point that the run's rules made is deleted after them, if
+// it is empty then; one the zone already had is left as it is.
 //
 // Each status the specs wait for is also judged with the health checks
 // docs/deploy.md gives Argo CD and Flux, run as those tools run them
@@ -145,6 +157,10 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		// transformsTurnedOn is set once the run may have turned the zone's
 		// managed transforms on, having found them all off.
 		transformsTurnedOn bool
+		// newEntrypointPhases are the phases in which the zone had no entry
+		// point before the run's first rule, so that one found there
+		// afterwards is the run's.
+		newEntrypointPhases []string
 	)
 
 	// resourceName is the name of every Cloudflare object this run creates.
@@ -336,6 +352,11 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				// stops Cloudflare's default deployment of the Free Managed
 				// Ruleset; deleting it restores the zone as found.
 				cleanupEmptyEntrypoint(ctx, cfAPI, zoneID, managedPhase)
+				// kflare leaves the other phases' entry points in place, so
+				// the run deletes those its rules made.
+				for _, phase := range newEntrypointPhases {
+					cleanupEmptyEntrypoint(ctx, cfAPI, zoneID, phase)
+				}
 				if transformsTurnedOn {
 					cleanupManagedTransforms(ctx, transforms, zoneID)
 				}
@@ -654,6 +675,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		zoneID = zone.Status.CloudflareMetadata.ZoneID
 		Expect(zoneID).NotTo(BeEmpty())
 		Expect(zone.Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+
+		By("recording the phases in which the zone has no entry point yet")
+		newEntrypointPhases = phasesWithoutEntrypoint(ctx, cfAPI, zoneID)
 	})
 
 	It("creates a DNSRecord and leaves it alone once it is in sync", func() {
@@ -1972,8 +1996,26 @@ func cleanupD1Database(ctx context.Context, api *cf.API, rc *cf.ResourceContaine
 	}
 }
 
+// phasesWithoutEntrypoint returns those of keptEntrypointPhases in which the
+// zone has no entry point. A run calls it before it writes its first rule, and
+// deletes afterwards only the entry points of the phases it returned, so that
+// one someone made on purpose stays.
+func phasesWithoutEntrypoint(ctx context.Context, api *cf.API, zoneID string) []string {
+	var phases []string
+	for _, phase := range keptEntrypointPhases {
+		_, err := api.GetEntrypointRuleset(ctx, cf.ZoneIdentifier(zoneID), phase)
+		if cfpkg.IsNotFound(err) {
+			phases = append(phases, phase)
+			continue
+		}
+		Expect(err).NotTo(HaveOccurred(), "reading the %s entry point", phase)
+	}
+	return phases
+}
+
 // cleanupEmptyEntrypoint deletes the zone's entry point in phase if it holds
-// no rules. It only reports problems: it runs after the specs, whether or not
+// no rules, so a rule the run did not write keeps its entry point. It only
+// reports problems: it runs after the specs, whether or not
 // they passed.
 func cleanupEmptyEntrypoint(ctx context.Context, api *cf.API, zoneID, phase string) {
 	zrc := cf.ZoneIdentifier(zoneID)

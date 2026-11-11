@@ -187,8 +187,8 @@ metrics, install Prometheus on the cluster first (`./local/prometheus.sh`, see
 - The zone is adopted with the retain policy and never deleted, but the specs write rules, records and routes in it.
   Use a zone you can spare
 - A Free zone holds one rate limiting rule and a Free account one IP list, so two runs must never overlap
-- Runs leave empty ruleset entry points in some of the zone's phases. They hold no rules and change nothing; delete
-  them if you like
+- A run deletes the ruleset entry points its rules made in the zone's phases, once they are empty. One the zone had
+  before the run stays, as does one that holds a rule the run did not write
 
 The same suite runs in GitHub Actions against the project's test account, on Kubernetes 1.37, in the `Live E2E`
 workflow: a maintainer runs it on a pull request with a review comment starting with `/live-e2e`, and the upgrade

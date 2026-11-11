@@ -115,6 +115,9 @@ var _ = Describe("Upgrade from the last release", Ordered, Label("upgrade"), fun
 		ruleService *rulesets.RuleService
 		transforms  *managed_transforms.ManagedTransformService
 		zoneID      string
+		// newEntrypointPhases are the phases in which the zone had no entry
+		// point before the run.
+		newEntrypointPhases []string
 	)
 
 	BeforeAll(func() {
@@ -174,11 +177,13 @@ var _ = Describe("Upgrade from the last release", Ordered, Label("upgrade"), fun
 			Expect(err).NotTo(HaveOccurred())
 			Expect(enabledTransforms(ctx, transforms, zoneID)).To(BeEmpty(),
 				"the zone's managed transforms must all be off: the run turns them all off at the end")
+			newEntrypointPhases = phasesWithoutEntrypoint(ctx, cfAPI, zoneID)
 
 			// Runs last, after the resources are deleted.
 			DeferCleanup(func() {
 				By("removing anything this run left behind in Cloudflare")
-				sweepUpgrade(ctx, cfAPI, accountRC, buckets, ruleService, transforms, zoneID, data, current, released)
+				sweepUpgrade(ctx, cfAPI, accountRC, buckets, ruleService, transforms, zoneID, newEntrypointPhases, data,
+					current, released)
 			})
 		}
 
@@ -1133,11 +1138,12 @@ func cloudflareLeftovers(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceCont
 }
 
 // sweepUpgrade deletes whatever the run's objects left in Cloudflare, found
-// by their names and refs. It only reports problems: it runs after the specs,
+// by their names and refs, and the entry points of newEntrypointPhases, the
+// phases that had none before the run, if they are empty. It only reports problems: it runs after the specs,
 // whether or not they passed.
 func sweepUpgrade(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceContainer, buckets *r2.BucketService,
 	ruleService *rulesets.RuleService, transforms *managed_transforms.ManagedTransformService, zoneID string,
-	data manifestData, all ...manifests) {
+	newEntrypointPhases []string, data manifestData, all ...manifests) {
 	zrc := cf.ZoneIdentifier(zoneID)
 	var routes []string
 	found, err := cfAPI.ListWorkerRoutes(ctx, zrc, cf.ListWorkerRoutesParams{})
@@ -1181,6 +1187,9 @@ func sweepUpgrade(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceContainer, 
 		cleanupRules(ctx, cfAPI, ruleService, zoneID, phase, phaseRefs...)
 	}
 	cleanupEmptyEntrypoint(ctx, cfAPI, zoneID, managedPhase)
+	for _, phase := range newEntrypointPhases {
+		cleanupEmptyEntrypoint(ctx, cfAPI, zoneID, phase)
+	}
 	// The run found them all off.
 	cleanupManagedTransforms(ctx, transforms, zoneID)
 	// After the rules: Cloudflare does not delete a list a rule uses.

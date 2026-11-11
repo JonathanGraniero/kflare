@@ -129,6 +129,9 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   and Current for its current generation, and one Cloudflare refuses or that exists without an adoption policy
   Degraded and Failed, so both checks are tested on what kflare writes against Cloudflare. Their test inputs hold
   statuses from a run against Cloudflare ([#83](https://github.com/JonathanGraniero/kflare/issues/83))
+- **A live run leaves no empty entry points in the test zone.** The live suite and the upgrade specs delete the
+  ruleset entry points their rules made, once those are empty; one the zone had before the run, or one that holds a
+  rule the run did not write, stays ([#57](https://github.com/JonathanGraniero/kflare/issues/57))
 
 ## v0.4.2 (alpha)
 

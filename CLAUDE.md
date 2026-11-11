@@ -262,7 +262,8 @@ why.
      PR changed. A survivor is a gap in the generated specs: close it in kflare-gen, for every kind
    - The live run: `hack/e2e-live.sh` runs the manager on this machine against the current kind cluster, runs the
      suite against it and leaves the cluster as it found it (its header says how). Afterwards, check that Cloudflare
-     holds nothing the run made, and delete the empty entry points rule specs leave in the zone's phases (issue #57).
+     holds nothing the run made. The suite deletes the entry points its rules made in the zone's phases (#57); a new
+     rule kind's phase goes into `keptEntrypointPhases` for that.
      Once the repo has its CI secrets (Release and CI below), a `/live-e2e` review comment on the pull request
      (`gh pr review <number> --comment -b /live-e2e`) runs the same suite in GitHub Actions instead (the `Live E2E`
      workflow; by hand, `gh workflow run live-e2e.yml --ref <branch>`). Never run both at once: the script's lock does
