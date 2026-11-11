@@ -12,6 +12,12 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 
 ## Unreleased
 
+### Monitoring
+
+- **Scraping kflare's metrics with Datadog.** The deploy guide has the annotation that has the Datadog Agent scrape
+  the controller over HTTPS with its own token, the permission it needs, and the names the metrics get in Datadog
+  ([Datadog](docs/deploy.md#datadog))
+
 ## v0.4.3 (alpha)
 
 The eighth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. A renamed

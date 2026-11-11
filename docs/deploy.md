@@ -1166,7 +1166,7 @@ The controller serves controller-runtime's standard Prometheus metrics: `control
 `controller_runtime_reconcile_errors_total` and `controller_runtime_reconcile_timeouts_total` (reconciles that ran
 longer than `reconcileTimeout`), labelled by `controller`, `controller_runtime_reconcile_time_seconds`,
 `workqueue_depth`, and the Go runtime's. Turn on `metrics.serviceMonitor.enabled` to have the Prometheus Operator scrape
-them. It also serves its own:
+them, or see [Datadog](#datadog) for its Agent. It also serves its own:
 
 | Metric | What it counts |
 |---|---|
@@ -1293,6 +1293,62 @@ Five things to alert on:
 The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name. Every response
 from Cloudflare with an error status is logged with its `cfRay`, the ID Cloudflare support asks for. A 404, which kflare
 expects when an object is gone, is logged only with the chart's `logging.level: debug`.
+
+#### Datadog
+
+The Datadog Agent does not read ServiceMonitors, and scrapes kflare only when told to. Its OpenMetrics check takes its
+configuration from an annotation on the controller's pod, which the chart's `podAnnotations` sets. The Agent on the
+pod's node then scrapes it, over HTTPS and with the Agent's own ServiceAccount token:
+
+```yaml
+podAnnotations:
+  ad.datadoghq.com/manager.checks: |
+    {
+      "openmetrics": {
+        "instances": [{
+          "openmetrics_endpoint": "https://%%host%%:8080/metrics",
+          "namespace": "kflare",
+          "metrics": ["kflare_.*", "controller_runtime_.*", "workqueue_.*"],
+          "tls_verify": false,
+          "auth_token": {
+            "reader": {"type": "file", "path": "/var/run/secrets/kubernetes.io/serviceaccount/token"},
+            "writer": {"type": "header", "name": "Authorization", "value": "Bearer <TOKEN>"}
+          }
+        }]
+      }
+    }
+```
+
+`manager` is the name of the controller's container, `8080` is `metrics.port`, and `<TOKEN>` stays as written: the
+Agent puts the token it read in its place. `tls_verify: false` is for the controller's self-signed certificate.
+
+The Agent's ServiceAccount needs the same permission as a Prometheus', `get` on `/metrics`. An Agent installed with
+Datadog's Helm chart already has it. To check yours, and to grant it if the answer is `no`, with the binding above and
+the Agent's ServiceAccount as its subject:
+
+```sh
+kubectl auth can-i get /metrics --as=system:serviceaccount:datadog:datadog   # namespace:name of the Agent's ServiceAccount
+```
+
+`agent status`, run in the Agent's pod on the controller's node, lists the check as `openmetrics:kflare` with the number
+of samples of its last run, or the error it got. With the chart's [NetworkPolicy](#network-access), list the Agent's
+namespace in `networkPolicy.metricsFrom`.
+
+Datadog names the metrics after the check's `namespace`, and changes the suffix of counters and histograms:
+
+| In Prometheus | In Datadog |
+|---|---|
+| A gauge, such as `kflare_resources` | `kflare.kflare_resources` |
+| A counter, such as `kflare_cloudflare_api_requests_total` | `kflare.kflare_cloudflare_api_requests.count`, the increase since the scrape before |
+| A histogram, such as `kflare_cloudflare_api_request_duration_seconds` | `kflare.kflare_cloudflare_api_request_duration_seconds.bucket`, `.sum` and `.count` |
+
+The labels become tags, next to those the Agent adds, such as `kube_namespace` and `pod_name`. So the alert on
+resources that are not `Ready` becomes a monitor on `sum:kflare.kflare_resources{ready:false} by {kind,reason}`, and
+the others follow the same way. Datadog bills each series as a custom metric: an idle controller serves about 950 with
+the list above, half of them the buckets of the two `workqueue_*_duration_seconds` histograms for each kind, which
+leaving `workqueue_.*` out of `metrics`, or naming the metrics you chart, takes away.
+
+The Agent collects the controller's log like any container's when its log collection is on, and parses the JSON.
 
 ### Network access
 
