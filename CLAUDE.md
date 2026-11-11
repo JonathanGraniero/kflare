@@ -1014,6 +1014,26 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     (`go list -deps ./cmd`)
   - Left, for the user: the merge. Then the tag on its merge commit, once main's CI and E2E pass there, the release
     workflow, and #84's checks
+  - Tagged on `06602d9` (#149's merge commit) and published as latest on 2026-11-04; `Release` run 41871302474
+    passed, and #84's checks did too
+- [ ] v0.4.3's pre-merge checks (`docs/release-v0.4.3`), the user's version: #162, #163, #164 and #165 add chart
+  values, flags, two status fields, condition reasons and a metric, and break no manifest. It is the release
+  `release-0.4` is cut from (#157), and the first that `Tag release` makes: merging the pull request releases it.
+  Done on the branch:
+  - `make crd-compat`: no breaking change to the CRDs since v0.4.2
+  - The chart pulled anonymously from GHCR (0.4.2, `sha256:5e8f4c23…`) and the branch's render the same 32 objects
+    with the default values, and 34 with two replicas, the NetworkPolicy, the ServiceMonitor, a drift check interval
+    and `retain`, on Kubernetes 1.34. Before the version bump they differed only in `CloudflareAccount`'s CRD
+    (`status.tokenStatus`, `status.tokenExpiresAt` and the `Token Expires` column) and the Deployment's
+    `--token-check-interval=1h`, `--token-expiry-warning=336h` and `--max-concurrent-reconciles=1`; the ClusterRole
+    is the same
+  - The live suite: run 42945092871 (a `/live-e2e` review on #166, the CI token, Kubernetes 1.37) passed 32 of 32
+    and the upgrade from v0.4.2 9 of 9 on `8a1ded8`, whose tree is that of #166's merge commit `0e02a75`, the commit
+    this branch starts from. The branch changes no code
+  - What an upgrade changes without a new value is in the notes' "Upgrading from v0.4.2": a deleted resource's
+    object goes to a successor (#165), an account's hourly token check, and `TokenExpired` and `TokenDisabled` where
+    an expired or disabled token reported `TerminalError` (#163)
+  - Left, for the user: the merge, which releases it. Then `release-0.4` can be cut from the tag, and #157 closed
 - [ ] Releases from the merge (`ci/release-on-merge`), the user's request on 2026-11-04: a release took a maintainer's
   tag, a draft's notes and #84's checks by hand. `tag-release.yml` runs on a push to `main` that changes `Chart.yaml`,
   and releases only when that push changed the version (a later CRD change also touches the file). It checks the

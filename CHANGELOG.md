@@ -12,6 +12,47 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 
 ## Unreleased
 
+## v0.4.3 (alpha)
+
+The eighth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. A renamed
+resource now keeps its Cloudflare object, where the rename used to delete it and create it again. An installation can
+be limited to some namespaces or to the resources that carry some labels, so that several can share a cluster, a
+`CloudflareAccount` shows when its API token expires and warns before it does, and each controller can reconcile
+several resources at once. **Manifests and Helm values written for v0.4.2 apply unchanged**: read
+[Upgrading from v0.4.2](#upgrading-from-v042) for what the new controller does differently with them.
+
+```sh
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version 0.4.3 -n kflare-system \
+  --values kflare-values.yaml
+```
+
+The image is `ghcr.io/jonathangraniero/kflare:0.4.3`, for `linux/amd64` and `linux/arm64`. The deploy guide's
+[Verifying a release](docs/deploy.md#verifying-a-release) checks both signatures before you install. To install kflare
+for the first time, follow the [README's quickstart](README.md#quickstart-expose-a-service-through-a-cloudflare-tunnel).
+
+### Upgrading from v0.4.2
+
+No manifest or values changes. With the values you have, the chart renders what v0.4.2's did but for three new flags
+on the controller, at their defaults, and two optional status fields and a printed column on `CloudflareAccount`'s
+CRD: if you manage the CRDs yourself (`crds.enabled=false`), apply `config/crd/bases` first. The controller's
+permissions are the same.
+
+Three things the new controller does differently:
+
+- **Deleting a resource can keep its Cloudflare object.** When another resource of the same kind, in the same
+  namespace, describes the same object and manages none, the object goes to it, whatever the deleted resource's
+  `kflare.dev/deletion-policy` says. That is what a rename looks like. If you relied on a rename to delete an object
+  and create it again, such as to get a tunnel a new token, delete the old resource before you create the new one
+  ([Renaming a resource](docs/deploy.md#renaming-a-resource))
+- **Each `CloudflareAccount` is validated every hour,** with two Cloudflare API calls, counted in its token's budget.
+  Set the chart's `tokenCheckInterval` to change that, or to `0s` to turn it off
+- **An expired or disabled token reports `TokenExpired` or `TokenDisabled`,** not `TerminalError`: check any alert
+  that matches an account's reason. The deploy guide's Argo CD and Flux health checks know the new reasons
+  (`NotWatched` too): update your copies of them
+  ([Health checks in Argo CD and Flux](docs/deploy.md#health-checks-in-argo-cd-and-flux))
+
+`watchNamespaces`, `watchSelector` and `maxConcurrentReconciles` change nothing until you set them.
+
 ### Renaming a resource
 
 - **A renamed resource keeps its Cloudflare object.** Changing a resource's `metadata.name`, as a kustomize
@@ -132,6 +173,12 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **A live run leaves no empty entry points in the test zone.** The live suite and the upgrade specs delete the
   ruleset entry points their rules made, once those are empty; one the zone had before the run, or one that holds a
   rule the run did not write, stays ([#57](https://github.com/JonathanGraniero/kflare/issues/57))
+
+### Known limitations
+
+v0.4.2's, with two changes. Each kind still reconciles one resource at a time unless you set
+`maxConcurrentReconciles`. And an installation sees only its own scope: two whose scopes overlap both reconcile what
+both select, and kflare does not detect it. [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains each.
 
 ## v0.4.2 (alpha)
 
