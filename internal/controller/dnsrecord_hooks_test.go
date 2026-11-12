@@ -139,7 +139,7 @@ var _ = Describe("DNSRecord hooks", func() {
 		record := &cloudflarev1alpha1.DNSRecord{
 			ObjectMeta: metav1.ObjectMeta{Name: at.Name, Namespace: at.Namespace, Finalizers: []string{reconciler.Finalizer}},
 			Spec: cloudflarev1alpha1.DNSRecordSpec{
-				ZoneRef: corev1.LocalObjectReference{Name: zoneName}, Name: "www.example.com", Type: "A",
+				ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneName}, Name: "www.example.com", Type: "A",
 				Content: "192.0.2.1",
 			},
 		}
@@ -799,7 +799,7 @@ var _ = Describe("DNSRecord hooks", func() {
 			record := &cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Name: "validated", Namespace: ns},
 				Spec: cloudflarev1alpha1.DNSRecordSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: zoneName}, Name: "x.example.com", Type: recordType,
+					ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneName}, Name: "x.example.com", Type: recordType,
 					Content: content, DNSRecordSpecExtras: extras,
 				},
 			}

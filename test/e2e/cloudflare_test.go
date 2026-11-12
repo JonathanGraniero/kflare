@@ -689,7 +689,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		record := &cloudflarev1alpha1.DNSRecord{
 			ObjectMeta: metav1.ObjectMeta{Name: recordKey.Name, Namespace: e2eNamespace},
 			Spec: cloudflarev1alpha1.DNSRecordSpec{
-				ZoneRef: corev1.LocalObjectReference{Name: zoneKey.Name},
+				ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneKey.Name},
 				Name:    recordName(),
 				Type:    "A",
 				Content: "192.0.2.10",
@@ -780,7 +780,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		record := &cloudflarev1alpha1.DNSRecord{
 			ObjectMeta: objectMeta(tunnelRecordKey),
 			Spec: cloudflarev1alpha1.DNSRecordSpec{
-				ZoneRef: corev1.LocalObjectReference{Name: zoneKey.Name},
+				ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneKey.Name},
 				Name:    tunnelRecordName(),
 				Type:    "CNAME",
 				DNSRecordSpecExtras: cloudflarev1alpha1.DNSRecordSpecExtras{
@@ -899,6 +899,92 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(err).NotTo(HaveOccurred(), "the adopted zone must still exist")
 	})
 
+	It("lets a DNSRecord in another namespace use the Zone, for the hostnames the Zone allows it", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		teamNamespace := resourceName() + "-team"
+		allowedName := resourceName() + "-team." + zoneName
+		refusedName := resourceName() + "-team-refused." + zoneName
+		recordsNamed := func(name string) []cf.DNSRecord {
+			records, _, err := cfAPI.ListDNSRecords(ctx, cf.ZoneIdentifier(zoneID), cf.ListDNSRecordsParams{Name: name})
+			Expect(err).NotTo(HaveOccurred())
+			return records
+		}
+		// allow sets the Zone's spec.allowedReferences.
+		allow := func(entries []cloudflarev1alpha1.ZoneAllowedReference) {
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8s.Get(ctx, zoneKey, zone)).To(Succeed())
+			patch := client.MergeFrom(zone.DeepCopy())
+			zone.Spec.AllowedReferences = entries
+			Expect(k8s.Patch(ctx, zone, patch)).To(Succeed())
+		}
+
+		By("allowing the namespace one hostname of the zone")
+		namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: teamNamespace}}
+		Expect(k8s.Create(ctx, namespace)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8s.Delete(ctx, namespace))).To(Succeed())
+			allow(nil)
+			for _, name := range []string{allowedName, refusedName} {
+				for _, record := range recordsNamed(name) {
+					_ = cfAPI.DeleteDNSRecord(ctx, cf.ZoneIdentifier(zoneID), record.ID)
+				}
+			}
+		})
+		allow([]cloudflarev1alpha1.ZoneAllowedReference{{
+			Namespaces: cloudflarev1alpha1.AllowedNamespaces{
+				From: cloudflarev1alpha1.NamespacesFromSelector,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{corev1.LabelMetadataName: teamNamespace},
+				},
+			},
+			Hostnames: []string{allowedName},
+		}})
+
+		record := func(name, hostname string) *cloudflarev1alpha1.DNSRecord {
+			return &cloudflarev1alpha1.DNSRecord{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: teamNamespace},
+				Spec: cloudflarev1alpha1.DNSRecordSpec{
+					ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneKey.Name, Namespace: zoneKey.Namespace},
+					Name:    hostname,
+					Type:    "A",
+					Content: "192.0.2.11",
+					Comment: "kflare e2e " + run,
+				},
+			}
+		}
+		allowed := record("allowed", allowedName)
+		Expect(k8s.Create(ctx, allowed)).To(Succeed())
+		expectReady(client.ObjectKeyFromObject(allowed), allowed,
+			func() []metav1.Condition { return allowed.Status.Conditions })
+		Expect(allowed.Status.CloudflareMetadata.ZoneID).To(Equal(zoneID))
+		cfRecord, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), allowed.Status.CloudflareMetadata.RecordID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfRecord.Name).To(Equal(allowedName))
+		Expect(cfRecord.Content).To(Equal("192.0.2.11"))
+
+		By("refusing the namespace a hostname the Zone does not list, without a record in Cloudflare")
+		refused := record("refused", refusedName)
+		Expect(k8s.Create(ctx, refused)).To(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, client.ObjectKeyFromObject(refused), refused)).To(Succeed())
+			ready := meta.FindStatusCondition(refused.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+			g.Expect(ready).NotTo(BeNil(), "no Ready condition yet")
+			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(ready.Reason).To(Equal("ZoneReferenceNotAllowed"), ready.Message)
+			expectGitOpsHealth(g, refused, gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+		Expect(recordsNamed(refusedName)).To(BeEmpty())
+
+		By("deleting the namespace, which deletes its record from the zone")
+		Expect(k8s.Delete(ctx, namespace)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8s.Get(ctx, client.ObjectKey{Name: teamNamespace}, &corev1.Namespace{}))
+		}, 2*e2eTimeout, e2ePoll).Should(BeTrue(), "the namespace was not deleted")
+		Expect(recordsNamed(allowedName)).To(BeEmpty(), "the namespace's record was not deleted")
+	})
+
 	It("routes a pattern to the WorkerScript, excludes a sub-path and changes the exclusion in place", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")
@@ -907,7 +993,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		route := &cloudflarev1alpha1.WorkerRoute{
 			ObjectMeta: objectMeta(routeKey),
 			Spec: cloudflarev1alpha1.WorkerRouteSpec{
-				ZoneRef:         corev1.LocalObjectReference{Name: zoneKey.Name},
+				ZoneRef:         cloudflarev1alpha1.ZoneReference{Name: zoneKey.Name},
 				Pattern:         pattern,
 				WorkerScriptRef: &corev1.LocalObjectReference{Name: workerKey.Name},
 			},
@@ -915,7 +1001,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		exclusion := &cloudflarev1alpha1.WorkerRoute{
 			ObjectMeta: objectMeta(exclusionKey),
 			Spec: cloudflarev1alpha1.WorkerRouteSpec{
-				ZoneRef: corev1.LocalObjectReference{Name: zoneKey.Name},
+				ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneKey.Name},
 				Pattern: recordName() + "/static/*",
 			},
 		}

@@ -34,7 +34,9 @@ const reasonAccountNotAllowed = "AccountNotAllowed"
 // accountName and the API token from the Secret it references, for a resource
 // in namespace, which the account must allow. This is the only way a resource
 // reaches a token, so what spec.allowedNamespaces says holds for every kind:
-// those that reach an account through a parent use one in their own namespace.
+// those that reach an account through a parent use one in their own namespace,
+// or, for a Zone in another namespace, pass the Zone's namespace, since the
+// Zone's spec.allowedReferences is what lets them use it.
 // So does the installation's scope: a resource uses only an account its
 // installation manages, so that the installation's deletion checks see every
 // resource using the account.
@@ -127,10 +129,12 @@ func restrictsNamespaces(account *cloudflarev1alpha1.CloudflareAccount) bool {
 // namespace again would leave the namespace stuck terminating, and calling
 // Cloudflare would use a token the namespace has lost. An account or parent
 // outside what the installation watches ends the same way, for the same
-// reasons: the installation has lost the token. Anything else is returned for
-// a retry.
+// reasons: the installation has lost the token. So does a Zone in another
+// namespace that no longer allows the resource's namespace, or the hostname
+// of its object. Anything else is returned for a retry.
 func leaveCloudflareObject(ctx context.Context, obj conditionedObject, credErr *conditionError) error {
-	if credErr.Reason != reasonAccountNotAllowed && credErr.Reason != reasonNotWatched {
+	if credErr.Reason != reasonAccountNotAllowed && credErr.Reason != reasonNotWatched &&
+		credErr.Reason != reasonZoneReferenceNotAllowed {
 		return credErr
 	}
 	log.FromContext(ctx).Info("Leaving the Cloudflare object of a resource being deleted", "reason", credErr.Message)

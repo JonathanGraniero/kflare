@@ -314,7 +314,7 @@ var _ = Describe("Installations scoped to some namespaces or a label selector", 
 		DeferCleanup(forceDelete, ctx, &cloudflarev1alpha1.Zone{}, client.ObjectKeyFromObject(zone))
 		record := &cloudflarev1alpha1.DNSRecord{
 			ObjectMeta: metav1.ObjectMeta{Name: "www", Namespace: namespace, Labels: selected},
-			Spec: cloudflarev1alpha1.DNSRecordSpec{ZoneRef: corev1.LocalObjectReference{Name: "web"},
+			Spec: cloudflarev1alpha1.DNSRecordSpec{ZoneRef: cloudflarev1alpha1.ZoneReference{Name: "web"},
 				Name: "www.scope-selector.example.com", Type: "A", Content: "192.0.2.1"},
 		}
 		Expect(k8sClient.Create(ctx, record)).To(Succeed())

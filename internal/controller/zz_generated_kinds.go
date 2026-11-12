@@ -105,14 +105,17 @@ var generatedAccountDependents = []dependentKind{
 var generatedRulesetRuleKinds = []rulesetRuleKind{cacheRuleKind, configurationRuleKind, managedRulesetKind, originRuleKind, rateLimitRuleKind, redirectRuleKind, transformRuleKind, wafCustomRuleKind}
 
 // generatedZoneDependents are the generated rule and settings kinds, and the
-// CRUD kinds of a zone, whose resources reference a Zone in their namespace.
+// CRUD kinds of a zone, whose resources reference a Zone in their namespace,
+// or, for a kind that may, in another.
 var generatedZoneDependents = []dependentKind{
 	dependents("CacheRule", func() client.ObjectList { return &cloudflarev1alpha1.CacheRuleList{} },
 		func(obj *cloudflarev1alpha1.CacheRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ConfigurationRule", func() client.ObjectList { return &cloudflarev1alpha1.ConfigurationRuleList{} },
 		func(obj *cloudflarev1alpha1.ConfigurationRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
-	dependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
-		func(obj *cloudflarev1alpha1.DNSRecord) []string { return []string{obj.Spec.ZoneRef.Name} }),
+	sharedZoneDependents("DNSRecord", func() client.ObjectList { return &cloudflarev1alpha1.DNSRecordList{} },
+		func(obj *cloudflarev1alpha1.DNSRecord) (cloudflarev1alpha1.ZoneReference, string) {
+			return obj.Spec.ZoneRef, obj.Spec.Name
+		}),
 	dependents("ManagedRuleset", func() client.ObjectList { return &cloudflarev1alpha1.ManagedRulesetList{} },
 		func(obj *cloudflarev1alpha1.ManagedRuleset) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("ManagedTransform", func() client.ObjectList { return &cloudflarev1alpha1.ManagedTransformList{} },
@@ -127,6 +130,8 @@ var generatedZoneDependents = []dependentKind{
 		func(obj *cloudflarev1alpha1.TransformRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
 	dependents("WAFCustomRule", func() client.ObjectList { return &cloudflarev1alpha1.WAFCustomRuleList{} },
 		func(obj *cloudflarev1alpha1.WAFCustomRule) []string { return []string{obj.Spec.ZoneRef.Name} }),
-	dependents("WorkerRoute", func() client.ObjectList { return &cloudflarev1alpha1.WorkerRouteList{} },
-		func(obj *cloudflarev1alpha1.WorkerRoute) []string { return []string{obj.Spec.ZoneRef.Name} }),
+	sharedZoneDependents("WorkerRoute", func() client.ObjectList { return &cloudflarev1alpha1.WorkerRouteList{} },
+		func(obj *cloudflarev1alpha1.WorkerRoute) (cloudflarev1alpha1.ZoneReference, string) {
+			return obj.Spec.ZoneRef, routePatternHostname(obj.Spec.Pattern)
+		}),
 }

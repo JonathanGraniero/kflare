@@ -109,7 +109,7 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.WorkerRoute, WorkerRo
 		return &cloudflarev1alpha1.WorkerRoute{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: cloudflarev1alpha1.WorkerRouteSpec{
-				ZoneRef:         corev1.LocalObjectReference{Name: parent},
+				ZoneRef:         cloudflarev1alpha1.ZoneReference{Name: parent},
 				Pattern:         "example.com/api/*",
 				WorkerScriptRef: &corev1.LocalObjectReference{Name: "example-worker"},
 			},
@@ -142,6 +142,8 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.WorkerRoute, WorkerRo
 	immutable: []crudSpecEdit[*cloudflarev1alpha1.WorkerRoute]{
 		{field: "zoneRef", what: "changing zoneRef",
 			edit: func(obj *cloudflarev1alpha1.WorkerRoute) { obj.Spec.ZoneRef.Name = "other-zone" }},
+		{field: "zoneRef", what: "naming a Zone in another namespace",
+			edit: func(obj *cloudflarev1alpha1.WorkerRoute) { obj.Spec.ZoneRef.Namespace = "other-namespace" }},
 	},
 	invalid: []crudSpecEdit[*cloudflarev1alpha1.WorkerRoute]{
 		{field: "pattern", what: "a pattern not matching its pattern",
@@ -149,6 +151,7 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.WorkerRoute, WorkerRo
 		{field: "pattern", what: "a pattern longer than 1024 characters",
 			edit: func(obj *cloudflarev1alpha1.WorkerRoute) { obj.Spec.Pattern = strings.Repeat("a", 1025) }},
 	},
+	inZoneNamespace: func(obj *cloudflarev1alpha1.WorkerRoute, namespace string) { obj.Spec.ZoneRef.Namespace = namespace },
 	references: []crudRefSpec[*cloudflarev1alpha1.WorkerRoute]{
 		{field: "workerScriptRef", kind: "WorkerScript", name: "example-worker", optional: true,
 			set: func(obj *cloudflarev1alpha1.WorkerRoute, name string) {

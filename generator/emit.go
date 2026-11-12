@@ -9,6 +9,7 @@ package main
 import (
 	"fmt"
 	"go/format"
+	"slices"
 	"strings"
 )
 
@@ -28,8 +29,9 @@ func emitTypes(k *kind, header string) ([]byte, error) {
 	write := func(format string, args ...any) { fmt.Fprintf(&b, format, args...) }
 
 	write("%s\n\n%s\n\npackage v1alpha1\n\n", strings.TrimRight(header, "\n"), generatedMarker)
-	// A spec of nothing but hand-written extras names no reference of its own.
-	if len(k.spec) > 0 {
+	// A spec of nothing but hand-written extras names no reference of its own,
+	// and neither does one whose zoneRef is a ZoneReference, without others.
+	if slices.ContainsFunc(k.spec, func(f field) bool { return strings.Contains(f.goType, "corev1.") }) {
 		write("import (\n\tcorev1 %q\n\tmetav1 %q\n)\n\n", "k8s.io/api/core/v1", "k8s.io/apimachinery/pkg/apis/meta/v1")
 	} else {
 		write("import (\n\tmetav1 %q\n)\n\n", "k8s.io/apimachinery/pkg/apis/meta/v1")

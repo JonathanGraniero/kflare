@@ -170,18 +170,25 @@ spec:
                   rule: self == oldSelf
               zoneRef:
                 description: |-
-                  ZoneRef references the Zone, in the same namespace, the DNS record
-                  belongs to.
+                  ZoneRef references the Zone the DNS record belongs to: one in the same
+                  namespace, or, with namespace, one in another namespace whose
+                  spec.allowedReferences allows this namespace and the DNS record's
+                  hostname.
                   Immutable after creation.
                 properties:
                   name:
                     default: ""
+                    description: Name of the Zone.
+                    type: string
+                  namespace:
                     description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                      Namespace of the Zone, when it is not the resource's own. The Zone's
+                      spec.allowedReferences must allow this resource's namespace and
+                      hostname; otherwise the resource reports reason ZoneReferenceNotAllowed,
+                      and kflare makes no Cloudflare call for it.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic

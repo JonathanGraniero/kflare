@@ -9,7 +9,6 @@ SPDX-License-Identifier: MIT
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -20,11 +19,13 @@ const DNSRecordIDLabel = "kflare.dev/record-id"
 
 // DNSRecordSpec defines the desired state of DNSRecord.
 type DNSRecordSpec struct {
-	// ZoneRef references the Zone, in the same namespace, the DNS record
-	// belongs to.
+	// ZoneRef references the Zone the DNS record belongs to: one in the same
+	// namespace, or, with namespace, one in another namespace whose
+	// spec.allowedReferences allows this namespace and the DNS record's
+	// hostname.
 	// Immutable after creation.
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="zoneRef is immutable"
-	ZoneRef corev1.LocalObjectReference `json:"zoneRef"`
+	ZoneRef ZoneReference `json:"zoneRef"`
 
 	// Name is the fully-qualified DNS record name (e.g. "www.example.com").
 	// Immutable after creation.

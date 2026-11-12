@@ -89,6 +89,116 @@ spec:
                 x-kubernetes-validations:
                 - message: accountRef is immutable
                   rule: self == oldSelf
+              allowedReferences:
+                description: |-
+                  AllowedReferences lets resources in other namespaces use this Zone, for
+                  the hostnames each entry lists: a DNSRecord or a WorkerRoute whose
+                  zoneRef names this Zone's namespace. Unset, only resources in the
+                  Zone's namespace use it. A resource that no entry allows reports reason
+                  ZoneReferenceNotAllowed, and kflare makes no Cloudflare call for it.
+                  The Zone's CloudflareAccount needs to allow only the Zone's namespace.
+                  Rules and settings stay in the Zone's namespace: they apply to the
+                  whole zone.
+                items:
+                  description: |-
+                    ZoneAllowedReference lets the resources of some namespaces use a Zone from
+                    outside its namespace, for some of the zone's hostnames.
+                  properties:
+                    hostnames:
+                      description: |-
+                        Hostnames are the hostnames those resources may use: a DNSRecord's
+                        name, and the hostname of a WorkerRoute's pattern. Each is a hostname,
+                        which allows itself alone, or starts with "*.", which allows every name
+                        below the rest, at any depth, but not the rest itself:
+                        "*.team-a.example.com" allows "api.team-a.example.com" and
+                        "v2.api.team-a.example.com", not "team-a.example.com". A name with a
+                        wildcard of its own, such as the record "*.team-a.example.com" or the
+                        route "*.team-a.example.com/*", needs an entry that covers every name it
+                        stands for. Names ignore case.
+                      items:
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^(\*\.)?([a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.)*[a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?$
+                        type: string
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    namespaces:
+                      description: Namespaces says which namespaces' resources this
+                        entry allows.
+                      properties:
+                        from:
+                          default: All
+                          description: |-
+                            From is All, for every namespace, or Selector, for those Selector
+                            matches.
+                          enum:
+                          - All
+                          - Selector
+                          type: string
+                        selector:
+                          description: |-
+                            Selector picks the namespaces by their labels, with from: Selector.
+                            To name namespaces, match their kubernetes.io/metadata.name label, which
+                            the API server sets and nobody can change. For other labels, this trusts
+                            whoever may label namespaces.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                      type: object
+                      x-kubernetes-validations:
+                      - message: 'selector goes with from: Selector, and only with
+                          it'
+                        rule: (self.from == 'Selector') == has(self.selector)
+                  required:
+                  - hostnames
+                  - namespaces
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
               name:
                 description: Name is the domain (e.g. "example.com"). Immutable after
                   creation.

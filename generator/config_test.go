@@ -130,6 +130,13 @@ func TestLoadConfigRefuses(t *testing.T) {
 			"both fixed and adjusted"},
 		{"no adoption key", replace("adopt: {by: title}", "adopt: {}"), "adopt.by is empty"},
 		{"no sample", replace("sample: {title: example}", "sample: {}"), "sample is empty"},
+		{"a zone hostname for an account's kind", validConfig + "    zoneHostname: {field: title, reason: why}\n",
+			"zoneHostname: only a kind of scope zone names a Zone"},
+		{"a zone hostname without a field",
+			replace("scope: account", "scope: zone") + "    zoneHostname: {reason: why}\n", "zoneHostname: field is empty"},
+		{"a zone hostname without a reason",
+			replace("scope: account", "scope: zone") + "    zoneHostname: {field: title}\n",
+			"zoneHostname: gives no reason"},
 		{"a dependent that is not a Go name", validConfig + dependent("worker-script", "bound", "why"),
 			"not a Go type name"},
 		{"a dependent listed twice", validConfig + dependent("WorkerScript", "bound", "why") +

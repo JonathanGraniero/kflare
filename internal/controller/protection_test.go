@@ -74,14 +74,14 @@ var _ = Describe("Deletion protection for parents", func() {
 			create(&cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Name: "prot-record", Namespace: ns},
 				Spec: cloudflarev1alpha1.DNSRecordSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: zoneName},
+					ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneName},
 					Name:    "www.prot-example.com", Type: "A", Content: "192.0.2.1",
 				},
 			})
 			create(&cloudflarev1alpha1.WorkerRoute{
 				ObjectMeta: metav1.ObjectMeta{Name: "prot-route", Namespace: ns},
 				Spec: cloudflarev1alpha1.WorkerRouteSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: zoneName}, Pattern: "prot-example.com/*",
+					ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneName}, Pattern: "prot-example.com/*",
 				},
 			})
 			create(&cloudflarev1alpha1.WAFCustomRule{
@@ -144,7 +144,7 @@ var _ = Describe("Deletion protection for parents", func() {
 		It("is re-triggered by a dependent's deletion only while it is being deleted", func() {
 			record := &cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
-				Spec:       cloudflarev1alpha1.DNSRecordSpec{ZoneRef: corev1.LocalObjectReference{Name: zoneName}},
+				Spec:       cloudflarev1alpha1.DNSRecordSpec{ZoneRef: cloudflarev1alpha1.ZoneReference{Name: zoneName}},
 			}
 			Expect(r.crud().deletingResourcesOf(ctx, record)).To(ConsistOf(reconcile.Request{NamespacedName: zoneKey}))
 
@@ -247,7 +247,7 @@ var _ = Describe("Deletion protection for parents", func() {
 			create(&cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Name: recordKey.Name, Namespace: ns},
 				Spec: cloudflarev1alpha1.DNSRecordSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: "prot-zone"}, Name: "app.prot-example.com",
+					ZoneRef: cloudflarev1alpha1.ZoneReference{Name: "prot-zone"}, Name: "app.prot-example.com",
 					Type:                "CNAME",
 					DNSRecordSpecExtras: cloudflarev1alpha1.DNSRecordSpecExtras{TunnelRef: &corev1.LocalObjectReference{Name: tunnelName}},
 				},
@@ -255,7 +255,7 @@ var _ = Describe("Deletion protection for parents", func() {
 			create(&cloudflarev1alpha1.DNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Name: "prot-unrelated-record", Namespace: ns},
 				Spec: cloudflarev1alpha1.DNSRecordSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: "prot-zone"}, Name: "prot-example.com",
+					ZoneRef: cloudflarev1alpha1.ZoneReference{Name: "prot-zone"}, Name: "prot-example.com",
 					Type: "A", Content: "192.0.2.1",
 				},
 			})
@@ -315,7 +315,7 @@ var _ = Describe("Deletion protection for parents", func() {
 		})
 		route := &cloudflarev1alpha1.WorkerRoute{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns},
-			Spec:       cloudflarev1alpha1.WorkerRouteSpec{ZoneRef: corev1.LocalObjectReference{Name: "prot-live-zone"}},
+			Spec:       cloudflarev1alpha1.WorkerRouteSpec{ZoneRef: cloudflarev1alpha1.ZoneReference{Name: "prot-live-zone"}},
 		}
 		r := &ZoneReconciler{Client: k8sClient}
 		Expect(r.crud().deletingResourcesOf(ctx, route)).To(BeEmpty())

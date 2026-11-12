@@ -190,6 +190,12 @@ kinds:
     claimLabel: kflare.dev/route-id
     adopt:
       by: pattern
+    zoneHostname:
+      field: pattern
+      routePattern: true
+      reason: >-
+        A zone usually belongs to a platform team and its routes to application teams, each in a namespace of its
+        own (#78).
     sample:
       pattern: example.com/api/*
       script: example-worker
@@ -374,6 +380,11 @@ kinds:
     claimLabel: kflare.dev/record-id
     adopt:
       by: name
+    zoneHostname:
+      field: name
+      reason: >-
+        A zone usually belongs to a platform team and its records to application teams, each in a namespace of its
+        own (#78).
     update: Edit
     sample:
       name: www.example.com

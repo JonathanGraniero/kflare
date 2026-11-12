@@ -184,6 +184,12 @@ func (b *kindBuilder) build() (*kind, error) {
 		parent.goName, parent.jsonName = "ZoneRef", zoneRefField
 		parent.doc = append(wrapIndented(fmt.Sprintf("ZoneRef references the Zone, in the same namespace, the %s "+
 			"belongs to.", e.Noun)), "Immutable after creation.")
+		if e.ZoneHostname != nil {
+			parent.goType = zoneReferenceType
+			parent.doc = append(wrapIndented(fmt.Sprintf("ZoneRef references the Zone the %s belongs to: one in "+
+				"the same namespace, or, with namespace, one in another namespace whose spec.allowedReferences "+
+				"allows this namespace and the %s's hostname.", e.Noun, e.Noun)), "Immutable after creation.")
+		}
 	}
 	k.spec = append(k.spec, parent)
 
@@ -755,6 +761,9 @@ func isZoneID(f sdkField) bool {
 const (
 	zoneIDParam  = "zone_id"
 	zoneRefField = "zoneRef"
+	// zoneReferenceType is the hand-written API type of a zoneRef that may
+	// name a Zone in another namespace (kindConfig.ZoneHostname).
+	zoneReferenceType = "ZoneReference"
 )
 
 // parentParam returns what reports whether a call's param is the ID of a

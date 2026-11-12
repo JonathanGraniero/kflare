@@ -40,6 +40,12 @@ type controller struct {
 	// ID.
 	zoned    bool
 	isParent func(sdkField) bool
+	// zoneHostname is the field that holds the hostname a resource's object
+	// takes in its zone, for a zone's kind whose resources may name a Zone in
+	// another namespace, and nil for any other; routePattern is set when the
+	// field holds a route pattern, whose hostname comes before its path.
+	zoneHostname *apiField
+	routePattern bool
 	// object is the type of the Cloudflare object that Get returns a pointer
 	// to, listed the type of the objects a page of List holds, and
 	// deleteResult the type Delete returns a pointer to. created and updated
@@ -160,6 +166,9 @@ func (b *controllerBuilder) build() (*controller, error) {
 	if err := b.status(c); err != nil {
 		return nil, err
 	}
+	if err := b.zoneHostname(c); err != nil {
+		return nil, err
+	}
 	if err := b.adoption(c); err != nil {
 		return nil, err
 	}
@@ -167,6 +176,26 @@ func (b *controllerBuilder) build() (*controller, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// zoneHostname reads which field holds the hostname of a resource's object,
+// for a kind whose resources may name a Zone in another namespace.
+func (b *controllerBuilder) zoneHostname(c *controller) error {
+	h := b.entry.ZoneHostname
+	if h == nil {
+		return nil
+	}
+	i := slices.IndexFunc(c.fields, func(f apiField) bool { return f.apiName == h.Field })
+	switch {
+	case i < 0:
+		return fmt.Errorf("zoneHostname.field: the spec has no field %s", h.Field)
+	case c.fields[i].optional || c.fields[i].goType != typeString:
+		return fmt.Errorf("zoneHostname.field: %s is not a required string", h.Field)
+	case c.fields[i].object == nil || !isString(c.fields[i].object.typ):
+		return fmt.Errorf("zoneHostname.field: Get's object does not report %s as a string", h.Field)
+	}
+	c.zoneHostname, c.routePattern = &c.fields[i], h.RoutePattern
+	return nil
 }
 
 // calls checks the shape of the calls the shared CRUD reconciler makes. A

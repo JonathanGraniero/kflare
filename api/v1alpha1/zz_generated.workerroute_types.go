@@ -20,11 +20,13 @@ const WorkerRouteIDLabel = "kflare.dev/route-id"
 
 // WorkerRouteSpec defines the desired state of WorkerRoute.
 type WorkerRouteSpec struct {
-	// ZoneRef references the Zone, in the same namespace, the Worker route
-	// belongs to.
+	// ZoneRef references the Zone the Worker route belongs to: one in the same
+	// namespace, or, with namespace, one in another namespace whose
+	// spec.allowedReferences allows this namespace and the Worker route's
+	// hostname.
 	// Immutable after creation.
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="zoneRef is immutable"
-	ZoneRef corev1.LocalObjectReference `json:"zoneRef"`
+	ZoneRef ZoneReference `json:"zoneRef"`
 
 	// Pattern selects the requests the route applies to, such as
 	// "example.com/api/*" or "*.example.com/*". It has no scheme or port,

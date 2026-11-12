@@ -14,7 +14,6 @@ import (
 	"github.com/cloudflare/cloudflare-go/v7/dns"
 	"github.com/cloudflare/cloudflare-go/v7/option"
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -102,7 +101,7 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.DNSRecord, DNSRecordA
 		return &cloudflarev1alpha1.DNSRecord{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: cloudflarev1alpha1.DNSRecordSpec{
-				ZoneRef: corev1.LocalObjectReference{Name: parent},
+				ZoneRef: cloudflarev1alpha1.ZoneReference{Name: parent},
 				Name:    "www.example.com",
 				Type:    "A",
 				Comment: "The web server.",
@@ -150,6 +149,8 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.DNSRecord, DNSRecordA
 	immutable: []crudSpecEdit[*cloudflarev1alpha1.DNSRecord]{
 		{field: "zoneRef", what: "changing zoneRef",
 			edit: func(obj *cloudflarev1alpha1.DNSRecord) { obj.Spec.ZoneRef.Name = "other-zone" }},
+		{field: "zoneRef", what: "naming a Zone in another namespace",
+			edit: func(obj *cloudflarev1alpha1.DNSRecord) { obj.Spec.ZoneRef.Namespace = "other-namespace" }},
 		{field: "name", what: "changing name",
 			edit: func(obj *cloudflarev1alpha1.DNSRecord) { obj.Spec.Name = "www.example.con" }},
 		{field: "type", what: "changing type",
@@ -161,4 +162,5 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.DNSRecord, DNSRecordA
 		{field: "type", what: "a type outside its enum",
 			edit: func(obj *cloudflarev1alpha1.DNSRecord) { obj.Spec.Type = "kflare-not-in-enum" }},
 	},
+	inZoneNamespace: func(obj *cloudflarev1alpha1.DNSRecord, namespace string) { obj.Spec.ZoneRef.Namespace = namespace },
 })

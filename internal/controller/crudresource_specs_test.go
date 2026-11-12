@@ -372,6 +372,9 @@ type crudKindSpecs[O conditionedObject, A any, R any, L any] struct {
 	elsewhere                   *crudScopeEdit[O]
 	// references are the spec's references to resources of other kinds.
 	references []crudRefSpec[O]
+	// inZoneNamespace points a resource's zoneRef at a Zone in namespace: nil
+	// for a kind whose resources name a Zone in their own namespace only.
+	inZoneNamespace func(obj O, namespace string)
 	// deletionBlockers are the entry's, a copy of the kind's own.
 	deletionBlockers []deletionBlocker
 }
@@ -2127,6 +2130,7 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 
 		if zoned {
 			describeCRUDZone(e)
+			describeCRUDSharedZone(e)
 		}
 		describeCRUDReferences(e)
 		describeCRUDAtOnce(e)

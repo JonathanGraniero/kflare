@@ -79,6 +79,9 @@ var workerRouteKind = crudResourceKind[*cloudflarev1alpha1.WorkerRoute, WorkerRo
 
 	zoneRef:        func(obj *cloudflarev1alpha1.WorkerRoute) string { return obj.Spec.ZoneRef.Name },
 	statusZoneID:   func(obj *cloudflarev1alpha1.WorkerRoute) *string { return &obj.Status.CloudflareMetadata.ZoneID },
+	zoneNamespace:  func(obj *cloudflarev1alpha1.WorkerRoute) string { return obj.Spec.ZoneRef.Namespace },
+	hostname:       func(obj *cloudflarev1alpha1.WorkerRoute) string { return routePatternHostname(obj.Spec.Pattern) },
+	objectHostname: func(current *workers.RouteGetResponse) string { return routePatternHostname(current.Pattern) },
 	key:            func(obj *cloudflarev1alpha1.WorkerRoute) string { return obj.Spec.Pattern },
 	claimLabel:     cloudflarev1alpha1.WorkerRouteIDLabel,
 	conflictReason: "PatternConflict",

@@ -12,6 +12,18 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 
 ## Unreleased
 
+### Resources
+
+- **A `Zone` can be shared with other namespaces, for the hostnames it allows.** A `DNSRecord` or a `WorkerRoute` can
+  name a Zone in another namespace with `zoneRef.namespace`, and the Zone's new `spec.allowedReferences` lists which
+  namespaces may, by a label selector, and for which hostnames, exact or below a `*.` wildcard. A platform team can
+  then keep a zone in its namespace while application teams manage their own records, without a `Zone` of their own
+  that could act on the whole zone. A resource the Zone does not allow reports reason `ZoneReferenceNotAllowed`, and
+  kflare makes no Cloudflare call for it. Rules and settings stay in the Zone's namespace. Nothing changes for
+  manifests without `zoneRef.namespace`
+  ([Sharing a Zone with other namespaces](docs/deploy.md#sharing-a-zone-with-other-namespaces),
+  [#78](https://github.com/JonathanGraniero/kflare/issues/78))
+
 ### The controller
 
 - **Two resources no longer adopt one object when the manager's cache is behind.** A resource with an adoption policy

@@ -99,6 +99,10 @@ kinds:
     claimLabel: kflare.dev/test-route-id
     adopt:
       by: pattern
+    zoneHostname:
+      field: pattern
+      routePattern: true
+      reason: A zone's owner lets other namespaces route some of its hostnames.
     sample:
       pattern: test.example.com/*
       script: test-worker

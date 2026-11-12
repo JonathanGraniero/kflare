@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -32,7 +33,11 @@ import (
 //     account kind kflare-gen generates, such as KVNamespaces and R2Buckets;
 //   - a Zone waits for its DNSRecords, WorkerRoutes, rules and settings (the
 //     generated zone kinds, such as WAFCustomRules and ManagedTransforms),
-//     which need its zone ID and account;
+//     which need its zone ID and account: those in its namespace, and the
+//     DNSRecords and WorkerRoutes in other namespaces that its
+//     spec.allowedReferences allows (zonereference.go). One it does not allow
+//     has no call to make through it, so it does not hold the Zone back, which
+//     any namespace could otherwise do to any Zone;
 //   - a Tunnel waits for its TunnelConfigurations, which reset its ingress
 //     rules through its account, and for the DNSRecords that point at it
 //     through tunnelRef, whose hostnames would otherwise route to nothing;
@@ -53,6 +58,10 @@ type dependentKind struct {
 	list      func() client.ObjectList
 	parents   func(client.Object) ([]string, bool)
 	newObject func() client.Object
+	// zone is set for a zone's kind whose resources may name a Zone in another
+	// namespace (sharedZoneDependents): it returns the namespace a resource's
+	// zoneRef names, "" for its own, and the hostname it asks the Zone for.
+	zone func(client.Object) (namespace, hostname string, ok bool)
 }
 
 // dependents builds a dependentKind for objects of type P (a *T) that
@@ -79,8 +88,8 @@ var (
 	// accountDependents use a CloudflareAccount's credentials directly.
 	accountDependents = generatedAccountDependents
 
-	// zoneDependents live in a Zone's namespace and reference it by name: the
-	// generated kinds of a zone.
+	// zoneDependents reference a Zone by name, in their namespace or, for a
+	// kind that may, in another: the generated kinds of a zone.
 	zoneDependents = generatedZoneDependents
 )
 
@@ -100,7 +109,8 @@ func recordTunnels(d *cloudflarev1alpha1.DNSRecord) []string {
 
 // dependentsOf returns every resource of kinds in namespace ("" for all
 // namespaces) that references parentName, as sorted "Kind namespace/name"
-// strings.
+// strings. For a Zone, parentName in namespace, they include the resources in
+// other namespaces that name it and that its spec.allowedReferences allows.
 func dependentsOf(
 	ctx context.Context,
 	c client.Reader,
@@ -108,9 +118,18 @@ func dependentsOf(
 	kinds []dependentKind,
 ) ([]string, error) {
 	var found []string
+	// zone is the Zone itself, read once a resource in another namespace
+	// names it.
+	var zone *cloudflarev1alpha1.Zone
 	for _, k := range kinds {
+		// A kind whose resources may name a Zone in another namespace is
+		// listed in all of them.
+		in := namespace
+		if k.zone != nil {
+			in = metav1.NamespaceAll
+		}
 		list := k.list()
-		if err := c.List(ctx, list, client.InNamespace(namespace)); err != nil {
+		if err := c.List(ctx, list, client.InNamespace(in)); err != nil {
 			return nil, err
 		}
 		items, err := meta.ExtractList(list)
@@ -122,9 +141,26 @@ func dependentsOf(
 			if !ok {
 				return nil, fmt.Errorf("unexpected list item %T", item)
 			}
-			if names, ok := k.parents(obj); ok && slices.Contains(names, parentName) {
-				found = append(found, fmt.Sprintf("%s %s/%s", k.kind, obj.GetNamespace(), obj.GetName()))
+			names, ok := k.parents(obj)
+			if !ok || !slices.Contains(names, parentName) {
+				continue
 			}
+			if namespace != "" && k.parentNamespace(obj) != namespace {
+				continue
+			}
+			if namespace != "" && obj.GetNamespace() != namespace {
+				if zone == nil {
+					zone = &cloudflarev1alpha1.Zone{}
+					if err := c.Get(ctx, types.NamespacedName{Name: parentName, Namespace: namespace}, zone); err != nil {
+						return nil, err
+					}
+				}
+				_, hostname, _ := k.zone(obj)
+				if checkZoneReference(ctx, c, zone, obj.GetNamespace(), hostname) != nil {
+					continue
+				}
+			}
+			found = append(found, fmt.Sprintf("%s %s/%s", k.kind, obj.GetNamespace(), obj.GetName()))
 		}
 	}
 	sort.Strings(found)
@@ -159,7 +195,7 @@ var deletesOnly = predicate.Funcs{
 // that are themselves being deleted: a parent in normal use has nothing to do
 // when a dependent goes away. newParent returns an empty object of the
 // parent's kind; namespaced parents are looked up in the dependent's
-// namespace.
+// namespace, or in the one its zoneRef names.
 func deletingParentOf(
 	ctx context.Context,
 	c client.Reader,
@@ -177,7 +213,7 @@ func deletingParentOf(
 		for _, name := range names {
 			key := types.NamespacedName{Name: name}
 			if namespaced {
-				key.Namespace = dependent.GetNamespace()
+				key.Namespace = k.parentNamespace(dependent)
 			}
 			parent := newParent()
 			if err := c.Get(ctx, key, parent); err != nil || parent.GetDeletionTimestamp().IsZero() {
