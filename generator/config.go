@@ -113,6 +113,26 @@ type kindConfig struct {
 	// Hooks says what the kind's hand-written hooks add, for what an entry
 	// cannot say.
 	Hooks *hooksConfig `json:"hooks,omitempty"`
+	// ZoneHostname lets a resource of a zone's kind name a Zone in another
+	// namespace, whose spec.allowedReferences must allow the hostname the
+	// resource asks for.
+	ZoneHostname *zoneHostnameConfig `json:"zoneHostname,omitempty"`
+}
+
+// zoneHostnameConfig says where a zone's kind holds the hostname its object
+// takes in the zone. With it, the kind's zoneRef is a ZoneReference, which may
+// name a Zone in another namespace: the shared CRUD reconciler then checks the
+// hostname the spec asks for, and that of the object it is about to change or
+// delete, against the Zone's spec.allowedReferences.
+type zoneHostnameConfig struct {
+	// Field is the API name of the field: a required string that New takes
+	// and Get's object reports.
+	Field string `json:"field"`
+	// RoutePattern is set for a field that holds a route pattern, such as
+	// "*.example.com/api/*", whose hostname is what comes before its path.
+	RoutePattern bool `json:"routePattern,omitempty"`
+	// Reason says why resources of the kind may come from other namespaces.
+	Reason string `json:"reason"`
 }
 
 // hooksConfig is what a kind's hooks, a crudHooks in a hand-written
@@ -412,6 +432,9 @@ func (k *kindConfig) validate() error {
 	case len(k.Sample) == 0:
 		return fmt.Errorf("sample is empty")
 	}
+	if err := k.ZoneHostname.validate(k.Scope); err != nil {
+		return err
+	}
 	seenDependents := map[string]bool{}
 	for i, d := range k.Dependents {
 		switch {
@@ -446,6 +469,22 @@ func (k *kindConfig) validate() error {
 		}
 	}
 	return validateFields(k.Fields)
+}
+
+// validate checks the zoneHostname of a kind of scope; a kind has none when h
+// is nil.
+func (h *zoneHostnameConfig) validate(scope string) error {
+	switch {
+	case h == nil:
+		return nil
+	case scope != scopeZone:
+		return fmt.Errorf("zoneHostname: only a kind of scope zone names a Zone")
+	case h.Field == "":
+		return fmt.Errorf("zoneHostname: field is empty")
+	case strings.TrimSpace(h.Reason) == "":
+		return fmt.Errorf("zoneHostname: gives no reason")
+	}
+	return nil
 }
 
 // validateFields checks a kind's field adjustments: their validations and

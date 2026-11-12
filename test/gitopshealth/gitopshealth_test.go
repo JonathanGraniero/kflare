@@ -444,6 +444,7 @@ var readyReasons = []struct {
 	{"False", "SecretNotFound", ArgoCDProgressing},
 	{"False", "TokenKeyMissing", ArgoCDDegraded},
 	{"False", "AccountNotAllowed", ArgoCDDegraded},
+	{"False", "ZoneReferenceNotAllowed", ArgoCDDegraded},
 	{"False", "InvalidAllowedNamespaces", ArgoCDDegraded},
 	// The account, or a resource referenced, is outside what the installation watches (watchscope.go).
 	{"False", "NotWatched", ArgoCDDegraded},

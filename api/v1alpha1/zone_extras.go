@@ -29,6 +29,19 @@ type ZoneSpecExtras struct {
 	// +kubebuilder:default=full
 	// +optional
 	Type string `json:"type,omitempty"`
+
+	// AllowedReferences lets resources in other namespaces use this Zone, for
+	// the hostnames each entry lists: a DNSRecord or a WorkerRoute whose
+	// zoneRef names this Zone's namespace. Unset, only resources in the
+	// Zone's namespace use it. A resource that no entry allows reports reason
+	// ZoneReferenceNotAllowed, and kflare makes no Cloudflare call for it.
+	// The Zone's CloudflareAccount needs to allow only the Zone's namespace.
+	// Rules and settings stay in the Zone's namespace: they apply to the
+	// whole zone.
+	// +kubebuilder:validation:MaxItems=64
+	// +listType=atomic
+	// +optional
+	AllowedReferences []ZoneAllowedReference `json:"allowedReferences,omitempty"`
 }
 
 // ZoneMetadataExtras holds what Cloudflare reports about a zone.

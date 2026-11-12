@@ -107,7 +107,7 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.TestWorkerRoute, Test
 		return &cloudflarev1alpha1.TestWorkerRoute{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: cloudflarev1alpha1.TestWorkerRouteSpec{
-				ZoneRef:         corev1.LocalObjectReference{Name: parent},
+				ZoneRef:         cloudflarev1alpha1.ZoneReference{Name: parent},
 				Pattern:         "test.example.com/*",
 				WorkerScriptRef: &corev1.LocalObjectReference{Name: "test-worker"},
 			},
@@ -140,6 +140,11 @@ var _ = describeCRUDKind(crudKindSpecs[*cloudflarev1alpha1.TestWorkerRoute, Test
 	immutable: []crudSpecEdit[*cloudflarev1alpha1.TestWorkerRoute]{
 		{field: "zoneRef", what: "changing zoneRef",
 			edit: func(obj *cloudflarev1alpha1.TestWorkerRoute) { obj.Spec.ZoneRef.Name = "other-zone" }},
+		{field: "zoneRef", what: "naming a Zone in another namespace",
+			edit: func(obj *cloudflarev1alpha1.TestWorkerRoute) { obj.Spec.ZoneRef.Namespace = "other-namespace" }},
+	},
+	inZoneNamespace: func(obj *cloudflarev1alpha1.TestWorkerRoute, namespace string) {
+		obj.Spec.ZoneRef.Namespace = namespace
 	},
 	references: []crudRefSpec[*cloudflarev1alpha1.TestWorkerRoute]{
 		{field: "workerScriptRef", kind: "WorkerScript", name: "test-worker", optional: true,

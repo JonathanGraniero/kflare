@@ -25,6 +25,7 @@ local needsPerson = {
   TokenDisabled = true,
   -- The CloudflareAccount, or a reference, does not fit, or is outside the installation's scope
   AccountNotAllowed = true,
+  ZoneReferenceNotAllowed = true,
   NotWatched = true,
   AccountMismatch = true,
   InvalidAllowedNamespaces = true,

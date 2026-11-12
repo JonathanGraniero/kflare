@@ -124,7 +124,9 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    is returned so controller-runtime backs off); `RateLimited` (waiting for the token's budget, and only on a resource
    that was not `Ready`: see `internal/controller/ratelimit.go`); credential reasons from `credentials.go`
    (`AccountNotFound`, `AccountNotAllowed`, `AccountNotReady`, `SecretNotFound`, `TokenKeyMissing`, requeued after a
-   minute); `TokenExpired`/`TokenDisabled` (a CloudflareAccount whose token Cloudflare reports so, checked again at
+   minute); `ZoneReferenceNotAllowed` (a `DNSRecord` or `WorkerRoute` naming a Zone in another namespace whose
+   `spec.allowedReferences` leaves out its namespace or hostname, `zonereference.go`);
+   `TokenExpired`/`TokenDisabled` (a CloudflareAccount whose token Cloudflare reports so, checked again at
    `--token-check-interval`); `NotWatched` (an account or a reference outside the installation's scope,
    `watchscope.go`: a reference is read with `getReference`); `Paused` (the status kept, see convention 11). A new
    reason goes into `readyReasons` (`test/gitopshealth`), and, if a person must act on it, into the Argo CD and Flux
@@ -771,6 +773,26 @@ four decisions went as it proposed, or as the [design notes](docs/design-notes.m
   review on the pull request, or `hack/e2e-live.sh`, both the user's call
 - Left: the merge. Not done, for later: a `Zone`'s hand-off (it must carry the Zone's children), the settings kinds,
   and a `kflare.dev/replaces` annotation for moves across namespaces
+
+### A Zone shared with other namespaces (#78, `feat/zone-allowed-references`)
+**Status:** 🚧 Built 2026-11-12 at the user's request ("start with implementation on this"), as one pull request;
+awaits review ([design notes](docs/design-notes.md#a-zone-shared-with-other-namespaces))
+- [x] The API: `zoneRef.namespace` on `DNSRecord` and `WorkerRoute` (`ZoneReference`, same schema as before plus the
+  field, so `make crd-compat` reports nothing), and `spec.allowedReferences` on `Zone` (entries of `namespaces`, the
+  account's `AllowedNamespaces` type, and `hostnames`)
+- [x] kflare-gen: an entry's `zoneHostname` (`field`, `routePattern`, `reason`) makes the kind's `zoneRef` a
+  `ZoneReference` and writes the descriptor's `zoneNamespace`, `hostname` and `objectHostname`, the table's
+  `inZoneNamespace` and a `sharedZoneDependents` entry
+- [x] The shared CRUD reconciler: `zoneKey`, `checkZoneReference` before the Zone's readiness, the account asked about
+  the Zone's namespace, the object's hostname checked before an update or a delete (`checkObjectHostname`), watches
+  on Zones in any namespace and on the labels of the resource's namespace. `dependentsOf` counts the resources in
+  other namespaces that the Zone allows
+- [x] Specs: `describeCRUDSharedZone` for both kinds, tables for the hostname and namespace matching, the Zone's CRD;
+  the live spec (a `DNSRecord` in a second namespace) runs with the pull request's Live E2E
+- [x] Mutations: 47 of the reconciler's new paths, the matching, `dependentsOf` and both kinds' generated accessors,
+  all caught. The first run left one alive, an equivalent: a clause for a missing selector, which matches nothing
+  anyway, now gone
+- Left: the merge. Not done, for later: `tunnelRef` and `workerScriptRef` across namespaces
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first

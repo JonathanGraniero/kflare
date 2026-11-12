@@ -11,7 +11,8 @@
     status.conditions.exists(c, c.type == 'Ready' && c.status == 'False'
     && c.observedGeneration == metadata.generation
     && c.reason in ['TerminalError', 'InvalidToken', 'TokenExpired', 'TokenDisabled', 'AccountNotAllowed',
-    'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported',
+    'ZoneReferenceNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
+    'R2BucketJurisdictionUnsupported',
     'TokenKeyMissing', 'ScriptKeyMissing', 'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound',
     'InvalidAdoptionPolicy', 'NameConflict', 'TitleConflict', 'PatternConflict', 'RulesetConflict',
     'CredentialsSecretConflict', 'AlreadyConfigured', 'TunnelAlreadyConfigured'])

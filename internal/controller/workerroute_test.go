@@ -11,7 +11,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -35,7 +34,7 @@ var _ = Describe("WorkerRoute patterns", func() {
 			err := k8sClient.Create(ctx, &cloudflarev1alpha1.WorkerRoute{
 				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 				Spec: cloudflarev1alpha1.WorkerRouteSpec{
-					ZoneRef: corev1.LocalObjectReference{Name: "route-pattern-zone"},
+					ZoneRef: cloudflarev1alpha1.ZoneReference{Name: "route-pattern-zone"},
 					Pattern: pattern,
 				},
 			})

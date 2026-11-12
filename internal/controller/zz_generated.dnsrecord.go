@@ -80,6 +80,9 @@ var dnsRecordKind = crudResourceKind[*cloudflarev1alpha1.DNSRecord, DNSRecordAPI
 
 	zoneRef:        func(obj *cloudflarev1alpha1.DNSRecord) string { return obj.Spec.ZoneRef.Name },
 	statusZoneID:   func(obj *cloudflarev1alpha1.DNSRecord) *string { return &obj.Status.CloudflareMetadata.ZoneID },
+	zoneNamespace:  func(obj *cloudflarev1alpha1.DNSRecord) string { return obj.Spec.ZoneRef.Namespace },
+	hostname:       func(obj *cloudflarev1alpha1.DNSRecord) string { return obj.Spec.Name },
+	objectHostname: func(current *dns.RecordResponse) string { return current.Name },
 	key:            func(obj *cloudflarev1alpha1.DNSRecord) string { return obj.Spec.Name },
 	claimLabel:     cloudflarev1alpha1.DNSRecordIDLabel,
 	conflictReason: "NameConflict",

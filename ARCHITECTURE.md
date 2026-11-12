@@ -45,6 +45,27 @@ selector also turns the account `Ready=False` with reason `InvalidAllowedNamespa
 check one. A kind that names its account follows the account and the labels of its namespace through watches. A zone's
 kind follows its Zone, which does the same. Without a selector, relabelling a namespace reconciles nothing.
 
+A `Zone` is namespaced, and a rule or a settings resource names one in its own namespace. A `DNSRecord` or a
+`WorkerRoute` may name one in another namespace (`zoneRef.namespace`), so that a platform team keeps the Zone and
+application teams their records. The Zone's `spec.allowedReferences` then decides: each entry allows some namespaces,
+by a label selector, some hostnames, exact or below a `*.` wildcard. `checkZoneReference`
+(`internal/controller/zonereference.go`) asks it for the resource's namespace and the hostname its spec holds (a
+record's name, the host of a route's pattern) on every reconcile, before the Zone's readiness and before any
+Cloudflare call; a resource no entry allows reports `ZoneReferenceNotAllowed`. It fails closed, as the account's check
+does. Two things follow from the Zone being the grant:
+
+- The Zone's account is asked about the Zone's namespace (`spec.allowedNamespaces`), not the resource's: the account
+  is used through the Zone
+- The hostname of the Cloudflare object is checked as well as the spec's. A resource names its object by an ID, in its
+  status or its claim label, and whoever may edit the resource may write that label. So before kflare updates or
+  deletes an object for a resource in another namespace, it reads the object and leaves one whose hostname the Zone
+  does not allow. An object a resource finds, adopts or creates is found by its spec's hostname, which the Zone
+  already allowed
+
+Such a resource follows its Zone, in whichever namespace, and its own namespace's labels through watches. A Zone being
+deleted waits for the resources in other namespaces that it allows, as for those in its own; one it does not allow has
+no call to make through it, and does not hold it back, which any namespace could otherwise do to any Zone.
+
 An installation can be scoped, so that several share a cluster: to the namespaces `--watch-namespaces` lists, and to
 the resources whose labels match `--watch-selector` (`internal/controller/watchscope.go`). The manager's cache then
 holds only the kflare resources of its scope, and the Secrets and ConfigMaps of the namespaces it watches, so its
@@ -748,6 +769,10 @@ A resource in a namespace its account no longer allows ends the same way: no Clo
 its Cloudflare object stays. A Warning Event with reason `AccountNotAllowed` says so. Keeping the finalizer until
 someone allows the namespace again would leave the namespace stuck terminating, and calling Cloudflare would use a token
 the namespace has lost.
+
+So does a `DNSRecord` or a `WorkerRoute` that names a Zone in another namespace, once the Zone's
+`spec.allowedReferences` no longer allows its namespace and hostname, or when the object its ID names has a hostname
+the Zone does not allow it: the Warning Event's reason is `ZoneReferenceNotAllowed`.
 
 So does a resource whose account, or whose Zone or Tunnel, is outside its installation's scope, for the same reasons,
 with a Warning Event with reason `NotWatched`: the installation has lost the token. A token Secret in a namespace the

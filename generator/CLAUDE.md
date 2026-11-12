@@ -563,6 +563,15 @@ kinds:
   (`cache.ByObject.Transform`): from the cache both ended up `Synced` and claiming the object, for all 7 kinds. Still
   cached reads after kflare's own writes, from #132: IPList's `synced` hook (its operation ID) and the settings
   reconciler's `recorded`
+- **A zone's kind used from another namespace** (`feat/zone-allowed-references`, 2026-11-12, for #78): an entry's
+  `zoneHostname` names the field that holds the hostname a resource's object takes in its zone (`field`; `routePattern`
+  for a Worker route's pattern, whose hostname comes before its path; `reason`). The field must be a required string
+  that Get's object reports. The kind's `zoneRef` is then the hand-written `ZoneReference`, with a `namespace`, and the
+  descriptor gains `zoneNamespace`, `hostname` and `objectHostname`, which the shared CRUD reconciler checks against
+  the Zone's `spec.allowedReferences`; the table gains `inZoneNamespace` and an immutable edit of the namespace, and
+  `generatedZoneDependents` lists the kind with `sharedZoneDependents`. A types file imports `corev1` only when a
+  field uses it. TestWorkerRoute is the golden kind. `describeCRUDSharedZone` (`zonereference_test.go`) runs for a
+  table with `inZoneNamespace`
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

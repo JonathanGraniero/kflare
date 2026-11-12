@@ -224,10 +224,10 @@ token as expired or disabled (`TokenExpired`, `TokenDisabled`); another resource
 Cloudflare object or configures the same settings (`NameConflict`, `TitleConflict`, `PatternConflict`,
 `RulesetConflict`, `CredentialsSecretConflict`, `AlreadyConfigured`, `TunnelAlreadyConfigured`); the object exists,
 or is missing, against the adoption policy (`AlreadyExists`, `NotFound`, `InvalidAdoptionPolicy`); a setting is wrong
-(`AccountNotAllowed`, `AccountMismatch`, `InvalidAllowedNamespaces`, `R2BucketJurisdictionUnsupported`,
-`TokenKeyMissing`, `ScriptKeyMissing`, `BindingSecretKeyMissing`); the account, or a resource referenced, is outside
-what the installation watches (`NotWatched`). kflare retries any other reason, or waits for what it names to appear
-or become ready.
+(`AccountNotAllowed`, `ZoneReferenceNotAllowed`, `AccountMismatch`, `InvalidAllowedNamespaces`,
+`R2BucketJurisdictionUnsupported`, `TokenKeyMissing`, `ScriptKeyMissing`, `BindingSecretKeyMissing`); the account, or
+a resource referenced, is outside what the installation watches (`NotWatched`). kflare retries any other reason, or
+waits for what it names to appear or become ready.
 
 [kstatus]: https://github.com/kubernetes-sigs/cli-utils/tree/master/pkg/kstatus
 
@@ -277,6 +277,7 @@ data:
           TokenDisabled = true,
           -- The CloudflareAccount, or a reference, does not fit, or is outside the installation's scope
           AccountNotAllowed = true,
+          ZoneReferenceNotAllowed = true,
           NotWatched = true,
           AccountMismatch = true,
           InvalidAllowedNamespaces = true,
@@ -469,7 +470,7 @@ spec:
       failed: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
         metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'TokenExpired', 'TokenDisabled',
-        'AccountNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
+        'AccountNotAllowed', 'ZoneReferenceNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
         'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing', 'BindingSecretKeyMissing',
         'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict', 'TitleConflict', 'PatternConflict',
         'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured', 'TunnelAlreadyConfigured'])
@@ -496,7 +497,7 @@ spec:
       failed: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
         metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'TokenExpired', 'TokenDisabled',
-        'AccountNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
+        'AccountNotAllowed', 'ZoneReferenceNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
         'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing', 'BindingSecretKeyMissing',
         'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict', 'TitleConflict', 'PatternConflict',
         'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured', 'TunnelAlreadyConfigured'])
@@ -903,6 +904,9 @@ crds:
   `CloudflareAccount` by name, unless the account sets `spec.allowedNamespaces`. Without it, treat permission to create
   kflare resources as permission to use every account's token. See
   [Limiting which namespaces may use an account](#limiting-which-namespaces-may-use-an-account).
+- **A Zone is its namespace's alone until it says otherwise.** A `DNSRecord` or a `WorkerRoute` in another namespace
+  can use it only for the hostnames its `spec.allowedReferences` allows that namespace. See
+  [Sharing a Zone with other namespaces](#sharing-a-zone-with-other-namespaces).
 - **Aggregated roles.** With `rbac.aggregateToDefaultRoles` (default), the built-in `view` role can read all
   kflare kinds, and `edit`/`admin` can manage the namespaced ones. `CloudflareAccount` is never added to
   `edit`: an account can point the controller at a token Secret in any namespace, so only cluster
@@ -943,7 +947,10 @@ spec:
 one without it, since an account that looks restricted would otherwise be open to every namespace.
 
 - **A resource in any other namespace reports reason `AccountNotAllowed`, and kflare makes no Cloudflare call for it.**
-  That covers every kind: a `DNSRecord` or a rule reaches its account through a `Zone` in its own namespace.
+  That covers every kind: a rule reaches its account through a `Zone` in its own namespace, and so does a `DNSRecord`
+  or a `WorkerRoute`, unless it names a Zone in another namespace. The account is then asked about the Zone's
+  namespace, and the Zone about the resource's
+  ([Sharing a Zone with other namespaces](#sharing-a-zone-with-other-namespaces)).
 - **A change takes effect straight away, both ways**, whether to the selector or to a namespace's labels.
 - **A namespace that loses access stops managing its objects, and they stay in Cloudflare.** Deleting a resource there
   removes the resource and leaves its object, with a Warning Event that says so. Clean the object up from a namespace
@@ -955,6 +962,82 @@ one without it, since an account that looks restricted would otherwise be open t
   watches, and namespaces an account allows can adopt each other's objects in it. Give each team its own account where
   that matters. For a tenant that must not share a controller at all, give it an installation of its own (see
   [Several installations in one cluster](#several-installations-in-one-cluster)), or a cluster of its own.
+
+### Sharing a Zone with other namespaces
+
+A zone usually belongs to a platform team, and its records to application teams, each in its own namespace. A `Zone`
+in every team's namespace would give each team the whole zone: its rules, its settings, every hostname, and, with the
+`delete` deletion policy, the zone itself. Instead, keep one `Zone` in the platform team's namespace and list in its
+`spec.allowedReferences` which namespaces may use it, and for which hostnames:
+
+```yaml
+apiVersion: kflare.dev/v1alpha1
+kind: Zone
+metadata:
+  name: example-com
+  namespace: platform-dns
+spec:
+  accountRef:
+    name: main
+  name: example.com
+  allowedReferences:
+    - namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            kubernetes.io/metadata.name: team-a
+      hostnames: ["team-a.example.com", "*.team-a.example.com"]
+---
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: api
+  namespace: team-a
+spec:
+  zoneRef:
+    name: example-com
+    namespace: platform-dns
+  name: api.team-a.example.com
+  type: A
+  content: 192.0.2.1
+```
+
+[examples/share-a-zone/](../examples/share-a-zone/) is this setup as manifests to apply.
+
+- **`zoneRef.namespace` is for a `DNSRecord` and a `WorkerRoute`.** Rules and settings (`WAFCustomRule`, `CacheRule`,
+  `ManagedTransform` and the others) apply to the whole zone, so they stay in the Zone's namespace, with its owner.
+  Without `namespace`, a `zoneRef` names a Zone in the resource's own namespace, as before.
+- **An entry allows its namespaces its hostnames.** `namespaces` is `from: All`, or `from: Selector` with a `selector`,
+  as for an account. A hostname allows itself alone. One that starts with `*.` allows every name below the rest, at any
+  depth, but not the rest itself: `*.team-a.example.com` allows `api.team-a.example.com` and
+  `v2.api.team-a.example.com`, not `team-a.example.com`, so list both to give a team a subdomain and what is below it.
+  Names ignore case.
+- **A hostname is a `DNSRecord`'s `name`, or what a `WorkerRoute`'s `pattern` has before its path.** A name with a
+  wildcard of its own needs an entry that covers every name it stands for: the record `*.team-a.example.com` and the
+  route `*.team-a.example.com/*` need `*.team-a.example.com`, and the route `*team-a.example.com/*`, which also
+  matches `not-team-a.example.com`, needs `*.example.com`.
+- **Anything else reports reason `ZoneReferenceNotAllowed`, and kflare makes no Cloudflare call for it.** A Zone
+  without `allowedReferences` allows no other namespace. The message says whether it is the namespace or the hostname
+  that no entry allows.
+- **A change takes effect straight away, both ways**, whether to the Zone's entries or to a namespace's labels.
+- **A namespace that loses access stops managing its objects, and they stay in Cloudflare.** Deleting a resource there
+  removes the resource and leaves its record or route, with a Warning Event that says so.
+- **The hostname is checked on the object too, not only on the spec.** Before kflare changes or deletes a record or a
+  route for a resource in another namespace, it reads the object the resource's status or claim label names, and
+  leaves one whose hostname the Zone does not allow that namespace. Whoever may edit a resource may write its labels,
+  and could otherwise point one at any record of the zone.
+- **The Zone's account is asked about the Zone's namespace.** With `spec.allowedNamespaces` on the
+  `CloudflareAccount`, a team's namespace needs only the Zone's entry, not the account's. A `Tunnel` or a
+  `WorkerScript` that the team's record or route references is the team's own, in its namespace, and its account must
+  allow that namespace as for any resource; it must also be the Zone's account.
+- **Deleting the Zone waits for the records and routes it allows**, in every namespace, as it waits for those in its
+  own: it reports `InUse` and names them. One it does not allow does not hold it back.
+- **The selector trusts whoever may label namespaces**, as an account's does: match `kubernetes.io/metadata.name` to
+  name namespaces.
+- **Not covered:** a `DNSRecord`'s `tunnelRef` and a `WorkerRoute`'s `workerScriptRef` still name a resource in their
+  own namespace, so a platform team's `Tunnel` cannot serve other namespaces' hostnames yet. With several
+  installations, the installation that manages the record must also watch the Zone's namespace
+  ([Scoping an installation](#scoping-an-installation)); otherwise the record reports `NotWatched`.
 
 ## Verifying a release
 
@@ -1650,6 +1733,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `RateLimited` | The resource has work to do, but its API token's budget is used up, or Cloudflare asked kflare to stop | Nothing: kflare carries on by itself. If it lasts, see [Cloudflare's API rate limit](#cloudflares-api-rate-limit) |
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
 | `AccountNotAllowed` | The `CloudflareAccount`'s `spec.allowedNamespaces` leaves out the resource's namespace | Move the resource, or have a cluster administrator [allow the namespace](#limiting-which-namespaces-may-use-an-account) |
+| `ZoneReferenceNotAllowed` | The resource's `zoneRef` names a `Zone` in another namespace whose `spec.allowedReferences` does not allow the resource's namespace, or its hostname. A resource being deleted then leaves its Cloudflare object, with a Warning Event | The message says which. Have the Zone's owner [allow the namespace and the hostname](#sharing-a-zone-with-other-namespaces), or change the resource |
 | `NotWatched` | The resource's `CloudflareAccount`, or a resource it references, is outside what its installation watches: the account's token Secret is in a namespace it does not watch, or labels do not match its `watchSelector`. A resource being deleted then leaves its Cloudflare object, with a Warning Event | The message says which, and why: list the namespace in `watchNamespaces`, or label the resource (see [Scoping an installation](#scoping-an-installation)) |
 | `InvalidAllowedNamespaces` | A `CloudflareAccount`'s `spec.allowedNamespaces.selector` is invalid, such as `In` with no values. Until it is fixed, it allows no namespace | Fix the selector |
 | `SecretNotFound`, `TokenKeyMissing`, `InvalidToken` | The token Secret is missing, lacks the key, or is empty | Fix the Secret; the account re-validates immediately |

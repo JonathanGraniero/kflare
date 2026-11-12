@@ -1,0 +1,69 @@
+# One Zone, in the platform team's namespace, that an application team's namespace may use for its own hostnames.
+#
+# Replace example.com with a domain on your Cloudflare account, and my-account with your CloudflareAccount
+# (examples/share-a-zone/README.md).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-dns
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+---
+# The platform team's Zone. It adopts the existing zone, and keeps it when this resource is deleted.
+apiVersion: kflare.dev/v1alpha1
+kind: Zone
+metadata:
+  name: example-com
+  namespace: platform-dns
+  annotations:
+    kflare.dev/adoption-policy: adopt
+spec:
+  accountRef:
+    name: my-account
+  name: example.com
+  # Resources in other namespaces may use this Zone only as an entry here allows: the namespaces it picks, for the
+  # hostnames it lists. Rules and settings stay in this namespace.
+  allowedReferences:
+    - namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            # The API server sets this label to the namespace's name, and nobody can change it.
+            kubernetes.io/metadata.name: team-a
+      # team-a.example.com itself, and every name below it.
+      hostnames:
+        - team-a.example.com
+        - "*.team-a.example.com"
+---
+# The application team's record. Its zoneRef names the Zone's namespace, and its name is one the Zone allows team-a.
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: api
+  namespace: team-a
+spec:
+  zoneRef:
+    name: example-com
+    namespace: platform-dns
+  name: api.team-a.example.com
+  type: A
+  content: 192.0.2.1
+  comment: Managed by team-a, through the platform team's Zone.
+---
+# A record the Zone does not allow team-a: it reports Ready=False with reason ZoneReferenceNotAllowed, and kflare
+# makes no Cloudflare call for it.
+apiVersion: kflare.dev/v1alpha1
+kind: DNSRecord
+metadata:
+  name: not-allowed
+  namespace: team-a
+spec:
+  zoneRef:
+    name: example-com
+    namespace: platform-dns
+  name: www.example.com
+  type: A
+  content: 192.0.2.1

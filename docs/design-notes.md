@@ -1646,6 +1646,44 @@ management cluster:
 - **Namespaces are watched only by kinds that name an account.** A zone's kind follows its Zone, and a relabelling that
   no account's selector concerns reconciles nothing, so it costs no Cloudflare calls
 
+## A Zone shared with other namespaces
+
+Decisions behind `zoneRef.namespace` and a Zone's `spec.allowedReferences` (#78), for a zone that a platform team owns
+and application teams hold records in:
+
+- **The grant is on the Zone**, as the issue proposed, not a separate object like Gateway API's `ReferenceGrant`: the
+  hostname limits belong to the zone's owner, and one object shows who may use a zone
+- **`namespaces` is the account's `AllowedNamespaces` type** (`from`, `selector`), where the issue's sketch had a bare
+  `selector`. One shape for "which namespaces" in both places, and its CEL rule comes along: a selector without
+  `from: Selector` is refused, so no entry looks restricted while it is open
+- **Hostnames are required, and a wildcard never covers its own parent**, as a Gateway listener's `hostname` does not:
+  `*.team-a.example.com` leaves `team-a.example.com` out. A whole subdomain is two entries, which says what is given
+- **A name with a wildcard of its own is compared as written.** Every name the record `*.a.example.com` or the route
+  `*a.example.com/*` stands for ends with what follows its wildcard, so an entry covers them all exactly when it
+  covers the text: `*.example.com` covers both, `*.a.example.com` only the first. No pattern arithmetic is needed
+- **Only `DNSRecord` and `WorkerRoute` take `zoneRef.namespace`.** A rule or a setting applies to the whole zone, so it
+  stays with the zone's owner. In kflare-gen it is an entry's `zoneHostname`: the field that holds the hostname, and
+  whether it is a route pattern
+- **The Zone's account is asked about the Zone's namespace** (#77's `spec.allowedNamespaces`), as #77's pull request
+  foresaw: the account is used through the Zone, so a team needs the Zone's grant alone. A `Tunnel` or `WorkerScript`
+  the team's record or route references is still the team's, and is checked as its own
+- **The check comes before the Zone's readiness**, as the account's comes before its own: a namespace the Zone leaves
+  out learns nothing more about it
+- **The object's hostname is checked too.** The spec's hostname is not enough: a resource deletes the object its claim
+  label names when its status records none, and whoever may edit a resource may write its labels. A `DNSRecord` for
+  an allowed name, labelled with another record's ID and deleted, would have deleted that record. So for a Zone in
+  another namespace, kflare reads the object before a delete, and checks the one status names before an update. It
+  costs one read per deletion, only for such resources. An object found, adopted or created is found by the spec's
+  hostname, so it needs no second check
+- **Deleting from a namespace that lost access leaves the object**, as #77 decided for accounts, with a Warning Event
+- **A Zone waits only for the resources it allows.** It must wait for those, which need it to delete their objects. One
+  it does not allow makes no call through it, and waiting for it would let any namespace hold back any Zone by naming
+  it
+- **No field index.** The issue suggested one on `zoneRef`. A Zone's event lists the kind's resources and compares, as
+  the account's and every other mapper does; an index would be one more thing each test manager must register
+- **Not done:** a `tunnelRef` or `workerScriptRef` across namespaces (the issue's "later"), and a live run of the
+  WorkerRoute path, whose live spec covers only `DNSRecord`
+
 ## Health checks in Argo CD and Flux
 
 Decisions behind the deploy guide's health checks (#83), and what was checked, on 2026-11-01:

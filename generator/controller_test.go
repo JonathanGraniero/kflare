@@ -353,6 +353,18 @@ func TestBuildControllerRefuses(t *testing.T) {
 			svc.update, svc.updateMethod = nil, ""
 			delete(svc.calls, "Update")
 		}, "adopt.by: Get's object does not report title"},
+		{"a zone hostname in an unknown field", func(_ *service, entry *kindConfig, _ *apiSpec) {
+			entry.ZoneHostname = &zoneHostnameConfig{Field: "name", Reason: "why"}
+		}, "zoneHostname.field: the spec has no field name"},
+		{"a zone hostname in an optional field", func(_ *service, entry *kindConfig, _ *apiSpec) {
+			entry.ZoneHostname = &zoneHostnameConfig{Field: "jurisdiction", Reason: "why"}
+		}, "zoneHostname.field: jurisdiction is not a required string"},
+		{"a zone hostname in a field Get does not report", func(svc *service, entry *kindConfig, _ *apiSpec) {
+			entry.ZoneHostname = &zoneHostnameConfig{Field: "title", Reason: "why"}
+			svc.object = without(svc.object, "title")
+			svc.update, svc.updateMethod = nil, ""
+			delete(svc.calls, "Update")
+		}, "zoneHostname.field: Get's object does not report title as a string"},
 		{"a sample of an unknown field", func(_ *service, entry *kindConfig, _ *apiSpec) {
 			entry.Sample = map[string]any{"title": "a", "colour": "blue"}
 		}, "sample.colour: the spec has no such field"},

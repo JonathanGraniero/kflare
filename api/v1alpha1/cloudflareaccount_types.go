@@ -46,8 +46,8 @@ type RateLimit struct {
 	RequestsPerFiveMinutes int32 `json:"requestsPerFiveMinutes"`
 }
 
-// NamespacesFrom says where the namespaces allowed to use a CloudflareAccount
-// come from.
+// NamespacesFrom says where the namespaces allowed to use a CloudflareAccount,
+// or a Zone from outside its namespace, come from.
 // +kubebuilder:validation:Enum=All;Selector
 type NamespacesFrom string
 
@@ -58,7 +58,8 @@ const (
 	NamespacesFromSelector NamespacesFrom = "Selector"
 )
 
-// AllowedNamespaces is which namespaces' resources may use a CloudflareAccount.
+// AllowedNamespaces is which namespaces' resources may use a CloudflareAccount,
+// or a Zone from outside its namespace (ZoneAllowedReference).
 // +kubebuilder:validation:XValidation:rule="(self.from == 'Selector') == has(self.selector)",message="selector goes with from: Selector, and only with it"
 type AllowedNamespaces struct {
 	// From is All, for every namespace, or Selector, for those Selector

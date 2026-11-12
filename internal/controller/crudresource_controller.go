@@ -52,6 +52,10 @@ import (
 // finds the object in its list: in its pages, or in the one page of a list
 // that is never paged, as a zone's Worker routes are.
 //
+// A zone's kind names its Zone in its own namespace. Some may also name one in
+// another namespace (zoneNamespace), which must allow the resource's namespace
+// and hostname (zonereference.go).
+//
 // A kind's spec may reference resources of other kinds in its namespace, as a
 // WorkerRoute names its WorkerScript: a resource waits for each to be ready,
 // and sends the value it gives, such as the Worker's name.
@@ -77,6 +81,15 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	accountRef   func(O) string
 	zoneRef      func(O) string
 	statusZoneID func(O) *string
+	// zoneNamespace, hostname and objectHostname are set for a zone's kind
+	// whose resources may name a Zone in another namespace. zoneNamespace
+	// returns the namespace a resource's zoneRef names, "" for its own;
+	// hostname the hostname its spec asks the Zone for, and objectHostname the
+	// one an object holds, each with its wildcard if it has one. Such a Zone
+	// must allow both (checkZoneReference).
+	zoneNamespace  func(O) string
+	hostname       func(O) string
+	objectHostname func(*R) string
 	// key returns the value a resource adopts an existing object by, such as
 	// a title that no two objects in an account share.
 	key func(O) string
@@ -278,14 +291,17 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 
 	// A zone's kind waits for its Zone (the Zone watch re-triggers this
 	// reconcile when it is ready) and calls Cloudflare with its account.
-	accountName, whose := "", "this "+r.kind.name
+	// The account is used from the resource's namespace, or, through a Zone,
+	// from the Zone's: what the account allows is asked of that one.
+	accountName, whose, usedFrom := "", "this "+r.kind.name, obj.GetNamespace()
 	var zone *cloudflarev1alpha1.Zone
 	if r.kind.zoneRef != nil {
 		var condErr *conditionError
 		if zone, condErr = r.zone(ctx, obj); condErr != nil {
 			return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
 		}
-		accountName, whose = zone.Spec.AccountRef.Name, fmt.Sprintf("Zone %q", zone.Name)
+		accountName, whose, usedFrom = zone.Spec.AccountRef.Name, zoneLabel(obj, client.ObjectKeyFromObject(zone)),
+			zone.Namespace
 	} else if r.kind.hooks.account != nil {
 		name, _, condErr := r.kind.hooks.account(ctx, r.Client, obj)
 		if condErr != nil {
@@ -300,7 +316,7 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
 	}
 
-	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), accountName, true)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, usedFrom, accountName, true)
 	if credErr != nil {
 		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
 	}
@@ -321,24 +337,76 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 	}
 
 	parentID := account.Spec.AccountID
+	var sharedZone *cloudflarev1alpha1.Zone
 	if zone != nil {
 		parentID = zone.Status.CloudflareMetadata.ZoneID
+		if zone.Namespace != obj.GetNamespace() {
+			sharedZone = zone
+		}
 	}
-	return r.sync(ctx, obj, account.Spec.AccountID, parentID, refs, api)
+	return r.sync(ctx, obj, account.Spec.AccountID, parentID, refs, api, sharedZone)
+}
+
+// zoneKey returns the Zone a resource of a zone's kind names: one in its own
+// namespace, unless its kind's resources may name another and it does.
+func (r *crudResourceReconciler[O, A, R, L]) zoneKey(obj O) types.NamespacedName {
+	key := types.NamespacedName{Name: r.kind.zoneRef(obj), Namespace: obj.GetNamespace()}
+	if r.kind.zoneNamespace != nil {
+		if namespace := r.kind.zoneNamespace(obj); namespace != "" {
+			key.Namespace = namespace
+		}
+	}
+	return key
+}
+
+// zoneLabel is what messages call the Zone key that obj names: by its name,
+// with its namespace when that is not obj's.
+func zoneLabel(obj client.Object, key types.NamespacedName) string {
+	if key.Namespace != obj.GetNamespace() {
+		return fmt.Sprintf("Zone %q", key.Namespace+"/"+key.Name)
+	}
+	return fmt.Sprintf("Zone %q", key.Name)
 }
 
 // zone returns the ready Zone a resource of a zone's kind belongs to, or why
-// the resource waits for it.
+// the resource waits for it. A Zone in another namespace must allow the
+// resource's namespace and the hostname its spec asks for, which comes before
+// its readiness: a namespace it leaves out learns nothing more about it.
 func (r *crudResourceReconciler[O, A, R, L]) zone(ctx context.Context, obj O) (*cloudflarev1alpha1.Zone, *conditionError) {
 	zone := &cloudflarev1alpha1.Zone{}
-	key := types.NamespacedName{Name: r.kind.zoneRef(obj), Namespace: obj.GetNamespace()}
-	if condErr := getReference(ctx, r.Client, key, zone, fmt.Sprintf("Zone %q", key.Name), "ZoneNotFound"); condErr != nil {
+	key := r.zoneKey(obj)
+	what := zoneLabel(obj, key)
+	if condErr := getReference(ctx, r.Client, key, zone, what, "ZoneNotFound"); condErr != nil {
 		return nil, condErr
 	}
+	if key.Namespace != obj.GetNamespace() {
+		if condErr := checkZoneReference(ctx, r.Client, zone, obj.GetNamespace(), r.kind.hostname(obj)); condErr != nil {
+			return nil, condErr
+		}
+	}
 	if !isZoneReady(zone) {
-		return nil, &conditionError{Reason: "ZoneNotReady", Message: fmt.Sprintf("Zone %q is not ready", key.Name)}
+		return nil, &conditionError{Reason: "ZoneNotReady", Message: what + " is not ready"}
 	}
 	return zone, nil
+}
+
+// checkObjectHostname returns why sharedZone, a Zone in another namespace,
+// does not allow obj to manage the object current, nil if it does: the
+// object's hostname, not only the spec's, must be one the Zone allows obj's
+// namespace. obj names the object by an ID, which its status or its claim
+// label holds, and whoever may edit obj may write that label.
+func (r *crudResourceReconciler[O, A, R, L]) checkObjectHostname(ctx context.Context, obj O,
+	sharedZone *cloudflarev1alpha1.Zone, current *R) *conditionError {
+	hostname := r.kind.objectHostname(current)
+	condErr := checkZoneReference(ctx, r.Client, sharedZone, obj.GetNamespace(), hostname)
+	if condErr == nil {
+		return nil
+	}
+	return &conditionError{
+		Reason: condErr.Reason,
+		Message: fmt.Sprintf("%s %s, which this %s names by its ID, has the hostname %q. %s", r.kind.noun,
+			r.kind.id(current), r.kind.name, hostname, condErr.Message),
+	}
 }
 
 // resolveReferences returns the value each of the kind's references gives, by
@@ -386,8 +454,12 @@ func (r *crudResourceReconciler[O, A, R, L]) references() []crudReference[O] {
 
 // sync drives the desired→observed→delta→reconcile loop for one resource, in
 // the account or zone parentID, of the Cloudflare account accountID.
+// sharedZone is the resource's Zone when it is in another namespace, and nil
+// otherwise: the object status names must then be one that Zone allows
+// (checkObjectHostname). An object the resource finds, adopts or creates is
+// one of the hostname its spec asks for, which the Zone already allowed.
 func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, accountID, parentID string,
-	refs map[string]string, api A) (ctrl.Result, error) {
+	refs map[string]string, api A, sharedZone *cloudflarev1alpha1.Zone) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	k := r.kind
 
@@ -404,6 +476,11 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 		case k.hooks.gone != nil && k.hooks.gone(got):
 			logger.Info(k.noun+" deleted outside kflare, recreating", "id", id)
 		default:
+			if sharedZone != nil {
+				if condErr := r.checkObjectHostname(ctx, obj, sharedZone, got); condErr != nil {
+					return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
+				}
+			}
 			current = got
 		}
 	}
@@ -698,11 +775,11 @@ func (r *crudResourceReconciler[O, A, R, L]) claimant(ctx context.Context, obj O
 func (r *crudResourceReconciler[O, A, R, L]) sameParent(ctx context.Context, obj, other O, parentID string) (bool, error) {
 	k := r.kind
 	if k.zoneRef != nil {
-		if other.GetNamespace() == obj.GetNamespace() && k.zoneRef(other) == k.zoneRef(obj) {
+		if r.zoneKey(other) == r.zoneKey(obj) {
 			return true, nil
 		}
 		zone := &cloudflarev1alpha1.Zone{}
-		err := r.Get(ctx, types.NamespacedName{Name: k.zoneRef(other), Namespace: other.GetNamespace()}, zone)
+		err := r.Get(ctx, r.zoneKey(other), zone)
 		switch {
 		case apierrors.IsNotFound(err):
 			return false, nil
@@ -781,12 +858,12 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 			return ctrl.Result{}, err
 		}
 		if !handed && !reconciler.RetainOnDelete(obj) {
-			accountName, zoneID, gone, err := r.deletionParent(ctx, obj)
+			from, gone, err := r.deletionParent(ctx, obj)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
 			if !gone {
-				if result, err := r.deleteObject(ctx, obj, accountName, zoneID, id); err != nil || !result.IsZero() {
+				if result, err := r.deleteObject(ctx, obj, from, id); err != nil || !result.IsZero() {
 					return result, err
 				}
 			}
@@ -936,17 +1013,29 @@ func (r *crudResourceReconciler[O, A, R, L]) parentID(ctx context.Context, obj O
 		return id, nil
 	}
 	zone := &cloudflarev1alpha1.Zone{}
-	err := r.Get(ctx, types.NamespacedName{Name: k.zoneRef(obj), Namespace: obj.GetNamespace()}, zone)
+	err := r.Get(ctx, r.zoneKey(obj), zone)
 	return zone.Status.CloudflareMetadata.ZoneID, client.IgnoreNotFound(err)
 }
 
-// deleteObject deletes a resource's object id from Cloudflare, with the token
-// of the CloudflareAccount accountName, from its account or, for a zone's
-// kind, from the zone zoneID. While one of the kind's deletion blockers keeps
-// the object, it reports why and returns a retry.
-func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, obj O, accountName, zoneID,
+// deletionParent is where a resource's object is deleted from: the
+// CloudflareAccount whose token deletes it, the namespace that uses the
+// account (the resource's, or its Zone's), and, for a zone's kind, the zone
+// its status records. sharedZone is the resource's Zone when it is in another
+// namespace, which must allow the object's hostname.
+type deletionParent struct {
+	accountName, usedFrom, zoneID string
+	sharedZone                    *cloudflarev1alpha1.Zone
+}
+
+// deleteObject deletes a resource's object id from Cloudflare, from where
+// from says. While one of the kind's deletion blockers keeps the object, it
+// reports why and returns a retry. Through a Zone in another namespace, it
+// reads the object first, and leaves one whose hostname the Zone does not
+// allow the resource's namespace, with a Warning Event: the ID may come from
+// the resource's claim label, which whoever may edit the resource may write.
+func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, obj O, from deletionParent,
 	id string) (ctrl.Result, error) {
-	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), accountName, false)
+	account, token, credErr := resolveAccountToken(ctx, r.Client, from.usedFrom, from.accountName, false)
 	if credErr != nil {
 		return ctrl.Result{}, leaveCloudflareObject(ctx, obj, credErr)
 	}
@@ -959,7 +1048,19 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 	}
 	parentID := account.Spec.AccountID
 	if r.kind.zoneRef != nil {
-		parentID = zoneID
+		parentID = from.zoneID
+	}
+	if from.sharedZone != nil {
+		current, err := r.kind.get(ctx, api, obj, parentID, id)
+		switch {
+		case cfpkg.IsNotFound(err):
+			return ctrl.Result{}, nil
+		case err != nil:
+			return retryCleanup(err)
+		}
+		if condErr := r.checkObjectHostname(ctx, obj, from.sharedZone, current); condErr != nil {
+			return ctrl.Result{}, leaveCloudflareObject(ctx, obj, condErr)
+		}
 	}
 	if before := r.kind.hooks.beforeDelete; before != nil {
 		if err := before(ctx, api, obj, parentID, id); err != nil && !cfpkg.IsNotFound(err) {
@@ -983,56 +1084,67 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 	return ctrl.Result{}, nil
 }
 
-// deletionParent returns where a resource's object is deleted from: the
-// CloudflareAccount whose token deletes it and, for a zone's kind, the zone
-// its status records. A zone's kind's Zone waits for its resources before it
-// is deleted, so it is normally still there; if it is gone anyway (its
-// finalizer was removed by hand), there are no credentials to delete with,
-// the object stays in Cloudflare and gone is set. A parent outside what the
-// installation watches ends the same way, with a Warning Event
-// (leaveCloudflareObject).
-func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context, obj O) (accountName, zoneID string,
+// deletionParent returns where a resource's object is deleted from. A zone's
+// kind's Zone waits for its resources before it is deleted, so it is normally
+// still there; if it is gone anyway (its finalizer was removed by hand), there
+// are no credentials to delete with, the object stays in Cloudflare and gone
+// is set. A parent outside what the installation watches ends the same way,
+// with a Warning Event (leaveCloudflareObject), and so does a Zone in another
+// namespace that no longer allows the resource's namespace and hostname.
+func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context, obj O) (from deletionParent,
 	gone bool, err error) {
+	from.usedFrom = obj.GetNamespace()
 	if account := r.kind.hooks.account; account != nil {
 		name, gone, condErr := account(ctx, r.Client, obj)
 		if condErr != nil && condErr.Reason == reasonNotWatched {
-			return "", "", true, leaveCloudflareObject(ctx, obj, condErr)
+			return from, true, leaveCloudflareObject(ctx, obj, condErr)
 		}
 		if condErr != nil && !gone {
-			return "", "", false, condErr
+			return from, false, condErr
 		}
-		return name, "", gone, nil
+		from.accountName = name
+		return from, gone, nil
 	}
 	if r.kind.zoneRef == nil {
-		return r.kind.accountRef(obj), "", false, nil
+		from.accountName = r.kind.accountRef(obj)
+		return from, false, nil
 	}
 	zone := &cloudflarev1alpha1.Zone{}
-	key := types.NamespacedName{Name: r.kind.zoneRef(obj), Namespace: obj.GetNamespace()}
+	key := r.zoneKey(obj)
 	err = r.Get(ctx, key, zone)
-	if condErr := outsideReference(ctx, key, zone, fmt.Sprintf("Zone %q", key.Name), err); condErr != nil {
-		return "", "", true, leaveCloudflareObject(ctx, obj, condErr)
+	if condErr := outsideReference(ctx, key, zone, zoneLabel(obj, key), err); condErr != nil {
+		return from, true, leaveCloudflareObject(ctx, obj, condErr)
 	}
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			log.FromContext(ctx).Info("Zone is gone, skipping Cloudflare deletion", "zone", key.Name)
-			return "", "", true, nil
+			log.FromContext(ctx).Info("Zone is gone, skipping Cloudflare deletion", "zone", key.String())
+			return from, true, nil
 		}
-		return "", "", false, err
+		return from, false, err
+	}
+	if key.Namespace != obj.GetNamespace() {
+		if condErr := checkZoneReference(ctx, r.Client, zone, obj.GetNamespace(), r.kind.hostname(obj)); condErr != nil {
+			return from, true, leaveCloudflareObject(ctx, obj, condErr)
+		}
+		from.sharedZone = zone
 	}
 	// A reconcile that failed before it wrote status recorded no zone: the
 	// Zone still names it.
-	zoneID = *r.kind.statusZoneID(obj)
-	if zoneID == "" {
-		zoneID = zone.Status.CloudflareMetadata.ZoneID
+	from.zoneID = *r.kind.statusZoneID(obj)
+	if from.zoneID == "" {
+		from.zoneID = zone.Status.CloudflareMetadata.ZoneID
 	}
-	return zone.Spec.AccountRef.Name, zoneID, false, nil
+	from.accountName, from.usedFrom = zone.Spec.AccountRef.Name, zone.Namespace
+	return from, false, nil
 }
 
 // setup registers the kind's controller, with rec as its reconciler. It
 // watches CloudflareAccounts, or Zones for a zone's kind, so a resource
 // waiting for its account or Zone is reconciled once it is ready; the labels
 // of Namespaces, so a kind that names its account follows what the account's
-// spec.allowedNamespaces says of them (a zone's kind follows its Zone); the
+// spec.allowedNamespaces says of them (a zone's kind follows its Zone, and one
+// that may name a Zone in another namespace what that Zone's
+// spec.allowedReferences says of its own namespace's labels); the
 // kinds its spec references, so a resource waiting for one is reconciled once
 // it is ready; the deletion of the kind's dependents, so a resource waiting
 // for them is released once they are gone; and the deletion of the kind's own
@@ -1042,6 +1154,10 @@ func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconci
 	switch {
 	case r.kind.zoneRef != nil:
 		b = b.Watches(&cloudflarev1alpha1.Zone{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForZone))
+		if r.kind.zoneNamespace != nil {
+			b = b.Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.resourcesOfSharedZones),
+				builder.WithPredicates(predicate.LabelChangedPredicate{}))
+		}
 	case r.kind.accountRef != nil:
 		b = b.Watches(&cloudflarev1alpha1.CloudflareAccount{}, handler.EnqueueRequestsFromMapFunc(r.resourcesForAccount))
 		b = b.Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.resourcesInNamespace),
@@ -1087,10 +1203,25 @@ func (r *crudResourceReconciler[O, A, R, L]) resourcesInNamespace(ctx context.Co
 		func(obj O) bool { return restricted[r.kind.accountRef(obj)] })
 }
 
-// resourcesForZone maps a Zone event to the kind's resources in its zone.
+// resourcesForZone maps a Zone event to the kind's resources in its zone:
+// those in its namespace, and, for a kind whose resources may name a Zone in
+// another namespace, those in any namespace that name it.
 func (r *crudResourceReconciler[O, A, R, L]) resourcesForZone(ctx context.Context, zone client.Object) []reconcile.Request {
-	return r.resourcesWhere(ctx, []client.ListOption{client.InNamespace(zone.GetNamespace())},
-		func(obj O) bool { return r.kind.zoneRef(obj) == zone.GetName() })
+	var opts []client.ListOption
+	if r.kind.zoneNamespace == nil {
+		opts = append(opts, client.InNamespace(zone.GetNamespace()))
+	}
+	return r.resourcesWhere(ctx, opts, func(obj O) bool { return r.zoneKey(obj) == client.ObjectKeyFromObject(zone) })
+}
+
+// resourcesOfSharedZones maps a change to a Namespace's labels to the kind's
+// resources there that name a Zone in another namespace, whose
+// spec.allowedReferences may pick namespaces by their labels. A resource of
+// its own namespace's Zone has nothing to ask the labels.
+func (r *crudResourceReconciler[O, A, R, L]) resourcesOfSharedZones(ctx context.Context,
+	namespace client.Object) []reconcile.Request {
+	return r.resourcesWhere(ctx, []client.ListOption{client.InNamespace(namespace.GetName())},
+		func(obj O) bool { return r.zoneKey(obj).Namespace != obj.GetNamespace() })
 }
 
 // resourcesReferencing returns what maps an event of a resource of the kind

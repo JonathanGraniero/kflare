@@ -222,6 +222,16 @@ func emitController(c *controller, header string) ([]byte, error) {
 		f.printf("zoneRef: func(obj %s) string { return obj.Spec.ZoneRef.Name },\n", obj)
 		f.printf("statusZoneID: func(obj %s) *string { return &obj.Status.CloudflareMetadata.%s },\n", obj,
 			c.statusZoneID)
+		if h := c.zoneHostname; h != nil {
+			hostname := "%s"
+			if c.routePattern {
+				hostname = "routePatternHostname(%s)"
+			}
+			f.printf("zoneNamespace: func(obj %s) string { return obj.Spec.ZoneRef.Namespace },\n", obj)
+			f.printf("hostname: func(obj %s) string { return "+hostname+" },\n", obj, "obj.Spec."+h.goName)
+			f.printf("objectHostname: func(current *%s) string { return "+hostname+" },\n", object,
+				"current."+h.object.goName)
+		}
 	} else {
 		f.printf("accountRef: func(obj %s) string { return obj.Spec.AccountRef.Name },\n", obj)
 	}
@@ -853,8 +863,12 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	}
 	f.printf("%s &%s.%s{\nObjectMeta: %s.ObjectMeta{Name: key.Name, Namespace: key.Namespace},\n", build, f.api(), name,
 		f.use("k8s.io/apimachinery/pkg/apis/meta/v1", "metav1"))
-	f.printf("Spec: %s.%sSpec{\n%s: %s.LocalObjectReference{Name: parent},\n", f.api(), name, parentRef,
-		f.use("k8s.io/api/core/v1", "corev1"))
+	if c.zoneHostname != nil {
+		f.printf("Spec: %s.%sSpec{\n%s: %s.%s{Name: parent},\n", f.api(), name, parentRef, f.api(), zoneReferenceType)
+	} else {
+		f.printf("Spec: %s.%sSpec{\n%s: %s.LocalObjectReference{Name: parent},\n", f.api(), name, parentRef,
+			f.use("k8s.io/api/core/v1", "corev1"))
+	}
 	for _, af := range c.fields {
 		if value, ok := c.sample[af.apiName]; ok {
 			f.printf("%s: %s,\n", af.goName, goValue(f, af.field, value))
@@ -903,6 +917,10 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 	}
 	f.printf("{field: %q, what: %q,\nedit: func(obj %s) { obj.Spec.%s.Name = %q }},\n", parentField,
 		"changing "+parentField, obj, parentRef, parentName)
+	if c.zoneHostname != nil {
+		f.printf("{field: %q, what: %q,\nedit: func(obj %s) { obj.Spec.%s.Namespace = %q }},\n", parentField,
+			"naming a Zone in another namespace", obj, parentRef, "other-namespace")
+	}
 	for _, e := range c.immutable {
 		f.printf("{field: %q, what: %q,\n", e.f.jsonName, e.what)
 		if e.setup != nil {
@@ -916,6 +934,10 @@ func emitControllerTest(c *controller, header string) ([]byte, error) {
 		f.printf("elsewhere: &crudScopeEdit[%s]{\ncrudSpecEdit: crudSpecEdit[%s]{field: %q, what: %q,\n"+
 			"edit: func(obj %s) { obj.Spec.%s = %s }},\nscope: %q,\n},\n", obj, obj, e.f.jsonName, e.what, obj,
 			e.f.goName, goValue(f, e.f, e.value), c.scopeElsewhere)
+	}
+	if c.zoneHostname != nil {
+		f.printf("inZoneNamespace: func(obj %s, namespace string) { obj.Spec.%s.Namespace = namespace },\n", obj,
+			parentRef)
 	}
 	emitReferenceSpecs(f, c, obj)
 	if len(c.deletionBlockers) > 0 {
@@ -1500,12 +1522,18 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*sett
 	}
 	f.printf("}\n\n")
 	comment(&f.Builder, "", wrap("generatedZoneDependents are the generated rule and settings kinds, and the CRUD "+
-		"kinds of a zone, whose resources reference a Zone in their namespace."))
+		"kinds of a zone, whose resources reference a Zone in their namespace, or, for a kind that may, in another."))
 	f.printf("var generatedZoneDependents = []dependentKind{\n")
 	zoneKinds := make([]string, 0, len(ruleKinds)+len(settingsKinds))
+	// shared holds the kinds whose resources may name a Zone in another
+	// namespace, by name.
+	shared := map[string]*controller{}
 	for _, c := range kinds {
 		if c.zoned {
 			zoneKinds = append(zoneKinds, c.name)
+		}
+		if c.zoneHostname != nil {
+			shared[c.name] = c
 		}
 	}
 	for _, k := range ruleKinds {
@@ -1515,6 +1543,17 @@ func emitKinds(kinds []*controller, ruleKinds []*ruleKind, settingsKinds []*sett
 		zoneKinds = append(zoneKinds, k.name)
 	}
 	for _, name := range slices.Sorted(slices.Values(zoneKinds)) {
+		if c := shared[name]; c != nil {
+			hostname := "obj.Spec." + c.zoneHostname.goName
+			if c.routePattern {
+				hostname = "routePatternHostname(" + hostname + ")"
+			}
+			f.printf("sharedZoneDependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", name, client, f.api(),
+				name)
+			f.printf("func(obj *%s.%s) (%s.%s, string) {\nreturn obj.Spec.ZoneRef, %s\n}),\n", f.api(), name, f.api(),
+				zoneReferenceType, hostname)
+			continue
+		}
 		f.printf("dependents(%q, func() %s.ObjectList { return &%s.%sList{} },\n", name, client, f.api(), name)
 		f.printf("func(obj *%s.%s) []string { return []string{obj.Spec.ZoneRef.Name} }),\n", f.api(), name)
 	}
