@@ -610,6 +610,9 @@ Things to know before pointing kflare at existing infrastructure:
   `kflare.dev/adoption-policy: adopt` (adopt it, never create one) or `adopt-or-create` (adopt it, or create
   one if there is none). kflare then corrects drift toward your spec, and marks the resource
   `kflare.dev/adopted: "true"`.
+- **Adopting a proxied DNS record.** A `DNSRecord` without `proxied` asks for a DNS-only record. So that adopting
+  a proxied (orange cloud) record does not turn its proxy off by omission, such a resource reports `AlreadyExists`
+  and leaves the record alone until its spec says `proxied: true`, to keep it proxied, or `proxied: false`.
 - **Deletion policy.** Deleting a kflare resource deletes the Cloudflare object kflare created, and keeps one
   it adopted. The annotation `kflare.dev/deletion-policy` overrides that: `retain` keeps the object, and
   `delete` deletes it even if it was adopted.
@@ -1744,6 +1747,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `AlreadyConfigured` | Another resource of the kind, in any namespace, configures the same Cloudflare zone's settings | Keep one per zone; kflare checks again every minute, and when the other is deleted |
 | `CredentialsSecretConflict` | A Secret with the tunnel's `credentialsSecretRef` name exists and kflare does not own it | Delete it or pick another name |
 | `AlreadyExists` | The Cloudflare object the resource names (a zone, record, tunnel, Worker, bucket, ...) exists and kflare did not create it, or not this installation: the message then names the `CloudflareAccount` through which another installation may manage it | Annotate the resource `kflare.dev/adoption-policy: adopt` to manage it, or pick another name. Leave an object another installation manages to it: adopting it would have both manage it |
+| `AlreadyExists` (DNSRecord, with an adoption policy) | The record is proxied and the resource's `proxied` is unset, which means DNS only: adopting it would turn its proxy off | Set `spec.proxied` to `true` to keep the record proxied, or to `false` to turn its proxy off |
 | `NotFound` | The resource's adoption policy is `adopt` and there is nothing to adopt | Check the name, or use `adopt-or-create` to create one |
 | `InvalidAdoptionPolicy` | `kflare.dev/adoption-policy` holds a value other than `adopt` and `adopt-or-create` | Fix or remove the annotation |
 | `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern in the same Cloudflare zone | Keep one WorkerRoute per pattern. After a rename, the new resource reports it until the old one is deleted ([Renaming a resource](#renaming-a-resource)) |
