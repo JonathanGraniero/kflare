@@ -183,6 +183,11 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// refuse says why a resource cannot take the object it found under its
 	// key, such as a list of another kind with the same name.
 	refuse func(found *R) *conditionError
+	// refuseAdoption says why a resource cannot adopt the object it found,
+	// which is not its own, as its spec stands: adopting overwrites the object
+	// to match the spec, and a kind may hold back a change the spec never
+	// spelled out, as a DNSRecord does with a proxied record.
+	refuseAdoption func(obj O, found *R, refs map[string]string) *conditionError
 	// matches replaces the comparison of the object with the spec.
 	matches func(obj O, current *R, refs map[string]string) bool
 	// sourceChanged reports that what the resource's calls send changed since
@@ -627,6 +632,11 @@ func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, o
 		}
 		if found != nil && k.hooks.refuse != nil {
 			if condErr := k.hooks.refuse(found); condErr != nil {
+				return stop(notReadyRetryAfter(ctx, r.Client, obj, condErr))
+			}
+		}
+		if found != nil && !own && k.hooks.refuseAdoption != nil {
+			if condErr := k.hooks.refuseAdoption(obj, found, refs); condErr != nil {
 				return stop(notReadyRetryAfter(ctx, r.Client, obj, condErr))
 			}
 		}

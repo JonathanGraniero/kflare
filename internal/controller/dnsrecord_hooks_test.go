@@ -505,6 +505,84 @@ var _ = Describe("DNSRecord hooks", func() {
 		})
 	})
 
+	Describe("adopting a proxied record", func() {
+		proxied := func(raw map[string]any) { raw["proxied"] = true }
+		setProxied := func(value bool) func(*cloudflarev1alpha1.DNSRecord) {
+			return func(record *cloudflarev1alpha1.DNSRecord) {
+				adoptOrCreate(record)
+				record.Spec.Proxied = &value
+			}
+		}
+		expectRefused := func() {
+			result, err := reconcileRecord()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+			cond := condition()
+			Expect(cond.Reason).To(Equal("AlreadyExists"))
+			Expect(cond.Message).To(Equal(`DNS record "www.example.com" already exists and is proxied, and ` +
+				`spec.proxied is unset, which means DNS only: adopting it would turn its proxy off. Set spec.proxied ` +
+				`to true to keep it proxied, or to false to turn its proxy off`))
+			Expect(store.writes).To(BeZero())
+			Expect(store.objects["existing"].Proxied).To(BeTrue())
+			record := getRecord()
+			Expect(record.Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			Expect(record.Labels).NotTo(HaveKey(cloudflarev1alpha1.DNSRecordIDLabel))
+		}
+
+		It("leaves the record alone while the spec leaves proxied unset, which would turn its proxy off", func() {
+			seed("existing", "192.0.2.1", proxied)
+			createRecord(key, adoptOrCreate)
+			expectRefused()
+		})
+
+		It("leaves a lone record of another content alone too, with the adopt policy", func() {
+			seed("existing", "192.0.2.9", proxied)
+			createRecord(key, func(record *cloudflarev1alpha1.DNSRecord) {
+				record.Annotations = map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt}
+			})
+			expectRefused()
+			Expect(store.objects["existing"].Content).To(Equal("192.0.2.9"))
+		})
+
+		It("adopts it once the spec says to keep it proxied, and writes nothing", func() {
+			seed("existing", "192.0.2.1", proxied)
+			createRecord(key, adoptOrCreate)
+			expectRefused()
+			update(func(record *cloudflarev1alpha1.DNSRecord) { record.Spec.Proxied = new(true) })
+			sync()
+			Expect(getRecord().Status.CloudflareMetadata.RecordID).To(Equal("existing"))
+			Expect(getRecord().Annotations).To(HaveKey(reconciler.AdoptedAnnotation))
+			Expect(current().Proxied).To(BeTrue())
+			Expect(store.writes).To(BeZero())
+		})
+
+		It("adopts it and turns its proxy off when the spec says false", func() {
+			seed("existing", "192.0.2.1", proxied)
+			createRecord(key, setProxied(false))
+			sync()
+			Expect(getRecord().Status.CloudflareMetadata.RecordID).To(Equal("existing"))
+			Expect(current().Proxied).To(BeFalse())
+		})
+
+		It("adopts a DNS-only record whose spec leaves proxied unset", func() {
+			seed("existing", "192.0.2.1", nil)
+			createRecord(key, adoptOrCreate)
+			sync()
+			Expect(getRecord().Status.CloudflareMetadata.RecordID).To(Equal("existing"))
+			Expect(store.writes).To(BeZero())
+		})
+
+		It("still turns the proxy off on a record it already claims", func() {
+			seed("mine", "192.0.2.1", proxied)
+			createRecord(key, func(record *cloudflarev1alpha1.DNSRecord) {
+				adoptOrCreate(record)
+				record.Labels = map[string]string{cloudflarev1alpha1.DNSRecordIDLabel: "mine"}
+			})
+			sync()
+			Expect(current().Proxied).To(BeFalse())
+		})
+	})
+
 	Describe("with a tunnelRef", func() {
 		createTunnel := func(account, id string, ready bool) {
 			tunnel := &cloudflarev1alpha1.Tunnel{
@@ -590,6 +668,21 @@ var _ = Describe("DNSRecord hooks", func() {
 			_, err := reconcileRecord()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(condition().Reason).To(Equal("AlreadyExists"))
+		})
+
+		It("adopts a proxied CNAME to the tunnel, which a tunnelRef keeps proxied", func() {
+			createTunnel(accountName, "tunnel-1", true)
+			seed("existing", "tunnel-1"+cloudflarev1alpha1.TunnelHostnameSuffix, func(raw map[string]any) {
+				raw["name"], raw["type"], raw["proxied"] = "app.example.com", "CNAME", true
+			})
+			createRecord(key, func(record *cloudflarev1alpha1.DNSRecord) {
+				pointAtTunnel(record)
+				adoptOrCreate(record)
+			})
+			sync()
+			Expect(getRecord().Status.CloudflareMetadata.RecordID).To(Equal("existing"))
+			Expect(current().Proxied).To(BeTrue())
+			Expect(store.writes).To(BeZero())
 		})
 
 		It("finds the record it was creating by the tunnel's hostname", func() {
