@@ -65,6 +65,7 @@ func main() {
 	var defaultDeletionPolicy string
 	var reconcileTimeout time.Duration
 	var driftCheckInterval time.Duration
+	var renameGracePeriod time.Duration
 	var tokenCheckInterval time.Duration
 	var tokenExpiryWarning time.Duration
 	var cloudflareRateLimit int
@@ -109,6 +110,12 @@ func main() {
 			"(in the Cloudflare dashboard, through the API, by Terraform) is corrected within about that long. Each "+
 			"check is moved by up to a tenth either way at random, and makes one or more Cloudflare API calls per "+
 			"resource, which count against Cloudflare's rate limit. 0 turns the checks off.")
+	flag.DurationVar(&renameGracePeriod, "rename-grace-period", 30*time.Second,
+		"How long a resource that is deleted keeps the Cloudflare object kflare would delete with it, for a "+
+			"resource that replaces it: a rename is a new resource and the old one's deletion, and a tool that "+
+			"deletes first, as Argo CD prunes before it applies, would otherwise have the object deleted and created "+
+			"again. The new resource's creation ends the wait, and every other deletion takes this much longer. 0 "+
+			"deletes the object at once.")
 	flag.DurationVar(&tokenCheckInterval, "token-check-interval", time.Hour,
 		"How long after a CloudflareAccount is validated it is validated again: its API token's status and expiry "+
 			"read from Cloudflare, and the account read with it. A token revoked, disabled or expired in Cloudflare "+
@@ -143,6 +150,10 @@ func main() {
 	}
 	if err := reconciler.SetDriftCheckInterval(driftCheckInterval); err != nil {
 		setupLog.Error(err, "invalid --drift-check-interval")
+		os.Exit(1)
+	}
+	if err := reconciler.SetRenameGracePeriod(renameGracePeriod); err != nil {
+		setupLog.Error(err, "invalid --rename-grace-period")
 		os.Exit(1)
 	}
 	if tokenCheckInterval < 0 {

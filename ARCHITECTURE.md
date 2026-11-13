@@ -360,6 +360,15 @@ goes `Ready` with the object's ID. What differs between the two specs besides th
 spec change is. A WorkerScript uploads its Worker once more, in place, since the new resource has no record of the last
 upload.
 
+A successor may also come after the deletion: Argo CD prunes the old resource of a rename before it applies the new
+one. So a resource that has no successor, and whose object would be deleted, keeps the object and its finalizer for
+the rename grace period (`--rename-grace-period`, the chart's `renameGracePeriod`, 30 seconds by default), counted
+from its deletion, and records a Normal Event with reason `AwaitingSuccessor` (`successorWait`). Each kind's
+controller watches the creation of its own resources too, and reconciles those being deleted in the new resource's
+namespace (`resourcesBeingDeleted`), so the hand-off is made when the successor is created rather than when the wait
+is over. With no successor by then, the object is deleted. An object that is kept anyway, retained or adopted, waits
+for nothing, nor does a `Zone`'s zone, which no resource takes over. `0` turns the wait off.
+
 A paused successor takes the claim too, since the deletion that makes the hand-off is not its own, and finds the
 object once it is unpaused.
 

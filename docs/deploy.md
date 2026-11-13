@@ -726,6 +726,9 @@ resources:
 `kflare.dev/deletion-policy: delete` (see
 [Protecting objects that must outlive their manifests](#protecting-objects-that-must-outlive-their-manifests)).
 
+`renameGracePeriod: 30s` is how long a deleted resource keeps the object kflare would delete with it, in case the
+deletion is half of a rename (see [Renaming a resource](#renaming-a-resource)). `0s` deletes it at once.
+
 Each controller reconciles one resource at a time by default (see [Reconciles at once](#reconciles-at-once)), so kflare
 bounds every call to Cloudflare: one that gets no answer, from a proxy that goes silent or over a connection a network
 change broke, cannot stall the others. A
@@ -1557,6 +1560,15 @@ step works the same way):
 3. The new resource goes `Ready` within seconds, with the same ID in its status. A field that differs between the two
    manifests, such as a record's `ttl`, is then updated in place. A `WorkerScript` uploads its Worker once more, in
    place
+
+A tool that deletes first keeps the object too. Argo CD prunes the old resource before it applies the new one, in
+the same sync. So a resource that is deleted keeps the object kflare would delete with it for the rename grace period,
+30 seconds by default, and records an Event with reason `AwaitingSuccessor`. When the new resource is created within
+that time, the old one hands it the object at once, as in step 2. With no new resource, the object is deleted when the
+time is over: every deletion that deletes an object takes that much longer, and `kubectl delete` waits for it. Set the
+chart's `renameGracePeriod` to wait longer, for a tool that takes longer between the two, or to `0s` to delete at
+once, where every tool applies first. Moving a resource from one Argo CD Application to another is two syncs, which
+may be further apart than that: sync the Application that gets the resource first.
 
 The new resource owns the object as the old one did: an object kflare created is deleted with it, and one the old
 resource adopted is kept. The old resource's `kflare.dev/deletion-policy` does not stop the hand-off, `delete` included;
