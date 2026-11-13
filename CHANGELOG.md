@@ -26,6 +26,13 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 
 ### The controller
 
+- **Adopting a proxied DNS record no longer turns its proxy off by omission.** A `DNSRecord` whose spec leaves
+  `proxied` unset asks for a DNS-only record, so one with an adoption policy that found a proxied record adopted it
+  and turned its proxy off, which publishes the origin's address and takes the zone's WAF, rules and cache out of the
+  traffic's path. It now reports `AlreadyExists`, with a message that says why, and leaves the record alone until its
+  spec sets `proxied: true`, to keep it proxied, or `proxied: false`. Nothing changes for a record kflare created or
+  already manages, or for one with a `tunnelRef`, which is always proxied
+  ([Manage Cloudflare resources](docs/deploy.md#4-manage-cloudflare-resources))
 - **A rename keeps its Cloudflare object when the old resource is deleted first.** kflare handed a deleted resource's
   object to the resource that replaces it only if that one existed already. Argo CD prunes before it applies, so a
   renamed `DNSRecord` could still have its record deleted and created again, and resolvers that asked in between

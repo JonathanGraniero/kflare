@@ -254,6 +254,14 @@ the one step that cannot be undone. If an adopted object is
 deleted outside kflare, `adopt-or-create` creates a new one, which is kflare's own from then on (the `adopted` mark
 goes), and `adopt` reports `NotFound`.
 
+One overwrite is held back. A `DNSRecord` whose spec leaves `proxied` unset asks for a DNS-only record, so adopting a
+proxied record would turn its proxy off: the origin's address is published, and the zone's WAF, rules and cache no
+longer see the traffic, for a field the manifest never mentions. Such a resource reports `AlreadyExists`, with a
+message that says so, and leaves the record as it is until its spec sets `proxied` to `true` or `false`
+(`refuseUnproxying`, the kind's `refuseAdoption` hook). A `tunnelRef` keeps a record proxied, so it adopts one. A
+record the resource already manages is not held back: there an unset `proxied` is corrected to DNS only, as any drift
+is.
+
 A reconcile that created an object but failed before recording it must still know the object as its own, not report
 `AlreadyExists`. So just before the create call, kflare records the object's key in the `kflare.dev/creating`
 annotation, and an object found with that key is the resource's own. The annotation goes once the resource records the
