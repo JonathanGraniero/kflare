@@ -573,6 +573,21 @@ kinds:
   `generatedZoneDependents` lists the kind with `sharedZoneDependents`. A types file imports `corev1` only when a
   field uses it. TestWorkerRoute is the golden kind. `describeCRUDSharedZone` (`zonereference_test.go`) runs for a
   table with `inZoneNamespace`
+- **cloudflare-go v7.14.0** (`deps/cloudflare-go-v7.14.0`, 2026-11-14, Dependabot's #177 without its ginkgo bump):
+  the SDK types more responses as unions, and two of kflare-gen's readers followed. The committed and golden output
+  did not change, and the generated code reads responses as raw JSON, as before:
+  - The read of `managed_transforms` and `url_normalization` returns a union of one struct
+    (`ManagedTransformListResponse.AsUnion`), whose own fields are `interface{}`. A settings kind's settings are that
+    struct (`sdkReader.soleVariant`), which types the paths of `unconfigured`; a union of several structs is refused.
+    `apijson.Port` copies the raw JSON to the response, so `JSON.RawJSON()` holds the settings as before
+  - `zones.SettingService`'s read types most scalar values as a union of a string, a number, a bool and a list
+    (`SettingGetResponseZonesAlwaysUseHTTPS2ValueUnion`), where v7.13 had a type per setting, with its enum's
+    constants. Such a value takes its type from the OpenAPI schema of the value the write takes, `zones_<id>_value`
+    (`settingsKindBuilder.schemaType`), which already gave its enum and bounds. Objects are still structs, and
+    `origin_h2_max_streams` and `origin_max_http_version` still typed. The write's union is unchanged
+  - The e2e suite's `enabledTransforms` reads the lists through `AsUnion`
+  - The release notes list `Rulesets.New` and `Rules.New`, `Edit` and `Delete` as returning unions; in the Go module
+    their signatures are v7.13.1's (read in both), and `RulesetRuleAPI` compiles against them unchanged
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

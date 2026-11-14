@@ -812,7 +812,10 @@ func (s sdk) settings(name string) (*settingsService, error) {
 			return nil, fmt.Errorf("%s returns %s, not settings: a pointer to a struct of %s", method,
 				typeName(result), pkg.PkgPath)
 		}
-		svc.read, svc.settings = c, settings
+		if svc.settings, err = r.soleVariant(settings); err != nil {
+			return nil, err
+		}
+		svc.read = c
 		break
 	}
 	if svc.read == nil {
@@ -866,6 +869,34 @@ func structOf(t types.Type, pkg *types.Package) (*types.Named, bool) {
 	}
 	_, isStruct := named.Underlying().(*types.Struct)
 	return named, isStruct
+}
+
+// soleVariant returns the struct a response holds the settings in. That is
+// the response itself, unless it is a union of one struct (AsUnion), as
+// cloudflare-go v7.14.0 types ManagedTransformListResponse: the response then
+// types its fields interface{}, and the variant gives their types. Stainless
+// lists the variant once per schema of the union, so it may appear several
+// times. A union of several structs is refused: which one holds the settings
+// is not known.
+func (r *sdkReader) soleVariant(response *types.Named) (*types.Named, error) {
+	asUnion := types.NewMethodSet(response).Lookup(r.pkg.Types, "AsUnion")
+	if asUnion == nil {
+		return response, nil
+	}
+	union, ok := r.isUnion(asUnion.Type().(*types.Signature).Results().At(0).Type())
+	if !ok {
+		return nil, fmt.Errorf("the AsUnion of %s returns no union of the package", response.Obj().Name())
+	}
+	variants := r.variants(union)
+	if len(variants) != 1 {
+		names := make([]string, len(variants))
+		for i, v := range variants {
+			names[i] = v.Obj().Name()
+		}
+		return nil, fmt.Errorf("%s is a union of %d structs (%s), not of one that holds the settings",
+			response.Obj().Name(), len(variants), strings.Join(names, ", "))
+	}
+	return variants[0], nil
 }
 
 // resetMethod reads a method shaped (ctx, params, opts...) error, as
