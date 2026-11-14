@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
 	corev1 "k8s.io/api/core/v1"
@@ -22,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -183,6 +185,11 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// refuse says why a resource cannot take the object it found under its
 	// key, such as a list of another kind with the same name.
 	refuse func(found *R) *conditionError
+	// refuseAdoption says why a resource cannot adopt the object it found,
+	// which is not its own, as its spec stands: adopting overwrites the object
+	// to match the spec, and a kind may hold back a change the spec never
+	// spelled out, as a DNSRecord does with a proxied record.
+	refuseAdoption func(obj O, found *R, refs map[string]string) *conditionError
 	// matches replaces the comparison of the object with the spec.
 	matches func(obj O, current *R, refs map[string]string) bool
 	// sourceChanged reports that what the resource's calls send changed since
@@ -630,6 +637,11 @@ func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, o
 				return stop(notReadyRetryAfter(ctx, r.Client, obj, condErr))
 			}
 		}
+		if found != nil && !own && k.hooks.refuseAdoption != nil {
+			if condErr := k.hooks.refuseAdoption(obj, found, refs); condErr != nil {
+				return stop(notReadyRetryAfter(ctx, r.Client, obj, condErr))
+			}
+		}
 		switch {
 		case found == nil:
 		case own:
@@ -829,9 +841,10 @@ func findInPages[R any](
 // reconcileDelete handles the deletion lifecycle. Once nothing depends on the
 // resource, it hands the object to the resource's successor, if it has one
 // (handOff), or else deletes it from Cloudflare (unless the retain policy is
-// set), then removes the finalizer. An object that one of the kind's deletion
-// blockers keeps is kept with the finalizer, and the resource reports why
-// until the delete goes through.
+// set), once the rename grace period is over (successorWait), then removes
+// the finalizer. An object that one of the kind's deletion blockers keeps is
+// kept with the finalizer, and the resource reports why until the delete goes
+// through.
 func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context, obj O) (ctrl.Result, error) {
 	// Safety check: if the finalizer is already gone, there is nothing to do.
 	if !controllerutil.ContainsFinalizer(obj, reconciler.Finalizer) {
@@ -858,6 +871,15 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 			return ctrl.Result{}, err
 		}
 		if !handed && !reconciler.RetainOnDelete(obj) {
+			if wait := r.successorWait(obj); wait > 0 {
+				k := r.kind
+				recordNormal(obj, reasonAwaitingSuccessor, "Delete", fmt.Sprintf("%s %s/%s keeps %s %s for %s after its "+
+					"deletion, for a resource that replaces it", k.name, obj.GetNamespace(), obj.GetName(), k.noun, id,
+					reconciler.RenameGracePeriod()))
+				log.FromContext(ctx).Info("Keeping the "+k.noun+" for a resource that may replace this one", "id", id,
+					"for", wait)
+				return ctrl.Result{RequeueAfter: wait}, nil
+			}
 			from, gone, err := r.deletionParent(ctx, obj)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -878,6 +900,25 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 // reasonHandedOff is the reason of the Events of a hand-off (handOff), on the
 // resource that gave its object and on the one that took it.
 const reasonHandedOff = "HandedOff"
+
+// reasonAwaitingSuccessor is the reason of the Event of a resource that is
+// being deleted and keeps its object for a successor (successorWait).
+const reasonAwaitingSuccessor = "AwaitingSuccessor"
+
+// successorWait returns how long obj, which is being deleted and has no
+// successor, still keeps its object for one: what is left of the rename grace
+// period (reconciler.SetRenameGracePeriod), counted from its deletion. A tool
+// that deletes the old resource of a rename before it creates the new one, as
+// Argo CD prunes before it applies, would otherwise have the object deleted
+// and created again. The new resource's creation ends the wait
+// (resourcesBeingDeleted). A kind whose resources share their objects has no
+// successor to wait for.
+func (r *crudResourceReconciler[O, A, R, L]) successorWait(obj O) time.Duration {
+	if r.kind.sharedObjects {
+		return 0
+	}
+	return reconciler.RenameGracePeriod() - time.Since(obj.GetDeletionTimestamp().Time)
+}
 
 // handOff gives the object id of obj, which is being deleted, to obj's
 // successor, and reports whether there was one. Renaming a resource makes a
@@ -1147,8 +1188,10 @@ func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context,
 // spec.allowedReferences says of its own namespace's labels); the
 // kinds its spec references, so a resource waiting for one is reconciled once
 // it is ready; the deletion of the kind's dependents, so a resource waiting
-// for them is released once they are gone; and the deletion of the kind's own
-// resources, so one waiting for another's object takes it at once.
+// for them is released once they are gone; the deletion of the kind's own
+// resources, so one waiting for another's object takes it at once; and their
+// creation, so one that is being deleted hands its object to the new resource
+// at once.
 func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconcile.Reconciler) error {
 	b := ctrl.NewControllerManagedBy(mgr).For(r.kind.newObject())
 	switch {
@@ -1173,6 +1216,8 @@ func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconci
 	if !r.kind.sharedObjects {
 		b = b.Watches(r.kind.newObject(), handler.EnqueueRequestsFromMapFunc(r.resourcesInConflict),
 			builder.WithPredicates(deletesOnly))
+		b = b.Watches(r.kind.newObject(), handler.EnqueueRequestsFromMapFunc(r.resourcesBeingDeleted),
+			builder.WithPredicates(createsOnly))
 	}
 	if r.kind.hooks.watch != nil {
 		b = r.kind.hooks.watch(b, r.Client)
@@ -1243,6 +1288,29 @@ func (r *crudResourceReconciler[O, A, R, L]) resourcesInConflict(ctx context.Con
 		ready := meta.FindStatusCondition(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
 		return ready != nil && ready.Reason == r.kind.conflictReason
 	})
+}
+
+// createsOnly passes only create events.
+var createsOnly = predicate.Funcs{
+	CreateFunc:  func(event.CreateEvent) bool { return true },
+	UpdateFunc:  func(event.UpdateEvent) bool { return false },
+	DeleteFunc:  func(event.DeleteEvent) bool { return false },
+	GenericFunc: func(event.GenericEvent) bool { return false },
+}
+
+// resourcesBeingDeleted maps the creation of a resource of the kind to the
+// kind's resources in its namespace that are being deleted: one of them may
+// keep its object for a successor (successorWait), which created may be.
+// Without the watch it would hand the object on only when its wait is over. A
+// resource older than the rename grace period, as every one is that a
+// starting manager lists, is one that any wait began with.
+func (r *crudResourceReconciler[O, A, R, L]) resourcesBeingDeleted(ctx context.Context,
+	created client.Object) []reconcile.Request {
+	if time.Since(created.GetCreationTimestamp().Time) > reconciler.RenameGracePeriod() {
+		return nil
+	}
+	return r.resourcesWhere(ctx, []client.ListOption{client.InNamespace(created.GetNamespace())},
+		func(obj O) bool { return !obj.GetDeletionTimestamp().IsZero() })
 }
 
 // resourcesWhere returns a request for each of the kind's resources that opts

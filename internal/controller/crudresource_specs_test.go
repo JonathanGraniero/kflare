@@ -1019,6 +1019,13 @@ func describeCRUDHandOff[O conditionedObject, A any, R any, L any](e *crudSpecEn
 		}
 	}
 
+	// setGracePeriod sets the rename grace period for one spec.
+	setGracePeriod := func(period time.Duration) {
+		GinkgoHelper()
+		Expect(reconciler.SetRenameGracePeriod(period)).To(Succeed())
+		DeferCleanup(reconciler.SetRenameGracePeriod, time.Duration(0))
+	}
+
 	if k.sharedObjects {
 		It("hands its "+k.noun+" to no other resource with the same "+t.keyField+", which may name it as it is",
 			func() {
@@ -1026,6 +1033,11 @@ func describeCRUDHandOff[O conditionedObject, A any, R any, L any](e *crudSpecEn
 				rename(nil)
 				expectDeleted(id)
 			})
+
+		It("deletes its "+k.noun+" at once with a rename grace period, since no resource takes it over", func() {
+			setGracePeriod(time.Minute)
+			expectDeleted(e.synced(nil))
+		})
 		return
 	}
 
@@ -1297,6 +1309,105 @@ func describeCRUDHandOff[O conditionedObject, A any, R any, L any](e *crudSpecEn
 				}).WithTimeout(10*time.Second).Should(Succeed(), "well before its retry, a minute later")
 				Expect(e.store.writes).To(Equal(writes), "no delete, and no create")
 			})
+	})
+
+	Describe("a rename that deletes first, as Argo CD prunes before it applies", func() {
+		// awaited maps the creation of created to the resources it has
+		// reconciled.
+		awaited := func(created O) []reconcile.Request {
+			return e.r.crud().resourcesBeingDeleted(ctx, created)
+		}
+
+		It("keeps its "+k.noun+" for the rename grace period, and hands it to the resource that replaces it", func() {
+			setGracePeriod(time.Minute)
+			recorder := events.NewFakeRecorder(20)
+			SetEventRecorder(recorder)
+			DeferCleanup(func() { SetEventRecorder(nil) })
+			id := e.synced(nil)
+			writes, sent := e.store.writes, len(e.store.sent)
+			for len(recorder.Events) > 0 {
+				<-recorder.Events
+			}
+
+			Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+			result, err := e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(And(BeNumerically(">", 50*time.Second), BeNumerically("<=", time.Minute)),
+				"what is left of the grace period, counted from the deletion")
+			Expect(e.get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
+			Expect(e.store.objects).To(HaveKey(id), "the "+k.noun+" is kept")
+			Expect(recorder.Events).To(Receive(Equal(fmt.Sprintf("Normal AwaitingSuccessor %s %s keeps %s %s for 1m0s "+
+				"after its deletion, for a resource that replaces it", k.name, key, k.noun, id))))
+
+			renamed := rename(nil)
+			Expect(awaited(renamed)).To(ConsistOf(reconcile.Request{NamespacedName: key}),
+				"a creation reconciles the resources that are being deleted")
+			reconcileAt(key)
+			Expect(gone(key)).To(BeTrue(), "the finalizer is removed")
+			collectGarbage()
+			Expect(getAt(otherKey).GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+			reconcileAt(otherKey)
+			Expect(readyAt(otherKey).Status).To(Equal(metav1.ConditionTrue), readyAt(otherKey).Message)
+			Expect(k.statusID(getAt(otherKey))).To(Equal(id))
+			Expect(e.store.writes).To(Equal(writes), "no delete, and no create")
+			Expect(e.store.sent).To(HaveLen(sent))
+		})
+
+		It("deletes its "+k.noun+" once the rename grace period is over, when no resource replaced it", func() {
+			// A deletion is at least this old when it is reconciled.
+			setGracePeriod(time.Nanosecond)
+			expectDeleted(e.synced(nil))
+		})
+
+		It("keeps a retained "+k.noun+" without waiting for the rename grace period", func() {
+			setGracePeriod(time.Minute)
+			id := e.synced(map[string]string{reconciler.DeletionPolicyAnnotation: reconciler.DeletionPolicyRetain})
+			deleteIt(key)
+			Expect(e.store.objects).To(HaveKey(id))
+		})
+
+		It("has a creation reconcile only resources that are being deleted, and only within the rename grace period",
+			func() {
+				setGracePeriod(time.Minute)
+				e.synced(nil)
+				renamed := rename(nil)
+				Expect(awaited(renamed)).To(BeEmpty(), "no resource is being deleted")
+				Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+				Expect(awaited(renamed)).To(ConsistOf(reconcile.Request{NamespacedName: key}))
+				setGracePeriod(time.Nanosecond)
+				Expect(awaited(renamed)).To(BeEmpty(), "a resource older than the grace period ends no wait")
+			})
+
+		It("is reconciled at once when the resource that replaces it is created, which it watches", func() {
+			setGracePeriod(time.Minute)
+			recorder := events.NewFakeRecorder(20)
+			SetEventRecorder(recorder)
+			DeferCleanup(func() { SetEventRecorder(nil) })
+			id := e.synced(nil)
+			writes := e.store.writes
+			e.runManager()
+			Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+			Eventually(recorder.Events).WithTimeout(10*time.Second).Should(Receive(ContainSubstring("AwaitingSuccessor")),
+				"the manager reconciled the deletion, and waits")
+			rename(nil)
+			Eventually(func(g Gomega) {
+				g.Expect(gone(key)).To(BeTrue())
+				// What the garbage collector does once the resource is gone.
+				secrets := &corev1.SecretList{}
+				g.Expect(k8sClient.List(ctx, secrets, client.InNamespace(crudSpecNamespace))).To(Succeed())
+				for i := range secrets.Items {
+					if owners := secrets.Items[i].OwnerReferences; len(owners) > 0 && owners[0].Name == key.Name {
+						g.Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &secrets.Items[i]))).To(Succeed())
+					}
+				}
+				renamed := k.newObject()
+				g.Expect(k8sClient.Get(ctx, otherKey, renamed)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(renamed.GetConditions(), cloudflarev1alpha1.ConditionReady)).
+					To(BeTrue())
+				g.Expect(k.statusID(renamed)).To(Equal(id))
+			}).WithTimeout(10*time.Second).Should(Succeed(), "well before the grace period is over, a minute later")
+			Expect(e.store.writes).To(Equal(writes), "no delete, and no create")
+		})
 	})
 
 	Describe("no rename", func() {

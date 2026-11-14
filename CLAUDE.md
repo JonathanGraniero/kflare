@@ -764,6 +764,10 @@ four decisions went as it proposed, or as the [design notes](docs/design-notes.m
   with what points at it
 - [x] A kind's controller watches its own deletions and reconciles the resources reporting its conflict reason; the
   Tunnel's watches the deletion of the Secret its `credentialsSecretRef` names. Events with reason `HandedOff`
+- [x] A rename that deletes first, as Argo CD prunes before it applies (2026-11-13, `fix/rename-delete-first`): a
+  resource with no successor keeps its object for `--rename-grace-period` (30s, `reconciler.SetRenameGracePeriod`,
+  `successorWait`), and the kind's controller watches its own creations to end the wait (`resourcesBeingDeleted`).
+  The specs leave the period at 0 unless they set it; 16 of 16 mutations caught
 - [x] Specs: shared ones for every generated CRUD kind (the hand-off, its states and policies, the watch in a manager,
   and each case that must still delete), DNSRecord's, TunnelConfiguration's and WorkerScript's own; 53 of 53
   mutations caught
