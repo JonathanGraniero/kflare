@@ -1232,7 +1232,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
 > `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule` and `OriginRule`
 > done.**
-> cloudflare-go is at v7.13.1, with v0.119 next to it for `Zone`, `TunnelConfiguration` and `WorkerScript`. Every kind
+> cloudflare-go is at v7.14.0, with v0.119 next to it for `Zone`, `TunnelConfiguration` and `WorkerScript`. Every kind
 > but `CloudflareAccount` runs on a shared reconciler: the shared CRUD reconciler, the shared rule controller or the shared
 > settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
 > hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:

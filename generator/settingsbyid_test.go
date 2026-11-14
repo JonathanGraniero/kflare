@@ -56,15 +56,19 @@ func TestSettingsReadsTheSettingsAServiceByIDKnows(t *testing.T) {
 		}
 		byID[s.id] = s
 	}
+	// Since cloudflare-go v7.14.0 most scalar values are unions that say
+	// nothing of the setting: their types come from the OpenAPI schema.
 	for _, tc := range []struct{ id, goName, value, variant string }{
-		{"ssl", "SSL", "zones.SettingGetResponseZonesSSL2Value", "shared.UnionString"},
-		{"always_use_https", "AlwaysUseHTTPS", "zones.SettingGetResponseZonesAlwaysUseHTTPS2Value",
-			"shared.UnionString"},
-		{"tls_1_3", "TLS13", "zones.TLS1_3Value", "shared.UnionString"},
-		{"browser_cache_ttl", "BrowserCacheTTL", "int64", "shared.UnionFloat"},
+		{"ssl", "SSL", "zones.SettingGetResponseZonesSSL2ValueUnion", ""},
+		{"always_use_https", "AlwaysUseHTTPS", "zones.SettingGetResponseZonesAlwaysUseHTTPS2ValueUnion", ""},
+		{"tls_1_3", "TLS13", "zones.TLS1_3ValueUnion", ""},
+		{"browser_cache_ttl", "BrowserCacheTTL", "zones.SettingGetResponseZonesBrowserCacheTTL2ValueUnion", ""},
+		{"origin_h2_max_streams", "OriginH2MaxStreams", "int64", "shared.UnionFloat"},
+		{"origin_max_http_version", "OriginMaxHTTPVersion",
+			"zones.SettingGetResponseZonesCacheRulesOriginMaxHTTPVersionValue", "shared.UnionString"},
 		{"security_header", "SecurityHeader", "zones.SecurityHeadersValue",
 			"zones.SettingEditParamsBodyValueValueZonesSecurityHeaderValue"},
-		{"0rtt", "0rtt", "zones.ZeroRTTValue", "shared.UnionString"},
+		{"0rtt", "0rtt", "zones.ZeroRTTValueUnion", ""},
 	} {
 		s, ok := byID[tc.id]
 		if !ok {
@@ -74,6 +78,12 @@ func TestSettingsReadsTheSettingsAServiceByIDKnows(t *testing.T) {
 		got := types.TypeString(s.value, (*types.Package).Name)
 		if s.goName != tc.goName || got != tc.value {
 			t.Errorf("%s: Go name %s, value %s; want %s, %s", tc.id, s.goName, got, tc.goName, tc.value)
+		}
+		if tc.variant == "" {
+			if !types.IsInterface(s.value) {
+				t.Errorf("%s: its value, %s, is no union", tc.id, got)
+			}
+			continue
 		}
 		variant, err := svc.valueVariant(s.value)
 		if err != nil || types.TypeString(variant, (*types.Package).Name) != tc.variant {
@@ -88,10 +98,64 @@ func TestSettingsReadsTheSettingsAServiceByIDKnows(t *testing.T) {
 	}
 }
 
+func TestSchemaTypeTypesAValueTheSDKLeavesUntyped(t *testing.T) {
+	entry := testSettingsEntry(t, "TestZoneSettings")
+	svc := loadTestSettings(t, entry.Service)
+	b := &settingsKindBuilder{entry: entry, svc: svc, spec: loadTestSpec(t)}
+	schemas, err := b.valueSchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ id, value, variant string }{
+		{"ssl", "string", "shared.UnionString"},
+		{"always_use_https", "string", "shared.UnionString"},
+		{"tls_1_3", "string", "shared.UnionString"},
+		{"0rtt", "string", "shared.UnionString"},
+		{"browser_cache_ttl", "int64", "shared.UnionFloat"},
+		{"ciphers", "[]string", ""},
+	} {
+		value, err := b.schemaType(schemas[tc.id])
+		if err != nil || value.String() != tc.value {
+			t.Errorf("%s: the schema's type = %v, %v; want %s", tc.id, value, err, tc.value)
+			continue
+		}
+		if tc.variant == "" {
+			continue
+		}
+		variant, err := svc.valueVariant(value)
+		if err != nil || types.TypeString(variant, (*types.Package).Name) != tc.variant {
+			t.Errorf("%s: the value's variant = %v, %v; want %s", tc.id, variant, err, tc.variant)
+		}
+	}
+	for _, tc := range []struct {
+		sch        *schema
+		value, err string
+	}{
+		{&schema{Type: "number"}, "float64", ""},
+		{&schema{Type: "boolean"}, "bool", ""},
+		{&schema{Type: "array", Items: &schema{Type: "integer"}}, "[]int64", ""},
+		{&schema{Type: "array"}, "", "its schema is a list of no type of items"},
+		{&schema{Type: "array", Items: &schema{Type: "object"}}, "",
+			`its schema's type, "object", is no string, integer, number, boolean or array`},
+		{&schema{Type: "object"}, "", `its schema's type, "object", is no string, integer, number, boolean or array`},
+		{&schema{}, "", `its schema's type, "", is no string, integer, number, boolean or array`},
+		{&schema{Ref: "#/components/schemas/nope"}, "", "nope"},
+	} {
+		value, err := b.schemaType(tc.sch)
+		switch {
+		case tc.err != "":
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("%+v: err = %v, want one containing %q", *tc.sch, err, tc.err)
+			}
+		case err != nil || value.String() != tc.value:
+			t.Errorf("%+v: the schema's type = %v, %v; want %s", *tc.sch, value, err, tc.value)
+		}
+	}
+}
+
 func TestValueVariantRefuses(t *testing.T) {
 	svc := loadTestSettings(t, "zones.SettingService")
-	ciphers := svc.settingsByID[slices.IndexFunc(svc.settingsByID, func(s *sdkSetting) bool { return s.id == "ciphers" })]
-	if _, err := svc.valueVariant(ciphers.value); err == nil ||
+	if _, err := svc.valueVariant(types.NewSlice(types.Typ[types.String])); err == nil ||
 		!strings.Contains(err.Error(), "its value is a []string, which kflare-gen cannot write by the setting's ID") {
 		t.Errorf("ciphers' variant: err = %v", err)
 	}
@@ -233,6 +297,15 @@ func TestBuildSettingsKindRefusesSettingsByID(t *testing.T) {
 		{"a setting whose value is a list", func(e *settingsKindConfig, _ *settingsService, _ *apiSpec) {
 			delete(e.Ignore, "ciphers")
 		}, "ciphers: its value is a []string, which kflare-gen cannot write by the setting's ID yet"},
+		{"an untyped value whose schema is no scalar or list", func(_ *settingsKindConfig, _ *settingsService,
+			spec *apiSpec) {
+			spec.Components.Schemas["zones_always_use_https_value"].Type = "object"
+		}, "always_use_https: cloudflare-go v7 types its value as the union " +
+			"zones.SettingGetResponseZonesAlwaysUseHTTPS2ValueUnion, and its schema's type, \"object\", is no string, " +
+			"integer, number, boolean or array; ignore it with a reason"},
+		{"an untyped value whose schema is a bool", func(_ *settingsKindConfig, _ *settingsService, spec *apiSpec) {
+			spec.Components.Schemas["zones_always_use_https_value"].Type = "boolean"
+		}, "always_use_https: its value is a bool, which kflare-gen cannot write by the setting's ID yet"},
 		{"a setting whose value the write takes no schema of", func(e *settingsKindConfig, _ *settingsService,
 			_ *apiSpec) {
 			delete(e.Ignore, "automatic_platform_optimization")

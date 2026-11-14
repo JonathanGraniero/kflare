@@ -9,6 +9,7 @@ package main
 import (
 	"fmt"
 	"go/token"
+	"go/types"
 	"maps"
 	"slices"
 	"strconv"
@@ -23,9 +24,11 @@ import (
 // cloudflare-go v7's constant for the ID names it) and holding the setting's
 // value:
 //
-//   - The value's type is that of the read's variant for the setting, with
-//     the constraints of the OpenAPI schema of the value the write takes
-//     (zones_<id>_value), and the conversion turns it into the type of the
+//   - The value's type is that of the read's variant for the setting, or,
+//     where cloudflare-go v7 types that as a union of every scalar (most
+//     scalar settings since v7.14.0), the type of the OpenAPI schema of the
+//     value the write takes (zones_<id>_value). That schema gives its
+//     constraints either way, and the conversion turns it into the type of the
 //     write's union of values that carries it: shared.UnionString for a
 //     string, shared.UnionFloat for a number, a struct of the union for an
 //     object.
@@ -103,13 +106,25 @@ func (b *settingsKindBuilder) settingField(pb *paramBuilder, s *sdkSetting, sch 
 		return nil, fmt.Errorf("%s: %s takes no value of the setting (zones_%s_value in the OpenAPI subset); ignore "+
 			"it with a reason", s.id, b.svc.writeRoute, s.id)
 	}
-	write, err := b.svc.valueVariant(s.value)
+	value := s.value
+	if types.IsInterface(value) {
+		// Since cloudflare-go v7.14.0 the read types most scalar values as a
+		// union of every scalar and a list, which says nothing of the
+		// setting's own: the OpenAPI schema of its value does.
+		var err error
+		if value, err = b.schemaType(sch); err != nil {
+			return nil, fmt.Errorf("%s: cloudflare-go v7 types its value as the union %s, and %w; ignore it with a "+
+				"reason", s.id, typeName(s.value), err)
+		}
+	}
+	write, err := b.svc.valueVariant(value)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w; ignore it with a reason", s.id, err)
 	}
 	// A scalar takes its type from the read's variant, which gives its
-	// enum's constants; an object its fields from the write's.
-	t := s.value
+	// enum's constants, or from its schema; an object its fields from the
+	// write's.
+	t := value
 	if isStructType(write) {
 		t = write
 	}
@@ -119,6 +134,36 @@ func (b *settingsKindBuilder) settingField(pb *paramBuilder, s *sdkSetting, sch 
 		return nil, err
 	}
 	return f, writableByID(f.node, s.id)
+}
+
+// schemaType returns the Go type of the values the OpenAPI schema sch
+// describes, for a value cloudflare-go v7 does not type: a string, an integer,
+// a number or a bool, or a list of those.
+func (b *settingsKindBuilder) schemaType(sch *schema) (types.Type, error) {
+	resolved, err := b.spec.resolve(sch)
+	if err != nil {
+		return nil, err
+	}
+	switch resolved.Type {
+	case typeString:
+		return types.Typ[types.String], nil
+	case typeInteger:
+		return types.Typ[types.Int64], nil
+	case "number":
+		return types.Typ[types.Float64], nil
+	case typeBoolean:
+		return types.Typ[types.Bool], nil
+	case "array":
+		if resolved.Items == nil {
+			return nil, fmt.Errorf("its schema is a list of no type of items")
+		}
+		items, err := b.schemaType(resolved.Items)
+		if err != nil {
+			return nil, err
+		}
+		return types.NewSlice(items), nil
+	}
+	return nil, fmt.Errorf("its schema's type, %q, is no string, integer, number, boolean or array", resolved.Type)
 }
 
 // utf8First returns the first rune of s.

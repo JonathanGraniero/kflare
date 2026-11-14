@@ -9,6 +9,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"go/token"
 	"go/types"
 	"reflect"
 	"slices"
@@ -86,15 +87,66 @@ func TestLoadConfigRefusesSettingsKinds(t *testing.T) {
 	}
 }
 
+func TestSoleVariantFindsTheStructOfAUnionOfOne(t *testing.T) {
+	transforms := loadTestSettings(t, "managed_transforms.ManagedTransformService").r
+	lookup := func(r *sdkReader, name string) *types.Named {
+		return r.pkg.Types.Scope().Lookup(name).Type().(*types.Named)
+	}
+	// A union of one struct: the struct types what the response leaves
+	// interface{}.
+	if got, err := transforms.soleVariant(lookup(transforms, "ManagedTransformListResponse")); err != nil ||
+		got.Obj().Name() != "ManagedTransformListResponseObject" {
+		t.Errorf("ManagedTransformListResponse's variant = %v, %v", got, err)
+	}
+	// No union: the response itself.
+	params := lookup(transforms, "ManagedTransformListParams")
+	if got, err := transforms.soleVariant(params); err != nil || got != params {
+		t.Errorf("a struct without AsUnion = %v, %v", got, err)
+	}
+	// A union of several structs.
+	zones := loadTestSettings(t, "zones.SettingService").r
+	if _, err := zones.soleVariant(lookup(zones, "SettingGetResponse")); err == nil ||
+		!strings.Contains(err.Error(), "SettingGetResponse is a union of ") ||
+		!strings.Contains(err.Error(), " structs (AdvancedDDoS, AlwaysOnline, ") ||
+		!strings.Contains(err.Error(), "not of one that holds the settings") {
+		t.Errorf("a union of several structs: err = %v", err)
+	}
+	// An AsUnion that returns no union.
+	pkg := types.NewPackage("example.com/odd", "odd")
+	odd := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Odd", nil), types.NewStruct(nil, nil), nil)
+	odd.AddMethod(types.NewFunc(token.NoPos, pkg, "AsUnion", types.NewSignatureType(
+		types.NewVar(token.NoPos, pkg, "r", odd), nil, nil, nil,
+		types.NewTuple(types.NewVar(token.NoPos, pkg, "", types.Typ[types.String])), false)))
+	r := &sdkReader{pkg: &packages.Package{Types: pkg}}
+	if _, err := r.soleVariant(odd); err == nil ||
+		!strings.Contains(err.Error(), "the AsUnion of Odd returns no union of the package") {
+		t.Errorf("an AsUnion that returns a string: err = %v", err)
+	}
+	// A union no struct of the package satisfies.
+	marker := types.NewFunc(token.NoPos, pkg, "implementsEmpty", types.NewSignatureType(nil, nil, nil, nil, nil, false))
+	union := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "EmptyUnion", nil),
+		types.NewInterfaceType([]*types.Func{marker}, nil).Complete(), nil)
+	pkg.Scope().Insert(union.Obj())
+	empty := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Empty", nil), types.NewStruct(nil, nil), nil)
+	empty.AddMethod(types.NewFunc(token.NoPos, pkg, "AsUnion", types.NewSignatureType(
+		types.NewVar(token.NoPos, pkg, "r", empty), nil, nil, nil,
+		types.NewTuple(types.NewVar(token.NoPos, pkg, "", union)), false)))
+	pkg.Scope().Insert(empty.Obj())
+	if _, err := r.soleVariant(empty); err == nil ||
+		!strings.Contains(err.Error(), "Empty is a union of 0 structs (), not of one that holds the settings") {
+		t.Errorf("a union without structs: err = %v", err)
+	}
+}
+
 func TestSettingsReadsTheServices(t *testing.T) {
 	for _, tc := range []struct {
 		service, read, write, reset, settings string
 		resetResults                          int
 		readRoute                             string
 	}{
-		{"managed_transforms.ManagedTransformService", "List", "Edit", "Delete", "ManagedTransformListResponse", 1,
+		{"managed_transforms.ManagedTransformService", "List", "Edit", "Delete", "ManagedTransformListResponseObject", 1,
 			"get /zones/{zone_id}/managed_headers"},
-		{"url_normalization.URLNormalizationService", "Get", "Update", "Delete", "URLNormalizationGetResponse", 1,
+		{"url_normalization.URLNormalizationService", "Get", "Update", "Delete", "URLNormalizationGetResponseObject", 1,
 			"get /zones/{zone_id}/url_normalization"},
 		{"dns.DNSSECService", "Get", "Edit", "Delete", "DNSSEC", 2, "get /zones/{zone_id}/dnssec"},
 	} {

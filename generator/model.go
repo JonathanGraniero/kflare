@@ -86,12 +86,14 @@ var (
 
 // typeString is a string, both as a Go type and as a print column's type;
 // typeInt64 and typeBool are the Go types of an integer and a bool, and
-// typeInteger an integer's type in the OpenAPI spec and in a print column.
+// typeInteger and typeBoolean an integer's and a bool's type in the OpenAPI
+// spec and in a print column.
 const (
 	typeString  = "string"
 	typeInt64   = "int64"
 	typeBool    = "bool"
 	typeInteger = "integer"
+	typeBoolean = "boolean"
 )
 
 // markers returns a field's kubebuilder markers.
@@ -729,7 +731,7 @@ func goTypeOf(f sdkField, specType string, integer bool) (goType, column string,
 		case types.String:
 			return typeString, typeString, nil
 		case types.Bool:
-			return typeBool, "boolean", nil
+			return typeBool, typeBoolean, nil
 		case types.Float64, types.Int64, types.Int:
 			switch {
 			case specType == typeInteger || integer:

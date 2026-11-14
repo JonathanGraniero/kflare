@@ -2196,8 +2196,12 @@ func enabledTransforms(
 ) []string {
 	var params managed_transforms.ManagedTransformListParams
 	params.ZoneID.Value, params.ZoneID.Present = zoneID, true
-	settings, err := transforms.List(ctx, params)
+	listed, err := transforms.List(ctx, params)
 	Expect(err).NotTo(HaveOccurred())
+	// Since cloudflare-go v7.14.0 the response is a union of one struct, which
+	// types the lists.
+	settings, ok := listed.AsUnion().(managed_transforms.ManagedTransformListResponseObject)
+	Expect(ok).To(BeTrue(), "the managed transforms read as %T", listed.AsUnion())
 	var ids []string
 	for _, transform := range settings.ManagedRequestHeaders {
 		if transform.Enabled {

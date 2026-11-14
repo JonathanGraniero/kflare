@@ -461,7 +461,7 @@ func (k *ruleKind) root() error {
 // a boolean of the spec, or of an object in it, but not of a list's items or a
 // map's values.
 func (k *ruleKind) fieldColumns(fields map[string]ruleFieldConfig) ([]printColumn, error) {
-	columnTypes := map[string]string{typeString: typeString, typeInt64: typeInteger, typeBool: "boolean"}
+	columnTypes := map[string]string{typeString: typeString, typeInt64: typeInteger, typeBool: typeBoolean}
 	var columns []printColumn
 	shown := map[string]bool{}
 	var walk func(st *paramStruct, path, jsonPath string)
