@@ -68,6 +68,7 @@ spec:
             - {{ printf "--watch-selector=%s" . | quote }}
             {{- end }}
             - --default-deletion-policy={{ .Values.defaultDeletionPolicy }}
+            - --rename-grace-period={{ .Values.renameGracePeriod }}
             - --reconcile-timeout={{ .Values.reconcileTimeout }}
             {{- with .Values.driftCheckInterval }}
             - --drift-check-interval={{ . }}

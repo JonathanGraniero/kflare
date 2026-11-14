@@ -9,6 +9,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -37,9 +38,10 @@ var dnsRecordHooks = crudHooks[*cloudflarev1alpha1.DNSRecord, DNSRecordAPI, dns.
 			func(ref *cloudflarev1alpha1.Tunnel) string { return ref.Spec.AccountRef.Name },
 			func(ref *cloudflarev1alpha1.Tunnel) string { return ref.Status.CloudflareMetadata.TunnelID }),
 	},
-	find:      findDNSRecord,
-	matches:   dnsRecordMatches,
-	describes: dnsRecordDescribes,
+	find:           findDNSRecord,
+	refuseAdoption: refuseUnproxying,
+	matches:        dnsRecordMatches,
+	describes:      dnsRecordDescribes,
 }
 
 // dnsRecordTunnelName returns the Tunnel a DNSRecord's tunnelRef names: "" when
@@ -65,6 +67,26 @@ func dnsRecordContent(record *cloudflarev1alpha1.DNSRecord, refs map[string]stri
 // reach (verified live), and otherwise as the spec says, unset meaning false.
 func dnsRecordProxied(record *cloudflarev1alpha1.DNSRecord, refs map[string]string) bool {
 	return refs[tunnelRefField] != "" || record.Spec.Proxied != nil && *record.Spec.Proxied
+}
+
+// refuseUnproxying refuses to adopt a proxied record while the spec leaves
+// proxied unset. Unset means DNS only, so adopting the record would turn its
+// proxy off: its origin's address would be published, and what the zone does
+// to proxied traffic (WAF, rules, caching) would stop, for a field the
+// manifest never mentions. The user says which they want with true or false.
+// A record the resource already manages is not held back: there an unset
+// proxied is corrected to DNS only, as any drift is.
+func refuseUnproxying(record *cloudflarev1alpha1.DNSRecord, found *dns.RecordResponse,
+	refs map[string]string) *conditionError {
+	if !found.Proxied || record.Spec.Proxied != nil || refs[tunnelRefField] != "" {
+		return nil
+	}
+	return &conditionError{
+		Reason: reasonAlreadyExists,
+		Message: fmt.Sprintf("DNS record %q already exists and is proxied, and spec.proxied is unset, which means "+
+			"DNS only: adopting it would turn its proxy off. Set spec.proxied to true to keep it proxied, or to "+
+			"false to turn its proxy off", found.Name),
+	}
 }
 
 // dnsRecordTTL returns spec.ttl, or automatic when it is unset.

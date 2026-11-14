@@ -123,6 +123,14 @@ leaderElectionID: ""
 # or retain it. The annotation always wins, and an object kflare adopted is
 # kept unless the annotation says delete.
 defaultDeletionPolicy: delete
+# -- How long a resource that is deleted keeps the Cloudflare object kflare
+# would delete with it, for a resource that replaces it, as a duration such
+# as 30s or 1m. A rename is a new resource and the old one's deletion, and a
+# tool that deletes first, as Argo CD prunes before it applies, would
+# otherwise have the object deleted and created again. The new resource's
+# creation ends the wait; every other deletion takes this much longer. 0s
+# deletes the object at once.
+renameGracePeriod: 30s
 
 # -- How long a reconcile may run, as a duration such as 5m or 90s; 0s turns
 # the timeout off. A reconcile that runs out of time, such as one waiting on a

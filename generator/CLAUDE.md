@@ -525,7 +525,8 @@ kinds:
   left, in one pull request at the user's request ([Generate every kind](../CLAUDE.md#generate-every-kind)):
   - `crudHooks` on `crudResourceKind`, every one optional: `account` (a resource's account, through another resource),
     `key`, `references`, `resolve` (values a call needs besides the spec, or why the resource waits), `gone` (an object
-    Cloudflare still reads, deleted), `find`, `refuse`, `matches`, `synced`, `beforeDelete` and `watch`. An entry's
+    Cloudflare still reads, deleted), `find`, `refuse`, `refuseAdoption` (why a resource does not adopt the object it
+    found as its spec stands), `matches`, `synced`, `beforeDelete` and `watch`. An entry's
     `hooks` key names what they bring: `specExtras`, `metadataExtras` and `statusExtras`, hand-written structs the
     generated types embed inline, whose CEL rules controller-gen merges into the spec's; `sampleExtras` and
     `tableExtras`; `columns`; `api`, a hand-written `<Kind>HooksAPI` the narrow interface embeds, which a hand-written

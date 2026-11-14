@@ -717,22 +717,10 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}, 15*time.Second, 3*time.Second).Should(Succeed())
 	})
 
-	It("keeps a DNS record, and its ID, through a rename of its DNSRecord", func() {
-		if zoneName == "" {
-			Skip("CF_E2E_ZONE is not set")
-		}
-		// A rename is a new resource with the old one's spec, and the old one's
-		// deletion: a kustomize namePrefix, a Helm fullnameOverride.
-		old := &cloudflarev1alpha1.DNSRecord{}
-		Expect(k8s.Get(ctx, recordKey, old)).To(Succeed())
-		renamedKey := client.ObjectKey{Namespace: e2eNamespace, Name: recordKey.Name + "-renamed"}
-		renamed := &cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(renamedKey), Spec: old.Spec}
-		Expect(k8s.Create(ctx, renamed)).To(Succeed())
-		expectNotReady(renamedKey, renamed, func() []metav1.Condition { return renamed.Status.Conditions },
-			"NameConflict", gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
-
-		// The zone must list the record, under its ID, on every poll through the
-		// rename: deleting and creating it again would leave polls without it.
+	// pollRecord lists the zone's records with the DNSRecord's name every 250 ms
+	// until the function it returns is called, which expects every poll to
+	// have listed the one record, under its ID.
+	pollRecord := func() func() {
 		var polls, missing atomic.Int64
 		stop, stopped := make(chan struct{}), make(chan struct{})
 		go func() {
@@ -753,6 +741,32 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				}
 			}
 		}()
+		return func() {
+			GinkgoHelper()
+			close(stop)
+			<-stopped
+			Expect(polls.Load()).To(BeNumerically(">", 1))
+			Expect(missing.Load()).To(BeZero(), "the zone listed the record on every one of %d polls", polls.Load())
+		}
+	}
+
+	It("keeps a DNS record, and its ID, through a rename of its DNSRecord", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		// A rename is a new resource with the old one's spec, and the old one's
+		// deletion: a kustomize namePrefix, a Helm fullnameOverride.
+		old := &cloudflarev1alpha1.DNSRecord{}
+		Expect(k8s.Get(ctx, recordKey, old)).To(Succeed())
+		renamedKey := client.ObjectKey{Namespace: e2eNamespace, Name: recordKey.Name + "-renamed"}
+		renamed := &cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(renamedKey), Spec: old.Spec}
+		Expect(k8s.Create(ctx, renamed)).To(Succeed())
+		expectNotReady(renamedKey, renamed, func() []metav1.Condition { return renamed.Status.Conditions },
+			"NameConflict", gitopshealth.ArgoCDDegraded, gitopshealth.FluxFailed)
+
+		// The zone must list the record, under its ID, on every poll through the
+		// rename: deleting and creating it again would leave polls without it.
+		expectListed := pollRecord()
 
 		By("deleting the old DNSRecord, as a prune does")
 		Expect(k8s.Delete(ctx, old)).To(Succeed())
@@ -760,15 +774,44 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 			return apierrors.IsNotFound(k8s.Get(ctx, recordKey, &cloudflarev1alpha1.DNSRecord{}))
 		}, e2eTimeout, e2ePoll).Should(BeTrue())
 		expectReady(renamedKey, renamed, func() []metav1.Condition { return renamed.Status.Conditions })
-		close(stop)
-		<-stopped
+		expectListed()
 		Expect(renamed.Status.CloudflareMetadata.RecordID).To(Equal(recordID), "the record keeps its ID")
 		Expect(renamed.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.DNSRecordIDLabel, recordID))
 		Expect(renamed.Annotations).NotTo(HaveKey("kflare.dev/adopted"), "kflare created the record")
-		Expect(polls.Load()).To(BeNumerically(">", 1))
-		Expect(missing.Load()).To(BeZero(), "the zone listed the record on every one of %d polls", polls.Load())
 		// The specs that follow, and the deletion spec, know the DNSRecord by
 		// its new name.
+		recordKey = renamedKey
+	})
+
+	It("keeps a DNS record, and its ID, through a rename that deletes its DNSRecord first", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		// Argo CD prunes the old resource of a rename before it applies the new
+		// one. The old DNSRecord keeps the record for the rename grace period, 30
+		// seconds by default, and the new one's creation ends the wait.
+		old := &cloudflarev1alpha1.DNSRecord{}
+		Expect(k8s.Get(ctx, recordKey, old)).To(Succeed())
+		renamedKey := client.ObjectKey{Namespace: e2eNamespace, Name: recordKey.Name + "-again"}
+		renamed := &cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(renamedKey), Spec: old.Spec}
+		expectListed := pollRecord()
+
+		By("deleting the old DNSRecord, which keeps the record for the DNSRecord that replaces it")
+		Expect(k8s.Delete(ctx, old)).To(Succeed())
+		Consistently(func() error {
+			return k8s.Get(ctx, recordKey, &cloudflarev1alpha1.DNSRecord{})
+		}, 5*time.Second, time.Second).Should(Succeed(), "the old DNSRecord waits")
+
+		By("creating the new DNSRecord, which the old one hands the record at once")
+		Expect(k8s.Create(ctx, renamed)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8s.Get(ctx, recordKey, &cloudflarev1alpha1.DNSRecord{}))
+		}, 15*time.Second, time.Second).Should(BeTrue(), "well before the grace period is over")
+		expectReady(renamedKey, renamed, func() []metav1.Condition { return renamed.Status.Conditions })
+		expectListed()
+		Expect(renamed.Status.CloudflareMetadata.RecordID).To(Equal(recordID), "the record keeps its ID")
+		Expect(renamed.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.DNSRecordIDLabel, recordID))
+		Expect(renamed.Annotations).NotTo(HaveKey("kflare.dev/adopted"), "kflare created the record")
 		recordKey = renamedKey
 	})
 

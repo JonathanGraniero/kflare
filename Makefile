@@ -203,7 +203,7 @@ helm-lint: helm ## Lint the chart and render it with default and non-default val
 		$(HELM) template kflare helm/kflare --kube-version $$v > /dev/null; \
 		$(HELM) template kflare helm/kflare --kube-version $$v \
 			--set crds.enabled=false,leaderElection=false,defaultDeletionPolicy=retain \
-			--set reconcileTimeout=90s,driftCheckInterval=30m,cloudflareRateLimit=6000000 \
+			--set reconcileTimeout=90s,driftCheckInterval=30m,cloudflareRateLimit=6000000,renameGracePeriod=0s \
 			--set metrics.serviceMonitor.enabled=true \
 			--set autoscaling.enabled=false,replicaCount=2,networkPolicy.enabled=true \
 			--set metrics.certSecret=kflare-metrics-tls \
