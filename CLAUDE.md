@@ -1059,6 +1059,19 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     object goes to a successor (#165), an account's hourly token check, and `TokenExpired` and `TokenDisabled` where
     an expired or disabled token reported `TerminalError` (#163)
   - Left, for the user: the merge, which releases it. Then `release-0.4` can be cut from the tag, and #157 closed
+- [ ] v0.5.0's pre-merge checks (`docs/release-v0.5.0`), the user's version, off `ba00742` (#179's merge): `main` holds
+  #168 to #173 and #174 to #179 since v0.4.3. Done on the branch:
+  - `make crd-compat`: no breaking change to the CRDs since v0.4.3 (`Zone.spec.allowedReferences` and
+    `zoneRef.namespace` are optional additions)
+  - The chart pulled anonymously from GHCR (0.4.3, `sha256:db478b29…`) and the branch's render the same 32 objects
+    with the default values, on Kubernetes 1.34; they differ only in `DNSRecord`'s, `WorkerRoute`'s and `Zone`'s CRDs
+    and the new `--rename-grace-period=30s` flag. `make helm-lint` passes on 1.34 and 1.37 and `go test ./hack/...`
+    passes
+  - Not run on the branch: a separate live run. Live E2E runs on every pull request (#170), and #179 and #173
+    passed it before they merged; the branch changes only Markdown, `Chart.yaml`'s version and its annotations
+  - Left, for the user: the merge, which releases it (Tag release). `release-0.4` is not cut yet: cut it from the
+    v0.4.3 tag (CONTRIBUTING.md, "Patch releases from a release branch") before v0.4 stops being the latest minor's
+    only fix path, and close #157
 - [ ] Releases from the merge (`ci/release-on-merge`), the user's request on 2026-11-04: a release took a maintainer's
   tag, a draft's notes and #84's checks by hand. `tag-release.yml` runs on a push to `main` that changes `Chart.yaml`,
   and releases only when that push changed the version (a later CRD change also touches the file). It checks the
@@ -1237,7 +1250,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
 > hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:
 > [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done:
-> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.2 is the latest release.
+> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.3 is the latest release (v0.5.0 is prepared in `docs/release-v0.5.0`).
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero

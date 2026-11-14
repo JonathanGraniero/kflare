@@ -10,7 +10,41 @@ upgrade, and one to a CRD names each kind it changes, which CI checks (`make crd
 under "Upgrading from" the release before, and a deprecation is under "Deprecated", with the earliest release that may
 remove it. Releases up to v0.4.2 describe their breaking changes in their opening paragraph and "Upgrading from".
 
-## Unreleased
+## v0.5.0 (alpha)
+
+The ninth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. A `Zone` can now
+be shared with other namespaces, for the hostnames it allows, a renamed resource keeps its Cloudflare object even when
+the old resource is deleted first, as Argo CD does, and two resources no longer adopt one object when the manager's
+cache is behind. **Manifests and Helm values written for v0.4.3 apply unchanged**: read
+[Upgrading from v0.4.3](#upgrading-from-v043) for what the new controller does differently with them.
+
+```sh
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version 0.5.0 -n kflare-system \
+  --values kflare-values.yaml
+```
+
+The image is `ghcr.io/jonathangraniero/kflare:0.5.0`, for `linux/amd64` and `linux/arm64`. The deploy guide's
+[Verifying a release](docs/deploy.md#verifying-a-release) checks both signatures before you install. To install kflare
+for the first time, follow the [README's quickstart](README.md#quickstart-expose-a-service-through-a-cloudflare-tunnel).
+
+### Upgrading from v0.4.3
+
+No manifest or values changes. With the values you have, the chart renders what v0.4.3's did but for one new flag on
+the controller, `--rename-grace-period=30s`, and the CRDs of `Zone`, `DNSRecord` and `WorkerRoute`, which gain optional
+fields: if you manage the CRDs yourself (`crds.enabled=false`), apply `config/crd/bases` first. The controller's
+permissions are the same.
+
+Two things the new controller does differently:
+
+- **Deleting a resource takes 30 seconds longer** when kflare would delete its Cloudflare object, so that a resource
+  that replaces it can take the object over. Set the chart's `renameGracePeriod` to `0s` to delete at once, as before
+  ([Renaming a resource](docs/deploy.md#renaming-a-resource))
+- **A `DNSRecord` that adopts a proxied record must say `proxied`.** One with an adoption policy and no `proxied` in
+  its spec used to adopt a proxied record and turn its proxy off; it now reports `AlreadyExists` until the spec sets
+  `proxied: true` or `proxied: false`. Records kflare created or already manages are not affected
+
+The Argo CD and Flux health checks in the deploy guide know the new reason `ZoneReferenceNotAllowed`: update your
+copies of them if you share a Zone.
 
 ### Resources
 
@@ -53,6 +87,10 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **Scraping kflare's metrics with Datadog.** The deploy guide has the annotation that has the Datadog Agent scrape
   the controller over HTTPS with its own token, the permission it needs, and the names the metrics get in Datadog
   ([Datadog](docs/deploy.md#datadog))
+
+### Known limitations
+
+v0.4.3's, unchanged. [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains each.
 
 ## v0.4.3 (alpha)
 
