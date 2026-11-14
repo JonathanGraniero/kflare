@@ -111,6 +111,10 @@
         "retain"
       ]
     },
+    "renameGracePeriod": {
+      "type": "string",
+      "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ms|s|m|h))+)$"
+    },
     "reconcileTimeout": {
       "type": "string",
       "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ms|s|m|h))+)$"

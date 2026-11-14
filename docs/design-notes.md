@@ -2055,6 +2055,14 @@ be picked up without answering them, so each went as the issue proposed, or as n
 - **The deletion watch enqueues every resource of the kind that reports its conflict reason,** not only those whose
   message names the deleted resource: the message is prose, a TunnelConfiguration's has another form, and such
   resources are few and retry every minute anyway
+- **A deletion waits for a successor that may come after it** (`--rename-grace-period`, 2026-11-13). Argo CD prunes
+  a wave's resources before it applies them (`runTasks` in gitops-engine, read at Argo CD v3.5.3, not run on a
+  cluster), so the old resource's deletion was reconciled with no successor to find, and the object deleted. Nothing
+  at the deletion says that a successor will come, so every deletion that would delete an object waits: 30 seconds by
+  default, counted from the deletion timestamp, so a resource that waited for its dependents waits no longer. The
+  kind's controller watches its own creations to end the wait at once, since a new resource that reports the conflict
+  for 30 seconds would show Degraded in Argo CD that long. A creation older than the grace period maps to nothing: a
+  starting manager sees every resource created, and would list each namespace once per resource
 - **Not verified live yet:** the live spec renames a `DNSRecord` and polls the zone through it; it has not run
   against Cloudflare. The other kinds' hand-offs call Cloudflare for nothing, so the fake API's record of no delete
   and no create is what the shared specs check

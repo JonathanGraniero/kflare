@@ -33,6 +33,14 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   spec sets `proxied: true`, to keep it proxied, or `proxied: false`. Nothing changes for a record kflare created or
   already manages, or for one with a `tunnelRef`, which is always proxied
   ([Manage Cloudflare resources](docs/deploy.md#4-manage-cloudflare-resources))
+- **A rename keeps its Cloudflare object when the old resource is deleted first.** kflare handed a deleted resource's
+  object to the resource that replaces it only if that one existed already. Argo CD prunes before it applies, so a
+  renamed `DNSRecord` could still have its record deleted and created again, and resolvers that asked in between
+  cached the missing record for the zone's negative TTL. A deleted resource now keeps the object kflare would delete
+  with it for 30 seconds (the chart's new `renameGracePeriod`, the controller's `--rename-grace-period`), with an
+  Event with reason `AwaitingSuccessor`, and hands it over as soon as the new resource is created. Every other
+  deletion of an object takes that much longer; `0s` deletes at once, as before
+  ([Renaming a resource](docs/deploy.md#renaming-a-resource))
 - **Two resources no longer adopt one object when the manager's cache is behind.** A resource with an adoption policy
   looked for another resource's claim on the object in the manager's cache, which may not hold a claim written a
   moment before. Two resources with one key, such as two KVNamespaces with one title and `adopt-or-create`, could then
