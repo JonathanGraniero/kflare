@@ -40,9 +40,7 @@ type TunnelConfigurationAPI interface {
 	UpdateTunnelConfiguration(ctx context.Context, rc *cf.ResourceContainer, params cf.TunnelConfigurationParams) (cf.TunnelConfigurationResult, error)
 }
 
-// defaultTunnelConfigurationAPI is the production factory: it delegates to
-// cfpkg.New so that the returned *cfpkg.Client (which embeds *cf.API)
-// satisfies TunnelConfigurationAPI.
+// defaultTunnelConfigurationAPI returns the production TunnelConfigurationAPI, a *cfpkg.Client.
 func defaultTunnelConfigurationAPI(token string) (TunnelConfigurationAPI, error) {
 	return cfpkg.New(token)
 }

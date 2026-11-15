@@ -17,7 +17,6 @@ import (
 	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -230,10 +229,9 @@ func tunnelsNamingSecret(c client.Reader) handler.MapFunc {
 	}
 }
 
-// isTunnelReady returns true if the Tunnel has a Ready=True condition and a tunnel ID.
+// isTunnelReady reports whether tunnel is Ready and has a tunnel ID.
 func isTunnelReady(tunnel *cloudflarev1alpha1.Tunnel) bool {
-	return tunnel.Status.CloudflareMetadata.TunnelID != "" &&
-		meta.IsStatusConditionTrue(tunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+	return tunnel.Status.CloudflareMetadata.TunnelID != "" && isReady(tunnel)
 }
 
 // sameTunnel reports whether the Tunnels named a and b in namespace are one

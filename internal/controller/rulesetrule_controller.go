@@ -15,12 +15,10 @@ import (
 
 	"github.com/cloudflare/cloudflare-go/v7/rulesets"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -114,44 +112,15 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	logger := log.FromContext(ctx)
 
 	obj := r.kind.newObject()
-	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-
-	// A paused resource is left as it is, deletion included, until its
-	// kflare.dev/paused annotation is removed.
-	if reconciler.Paused(obj) {
-		return ctrl.Result{}, updatePaused(ctx, r.Client, obj)
-	}
-
-	// Then handle deletion, before anything else.
-	if !obj.GetDeletionTimestamp().IsZero() {
+	if done, result, err := startReconcile(ctx, r.Client, req, obj, func() (ctrl.Result, error) {
 		return r.reconcileDelete(ctx, obj)
+	}); done {
+		return result, err
 	}
 
-	// Ensure the finalizer is present before doing any work. On the first
-	// reconcile it is absent: add it and return; the update re-triggers this
-	// reconcile.
-	added, err := reconciler.EnsureFinalizer(ctx, r.Client, obj)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if added {
-		logger.Info("Added finalizer", "rule", req.NamespacedName)
-		return ctrl.Result{}, nil
-	}
-
-	// The Zone watch re-triggers this reconcile when the Zone appears or
-	// becomes ready.
-	zone := &cloudflarev1alpha1.Zone{}
-	zoneKey := types.NamespacedName{Name: obj.GetRulesetRuleSpec().ZoneRef.Name, Namespace: obj.GetNamespace()}
-	if condErr := getReference(ctx, r.Client, zoneKey, zone, fmt.Sprintf("Zone %q", zoneKey.Name),
-		"ZoneNotFound"); condErr != nil {
+	zone, condErr := readyZone(ctx, r.Client, obj, obj.GetRulesetRuleSpec().ZoneRef.Name)
+	if condErr != nil {
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
-	}
-	if !isZoneReady(zone) {
-		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, "ZoneNotReady",
-			fmt.Sprintf("Zone %q is not ready", zoneKey.Name))
 	}
 
 	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), zone.Spec.AccountRef.Name, true)
@@ -197,7 +166,7 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 		recordWarning(obj, reasonOtherKflareRules, "Order", fmt.Sprintf("Zone %q's %s phase also holds rules that "+
 			"kflare wrote for resources this installation does not manage: another installation's, which may run in "+
 			"another cluster, or rules kept by a deletion with the retain policy. kflare orders this rule only among "+
-			"this installation's rules, and leaves those where they are", zoneKey.Name, phase))
+			"this installation's rules, and leaves those where they are", zone.Name, phase))
 	}
 
 	obj.GetRulesetRuleStatus().CloudflareMetadata = cloudflarev1alpha1.RulesetRuleCloudflareMetadata{
@@ -236,19 +205,11 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 		if !slices.Contains(kind.phases, phase) {
 			continue
 		}
-		list := kind.newList()
-		if err := r.List(ctx, list); err != nil {
-			return nil, nil, err
-		}
-		items, err := meta.ExtractList(list)
+		objs, err := reconciler.List[rulesetRuleObject](ctx, r.Client, kind.newList())
 		if err != nil {
 			return nil, nil, err
 		}
-		for _, item := range items {
-			obj, ok := item.(rulesetRuleObject)
-			if !ok {
-				return nil, nil, fmt.Errorf("unexpected %T in a %s list", item, kind.name)
-			}
+		for _, obj := range objs {
 			ref := rulesetRuleRef(kind.name, obj.GetNamespace(), obj.GetName())
 			known[ref] = true
 			if !obj.GetDeletionTimestamp().IsZero() || reconciler.Paused(obj) || kind.phase(obj) != phase {
@@ -283,42 +244,14 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 // reconcileDelete handles the deletion lifecycle: unless the retain policy is
 // set, it deletes the rule from Cloudflare, then removes the finalizer.
 func (r *rulesetRuleReconciler) reconcileDelete(ctx context.Context, obj rulesetRuleObject) (ctrl.Result, error) {
-	// Safety check: if the finalizer is already gone, there is nothing to do.
-	if !controllerutil.ContainsFinalizer(obj, reconciler.Finalizer) {
-		return ctrl.Result{}, nil
-	}
-
-	if !reconciler.RetainOnDelete(obj) {
-		if err := r.deleteCloudflareRule(ctx, obj); err != nil {
-			return retryCleanup(err)
-		}
-	}
-
-	// Remove the finalizer to allow Kubernetes to complete the deletion.
-	_, err := reconciler.RemoveFinalizer(ctx, r.Client, obj)
-	return ctrl.Result{}, err
+	return deleteUnlessRetained(ctx, r.Client, obj, func() error { return r.deleteCloudflareRule(ctx, obj) })
 }
 
-// deleteCloudflareRule deletes the resource's rule from Cloudflare, resolving
-// Zone → Account → Secret for credentials.
-//
-// The Zone waits for its rules before it is deleted, so it is normally still
-// there. If it is gone anyway (its finalizer was removed by hand), there are
-// no credentials to delete with and the rule stays in Cloudflare. A Zone
-// outside what the installation watches ends the same way, with a Warning
-// Event (leaveCloudflareObject).
+// deleteCloudflareRule deletes the resource's rule from Cloudflare, with its
+// Zone's account (deletionZone).
 func (r *rulesetRuleReconciler) deleteCloudflareRule(ctx context.Context, obj rulesetRuleObject) error {
-	zone := &cloudflarev1alpha1.Zone{}
-	zoneKey := types.NamespacedName{Name: obj.GetRulesetRuleSpec().ZoneRef.Name, Namespace: obj.GetNamespace()}
-	err := r.Get(ctx, zoneKey, zone)
-	if condErr := outsideReference(ctx, zoneKey, zone, fmt.Sprintf("Zone %q", zoneKey.Name), err); condErr != nil {
-		return leaveCloudflareObject(ctx, obj, condErr)
-	}
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.FromContext(ctx).Info("Zone is gone, skipping Cloudflare deletion", "zone", zoneKey.Name)
-			return nil
-		}
+	zone, err := deletionZone(ctx, r.Client, obj, obj.GetRulesetRuleSpec().ZoneRef.Name)
+	if zone == nil || err != nil {
 		return err
 	}
 
@@ -409,28 +342,10 @@ func (r *rulesetRuleReconciler) rulesInZoneOfDeleted(ctx context.Context, delete
 		return nil
 	}
 	zoneID := rule.GetRulesetRuleStatus().CloudflareMetadata.ZoneID
-	list := r.kind.newList()
-	if err := r.List(ctx, list); err != nil {
-		return nil
-	}
-	items, err := meta.ExtractList(list)
-	if err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for _, item := range items {
-		obj, ok := item.(rulesetRuleObject)
-		if !ok {
-			continue
-		}
+	return reconciler.RequestsWhere(ctx, r.Client, r.kind.newList(), nil, func(obj rulesetRuleObject) bool {
 		synced := obj.GetRulesetRuleStatus().CloudflareMetadata.ZoneID
-		if zoneID == "" || synced == "" || synced == zoneID {
-			reqs = append(reqs, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()},
-			})
-		}
-	}
-	return reqs
+		return zoneID == "" || synced == "" || synced == zoneID
+	})
 }
 
 // The rule kinds' controllers watch IPLists.
@@ -446,46 +361,17 @@ func (r *rulesetRuleReconciler) rulesUsingList(ctx context.Context, obj client.O
 	if !ok || ipList.Status.CloudflareMetadata.ListID == "" {
 		return nil
 	}
-	list := r.kind.newList()
-	if err := r.List(ctx, list); err != nil {
-		return nil
-	}
-	items, err := meta.ExtractList(list)
-	if err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for _, item := range items {
-		rule, ok := item.(rulesetRuleObject)
-		if ok && slices.Contains(listsInExpression(rule.GetRulesetRuleSpec().Expression), ipList.Spec.Name) {
-			reqs = append(reqs, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: rule.GetName(), Namespace: rule.GetNamespace()},
-			})
-		}
-	}
-	return reqs
+	return reconciler.RequestsWhere(ctx, r.Client, r.kind.newList(), nil, func(rule rulesetRuleObject) bool {
+		return slices.Contains(listsInExpression(rule.GetRulesetRuleSpec().Expression), ipList.Spec.Name)
+	})
 }
 
 // rulesForZone maps a Zone event to the kind's resources in that zone.
 func (r *rulesetRuleReconciler) rulesForZone(ctx context.Context, zone client.Object) []reconcile.Request {
-	list := r.kind.newList()
-	if err := r.List(ctx, list, client.InNamespace(zone.GetNamespace())); err != nil {
-		return nil
-	}
-	items, err := meta.ExtractList(list)
-	if err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for _, item := range items {
-		obj, ok := item.(rulesetRuleObject)
-		if ok && obj.GetRulesetRuleSpec().ZoneRef.Name == zone.GetName() {
-			reqs = append(reqs, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()},
-			})
-		}
-	}
-	return reqs
+	return reconciler.RequestsWhere(ctx, r.Client, r.kind.newList(),
+		[]client.ListOption{client.InNamespace(zone.GetNamespace())}, func(obj rulesetRuleObject) bool {
+			return obj.GetRulesetRuleSpec().ZoneRef.Name == zone.GetName()
+		})
 }
 
 // defaultRulesetRuleAPI is the production factory: cloudflare-go v7's

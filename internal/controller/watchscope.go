@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 // reasonNotWatched reports a resource whose CloudflareAccount, or a resource
@@ -215,7 +215,7 @@ func (s WatchScope) accountsElsewhere(ctx context.Context, c client.Reader, acco
 // may not list across the cluster. The kind is one the selector applies to:
 // not CloudflareAccount.
 func (s WatchScope) listUncached(ctx context.Context, reader client.Reader, newList func() client.ObjectList,
-	matching labels.Set) ([]runtime.Object, error) {
+	matching labels.Set) ([]client.Object, error) {
 	selector := labels.SelectorFromValidatedSet(matching)
 	if s.selector != nil {
 		requirements, _ := s.selector.Requirements()
@@ -225,14 +225,10 @@ func (s WatchScope) listUncached(ctx context.Context, reader client.Reader, newL
 	if namespaces == nil {
 		namespaces = []string{metav1.NamespaceAll}
 	}
-	var found []runtime.Object
+	var found []client.Object
 	for _, namespace := range namespaces {
-		list := newList()
-		err := reader.List(ctx, list, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector})
-		if err != nil {
-			return nil, err
-		}
-		items, err := meta.ExtractList(list)
+		items, err := reconciler.List[client.Object](ctx, reader, newList(), client.InNamespace(namespace),
+			client.MatchingLabelsSelector{Selector: selector})
 		if err != nil {
 			return nil, err
 		}

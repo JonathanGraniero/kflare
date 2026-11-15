@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -22,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 // Deletion protection. A resource whose dependents need it for their own
@@ -128,19 +128,11 @@ func dependentsOf(
 		if k.zone != nil {
 			in = metav1.NamespaceAll
 		}
-		list := k.list()
-		if err := c.List(ctx, list, client.InNamespace(in)); err != nil {
-			return nil, err
-		}
-		items, err := meta.ExtractList(list)
+		objs, err := reconciler.List[client.Object](ctx, c, k.list(), client.InNamespace(in))
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range items {
-			obj, ok := item.(client.Object)
-			if !ok {
-				return nil, fmt.Errorf("unexpected list item %T", item)
-			}
+		for _, obj := range objs {
 			names, ok := k.parents(obj)
 			if !ok || !slices.Contains(names, parentName) {
 				continue
