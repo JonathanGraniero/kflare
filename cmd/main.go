@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -140,40 +141,17 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	if err := reconciler.SetDefaultDeletionPolicy(defaultDeletionPolicy); err != nil {
-		setupLog.Error(err, "invalid --default-deletion-policy")
-		os.Exit(1)
-	}
-	if reconcileTimeout < 0 {
-		setupLog.Error(nil, "--reconcile-timeout must be 0 (off) or a positive duration", "value", reconcileTimeout)
-		os.Exit(1)
-	}
-	if err := reconciler.SetDriftCheckInterval(driftCheckInterval); err != nil {
-		setupLog.Error(err, "invalid --drift-check-interval")
-		os.Exit(1)
-	}
-	if err := reconciler.SetRenameGracePeriod(renameGracePeriod); err != nil {
-		setupLog.Error(err, "invalid --rename-grace-period")
-		os.Exit(1)
-	}
-	if tokenCheckInterval < 0 {
-		setupLog.Error(nil, "--token-check-interval must be 0 (off) or a positive duration", "value",
-			tokenCheckInterval)
-		os.Exit(1)
-	}
-	if tokenExpiryWarning < 0 {
-		setupLog.Error(nil, "--token-expiry-warning must be 0 (off) or a positive duration", "value",
-			tokenExpiryWarning)
-		os.Exit(1)
-	}
+	exitOnError(reconciler.SetDefaultDeletionPolicy(defaultDeletionPolicy), "invalid --default-deletion-policy")
+	exitOnError(offOrPositive(reconcileTimeout), "invalid --reconcile-timeout")
+	exitOnError(reconciler.SetDriftCheckInterval(driftCheckInterval), "invalid --drift-check-interval")
+	exitOnError(reconciler.SetRenameGracePeriod(renameGracePeriod), "invalid --rename-grace-period")
+	exitOnError(offOrPositive(tokenCheckInterval), "invalid --token-check-interval")
+	exitOnError(offOrPositive(tokenExpiryWarning), "invalid --token-expiry-warning")
 	if maxConcurrentReconciles < 1 {
 		setupLog.Error(nil, "--max-concurrent-reconciles must be 1 or more", "value", maxConcurrentReconciles)
 		os.Exit(1)
 	}
-	if err := cfpkg.SetRateLimit(cloudflareRateLimit); err != nil {
-		setupLog.Error(err, "invalid --cloudflare-rate-limit")
-		os.Exit(1)
-	}
+	exitOnError(cfpkg.SetRateLimit(cloudflareRateLimit), "invalid --cloudflare-rate-limit")
 	if problems := validation.IsDNS1123Subdomain(leaderElectionID); len(problems) > 0 {
 		setupLog.Error(nil, "invalid --leader-election-id", "value", leaderElectionID, "problems", problems)
 		os.Exit(1)
@@ -183,23 +161,13 @@ func main() {
 	// The scope reads past the manager's cache, which holds only what the
 	// installation manages, to tell a reference outside it from a missing one.
 	apiReader, err := client.New(restConfig, client.Options{Scheme: scheme})
-	if err != nil {
-		setupLog.Error(err, "unable to create a Kubernetes client")
-		os.Exit(1)
-	}
+	exitOnError(err, "unable to create a Kubernetes client")
 	scope, err := controller.NewWatchScope(watchNamespaces, watchSelector, apiReader)
-	if err != nil {
-		setupLog.Error(err, "invalid --watch-namespaces or --watch-selector")
-		os.Exit(1)
-	}
+	exitOnError(err, "invalid --watch-namespaces or --watch-selector")
 	setupLog.Info("managing kflare resources", "scope", scope.String())
 
-	// if the enable-http2 flag is false (the default), http/2 should be disabled
-	// due to its vulnerabilities. More specifically, disabling http/2 will
-	// prevent from being vulnerable to the HTTP/2 Stream Cancelation and
-	// Rapid Reset CVEs. For more information see:
-	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
-	// - https://github.com/advisories/GHSA-4374-p667-p6c8
+	// HTTP/2 stays off unless --enable-http2: the Stream Cancellation and Rapid
+	// Reset CVEs (GHSA-qppj-fm5r-hxr3, GHSA-4374-p667-p6c8).
 	disableHTTP2 := func(c *tls.Config) {
 		setupLog.Info("disabling http/2")
 		c.NextProtos = []string{"http/1.1"}
@@ -233,10 +201,8 @@ func main() {
 		// The metrics server falls back to a self-signed certificate when
 		// these files are missing, so a mistyped mount would go unnoticed.
 		for _, name := range []string{"tls.crt", "tls.key"} {
-			if _, err := os.Stat(filepath.Join(metricsCertPath, name)); err != nil {
-				setupLog.Error(err, "unable to read the metrics server's certificate")
-				os.Exit(1)
-			}
+			_, err := os.Stat(filepath.Join(metricsCertPath, name))
+			exitOnError(err, "unable to read the metrics server's certificate")
 		}
 		metricsServerOptions.CertDir = metricsCertPath
 	}
@@ -260,57 +226,42 @@ func main() {
 		},
 		LeaderElection:   enableLeaderElection,
 		LeaderElectionID: leaderElectionID,
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
 	})
-	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
-	}
+	exitOnError(err, "unable to start manager")
 	controller.SetEventRecorder(mgr.GetEventRecorder("kflare"))
 
-	if err = (&controller.CloudflareAccountReconciler{
+	exitOnError((&controller.CloudflareAccountReconciler{
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
 		TokenCheckInterval: tokenCheckInterval,
 		TokenExpiryWarning: tokenExpiryWarning,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "CloudflareAccount")
-		os.Exit(1)
-	}
+	}).SetupWithManager(mgr), "unable to create the CloudflareAccount controller")
 	// The kinds kflare-gen generates, KVNamespace among them.
-	if err = controller.SetupGeneratedReconcilers(mgr); err != nil {
-		setupLog.Error(err, "unable to create controllers")
-		os.Exit(1)
-	}
+	exitOnError(controller.SetupGeneratedReconcilers(mgr), "unable to create controllers")
 	//+kubebuilder:scaffold:builder
 
-	if err := controller.SetupMetrics(mgr, scope); err != nil {
-		setupLog.Error(err, "unable to set up metrics")
-		os.Exit(1)
-	}
+	exitOnError(controller.SetupMetrics(mgr, scope), "unable to set up metrics")
 
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
+	exitOnError(mgr.AddHealthzCheck("healthz", healthz.Ping), "unable to set up health check")
+	exitOnError(mgr.AddReadyzCheck("readyz", healthz.Ping), "unable to set up ready check")
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	exitOnError(mgr.Start(ctrl.SetupSignalHandler()), "problem running manager")
+}
+
+// exitOnError logs err with msg and exits, when err is not nil.
+func exitOnError(err error, msg string) {
+	if err != nil {
+		setupLog.Error(err, msg)
 		os.Exit(1)
 	}
+}
+
+// offOrPositive refuses a negative duration: a duration flag takes 0 (off) or
+// a positive one.
+func offOrPositive(d time.Duration) error {
+	if d < 0 {
+		return fmt.Errorf("%s is negative: want 0 (off) or a positive duration", d)
+	}
+	return nil
 }
