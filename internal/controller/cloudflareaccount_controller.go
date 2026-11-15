@@ -29,11 +29,8 @@ import (
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
-// CloudflareAccountAPI is the subset of the Cloudflare API used by this
-// controller.  Declaring a narrow interface here (rather than depending on
-// *cfpkg.Client directly) keeps unit tests simple: tests inject a fake that
-// implements only these methods.  In production, *cfpkg.Client satisfies this
-// interface: it embeds *cf.API, and verifies its token with cloudflare-go v7.
+// CloudflareAccountAPI is the part of the Cloudflare API this controller
+// calls; *cfpkg.Client satisfies it, and tests inject a fake.
 type CloudflareAccountAPI interface {
 	Account(ctx context.Context, accountID string) (cf.Account, cf.ResultInfo, error)
 	VerifyToken(ctx context.Context, accountID string) (cfpkg.TokenVerification, error)
@@ -66,8 +63,8 @@ type CloudflareAccountReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	// NewCFClient constructs a CloudflareAccountAPI from a raw API token.
-	// Defaults to cfpkg.New; overridden in tests to inject a fake.
+	// NewCFClient builds a CloudflareAccountAPI from a token: cfpkg.New, or a
+	// test's fake.
 	NewCFClient func(token string) (CloudflareAccountAPI, error)
 
 	// TokenCheckInterval is how long after a validation the account is
@@ -200,7 +197,7 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 // account's status, in memory: the status write that ends the reconcile
 // carries it.
 func recordToken(account *cloudflarev1alpha1.CloudflareAccount, verification cfpkg.TokenVerification) {
-	account.Status.TokenStatus = verification.Status
+	account.Status.TokenStatus = string(verification.Status)
 	account.Status.TokenExpiresAt = nil
 	if !verification.ExpiresOn.IsZero() {
 		account.Status.TokenExpiresAt = new(metav1.NewTime(verification.ExpiresOn))
@@ -300,9 +297,7 @@ func (r *CloudflareAccountReconciler) accountsForSecret(ctx context.Context, obj
 	return reqs
 }
 
-// defaultCFClient is the production factory: it delegates to cfpkg.New so
-// that the returned *cfpkg.Client (which embeds *cf.API) satisfies
-// CloudflareAccountAPI.
+// defaultCFClient returns the production CloudflareAccountAPI, a *cfpkg.Client.
 func defaultCFClient(token string) (CloudflareAccountAPI, error) {
 	return cfpkg.New(token)
 }

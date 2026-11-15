@@ -124,14 +124,14 @@ var _ = Describe("A CloudflareAccount's API token", func() {
 			validate()
 			Expect(fake.verifications).To(Equal(1))
 			Expect(ready().Reason).To(Equal("Validated"))
-			Expect(stored().Status.TokenStatus).To(Equal(cfpkg.TokenActive))
+			Expect(stored().Status.TokenStatus).To(Equal(string(cfpkg.TokenActive)))
 			Expect(stored().Status.TokenExpiresAt).NotTo(BeNil())
 			Expect(stored().Status.TokenExpiresAt.Time).To(BeTemporally("==", at))
 		})
 
 		It("records no expiry for a token that never expires", func() {
 			validate()
-			Expect(stored().Status.TokenStatus).To(Equal(cfpkg.TokenActive))
+			Expect(stored().Status.TokenStatus).To(Equal(string(cfpkg.TokenActive)))
 			Expect(stored().Status.TokenExpiresAt).To(BeNil())
 		})
 
@@ -169,7 +169,7 @@ var _ = Describe("A CloudflareAccount's API token", func() {
 			_, err := reconcileIt()
 			Expect(err).To(HaveOccurred(), "an error to retry is returned, for controller-runtime's back-off")
 			Expect(ready().Reason).To(Equal("APIError"))
-			Expect(stored().Status.TokenStatus).To(Equal(cfpkg.TokenActive))
+			Expect(stored().Status.TokenStatus).To(Equal(string(cfpkg.TokenActive)))
 			Expect(stored().Status.TokenExpiresAt.Time).To(BeTemporally("==", at))
 		})
 
@@ -214,7 +214,7 @@ var _ = Describe("A CloudflareAccount's API token", func() {
 			Expect(ready().Reason).To(Equal("TokenExpired"))
 			Expect(ready().Message).To(Equal("The API token in Secret " + secret + " expired at " +
 				"2026-11-09T20:07:05Z: put a new token in the Secret, or extend the token's expiry in Cloudflare"))
-			Expect(stored().Status.TokenStatus).To(Equal(cfpkg.TokenExpired))
+			Expect(stored().Status.TokenStatus).To(Equal(string(cfpkg.TokenExpired)))
 			Expect(stored().Status.TokenExpiresAt.Time).To(BeTemporally("==", at))
 			Expect(result.RequeueAfter).To(Equal(tokenCheckTestInterval),
 				"an expiry moved in Cloudflare changes nothing in the cluster")
@@ -236,7 +236,7 @@ var _ = Describe("A CloudflareAccount's API token", func() {
 			Expect(ready().Reason).To(Equal("TokenDisabled"))
 			Expect(ready().Message).To(Equal("Cloudflare reports the API token in Secret " + secret + " as " +
 				"disabled: enable it again in Cloudflare, or put a new token in the Secret"))
-			Expect(stored().Status.TokenStatus).To(Equal(cfpkg.TokenDisabled))
+			Expect(stored().Status.TokenStatus).To(Equal(string(cfpkg.TokenDisabled)))
 			Expect(result.RequeueAfter).To(Equal(tokenCheckTestInterval),
 				"a token enabled again in Cloudflare changes nothing in the cluster")
 		})
@@ -419,11 +419,11 @@ func tokenExpirySeries(gatherer prometheus.Gatherer) map[string]float64 {
 // a spec changes what Cloudflare reports about the token.
 type lockedTokenAPI struct {
 	mu            sync.Mutex
-	status        string
+	status        cfpkg.TokenStatus
 	verifications int
 }
 
-func (l *lockedTokenAPI) set(status string) {
+func (l *lockedTokenAPI) set(status cfpkg.TokenStatus) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.status = status
