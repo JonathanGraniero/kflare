@@ -364,42 +364,35 @@ func (c *config) validate() error {
 		return fmt.Errorf("no kinds")
 	}
 	seen := map[string]bool{}
+	check := func(list string, i int, kind string, err error) error {
+		if err != nil {
+			return fmt.Errorf("%s[%d] (%s): %w", list, i, kind, err)
+		}
+		if seen[kind] {
+			return fmt.Errorf("%s[%d]: %s is listed twice", list, i, kind)
+		}
+		seen[kind] = true
+		return nil
+	}
 	for i, k := range c.Kinds {
-		if err := k.validate(); err != nil {
-			return fmt.Errorf("kinds[%d] (%s): %w", i, k.Kind, err)
-		}
-		if seen[k.Kind] {
-			return fmt.Errorf("kinds[%d]: %s is listed twice", i, k.Kind)
-		}
-		seen[k.Kind] = true
-	}
-	for i, k := range c.RuleKinds {
-		if err := k.validate(); err != nil {
-			return fmt.Errorf("ruleKinds[%d] (%s): %w", i, k.Kind, err)
-		}
-		if seen[k.Kind] {
-			return fmt.Errorf("ruleKinds[%d]: %s is listed twice", i, k.Kind)
-		}
-		seen[k.Kind] = true
-	}
-	for i := range c.HookedKinds {
-		k := &c.HookedKinds[i]
-		if err := k.validate(); err != nil {
+		if err := check("kinds", i, k.Kind, k.validate()); err != nil {
 			return err
 		}
-		if seen[k.Kind] {
-			return fmt.Errorf("kind %s is listed twice", k.Kind)
+	}
+	for i, k := range c.RuleKinds {
+		if err := check("ruleKinds", i, k.Kind, k.validate()); err != nil {
+			return err
 		}
-		seen[k.Kind] = true
+	}
+	for i := range c.HookedKinds {
+		if err := check("hookedKinds", i, c.HookedKinds[i].Kind, c.HookedKinds[i].validate()); err != nil {
+			return err
+		}
 	}
 	for i, k := range c.SettingsKinds {
-		if err := k.validate(); err != nil {
-			return fmt.Errorf("settingsKinds[%d] (%s): %w", i, k.Kind, err)
+		if err := check("settingsKinds", i, k.Kind, k.validate()); err != nil {
+			return err
 		}
-		if seen[k.Kind] {
-			return fmt.Errorf("settingsKinds[%d]: %s is listed twice", i, k.Kind)
-		}
-		seen[k.Kind] = true
 	}
 	return nil
 }
@@ -1079,18 +1072,18 @@ var settingsValuePath = regexp.MustCompile(`^[a-z][a-z0-9_-]*(\[\])?(\.[a-z][a-z
 func (k *hookedKindConfig) validate() error {
 	switch {
 	case !kindName.MatchString(k.Kind):
-		return fmt.Errorf("hookedKinds: %q is not a Go type name", k.Kind)
+		return fmt.Errorf("%q is not a Go type name", k.Kind)
 	case k.ShortName == "" || k.Noun == "" || k.ClaimLabel == "" || k.ID.Status == "":
-		return fmt.Errorf("hookedKinds (%s): shortName, noun, claimLabel and id.status are required", k.Kind)
+		return fmt.Errorf("shortName, noun, claimLabel and id.status are required")
 	case !strings.HasPrefix(k.Doc, k.Kind+" "):
-		return fmt.Errorf("hookedKinds (%s): doc does not start with %q", k.Kind, k.Kind+" ")
+		return fmt.Errorf("doc does not start with %q", k.Kind+" ")
 	case k.Scope != "" && k.Scope != scopeAccount:
-		return fmt.Errorf("hookedKinds (%s): scope %q: it is account, or empty", k.Kind, k.Scope)
+		return fmt.Errorf("scope %q: it is account, or empty", k.Scope)
 	}
 	hooks := hooksConfig{SpecExtras: k.SpecExtras, MetadataExtras: k.MetadataExtras, StatusExtras: k.StatusExtras,
 		Columns: k.Columns}
 	if k.SpecExtras == "" {
-		return fmt.Errorf("hookedKinds (%s): specExtras is required", k.Kind)
+		return fmt.Errorf("specExtras is required")
 	}
 	return hooks.validate()
 }
