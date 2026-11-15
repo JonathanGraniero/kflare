@@ -4,10 +4,9 @@ Copyright 2026 Jonathan Graniero.
 SPDX-License-Identifier: MIT
 */
 
-// Package reconciler provides shared helpers used across all kflare
-// controllers.  Centralising these utilities keeps individual reconcilers
-// focused on resource-specific logic and ensures consistent behaviour for
-// condition management, finalizer lifecycle, and error classification.
+// Package reconciler holds what every kflare controller shares: the
+// annotations and finalizer kflare owns, the deletion policy, conditions and
+// listing.
 package reconciler
 
 import (
@@ -22,10 +21,8 @@ import (
 )
 
 const (
-	// Finalizer is the finalizer added to every kflare-managed resource.
-	// Its presence prevents Kubernetes from deleting the object until the
-	// controller has had a chance to clean up the corresponding Cloudflare
-	// resource (unless its deletion policy keeps it).
+	// Finalizer keeps a resource until kflare has cleaned up its Cloudflare
+	// object (unless its deletion policy keeps it).
 	Finalizer = "kflare.dev/finalizer"
 
 	// DeletionPolicyAnnotation chooses what happens to the Cloudflare resource
@@ -121,13 +118,8 @@ func RetainOnDelete(obj client.Object) bool {
 	return Adopted(obj) || retainByDefault.Load()
 }
 
-// SetCondition upserts a standard Kubernetes condition on the provided slice.
-// It is a thin, typed wrapper around meta.SetStatusCondition that ensures
-// ObservedGeneration is always populated, which is required for correct
-// server-side apply and status conflict detection.
-//
-// condType must match the Type of an existing condition in the slice for an
-// update; otherwise a new condition is appended.
+// SetCondition sets the condition of condType in conditions, observed at
+// generation.
 func SetCondition(
 	conditions *[]metav1.Condition,
 	condType string,
@@ -144,12 +136,8 @@ func SetCondition(
 	})
 }
 
-// EnsureFinalizer adds the kflare finalizer to obj if it is not already
-// present and persists the change via a Kubernetes Update call.
-//
-// Returns (true, nil) when the finalizer was added and the object updated.
-// Returns (false, nil) when the finalizer was already present (no-op).
-// Returns (false, err) when the Update call failed.
+// EnsureFinalizer adds the kflare finalizer to obj and updates it, when obj
+// lacks one. added reports whether it tried; err is the update's.
 func EnsureFinalizer(ctx context.Context, c client.Client, obj client.Object) (added bool, err error) {
 	if controllerutil.ContainsFinalizer(obj, Finalizer) {
 		return false, nil
@@ -158,14 +146,8 @@ func EnsureFinalizer(ctx context.Context, c client.Client, obj client.Object) (a
 	return true, c.Update(ctx, obj)
 }
 
-// RemoveFinalizer removes the kflare finalizer from obj and persists the
-// change via a Kubernetes Update call.  Typically called at the end of a
-// deletion reconcile, after the corresponding Cloudflare resource has been
-// deleted (or retained per policy).
-//
-// Returns (true, nil) when the finalizer was removed and the object updated.
-// Returns (false, nil) when the finalizer was not present (no-op).
-// Returns (false, err) when the Update call failed.
+// RemoveFinalizer removes the kflare finalizer from obj and updates it, when
+// obj has one. removed reports whether it tried; err is the update's.
 func RemoveFinalizer(ctx context.Context, c client.Client, obj client.Object) (removed bool, err error) {
 	if !controllerutil.ContainsFinalizer(obj, Finalizer) {
 		return false, nil
