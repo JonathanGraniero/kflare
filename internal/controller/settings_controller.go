@@ -12,12 +12,10 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -110,47 +108,16 @@ type settingsReconciler[A any] struct {
 }
 
 func (r *settingsReconciler[A]) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	obj := r.kind.newObject()
-	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-
-	// A paused resource is left as it is, deletion included, until its
-	// kflare.dev/paused annotation is removed.
-	if reconciler.Paused(obj) {
-		return ctrl.Result{}, updatePaused(ctx, r.Client, obj)
-	}
-
-	// Then handle deletion, before anything else.
-	if !obj.GetDeletionTimestamp().IsZero() {
+	if done, result, err := startReconcile(ctx, r.Client, req, obj, func() (ctrl.Result, error) {
 		return r.reconcileDelete(ctx, obj)
+	}); done {
+		return result, err
 	}
 
-	// Ensure the finalizer is present before doing any work. On the first
-	// reconcile it is absent: add it and return; the update re-triggers this
-	// reconcile.
-	added, err := reconciler.EnsureFinalizer(ctx, r.Client, obj)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if added {
-		logger.Info("Added finalizer", "resource", req.NamespacedName)
-		return ctrl.Result{}, nil
-	}
-
-	// The Zone watch re-triggers this reconcile when the Zone appears or
-	// becomes ready.
-	zone := &cloudflarev1alpha1.Zone{}
-	zoneKey := types.NamespacedName{Name: obj.GetSettingsSpec().ZoneRef.Name, Namespace: obj.GetNamespace()}
-	if condErr := getReference(ctx, r.Client, zoneKey, zone, fmt.Sprintf("Zone %q", zoneKey.Name),
-		"ZoneNotFound"); condErr != nil {
+	zone, condErr := readyZone(ctx, r.Client, obj, obj.GetSettingsSpec().ZoneRef.Name)
+	if condErr != nil {
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
-	}
-	if !isZoneReady(zone) {
-		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, "ZoneNotReady",
-			fmt.Sprintf("Zone %q is not ready", zoneKey.Name))
 	}
 
 	// Only one resource of the kind configures a zone's settings. Another
@@ -288,21 +255,13 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, ac
 // it cannot reset what another one just wrote.
 func (r *settingsReconciler[A]) owner(ctx context.Context, obj settingsObject, zoneID string) (settingsObject,
 	error) {
-	list := r.kind.newList()
-	if err := r.List(ctx, list); err != nil {
-		return nil, err
-	}
-	items, err := meta.ExtractList(list)
+	others, err := reconciler.List[settingsObject](ctx, r.Client, r.kind.newList())
 	if err != nil {
 		return nil, err
 	}
 	owner := obj
 	zoneIDs := map[types.NamespacedName]string{}
-	for _, item := range items {
-		other, ok := item.(settingsObject)
-		if !ok {
-			return nil, fmt.Errorf("unexpected %T in a %s list", item, r.kind.name)
-		}
+	for _, other := range others {
 		// The list's copy of obj may be older than obj, which is the one to go
 		// by.
 		if client.ObjectKeyFromObject(other) == client.ObjectKeyFromObject(obj) ||
@@ -355,32 +314,14 @@ func settingsOlder(a, b client.Object) bool {
 // retained (the retain policy, or settings this resource adopted), it resets
 // them, then removes the finalizer.
 func (r *settingsReconciler[A]) reconcileDelete(ctx context.Context, obj settingsObject) (ctrl.Result, error) {
-	// Safety check: if the finalizer is already gone, there is nothing to do.
-	if !controllerutil.ContainsFinalizer(obj, reconciler.Finalizer) {
-		return ctrl.Result{}, nil
-	}
-
-	if !reconciler.RetainOnDelete(obj) {
-		if err := r.resetSettings(ctx, obj); err != nil {
-			return retryCleanup(err)
-		}
-	}
-
-	// Remove the finalizer to allow Kubernetes to complete the deletion.
-	_, err := reconciler.RemoveFinalizer(ctx, r.Client, obj)
-	return ctrl.Result{}, err
+	return deleteUnlessRetained(ctx, r.Client, obj, func() error { return r.resetSettings(ctx, obj) })
 }
 
 // resetSettings restores Cloudflare's defaults in the zone whose settings obj
 // configures, when it still configures them: the zone of its last sync, or,
 // without one, the zone its creating annotation names, whose settings a sync
-// may have written before failing to record them.
-//
-// The Zone waits for its resources before it is deleted, so it is normally
-// still there. If it is gone anyway (its finalizer was removed by hand), there
-// are no credentials to reset with and the settings stay. A Zone outside what
-// the installation watches ends the same way, with a Warning Event
-// (leaveCloudflareObject).
+// may have written before failing to record them, with its Zone's account
+// (deletionZone).
 func (r *settingsReconciler[A]) resetSettings(ctx context.Context, obj settingsObject) error {
 	logger := log.FromContext(ctx)
 	zoneID := obj.GetSettingsStatus().CloudflareMetadata.ZoneID
@@ -391,17 +332,8 @@ func (r *settingsReconciler[A]) resetSettings(ctx context.Context, obj settingsO
 		return nil
 	}
 
-	zone := &cloudflarev1alpha1.Zone{}
-	zoneKey := types.NamespacedName{Name: obj.GetSettingsSpec().ZoneRef.Name, Namespace: obj.GetNamespace()}
-	err := r.Get(ctx, zoneKey, zone)
-	if condErr := outsideReference(ctx, zoneKey, zone, fmt.Sprintf("Zone %q", zoneKey.Name), err); condErr != nil {
-		return leaveCloudflareObject(ctx, obj, condErr)
-	}
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.Info("Zone is gone, leaving the "+r.kind.noun+" as they are", "zone", zoneKey.Name)
-			return nil
-		}
+	zone, err := deletionZone(ctx, r.Client, obj, obj.GetSettingsSpec().ZoneRef.Name)
+	if zone == nil || err != nil {
 		return err
 	}
 	owner, err := r.owner(ctx, obj, zoneID)
@@ -469,19 +401,5 @@ func (r *settingsReconciler[A]) othersInZoneOf(ctx context.Context, deleted clie
 // with opts, that match accepts.
 func (r *settingsReconciler[A]) resourcesWhere(ctx context.Context, opts []client.ListOption,
 	match func(settingsObject) bool) []reconcile.Request {
-	list := r.kind.newList()
-	if err := r.List(ctx, list, opts...); err != nil {
-		return nil
-	}
-	items, err := meta.ExtractList(list)
-	if err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for _, item := range items {
-		if obj, ok := item.(settingsObject); ok && match(obj) {
-			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(obj)})
-		}
-	}
-	return reqs
+	return reconciler.RequestsWhere(ctx, r.Client, r.kind.newList(), opts, match)
 }

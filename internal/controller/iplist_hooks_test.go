@@ -448,6 +448,10 @@ var _ = Describe("ipListItemsMatch", func() {
 			[]rules.ListItemListResponse{item("192.0.2.1", "")}, false),
 		Entry("Cloudflare's copy in another form", []cloudflarev1alpha1.IPListItem{{IP: "2001:db8::1"}},
 			[]rules.ListItemListResponse{item("2001:DB8:0::1", "")}, true),
+		Entry("a value that is no address, as written", []cloudflarev1alpha1.IPListItem{{IP: "not-an-ip"}},
+			[]rules.ListItemListResponse{item("not-an-ip", "")}, true),
+		Entry("a value that is no address, against another", []cloudflarev1alpha1.IPListItem{{IP: "not-an-ip"}},
+			[]rules.ListItemListResponse{item("Not-An-IP", "")}, false),
 	)
 })
 

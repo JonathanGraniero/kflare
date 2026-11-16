@@ -178,9 +178,9 @@ var _ = Describe("WorkerScript r2BucketRef bindings", func() {
 
 	It("maps an R2Bucket to the WorkerScripts that bind it", func() {
 		b := &cloudflarev1alpha1.R2Bucket{ObjectMeta: metav1.ObjectMeta{Name: r2Name, Namespace: ns}}
-		Expect(r.workersForR2Bucket(ctx, b)).To(ConsistOf(reconcile.Request{NamespacedName: wsKey}))
+		Expect(r.workersBinding(boundR2Buckets)(ctx, b)).To(ConsistOf(reconcile.Request{NamespacedName: wsKey}))
 		other := &cloudflarev1alpha1.R2Bucket{ObjectMeta: metav1.ObjectMeta{Name: "unbound", Namespace: ns}}
-		Expect(r.workersForR2Bucket(ctx, other)).To(BeEmpty())
+		Expect(r.workersBinding(boundR2Buckets)(ctx, other)).To(BeEmpty())
 	})
 })
 

@@ -172,30 +172,10 @@ func emitRuleTypes(k *ruleKind, header string) ([]byte, error) {
 	writeParamFields(&b, k.params.fields)
 	write("}\n\n")
 
-	for _, st := range k.structs {
-		comment(&b, "", st.doc)
-		comment(&b, "", ruleMarkers(st.rules))
-		write("type %s struct {\n", st.goName)
-		writeParamFields(&b, st.fields)
-		write("}\n\n")
-	}
+	writeStructs(&b, k.structs)
 
-	write("// +kubebuilder:object:root=true\n// +kubebuilder:subresource:status\n")
-	write("// +kubebuilder:resource:path=%s,scope=Namespaced,shortName=%s,categories=kflare\n", k.plural, k.shortName)
-	for _, c := range k.printColumns {
-		write("// +kubebuilder:printcolumn:name=%q,type=%s,JSONPath=`%s`\n", c.name, c.typ, c.jsonPath)
-	}
-	write("\n")
-	comment(&b, "", k.doc)
-	write("type %s struct {\n", k.name)
-	write("\tmetav1.TypeMeta   `json:\",inline\"`\n\tmetav1.ObjectMeta `json:\"metadata,omitempty\"`\n\n")
-	write("\tSpec   %sSpec   `json:\"spec,omitempty\"`\n", k.name)
-	write("\tStatus RulesetRuleStatus `json:\"status,omitempty\"`\n}\n\n")
-
-	write("// +kubebuilder:object:root=true\n\n// %sList contains a list of %s.\n", k.name, k.name)
-	write("type %sList struct {\n", k.name)
-	write("\tmetav1.TypeMeta `json:\",inline\"`\n\tmetav1.ListMeta `json:\"metadata,omitempty\"`\n")
-	write("\tItems []%s `json:\"items\"`\n}\n\n", k.name)
+	writeRootTypes(&b, rootType{name: k.name, plural: k.plural, shortName: k.shortName, columns: k.printColumns,
+		doc: k.doc, status: "RulesetRuleStatus"})
 
 	write("// GetConditions returns the %s's status conditions.\n", k.noun)
 	write("func (in *%s) GetConditions() []metav1.Condition { return in.Status.Conditions }\n\n", k.name)
@@ -292,17 +272,7 @@ func emitRuleController(k *ruleKind, header string) ([]byte, error) {
 	f.printf("// NewRulesetRuleAPI constructs a RulesetRuleAPI from a raw API token.\n")
 	f.printf("// Defaults to defaultRulesetRuleAPI; tests inject a fake.\n")
 	f.printf("NewRulesetRuleAPI func(token string) (RulesetRuleAPI, error)\n}\n\n")
-	for _, line := range []string{
-		fmt.Sprintf("groups=kflare.dev,resources=%s,verbs=get;list;watch;create;update;patch;delete", k.plural),
-		fmt.Sprintf("groups=kflare.dev,resources=%s/status,verbs=get;update;patch", k.plural),
-		fmt.Sprintf("groups=kflare.dev,resources=%s/finalizers,verbs=update", k.plural),
-		"groups=kflare.dev,resources=zones,verbs=get;list;watch",
-		"groups=kflare.dev,resources=cloudflareaccounts,verbs=get;list;watch",
-		`groups="",resources=secrets,verbs=get;list;watch`,
-	} {
-		f.printf("// +kubebuilder:rbac:%s\n", line)
-	}
-	f.printf("\n")
+	writeRBACMarkers(f, rbacMarkers(k.plural, true))
 
 	phases := make([]string, len(k.phases))
 	for i, p := range k.phases {

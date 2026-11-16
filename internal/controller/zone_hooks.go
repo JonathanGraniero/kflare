@@ -8,9 +8,12 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -39,8 +42,7 @@ type ZoneAPI interface {
 	ZoneUpdatePlan(ctx context.Context, zoneID string, planType string) error
 }
 
-// defaultZoneAPI is the production factory: it delegates to cfpkg.New so that
-// the returned *cfpkg.Client (which embeds *cf.API) satisfies ZoneAPI.
+// defaultZoneAPI returns the production ZoneAPI, a *cfpkg.Client.
 func defaultZoneAPI(token string) (ZoneAPI, error) {
 	return cfpkg.New(token)
 }
@@ -196,4 +198,48 @@ func desiredZoneType(zone *cloudflarev1alpha1.Zone) string {
 		return "full"
 	}
 	return zone.Spec.Type
+}
+
+// isZoneReady reports whether zone is Ready and has a zone ID.
+func isZoneReady(zone *cloudflarev1alpha1.Zone) bool {
+	return zone.Status.CloudflareMetadata.ZoneID != "" && isReady(zone)
+}
+
+// readyZone returns the Zone name in obj's namespace once it is ready, or why
+// obj waits for it. The Zone watch re-triggers obj when that changes.
+func readyZone(ctx context.Context, c client.Reader, obj client.Object, name string) (*cloudflarev1alpha1.Zone,
+	*conditionError) {
+	zone := &cloudflarev1alpha1.Zone{}
+	what := fmt.Sprintf("Zone %q", name)
+	key := types.NamespacedName{Name: name, Namespace: obj.GetNamespace()}
+	if condErr := getReference(ctx, c, key, zone, what, "ZoneNotFound"); condErr != nil {
+		return nil, condErr
+	}
+	if !isZoneReady(zone) {
+		return nil, &conditionError{Reason: "ZoneNotReady", Message: what + " is not ready"}
+	}
+	return zone, nil
+}
+
+// deletionZone returns the Zone name in obj's namespace, whose account obj's
+// deletion calls Cloudflare with. It returns nil when there is none to call
+// with, and the Cloudflare object stays: the Zone waits for its dependents,
+// so it is gone only if its finalizer was removed by hand, or it is outside
+// the installation's scope (leaveCloudflareObject).
+func deletionZone(ctx context.Context, c client.Reader, obj conditionedObject, name string) (*cloudflarev1alpha1.Zone,
+	error) {
+	zone := &cloudflarev1alpha1.Zone{}
+	key := types.NamespacedName{Name: name, Namespace: obj.GetNamespace()}
+	err := c.Get(ctx, key, zone)
+	if condErr := outsideReference(ctx, key, zone, fmt.Sprintf("Zone %q", name), err); condErr != nil {
+		return nil, leaveCloudflareObject(ctx, obj, condErr)
+	}
+	if apierrors.IsNotFound(err) {
+		log.FromContext(ctx).Info("Zone is gone, leaving the Cloudflare object", "zone", name)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return zone, nil
 }

@@ -25,17 +25,10 @@ import (
 // v7's root package (see Client.V7Options).
 type v7Error = kv.Error
 
-// IsTerminalError returns true if err represents a condition that will not
-// resolve by retrying — for example, an invalid token, insufficient
-// permissions, or a malformed request. Controllers that receive a terminal
-// error should set a Terminal condition and stop requeuing.
-//
-// Retryable errors (rate limits, 5xx service errors, transient network
-// failures) return false, allowing the controller-runtime back-off queue to
-// retry naturally.
-//
-// Note: cloudflare-go returns pointer types (*AuthenticationError, etc.) from
-// its HTTP layer, so errors.As targets must use pointer types to match.
+// IsTerminalError reports whether retrying err cannot help: a 4xx other than
+// 429, such as an invalid token, a missing permission or a malformed request.
+// Rate limits, 5xx and network failures are retryable. (v0's errors are
+// pointers, so errors.As targets are too.)
 func IsTerminalError(err error) bool {
 	if err == nil {
 		return false
@@ -48,39 +41,31 @@ func IsTerminalError(err error) bool {
 			v7Err.StatusCode != http.StatusTooManyRequests
 	}
 
-	// HTTP 403 Forbidden — token lacks the required scope/permission.
-	// cloudflare-go counterintuitively names this AuthenticationError.
+	// 403: v0 names it AuthenticationError.
 	var authErr *cf.AuthenticationError
 	if errors.As(err, &authErr) {
 		return true
 	}
 
-	// HTTP 401 Unauthorized — bad or revoked token.
-	// cloudflare-go counterintuitively names this AuthorizationError.
+	// 401: v0 names it AuthorizationError.
 	var authzErr *cf.AuthorizationError
 	if errors.As(err, &authzErr) {
 		return true
 	}
 
-	// 404 Not Found — the resource does not exist on Cloudflare's side.
-	// Controllers should treat this as terminal when fetching a known resource;
-	// the create path may recover from it, so callers can check IsNotFound
-	// separately when that distinction matters.
+	// 404: terminal for a known object; callers that can recreate check
+	// IsNotFound first.
 	var notFoundErr *cf.NotFoundError
 	if errors.As(err, &notFoundErr) {
 		return true
 	}
 
-	// 4xx RequestError — bad payload, unsupported operation, etc.
-	// RatelimitError (429) and ServiceError (5xx) are retryable; all other
-	// unknown errors (e.g. network timeouts) are also retryable by default.
+	// Any other 4xx; RatelimitError, ServiceError and unknown errors retry.
 	var reqErr *cf.RequestError
 	return errors.As(err, &reqErr)
 }
 
-// IsNotFound returns true if err is a Cloudflare 404 Not Found response.
-// This is useful in reconcilers that need to distinguish "resource missing"
-// from other terminal errors (e.g. to create the resource instead of failing).
+// IsNotFound reports whether err is a Cloudflare 404.
 func IsNotFound(err error) bool {
 	if v7Err, ok := asV7Error(err); ok {
 		return v7Err.StatusCode == http.StatusNotFound

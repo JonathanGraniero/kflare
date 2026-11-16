@@ -407,7 +407,7 @@ var _ = Describe("An installation's scope and its CloudflareAccounts", func() {
 			Expect(err).NotTo(HaveOccurred())
 			found := make([]string, 0, len(items))
 			for _, item := range items {
-				found = append(found, client.ObjectKeyFromObject(item.(client.Object)).String())
+				found = append(found, client.ObjectKeyFromObject(item).String())
 			}
 			return found
 		}
@@ -512,7 +512,7 @@ var _ = Describe("An installation's scope and its CloudflareAccounts", func() {
 			account, secret := read("scoped-inside")
 			Expect(account.Finalizers).To(ContainElement(reconciler.Finalizer))
 			Expect(account.Status.AccountName).To(Equal("Scoped Account"))
-			Expect(isAccountReady(account)).To(BeTrue())
+			Expect(isReady(account)).To(BeTrue())
 			Expect(secret.Finalizers).To(ContainElement(tokenSecretFinalizer))
 		})
 

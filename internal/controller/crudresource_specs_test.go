@@ -424,6 +424,9 @@ type crudSpecEnv[O conditionedObject, A any, R any, L any] struct {
 	ready       func() metav1.Condition
 	reconcileIt func() (ctrl.Result, error)
 	synced      func(annotations map[string]string) string
+	// stopManager stops the manager runManager started, if any; reset makes
+	// it do nothing.
+	stopManager func()
 }
 
 // newCRUDSpecEnv names the resources of t's shared specs.
@@ -447,11 +450,12 @@ func newCRUDSpecEnv[O conditionedObject, A any, R any, L any](t crudKindSpecs[O,
 	return e
 }
 
-// reset gives a spec a new fake store and a reconciler that calls it, and
-// forgets what the sample's references gave.
+// reset gives a spec a new fake store and a reconciler that calls it, no
+// manager to stop, and forgets what the sample's references gave.
 func (e *crudSpecEnv[O, A, R, L]) reset() {
 	e.store = newFakeCRUDStore[R](e.t.pageSize, e.t.scope)
 	e.r = e.t.newReconciler(k8sClient, func(string) (A, error) { return e.t.newFake(e.store), nil })
+	e.stopManager = func() {}
 	e.refs = map[string]string{}
 	for _, ref := range e.t.references {
 		e.refs[ref.field] = ""
@@ -668,11 +672,10 @@ func (e *crudSpecEnv[O, A, R, L]) runManagerWithCache(opts cache.Options) {
 		defer close(stopped)
 		Expect(mgr.Start(ctx)).To(Succeed())
 	}()
-	// Stop it before the next spec, which reconciles the kind itself.
-	DeferCleanup(func() {
+	e.stopManager = func() {
 		stop()
 		Eventually(stopped).Should(BeClosed())
-	})
+	}
 }
 
 // eventuallyReady waits until the resource reports Ready with reason.
@@ -2221,6 +2224,10 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 		BeforeEach(e.reset)
 
 		AfterEach(func() {
+			// Stop the spec's manager first: DeferCleanup would stop it only after
+			// this, and a running manager puts back the finalizers forceDelete
+			// removes, leaving a resource being deleted for the next spec.
+			e.stopManager()
 			forceDelete(ctx, k.newObject(), key)
 			forceDelete(ctx, k.newObject(), otherKey)
 			forceDelete(ctx, &cloudflarev1alpha1.Zone{}, types.NamespacedName{Name: zoneName, Namespace: ns})

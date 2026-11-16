@@ -51,17 +51,7 @@ func emitHookedController(k *hookedKind, header string) ([]byte, error) {
 
 	emitCRUDReconcilerType(f, name, api)
 
-	group := "+kubebuilder:rbac:groups=kflare.dev,resources="
-	for _, marker := range []string{
-		group + k.plural + ",verbs=get;list;watch;create;update;patch;delete",
-		group + k.plural + "/status,verbs=get;update;patch",
-		group + k.plural + "/finalizers,verbs=update",
-		group + "cloudflareaccounts,verbs=get;list;watch",
-		`+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch`,
-	} {
-		f.printf("// %s\n", marker)
-	}
-	f.printf("\n")
+	writeRBACMarkers(f, rbacMarkers(k.plural, false))
 
 	f.printf("func (r *%sReconciler) Reconcile(ctx %s.Context, req %s.Request) (%s.Result, error) {\n", name, ctx, ctrl,
 		ctrl)
@@ -75,15 +65,8 @@ func emitHookedController(k *hookedKind, header string) ([]byte, error) {
 // its fields are.
 func (o *outputs) addHookedKind(k *hookedKind, header string) error {
 	lower := strings.ToLower(k.name)
-	types, err := emitTypes(k.kind, header)
-	if err != nil {
-		return err
-	}
-	ctrl, err := emitHookedController(k, header)
-	if err != nil {
-		return err
-	}
-	o.files[typesFile(lower)] = types
-	o.files[controllerFile(lower)] = ctrl
-	return nil
+	return o.add(
+		kindFile{typesFile(lower), func() ([]byte, error) { return emitTypes(k.kind, header) }},
+		kindFile{controllerFile(lower), func() ([]byte, error) { return emitHookedController(k, header) }},
+	)
 }

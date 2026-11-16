@@ -245,7 +245,7 @@ var _ = Describe("An installation that may use Secrets in some namespaces", func
 				ContainSubstring("Token Secret secretns-account-elsewhere/secretns-moved-token keeps its "+
 					"kflare.dev/token-protection finalizer"))))
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, account)).To(Succeed())
-			Expect(isAccountReady(account)).To(BeTrue())
+			Expect(isReady(account)).To(BeTrue())
 		})
 	})
 

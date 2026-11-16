@@ -11,7 +11,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -30,23 +29,12 @@ const reasonAccountNotAllowed = "AccountNotAllowed"
 
 //+kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
-// resolveAccountToken fetches the cluster-scoped CloudflareAccount named
-// accountName and the API token from the Secret it references, for a resource
-// in namespace, which the account must allow. This is the only way a resource
-// reaches a token, so what spec.allowedNamespaces says holds for every kind:
-// those that reach an account through a parent use one in their own namespace,
-// or, for a Zone in another namespace, pass the Zone's namespace, since the
-// Zone's spec.allowedReferences is what lets them use it.
-// So does the installation's scope: a resource uses only an account its
-// installation manages, so that the installation's deletion checks see every
-// resource using the account.
-//
-// When requireReady is true, an account without a Ready=True condition is
-// rejected. Deletion paths pass false so that cleanup can proceed while the
-// account is being re-validated.
-//
-// The error is a concrete *conditionError so callers can read its Reason
-// directly; it is nil on success.
+// resolveAccountToken returns the CloudflareAccount accountName and its API
+// token, for a resource in namespace. It is the only way to a token, so the
+// account's spec.allowedNamespaces and the installation's scope hold for every
+// kind; a resource using a Zone in another namespace passes the Zone's
+// namespace. requireReady refuses an account that is not Ready; deletions pass
+// false, so cleanup goes on while the account is re-validated.
 func resolveAccountToken(
 	ctx context.Context,
 	c client.Reader,
@@ -69,7 +57,7 @@ func resolveAccountToken(
 		return nil, "", condErr
 	}
 
-	if requireReady && !isAccountReady(account) {
+	if requireReady && !isReady(account) {
 		return nil, "", &conditionError{
 			Reason:  "AccountNotReady",
 			Message: fmt.Sprintf("CloudflareAccount %q is not ready", accountName),
@@ -123,29 +111,23 @@ func restrictsNamespaces(account *cloudflarev1alpha1.CloudflareAccount) bool {
 }
 
 // leaveCloudflareObject handles a deletion whose credentials could not be
-// resolved. A namespace the account no longer allows gets no call and keeps
-// nothing waiting: the resource goes, and a Warning Event says that its
-// Cloudflare object stays. Holding the finalizer until someone allows the
-// namespace again would leave the namespace stuck terminating, and calling
-// Cloudflare would use a token the namespace has lost. An account or parent
-// outside what the installation watches ends the same way, for the same
-// reasons: the installation has lost the token. So does a Zone in another
-// namespace that no longer allows the resource's namespace, or the hostname
-// of its object. Anything else is returned for a retry.
+// resolved. When the token is no longer the resource's to use (an account
+// that no longer allows its namespace, an account or parent outside the
+// installation's scope, a shared Zone that no longer allows it), the resource
+// goes without a call, and a Warning Event says its Cloudflare object stays:
+// holding the finalizer would leave its namespace stuck terminating. Anything
+// else is returned for a retry.
 func leaveCloudflareObject(ctx context.Context, obj conditionedObject, credErr *conditionError) error {
 	if credErr.Reason != reasonAccountNotAllowed && credErr.Reason != reasonNotWatched &&
 		credErr.Reason != reasonZoneReferenceNotAllowed {
 		return credErr
 	}
 	log.FromContext(ctx).Info("Leaving the Cloudflare object of a resource being deleted", "reason", credErr.Message)
-	recordDeletionWarning(obj, credErr.Reason, credErr.Message+"; its Cloudflare object stays in Cloudflare")
+	recordWarning(obj, credErr.Reason, "Delete", credErr.Message+"; its Cloudflare object stays in Cloudflare")
 	return nil
 }
 
-// accountToken reads the API token from the Secret referenced by account.
-//
-// The error is a concrete *conditionError so callers can read its Reason
-// directly; it is nil on success.
+// accountToken reads the API token from the Secret account references.
 func accountToken(
 	ctx context.Context,
 	c client.Reader,
@@ -180,9 +162,4 @@ func accountToken(
 	}
 
 	return string(token), nil
-}
-
-// isAccountReady returns true if the CloudflareAccount has a Ready=True condition.
-func isAccountReady(account *cloudflarev1alpha1.CloudflareAccount) bool {
-	return meta.IsStatusConditionTrue(account.Status.Conditions, cloudflarev1alpha1.ConditionReady)
 }

@@ -170,9 +170,9 @@ var _ = Describe("WorkerScript kvNamespaceRef bindings", func() {
 
 	It("maps a KVNamespace to the WorkerScripts that bind it", func() {
 		kv := &cloudflarev1alpha1.KVNamespace{ObjectMeta: metav1.ObjectMeta{Name: kvName, Namespace: ns}}
-		Expect(r.workersForKVNamespace(ctx, kv)).To(ConsistOf(reconcile.Request{NamespacedName: wsKey}))
+		Expect(r.workersBinding(boundKVNamespaces)(ctx, kv)).To(ConsistOf(reconcile.Request{NamespacedName: wsKey}))
 		other := &cloudflarev1alpha1.KVNamespace{ObjectMeta: metav1.ObjectMeta{Name: "unbound", Namespace: ns}}
-		Expect(r.workersForKVNamespace(ctx, other)).To(BeEmpty())
+		Expect(r.workersBinding(boundKVNamespaces)(ctx, other)).To(BeEmpty())
 	})
 })
 

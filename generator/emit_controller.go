@@ -208,10 +208,14 @@ func emitController(c *controller, header string) ([]byte, error) {
 
 	emitCRUDReconcilerType(f, name, api)
 
-	for _, marker := range rbacMarkers(c) {
-		f.printf("// %s\n", marker)
+	reads := make([]string, 0, len(c.references)+len(c.dependents))
+	for _, af := range c.references {
+		reads = append(reads, plural(af.ref.Kind))
 	}
-	f.printf("\n")
+	for _, d := range c.dependents {
+		reads = append(reads, plural(d.Kind))
+	}
+	writeRBACMarkers(f, rbacMarkers(c.plural, c.zoned, reads...))
 
 	comment(&f.Builder, "", wrap(kindDoc(c)))
 	f.printf("var %sKind = crudResourceKind[%s, %s, %s, %s]{\n", v, obj, api, object, listed)
@@ -735,26 +739,31 @@ func matchesExpr(f *goFile, c *controller, all bool) (string, bool, error) {
 }
 
 // rbacMarkers returns the RBAC markers of a kind's controller: its own
-// resources, its Zone, its account and the account's token Secret, the kinds
-// it references and those it waits for.
-func rbacMarkers(c *controller) []string {
+// resources, its Zone when zoned, its account and the account's token
+// Secret, and the resources of reads, by plural.
+func rbacMarkers(plural string, zoned bool, reads ...string) []string {
 	group := "+kubebuilder:rbac:groups=kflare.dev,resources="
 	out := []string{
-		group + c.plural + ",verbs=get;list;watch;create;update;patch;delete",
-		group + c.plural + "/status,verbs=get;update;patch",
-		group + c.plural + "/finalizers,verbs=update",
+		group + plural + ",verbs=get;list;watch;create;update;patch;delete",
+		group + plural + "/status,verbs=get;update;patch",
+		group + plural + "/finalizers,verbs=update",
 	}
-	if c.zoned {
+	if zoned {
 		out = append(out, group+"zones,verbs=get;list;watch")
 	}
 	out = append(out, group+"cloudflareaccounts,verbs=get;list;watch")
-	for _, af := range c.references {
-		out = append(out, group+plural(af.ref.Kind)+",verbs=get;list;watch")
-	}
-	for _, d := range c.dependents {
-		out = append(out, group+plural(d.Kind)+",verbs=get;list;watch")
+	for _, r := range reads {
+		out = append(out, group+r+",verbs=get;list;watch")
 	}
 	return append(out, `+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch`)
+}
+
+// writeRBACMarkers writes markers as comments, then a blank line.
+func writeRBACMarkers(f *goFile, markers []string) {
+	for _, marker := range markers {
+		f.printf("// %s\n", marker)
+	}
+	f.printf("\n")
 }
 
 // kindDoc documents a kind's descriptor: how its resources adopt, update and

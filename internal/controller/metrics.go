@@ -74,16 +74,11 @@ func withControllerName(kind string, rec reconcile.Reconciler) reconcile.Reconci
 }
 
 // resourceCollector serves kflare_resources and
-// kflare_account_token_expiry_timestamp_seconds. It reads them when scraped,
-// from the manager's cache, so nothing keeps them up to date between scrapes,
-// and they hold across restarts and deletions.
-//
-// Only the leader answers. A standby has none of these informers, and a list
-// would start them all, on a pod meant to sit idle; and a sum across pods
-// would count each resource once per replica.
-//
-// It counts what the installation manages: the cache holds nothing else, but
-// for the CloudflareAccounts of other installations, which scope leaves out.
+// kflare_account_token_expiry_timestamp_seconds, read from the manager's
+// cache at each scrape. Only the leader answers: a standby's list would start
+// every informer, and a sum across pods would count each resource per
+// replica. Other installations' CloudflareAccounts, which the cache holds,
+// are left out.
 type resourceCollector struct {
 	reader client.Reader
 	// lists holds an empty list of each kind with a Ready condition, by kind.

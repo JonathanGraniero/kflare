@@ -8,9 +8,7 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
@@ -35,19 +33,12 @@ func claimedIDs(
 	label string,
 	self client.Object,
 ) (map[string]string, error) {
-	if err := c.List(ctx, list, client.HasLabels{label}); err != nil {
-		return nil, err
-	}
-	items, err := meta.ExtractList(list)
+	others, err := reconciler.List[client.Object](ctx, c, list, client.HasLabels{label})
 	if err != nil {
 		return nil, err
 	}
-	claimed := make(map[string]string, len(items))
-	for _, item := range items {
-		other, ok := item.(client.Object)
-		if !ok {
-			return nil, fmt.Errorf("unexpected list item %T", item)
-		}
+	claimed := make(map[string]string, len(others))
+	for _, other := range others {
 		if other.GetUID() != self.GetUID() {
 			claimed[other.GetLabels()[label]] = other.GetNamespace() + "/" + other.GetName()
 		}

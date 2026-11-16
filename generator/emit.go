@@ -72,22 +72,8 @@ func emitTypes(k *kind, header string) ([]byte, error) {
 	writeExtras(&b, k.statusExtras)
 	write("}\n\n")
 
-	write("// +kubebuilder:object:root=true\n// +kubebuilder:subresource:status\n")
-	write("// +kubebuilder:resource:path=%s,scope=Namespaced,shortName=%s,categories=kflare\n", k.plural, k.shortName)
-	for _, c := range k.printColumns {
-		write("// +kubebuilder:printcolumn:name=%q,type=%s,JSONPath=`%s`\n", c.name, c.typ, c.jsonPath)
-	}
-	write("\n")
-	comment(&b, "", k.doc)
-	write("type %s struct {\n", k.name)
-	write("\tmetav1.TypeMeta   `json:\",inline\"`\n\tmetav1.ObjectMeta `json:\"metadata,omitempty\"`\n\n")
-	write("\tSpec   %sSpec   `json:\"spec,omitempty\"`\n", k.name)
-	write("\tStatus %sStatus `json:\"status,omitempty\"`\n}\n\n", k.name)
-
-	write("// +kubebuilder:object:root=true\n\n// %sList contains a list of %s.\n", k.name, k.name)
-	write("type %sList struct {\n", k.name)
-	write("\tmetav1.TypeMeta `json:\",inline\"`\n\tmetav1.ListMeta `json:\"metadata,omitempty\"`\n")
-	write("\tItems []%s `json:\"items\"`\n}\n\n", k.name)
+	writeRootTypes(&b, rootType{name: k.name, plural: k.plural, shortName: k.shortName, columns: k.printColumns,
+		doc: k.doc, status: k.name + "Status"})
 
 	write("// GetConditions returns the %s's status conditions.\n", k.noun)
 	write("func (in *%s) GetConditions() []metav1.Condition { return in.Status.Conditions }\n\n", k.name)
@@ -100,6 +86,48 @@ func emitTypes(k *kind, header string) ([]byte, error) {
 		return nil, fmt.Errorf("formatting %s's types: %w", k.name, err)
 	}
 	return src, nil
+}
+
+// rootType is what a kind's root and list types are written from: the kind's
+// names, print columns and doc, and its status type.
+type rootType struct {
+	name, plural, shortName string
+	columns                 []printColumn
+	doc                     []string
+	status                  string
+}
+
+// writeRootTypes writes a kind's root type, with its markers, and its list
+// type.
+func writeRootTypes(b *strings.Builder, t rootType) {
+	write := func(format string, args ...any) { fmt.Fprintf(b, format, args...) }
+	write("// +kubebuilder:object:root=true\n// +kubebuilder:subresource:status\n")
+	write("// +kubebuilder:resource:path=%s,scope=Namespaced,shortName=%s,categories=kflare\n", t.plural, t.shortName)
+	for _, c := range t.columns {
+		write("// +kubebuilder:printcolumn:name=%q,type=%s,JSONPath=`%s`\n", c.name, c.typ, c.jsonPath)
+	}
+	write("\n")
+	comment(b, "", t.doc)
+	write("type %s struct {\n", t.name)
+	write("\tmetav1.TypeMeta   `json:\",inline\"`\n\tmetav1.ObjectMeta `json:\"metadata,omitempty\"`\n\n")
+	write("\tSpec   %sSpec   `json:\"spec,omitempty\"`\n", t.name)
+	write("\tStatus %s `json:\"status,omitempty\"`\n}\n\n", t.status)
+
+	write("// +kubebuilder:object:root=true\n\n// %sList contains a list of %s.\n", t.name, t.name)
+	write("type %sList struct {\n", t.name)
+	write("\tmetav1.TypeMeta `json:\",inline\"`\n\tmetav1.ListMeta `json:\"metadata,omitempty\"`\n")
+	write("\tItems []%s `json:\"items\"`\n}\n\n", t.name)
+}
+
+// writeStructs writes the structs of a rule or settings kind's parameters.
+func writeStructs(b *strings.Builder, structs []*paramStruct) {
+	for _, st := range structs {
+		comment(b, "", st.doc)
+		comment(b, "", ruleMarkers(st.rules))
+		fmt.Fprintf(b, "type %s struct {\n", st.goName)
+		writeParamFields(b, st.fields)
+		b.WriteString("}\n\n")
+	}
 }
 
 // writeFields writes a struct's fields, a blank line between two. A spec's

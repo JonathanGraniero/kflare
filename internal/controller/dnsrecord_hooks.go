@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/cloudflare/cloudflare-go/v7/dns"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -286,10 +285,4 @@ func dnsRecordDescribes(ctx context.Context, c client.Client, record, other *clo
 		return false, nil
 	}
 	return sameTunnel(ctx, c, record.Namespace, dnsRecordTunnelName(record), dnsRecordTunnelName(other))
-}
-
-// isZoneReady returns true if the Zone has a Ready=True condition and a zone ID.
-func isZoneReady(zone *cloudflarev1alpha1.Zone) bool {
-	return zone.Status.CloudflareMetadata.ZoneID != "" &&
-		meta.IsStatusConditionTrue(zone.Status.Conditions, cloudflarev1alpha1.ConditionReady)
 }

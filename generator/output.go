@@ -72,82 +72,55 @@ var stalePatterns = []string{
 	typesFile("*"), controllerFile("*"), controllerTestFile("*"), sampleFile("*"),
 }
 
-// addKind adds a kind's files.
+// kindFile is one of a kind's files: its path, and what emits it.
+type kindFile struct {
+	path string
+	emit func() ([]byte, error)
+}
+
+// add adds a kind's files.
+func (o *outputs) add(files ...kindFile) error {
+	for _, f := range files {
+		content, err := f.emit()
+		if err != nil {
+			return err
+		}
+		o.files[f.path] = content
+	}
+	return nil
+}
+
+// addKind adds a CRUD kind's files.
 func (o *outputs) addKind(c *controller, header string) error {
 	lower := strings.ToLower(c.name)
-	types, err := emitTypes(c.kind, header)
-	if err != nil {
-		return err
-	}
-	ctrl, err := emitController(c, header)
-	if err != nil {
-		return err
-	}
-	test, err := emitControllerTest(c, header)
-	if err != nil {
-		return err
-	}
-	sample, err := emitSample(c)
-	if err != nil {
-		return err
-	}
-	o.files[typesFile(lower)] = types
-	o.files[controllerFile(lower)] = ctrl
-	o.files[controllerTestFile(lower)] = test
-	o.files[sampleFile(lower)] = sample
-	return nil
+	return o.add(
+		kindFile{typesFile(lower), func() ([]byte, error) { return emitTypes(c.kind, header) }},
+		kindFile{controllerFile(lower), func() ([]byte, error) { return emitController(c, header) }},
+		kindFile{controllerTestFile(lower), func() ([]byte, error) { return emitControllerTest(c, header) }},
+		kindFile{sampleFile(lower), func() ([]byte, error) { return emitSample(c) }},
+	)
 }
 
 // addRuleKind adds a rule kind's files.
 func (o *outputs) addRuleKind(k *ruleKind, header string) error {
 	lower := strings.ToLower(k.name)
-	types, err := emitRuleTypes(k, header)
-	if err != nil {
-		return err
-	}
-	ctrl, err := emitRuleController(k, header)
-	if err != nil {
-		return err
-	}
-	test, err := emitRuleKindTest(k, header)
-	if err != nil {
-		return err
-	}
-	sample, err := emitRuleSample(k)
-	if err != nil {
-		return err
-	}
-	o.files[typesFile(lower)] = types
-	o.files[controllerFile(lower)] = ctrl
-	o.files[controllerTestFile(lower)] = test
-	o.files[sampleFile(lower)] = sample
-	return nil
+	return o.add(
+		kindFile{typesFile(lower), func() ([]byte, error) { return emitRuleTypes(k, header) }},
+		kindFile{controllerFile(lower), func() ([]byte, error) { return emitRuleController(k, header) }},
+		kindFile{controllerTestFile(lower), func() ([]byte, error) { return emitRuleKindTest(k, header) }},
+		kindFile{sampleFile(lower), func() ([]byte, error) { return emitRuleSample(k) }},
+	)
 }
 
 // addSettingsKind adds a settings kind's files.
 func (o *outputs) addSettingsKind(k *settingsKind, header string) error {
 	lower := strings.ToLower(k.name)
-	types, err := emitSettingsTypes(k, header)
-	if err != nil {
-		return err
-	}
-	ctrl, err := emitSettingsController(k, header)
-	if err != nil {
-		return err
-	}
-	test, err := emitSettingsKindTest(k, header)
-	if err != nil {
-		return err
-	}
-	sample, err := emitSettingsSample(k)
-	if err != nil {
-		return err
-	}
-	o.files[typesFile(lower)] = types
-	o.files[controllerFile(lower)] = ctrl
-	o.files[controllerTestFile(lower)] = test
-	o.files[sampleFile(lower)] = sample
-	return nil
+	return o.add(
+		kindFile{typesFile(lower), func() ([]byte, error) { return emitSettingsTypes(k, header) }},
+		kindFile{controllerFile(lower), func() ([]byte, error) { return emitSettingsController(k, header) }},
+		kindFile{controllerTestFile(lower), func() ([]byte, error) { return emitSettingsKindTest(k, header) }},
+		kindFile{sampleFile(lower), func() ([]byte, error) { return emitSettingsSample(k) }},
+	)
 }
 
 // write writes the outputs into the repository at root: it removes the

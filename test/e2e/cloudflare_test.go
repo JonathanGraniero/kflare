@@ -380,7 +380,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 
 		By("recording the token's status and expiry as Cloudflare reports them")
 		status, expiresOn := verifyToken(ctx, os.Getenv("CF_API_TOKEN"), accountID)
-		Expect(status).To(Equal(cfpkg.TokenActive))
+		Expect(status).To(Equal(string(cfpkg.TokenActive)))
 		Expect(account.Status.TokenStatus).To(Equal(status))
 		if expiresOn == "" {
 			Expect(account.Status.TokenExpiresAt).To(BeNil())

@@ -16,35 +16,20 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Client is a thin wrapper around the cloudflare-go *API that serves as the
-// single production implementation for all kflare controllers.
-//
-// Testability is achieved through narrow per-controller interfaces: each
-// controller declares only the methods it uses, and tests inject a fake that
-// satisfies those methods.  *Client satisfies every such interface because it
-// embeds *cf.API, which provides all upstream Cloudflare SDK methods.
-//
-// It also carries what cloudflare-go v7, the SDK Cloudflare generates from
-// its OpenAPI spec, needs to call the API with the same token: see V7Options.
-//
-// Error handling is intentionally left to the caller; use IsTerminalError,
-// IsNotFound, and IsRateLimit from this package to classify errors returned
-// by any method of either SDK.
+// Client calls Cloudflare with one API token, through cloudflare-go v0 (the
+// embedded *cf.API) and v7 (V7Options). Controllers depend on narrow
+// interfaces that *Client satisfies, so tests inject fakes. Classify its
+// errors with IsTerminalError, IsNotFound and IsRateLimit.
 type Client struct {
 	*cf.API
 
 	v7 []option.RequestOption
 }
 
-// New constructs a Client from a raw Cloudflare API token.
-//
-// The token is validated for basic format requirements by the cloudflare-go
-// SDK.  An error is returned if the token string is empty or malformed; note
-// that credential correctness (i.e. whether the token is accepted by the
-// Cloudflare API) is only confirmed when the first API call is made.
-//
-// Both SDKs send their requests through httpClient, whose timeouts bound
-// every request and whose transport keeps each token within its budget.
+// New returns a Client for token. It refuses only an empty or malformed
+// token: whether Cloudflare accepts it shows on the first call. Both SDKs
+// send through httpClient, whose timeouts and rate limit apply to every
+// request.
 func New(token string) (*Client, error) {
 	return newClient(token, httpClient)
 }
@@ -67,12 +52,10 @@ func newClient(token string, hc *http.Client) (*Client, error) {
 	}, nil
 }
 
-// httpTimeouts bound the requests kflare sends to Cloudflare. A controller
-// reconciles one resource at a time, so a request that never gets an answer,
-// from a proxy that accepts a connection and goes silent or over a TCP
-// connection a network change left half-open, would otherwise stall its
-// kind until the manager restarts. Opening a connection is bounded already:
-// http.DefaultTransport's dialer gives up after 30 seconds.
+// httpTimeouts bound the requests kflare sends to Cloudflare, so that one
+// that never gets an answer (a silent proxy, a half-open connection) cannot
+// stall its controller until the manager restarts. Dialing is bounded
+// already: http.DefaultTransport's dialer gives up after 30 seconds.
 type httpTimeouts struct {
 	// tlsHandshake bounds the TLS handshake.
 	tlsHandshake time.Duration
@@ -83,18 +66,15 @@ type httpTimeouts struct {
 	// response, so it also stops an upload or a response body that stalls.
 	request time.Duration
 	// http2Ping is how long an HTTP/2 connection may go without a frame
-	// from Cloudflare before the transport pings it, and http2PingTimeout
-	// how long it waits for the answer before it closes the connection.
-	// Without the ping, a request that times out leaves a dead connection
-	// in use, and every request after it times out the same way.
+	// before the transport pings it, and http2PingTimeout how long it waits
+	// for the answer before closing it: otherwise a dead connection stays in
+	// use and every later request on it times out too.
 	http2Ping, http2PingTimeout time.Duration
 }
 
 // defaultHTTPTimeouts are httpClient's. Cloudflare usually answers in well
-// under a second. The largest request kflare sends is a WorkerScript's
-// upload: its script comes from the resource itself or from a ConfigMap, so
-// a Kubernetes object's size limit keeps it under about 1.5 MiB, which takes
-// seconds to send even over a slow link.
+// under a second; the largest request, a WorkerScript's upload, is bounded
+// by a Kubernetes object's size (about 1.5 MiB).
 var defaultHTTPTimeouts = httpTimeouts{
 	tlsHandshake:     10 * time.Second,
 	responseHeader:   time.Minute,
@@ -103,17 +83,14 @@ var defaultHTTPTimeouts = httpTimeouts{
 	http2PingTimeout: 15 * time.Second,
 }
 
-// httpClient is the HTTP client of every Client: one, so that both SDKs and
-// every reconcile, each of which builds its own Client, reuse its connections
-// and spend one budget per token. Its metrics sit inside the rate limit, so
-// that they show what reached Cloudflare: not a call kept back unsent, nor
-// the time one waits for its turn.
+// httpClient is shared by every Client, so that all of them reuse its
+// connections and spend one budget per token. Its metrics sit inside the
+// rate limit: they count what reached Cloudflare, not calls held back.
 var httpClient = withRateLimit(withMetrics(newHTTPClient(defaultHTTPTimeouts)), limiter)
 
-// newHTTPClient returns an HTTP client with timeouts t. Its transport is a
-// copy of http.DefaultTransport, so it keeps the proxy that the standard
-// variables (HTTPS_PROXY, NO_PROXY) set, connection reuse, HTTP/2 and the
-// dialer's timeout.
+// newHTTPClient returns an HTTP client with timeouts t, on a copy of
+// http.DefaultTransport: it keeps HTTPS_PROXY/NO_PROXY, connection reuse,
+// HTTP/2 and the dialer's timeout.
 func newHTTPClient(t httpTimeouts) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSHandshakeTimeout = t.tlsHandshake
@@ -134,28 +111,20 @@ func withRateLimit(hc *http.Client, limits *rateLimiter) *http.Client {
 	return hc
 }
 
-// V7Options returns the request options for the cloudflare-go v7 services a
-// controller calls with this client's token, for example
+// V7Options returns the request options of the cloudflare-go v7 services a
+// controller calls with this client's token:
 //
 //	namespaces := kv.NewNamespaceService(client.V7Options()...)
 //
-// kflare builds only the services it calls and never imports v7's root
-// package, which golangci-lint's depguard refuses. Its NewClient builds a
-// service for every Cloudflare product and applies six CLOUDFLARE_*
-// environment variables to every request: other credentials, another base
-// URL and extra headers, whereas kflare takes each account's token from its
-// Secret. Importing the package at all pulls every v7 package into the
-// manager, which grows by a third. A param field is set the way its F would
-// set it:
+// kflare never imports v7's root package (depguard refuses it): its NewClient
+// reads CLOUDFLARE_* environment variables into every request, and the import
+// grows the manager by a third. Set a param field as its F would:
 //
 //	params.Title.Value, params.Title.Present = title, true
 //
-// The services share httpClient with v0, whose timeouts bound each attempt.
-// They keep v7's retries: two, after a 408, 409, 5xx or connection error,
-// which includes a request that timed out, but not after a 429, which the
-// transport marks not to retry (rateLimitedTransport). They set no per-attempt
-// timeout of v7's own (option.WithRequestTimeout): httpClient's already
-// bounds each attempt, and v7 gives up without a retry when its own runs
+// The services keep v7's two retries (408, 409, 5xx, connection errors; never
+// a 429, which rateLimitedTransport marks) and no timeout of v7's own:
+// httpClient bounds each attempt, and v7 would not retry after its own ran
 // out.
 func (c *Client) V7Options() []option.RequestOption {
 	return slices.Clone(c.v7)

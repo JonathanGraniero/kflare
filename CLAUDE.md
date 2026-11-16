@@ -81,7 +81,7 @@ With:
 ├── pkg/
 │   ├── cloudflare/        # Client wrapper, error classification, each API token's rate limit and the API metrics
 │   ├── metricsauth/       # Authenticates and authorizes metrics requests (TokenReview, SubjectAccessReview)
-│   └── reconciler/        # Conditions, finalizer and deletion-policy helpers
+│   └── reconciler/        # Conditions, finalizer, deletion-policy and list helpers
 ├── config/
 │   ├── crd/               # Generated CRDs (make manifests) + kustomization
 │   ├── rbac/              # Generated role.yaml + kustomize RBAC
@@ -158,8 +158,8 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
     updates the matching section and tables in `ARCHITECTURE.md`
 11. **Pause** — kflare leaves a resource annotated `kflare.dev/paused: "true"` alone, its deletion included: every
     `Reconcile` checks `reconciler.Paused` right after reading its resource, before deletion and the finalizer, and
-    returns `updatePaused`. The shared reconcilers do it for the generated kinds; a new hand-written controller does
-    it itself, and gets an entry in `pausedKinds` (`internal/controller/paused_test.go`)
+    returns `updatePaused`. The shared reconcilers do it for the generated kinds (`startReconcile`); a new hand-written
+    controller does it itself, and gets an entry in `pausedKinds` (`internal/controller/paused_test.go`)
 12. **Rate limits** — a hand-written path to Cloudflare calls `admit` once it has its token, before any SDK, and
     returns `rateLimited` when told to wait (`cleanupDeferred` in a deletion's cleanup), so that it gives its worker
     back. Every call goes through the transport regardless (`pkg/cloudflare/ratelimit.go`; ARCHITECTURE.md's Rate

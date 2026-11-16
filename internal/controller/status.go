@@ -73,6 +73,11 @@ const (
 		" annotation: kflare goes on with it once the annotation is removed"
 )
 
+// isReady reports whether obj's Ready condition is True.
+func isReady(obj conditionedObject) bool {
+	return meta.IsStatusConditionTrue(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
+}
+
 // setReady sets obj's Ready condition for its current generation, in memory.
 func setReady(obj conditionedObject, status metav1.ConditionStatus, reason, message string) {
 	conditions := obj.GetConditions()
@@ -131,16 +136,12 @@ func updateReadyCondition(
 	return nil
 }
 
-// updatePaused reports that obj is paused (reconciler.Paused), which every
-// controller checks before anything else: kflare makes no Cloudflare call for
-// it, and keeps the finalizer of a paused resource being deleted, and with it
-// its Cloudflare object, until the annotation is removed. Ready takes the
-// reason Paused but keeps its status and the generation it was observed at:
-// the Cloudflare object is as the last reconcile left it, so a resource that
-// was Ready still works for the resources that use it, and a spec changed
-// while paused shows as not yet observed. A resource never reconciled
-// reports Ready=Unknown. A resource being deleted without kflare's finalizer
-// has nothing left for kflare to do, and is not written.
+// updatePaused reports that obj is paused (reconciler.Paused): no Cloudflare
+// call, and a deletion keeps its finalizer until the annotation goes. Ready
+// takes the reason Paused but keeps its status and observed generation, so a
+// Ready resource still serves its dependents and a spec changed while paused
+// shows as unobserved; one never reconciled is Unknown. A deleted resource
+// without kflare's finalizer is not written.
 func updatePaused(ctx context.Context, c client.StatusClient, obj conditionedObject) error {
 	deleting := !obj.GetDeletionTimestamp().IsZero()
 	if deleting && !controllerutil.ContainsFinalizer(obj, reconciler.Finalizer) {
@@ -177,12 +178,10 @@ func updatePaused(ctx context.Context, c client.StatusClient, obj conditionedObj
 // time (statusContext).
 const statusWriteTimeout = 10 * time.Second
 
-// statusContext returns the context handleCloudflareError writes a
-// resource's status with: ctx, unless its deadline has passed. A reconcile
-// whose Cloudflare call ran out of time (the manager's --reconcile-timeout)
-// still reports why it failed, so its write gets a context of its own, with
-// ctx's values and statusWriteTimeout to finish in. A reconcile cancelled for
-// another reason, such as the manager stopping, writes nothing.
+// statusContext returns the context handleCloudflareError writes status with:
+// ctx, or, once ctx's deadline (--reconcile-timeout) has passed, a copy with
+// statusWriteTimeout, so a timed-out reconcile still reports why. A reconcile
+// cancelled otherwise, as on shutdown, writes nothing.
 func statusContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return ctx, func() {}
@@ -212,36 +211,29 @@ const eventNoteLimit = 1024
 // when Ready is True or the resource is paused, which someone asked for, and
 // Warning otherwise, with the condition's reason, and its message as the note.
 func recordReadyChange(obj conditionedObject, status metav1.ConditionStatus, reason, message string) {
-	recorder := readyEvents.Load()
-	if recorder == nil || *recorder == nil {
-		return
-	}
 	eventType := corev1.EventTypeWarning
 	if status == metav1.ConditionTrue || reason == reasonPaused {
 		eventType = corev1.EventTypeNormal
 	}
-	(*recorder).Eventf(obj, nil, eventType, reason, "Reconcile", "%s", eventNote(message))
-}
-
-// recordDeletionWarning records a Warning Event about what deleting obj left
-// undone, for kubectl get events: obj itself is about to go.
-func recordDeletionWarning(obj conditionedObject, reason, message string) {
-	recordWarning(obj, reason, "Delete", message)
+	recordEvent(obj, eventType, reason, "Reconcile", message)
 }
 
 // recordWarning records a Warning Event about what action on obj left undone,
 // which obj's Ready condition does not show.
 func recordWarning(obj conditionedObject, reason, action, message string) {
-	if recorder := readyEvents.Load(); recorder != nil && *recorder != nil {
-		(*recorder).Eventf(obj, nil, corev1.EventTypeWarning, reason, action, "%s", eventNote(message))
-	}
+	recordEvent(obj, corev1.EventTypeWarning, reason, action, message)
 }
 
 // recordNormal records a Normal Event about what action did with obj, which
 // obj's Ready condition does not show.
 func recordNormal(obj conditionedObject, reason, action, message string) {
+	recordEvent(obj, corev1.EventTypeNormal, reason, action, message)
+}
+
+// recordEvent records an Event on obj, once SetEventRecorder has been called.
+func recordEvent(obj conditionedObject, eventType, reason, action, message string) {
 	if recorder := readyEvents.Load(); recorder != nil && *recorder != nil {
-		(*recorder).Eventf(obj, nil, corev1.EventTypeNormal, reason, action, "%s", eventNote(message))
+		(*recorder).Eventf(obj, nil, eventType, reason, action, "%s", eventNote(message))
 	}
 }
 
@@ -280,15 +272,11 @@ func invalidToken(ctx context.Context, c client.StatusClient, obj conditionedObj
 }
 
 // handleCloudflareError reports a failed Cloudflare API call on obj. A rate
-// limit is waited out (rateLimited). Terminal errors (4xx) are not requeued:
-// they need a change to the spec or the credentials, which re-triggers the
-// reconcile. Anything else is returned so controller-runtime retries with
-// back-off. The condition shows Cloudflare's
-// messages and codes (cfpkg.ErrorMessage) and the response's cf-ray ID
-// (withRayID); the returned error, which controller-runtime logs, keeps
-// everything. A call cut short because the reconcile ran out of time fails
-// with the context's error alone, so the condition adds the context's cause:
-// "reconciliation timeout", from controller-runtime.
+// limit is waited out (rateLimited); a terminal error (4xx) is not requeued,
+// as only a change to the spec or credentials can fix it; anything else is
+// returned for controller-runtime's back-off. The condition holds
+// Cloudflare's messages and codes and the cf-ray ID (withRayID), plus the
+// context's cause when the reconcile timed out.
 func handleCloudflareError(ctx context.Context, c client.StatusClient, obj conditionedObject, err error) (ctrl.Result, error) {
 	message := cfpkg.ErrorMessage(err)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -314,13 +302,10 @@ func handleCloudflareError(ctx context.Context, c client.StatusClient, obj condi
 // rayIDPrefix starts what withRayID adds to a message.
 const rayIDPrefix = " (cf-ray "
 
-// withRayID ends message with ray, the ID of the response that failed, which
-// Cloudflare support asks for, unless obj already reports message with an ID:
-// it then keeps that one. Every attempt gets a new ID, and every change to
-// status is a watch event that reconciles the resource at once, past its
-// back-off, so a resource that failed the same way twice would call Cloudflare
-// in a loop, hundreds of times a second, were its message to change each time.
-// The log has each attempt's ID (pkg/cloudflare's instrumentedTransport).
+// withRayID ends message with ray, the failed response's ID (Cloudflare
+// support asks for it), unless obj already reports message with an ID, which
+// it keeps: a status change reconciles at once, past the back-off, so a new
+// ID per attempt would call Cloudflare in a loop. The log has every ID.
 func withRayID(obj conditionedObject, message, ray string) string {
 	if ray == "" {
 		return message

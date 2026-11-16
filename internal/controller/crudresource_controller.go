@@ -266,34 +266,11 @@ type crudResourceReconciler[O conditionedObject, A any, R any, L any] struct {
 }
 
 func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	obj := r.kind.newObject()
-	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-
-	// A paused resource is left as it is, deletion included, until its
-	// kflare.dev/paused annotation is removed.
-	if reconciler.Paused(obj) {
-		return ctrl.Result{}, updatePaused(ctx, r.Client, obj)
-	}
-
-	// Then handle deletion, before anything else.
-	if !obj.GetDeletionTimestamp().IsZero() {
+	if done, result, err := startReconcile(ctx, r.Client, req, obj, func() (ctrl.Result, error) {
 		return r.reconcileDelete(ctx, obj)
-	}
-
-	// Ensure the finalizer is present before doing any work. On the first
-	// reconcile it is absent: add it and return; the update re-triggers this
-	// reconcile.
-	added, err := reconciler.EnsureFinalizer(ctx, r.Client, obj)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if added {
-		logger.Info("Added finalizer", "resource", req.NamespacedName)
-		return ctrl.Result{}, nil
+	}); done {
+		return result, err
 	}
 
 	// A zone's kind waits for its Zone (the Zone watch re-triggers this
@@ -443,7 +420,7 @@ func (r *crudResourceReconciler[O, A, R, L]) resolveReferences(ctx context.Conte
 					"own account", ref.kind, name, account, whose, accountName, r.kind.noun, ref.kind),
 			}
 		}
-		if !meta.IsStatusConditionTrue(target.GetConditions(), cloudflarev1alpha1.ConditionReady) {
+		if !isReady(target) {
 			return nil, &conditionError{
 				Reason:  ref.kind + "NotReady",
 				Message: fmt.Sprintf("%s %q is not ready", ref.kind, name),
@@ -553,18 +530,12 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
 }
 
-// upToDate reports whether obj, as the manager's cache gives it, is the
-// resource the API server holds. sync asks before it writes to Cloudflare on
-// what the resource says: before it finds, adopts or creates an object, and
-// before it updates one. A reconcile's own writes (the creating mark, the
-// claim) queue the next reconcile, as other events do while it runs, and the
-// status it writes last may not have reached the cache when that one reads
-// the resource. Reading no ID, or one of an object it has just recreated, the
-// next reconcile would find, adopt or create an object again; reading a
-// WorkerScript's previous hash, it would upload the Worker again. A newer
-// version, or a resource already gone, means the cache is behind: the
-// reconcile stops, and the watch event that brings the cache up to date
-// reconciles the resource again.
+// upToDate reports whether obj, as the cache gives it, is the version the API
+// server holds. sync asks before writing to Cloudflare: a reconcile queued by
+// the previous one's writes may read the resource before its last status
+// write reached the cache, and would create, adopt or upload again. When the
+// cache is behind, the reconcile stops; the watch event that catches the
+// cache up reconciles the resource again.
 func (r *crudResourceReconciler[O, A, R, L]) upToDate(ctx context.Context, obj O) (bool, error) {
 	current := r.kind.newObject()
 	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
@@ -579,15 +550,11 @@ func (r *crudResourceReconciler[O, A, R, L]) upToDate(ctx context.Context, obj O
 }
 
 // findOrCreate returns the object of a resource whose status records none:
-// the parent's object with its key, which is the resource's own when its claim
-// or its creating annotation says so (an earlier reconcile did not record it in
-// status), or which it adopts, as its adoption policy allows, unless another
-// resource of the kind claims it. Without one, it creates the object, unless the
-// policy is adopt. An object found in the list is read by its ID, for all that
-// the list leaves out. An object the resource may not adopt is reported with
-// the accounts of the Cloudflare account accountID through which another
-// installation may manage it (mayAdopt). done ends the reconcile with result
-// and err.
+// the parent's object with its key, which is the resource's own when its
+// claim or creating annotation says so, or else adopted as its adoption policy
+// allows, unless another resource claims it. Without one, it creates the
+// object unless the policy is adopt. A listed object is read by its ID for
+// what the list leaves out. done ends the reconcile with result and err.
 func (r *crudResourceReconciler[O, A, R, L]) findOrCreate(ctx context.Context, obj O, accountID, parentID string,
 	refs map[string]string, api A) (current *R, adopting, done bool, result ctrl.Result, err error) {
 	logger := log.FromContext(ctx)
@@ -684,13 +651,9 @@ var crudObjectLocks keyLock
 
 // lockObjectKey waits until obj is the only resource of its kind finding,
 // adopting or creating the parent's object with its key, and returns the
-// function that lets the next one in. Two resources with one key that did so
-// at once would each find no object and create one, or the second would find
-// the first's new object before its claim and, its creating annotation naming
-// the key, take it for its own: two resources would then own one object, and
-// deleting either would delete it. One at a time, the second finds the first's
-// claim and reports the conflict, as a single worker always made it. The key
-// is held until the sync ends, which also covers the first's status write.
+// release. Two at once could both create, or both own one object; one at a
+// time, the second sees the first's claim and reports the conflict. Hold it
+// until the sync, status write included, ends.
 func (r *crudResourceReconciler[O, A, R, L]) lockObjectKey(ctx context.Context, obj O, parentID string,
 	refs map[string]string) (func(), error) {
 	return crudObjectLocks.lock(ctx, r.kind.name+"/"+parentID+"/"+r.objectKey(obj, refs))
@@ -742,16 +705,11 @@ func (r *crudResourceReconciler[O, A, R, L]) find(ctx context.Context, api A, ob
 	return k.listedID(listed), nil, nil
 }
 
-// claimant returns the "namespace/name" of another resource of the kind that
-// claims the object id in the Cloudflare account or zone parentID, at obj's
-// address, or "" if none does. Resources in every namespace count, and an ID
-// is unique only within its parent (an R2 bucket's name), so a claim counts
-// only from a resource whose object is in the same parent (sameParent).
-//
-// The claims are read from the API server, not from the manager's cache
-// (WatchScope.listUncached): the resource that held the object's key just
-// before obj (lockObjectKey) may have claimed the object a moment ago, and a
-// cache that does not hold that claim yet would let obj adopt the object too.
+// claimant returns the "namespace/name" of another resource of the kind, in
+// any namespace, that claims the object id at obj's address in the same
+// parent (an ID is unique only there), or "". It reads the claims from the API
+// server: the resource that held the key just before obj (lockObjectKey) may
+// have claimed the object a moment ago, before the cache saw it.
 func (r *crudResourceReconciler[O, A, R, L]) claimant(ctx context.Context, obj O, parentID, id string) (string, error) {
 	k := r.kind
 	if k.sharedObjects {
@@ -905,14 +863,12 @@ const reasonHandedOff = "HandedOff"
 // being deleted and keeps its object for a successor (successorWait).
 const reasonAwaitingSuccessor = "AwaitingSuccessor"
 
-// successorWait returns how long obj, which is being deleted and has no
-// successor, still keeps its object for one: what is left of the rename grace
-// period (reconciler.SetRenameGracePeriod), counted from its deletion. A tool
-// that deletes the old resource of a rename before it creates the new one, as
-// Argo CD prunes before it applies, would otherwise have the object deleted
-// and created again. The new resource's creation ends the wait
-// (resourcesBeingDeleted). A kind whose resources share their objects has no
-// successor to wait for.
+// successorWait returns how long obj, being deleted without a successor,
+// still keeps its object for one: what is left of the rename grace period
+// since its deletion, so that a rename that deletes first (Argo CD prunes
+// before it applies) does not delete and recreate the object. The new
+// resource's creation ends the wait (resourcesBeingDeleted). Kinds whose
+// resources share objects never wait.
 func (r *crudResourceReconciler[O, A, R, L]) successorWait(obj O) time.Duration {
 	if r.kind.sharedObjects {
 		return 0
@@ -921,20 +877,13 @@ func (r *crudResourceReconciler[O, A, R, L]) successorWait(obj O) time.Duration 
 }
 
 // handOff gives the object id of obj, which is being deleted, to obj's
-// successor, and reports whether there was one. Renaming a resource makes a
-// new one with the same spec, which reports the kind's conflict reason while
-// the old one manages the object, and deletes the old one: deleting the
-// object for the new resource to create it again would take a DNS record out
-// of its zone for a while, and a KV namespace's or a D1 database's data for
-// good. So the successor's claim replaces obj's, with what obj knew of the
-// object: one kflare created is still deleted with the successor, and one it
-// adopted still kept. No deletion policy on obj changes that, since the
-// successor's spec asks for the object. Nothing is written to Cloudflare, and
-// deleting obj re-triggers the successor (resourcesInConflict), which finds
-// the object by its claim.
-//
-// The claim is written before obj's finalizer goes, so the object is never
-// without one: a hand-off that fails halfway is made again.
+// successor, and reports whether there was one. A rename is a new resource
+// with the same spec plus the old one's deletion; deleting the object for the
+// new one to recreate would drop a DNS record for a while, or a KV
+// namespace's data for good. The successor's claim replaces obj's, keeping
+// whether kflare created or adopted it, whatever obj's deletion policy.
+// Nothing is written to Cloudflare. The claim is written before obj's
+// finalizer goes, so a hand-off that fails halfway is made again.
 func (r *crudResourceReconciler[O, A, R, L]) handOff(ctx context.Context, obj O, id string) (bool, error) {
 	k := r.kind
 	successor, found, err := r.successor(ctx, obj, id)
@@ -954,35 +903,22 @@ func (r *crudResourceReconciler[O, A, R, L]) handOff(ctx context.Context, obj O,
 }
 
 // successor returns the resource that takes over the object id when obj is
-// deleted: another resource of the kind in obj's namespace that is not being
-// deleted, describes the same object at the same address, in the same
-// Cloudflare account or zone (sameParent), and manages no other object. A
-// resource in another namespace is no successor: its owner may be someone
-// else, to whom deleting obj must not give the object. Of several, the oldest
-// is it, the name breaking ties, and the others report the kind's conflict
-// reason against it, as resources created with one key do. A kind whose
-// resources share their objects has none (sharedObjects): nothing waits for
-// such an object.
+// deleted: another resource of the kind in obj's namespace (never another
+// namespace, whose owner may differ), not being deleted, that describes the
+// same object in the same parent and manages no other. The oldest wins, then
+// the name. Kinds whose resources share objects have none.
 func (r *crudResourceReconciler[O, A, R, L]) successor(ctx context.Context, obj O, id string) (O, bool, error) {
 	k := r.kind
 	var none O
 	if k.sharedObjects {
 		return none, false, nil
 	}
-	list := k.newList()
-	if err := r.List(ctx, list, client.InNamespace(obj.GetNamespace())); err != nil {
-		return none, false, err
-	}
-	items, err := meta.ExtractList(list)
+	others, err := reconciler.List[O](ctx, r.Client, k.newList(), client.InNamespace(obj.GetNamespace()))
 	if err != nil {
 		return none, false, err
 	}
 	var candidates []O
-	for _, item := range items {
-		other, ok := item.(O)
-		if !ok {
-			return none, false, fmt.Errorf("unexpected list item %T", item)
-		}
+	for _, other := range others {
 		// obj itself is being deleted.
 		if !other.GetDeletionTimestamp().IsZero() ||
 			(k.address != nil && !slices.Equal(k.address(other), k.address(obj))) {
@@ -1179,19 +1115,11 @@ func (r *crudResourceReconciler[O, A, R, L]) deletionParent(ctx context.Context,
 	return from, false, nil
 }
 
-// setup registers the kind's controller, with rec as its reconciler. It
-// watches CloudflareAccounts, or Zones for a zone's kind, so a resource
-// waiting for its account or Zone is reconciled once it is ready; the labels
-// of Namespaces, so a kind that names its account follows what the account's
-// spec.allowedNamespaces says of them (a zone's kind follows its Zone, and one
-// that may name a Zone in another namespace what that Zone's
-// spec.allowedReferences says of its own namespace's labels); the
-// kinds its spec references, so a resource waiting for one is reconciled once
-// it is ready; the deletion of the kind's dependents, so a resource waiting
-// for them is released once they are gone; the deletion of the kind's own
-// resources, so one waiting for another's object takes it at once; and their
-// creation, so one that is being deleted hands its object to the new resource
-// at once.
+// setup registers the kind's controller, with rec as its reconciler. Each
+// watch re-triggers a resource waiting on what it watches: its account or
+// Zone, its namespace's labels (allowedNamespaces, or a shared Zone's
+// allowedReferences), the kinds it references, its dependents' deletions,
+// and its own kind's deletions (a freed object) and creations (a successor).
 func (r *crudResourceReconciler[O, A, R, L]) setup(mgr ctrl.Manager, rec reconcile.Reconciler) error {
 	b := ctrl.NewControllerManagedBy(mgr).For(r.kind.newObject())
 	switch {
@@ -1317,21 +1245,7 @@ func (r *crudResourceReconciler[O, A, R, L]) resourcesBeingDeleted(ctx context.C
 // list and match accepts.
 func (r *crudResourceReconciler[O, A, R, L]) resourcesWhere(ctx context.Context, opts []client.ListOption,
 	match func(O) bool) []reconcile.Request {
-	list := r.kind.newList()
-	if err := r.List(ctx, list, opts...); err != nil {
-		return nil
-	}
-	items, err := meta.ExtractList(list)
-	if err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for _, item := range items {
-		if obj, ok := item.(O); ok && match(obj) {
-			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(obj)})
-		}
-	}
-	return reqs
+	return reconciler.RequestsWhere(ctx, r.Client, r.kind.newList(), opts, match)
 }
 
 // deletingResourcesOf maps the deletion of a dependent to the kind's resources

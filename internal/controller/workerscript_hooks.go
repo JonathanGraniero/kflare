@@ -16,7 +16,6 @@ import (
 
 	cf "github.com/cloudflare/cloudflare-go"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,6 +24,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
@@ -61,9 +61,7 @@ type WorkerScriptAPI interface {
 	DeleteWorker(ctx context.Context, rc *cf.ResourceContainer, params cf.DeleteWorkerParams) error
 }
 
-// defaultWorkerScriptAPI is the production factory: it delegates to cfpkg.New
-// so that the returned *cfpkg.Client (which embeds *cf.API) satisfies
-// WorkerScriptAPI.
+// defaultWorkerScriptAPI returns the production WorkerScriptAPI, a *cfpkg.Client.
 func defaultWorkerScriptAPI(token string) (WorkerScriptAPI, error) {
 	return cfpkg.New(token)
 }
@@ -320,11 +318,9 @@ func bindingKVNamespace(ctx context.Context, c client.Client, ws *cloudflarev1al
 	return kv.Status.CloudflareMetadata.NamespaceID, nil
 }
 
-// isKVNamespaceReady returns true if the KVNamespace has a Ready=True
-// condition and a namespace ID.
+// isKVNamespaceReady reports whether kv is Ready and has a namespace ID.
 func isKVNamespaceReady(kv *cloudflarev1alpha1.KVNamespace) bool {
-	return kv.Status.CloudflareMetadata.NamespaceID != "" &&
-		meta.IsStatusConditionTrue(kv.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+	return kv.Status.CloudflareMetadata.NamespaceID != "" && isReady(kv)
 }
 
 // boundKVNamespaces returns the names of the KVNamespaces ws binds through
@@ -343,16 +339,11 @@ func boundKVNamespaces(ws *cloudflarev1alpha1.WorkerScript) []string {
 // by name alone.
 const r2DefaultJurisdiction = "default"
 
-// bindingR2Bucket returns the Cloudflare bucket name of the R2Bucket an
-// r2BucketRef binding names. It must be ready, because Cloudflare refuses to
-// upload a Worker bound to a missing bucket, use the Worker's account, and be
-// in the default jurisdiction: cloudflare-go v0.119's R2 binding names a
-// bucket without one, so it would bind the default jurisdiction's bucket of
-// that name.
-//
-// The binding resolves the bucket by name: a Worker keeps working when its
-// bucket is deleted and created again under the same name (verified live),
-// so unlike a KV namespace a recreated bucket needs no re-upload.
+// bindingR2Bucket returns the bucket name of the R2Bucket an r2BucketRef
+// binding names. It must be ready (Cloudflare refuses an upload bound to a
+// missing bucket), use the Worker's account, and be in the default
+// jurisdiction, as v0.119's binding names none. The binding goes by name, so
+// a recreated bucket needs no re-upload (verified live).
 func bindingR2Bucket(ctx context.Context, c client.Client, ws *cloudflarev1alpha1.WorkerScript,
 	b cloudflarev1alpha1.WorkerBinding) (string, *conditionError) {
 	ref := b.R2BucketRef
@@ -375,7 +366,7 @@ func bindingR2Bucket(ctx context.Context, c client.Client, ws *cloudflarev1alpha
 				"buckets in the default one yet", bucket.Name, b.Name, j),
 		}
 	}
-	if !meta.IsStatusConditionTrue(bucket.Status.Conditions, cloudflarev1alpha1.ConditionReady) {
+	if !isReady(bucket) {
 		return "", &conditionError{
 			Reason:  "R2BucketNotReady",
 			Message: fmt.Sprintf("R2Bucket %q for binding %q is not ready", bucket.Name, b.Name),
@@ -431,8 +422,8 @@ func watchWorkerSources(b *builder.Builder, c client.Client) *builder.Builder {
 	return b.
 		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.workersForConfigMap)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.workersForSecret)).
-		Watches(&cloudflarev1alpha1.KVNamespace{}, handler.EnqueueRequestsFromMapFunc(r.workersForKVNamespace)).
-		Watches(&cloudflarev1alpha1.R2Bucket{}, handler.EnqueueRequestsFromMapFunc(r.workersForR2Bucket))
+		Watches(&cloudflarev1alpha1.KVNamespace{}, handler.EnqueueRequestsFromMapFunc(r.workersBinding(boundKVNamespaces))).
+		Watches(&cloudflarev1alpha1.R2Bucket{}, handler.EnqueueRequestsFromMapFunc(r.workersBinding(boundR2Buckets)))
 }
 
 // workersMatching returns a reconcile.Request for every WorkerScript in
@@ -442,19 +433,8 @@ func (r *WorkerScriptReconciler) workersMatching(
 	namespace string,
 	match func(*cloudflarev1alpha1.WorkerScript) bool,
 ) []reconcile.Request {
-	list := &cloudflarev1alpha1.WorkerScriptList{}
-	if err := r.List(ctx, list, client.InNamespace(namespace)); err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for i := range list.Items {
-		if match(&list.Items[i]) {
-			reqs = append(reqs, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: list.Items[i].Name, Namespace: list.Items[i].Namespace},
-			})
-		}
-	}
-	return reqs
+	return reconciler.RequestsWhere(ctx, r.Client, &cloudflarev1alpha1.WorkerScriptList{},
+		[]client.ListOption{client.InNamespace(namespace)}, match)
 }
 
 // workersForConfigMap maps a ConfigMap event to the WorkerScripts reading their code from it.
@@ -476,16 +456,12 @@ func (r *WorkerScriptReconciler) workersForSecret(ctx context.Context, obj clien
 	})
 }
 
-// workersForKVNamespace maps a KVNamespace event to the WorkerScripts that bind it.
-func (r *WorkerScriptReconciler) workersForKVNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.workersMatching(ctx, obj.GetNamespace(), func(ws *cloudflarev1alpha1.WorkerScript) bool {
-		return slices.Contains(boundKVNamespaces(ws), obj.GetName())
-	})
-}
-
-// workersForR2Bucket maps an R2Bucket event to the WorkerScripts that bind it.
-func (r *WorkerScriptReconciler) workersForR2Bucket(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.workersMatching(ctx, obj.GetNamespace(), func(ws *cloudflarev1alpha1.WorkerScript) bool {
-		return slices.Contains(boundR2Buckets(ws), obj.GetName())
-	})
+// workersBinding maps an event of a resource that bound names, such as
+// boundKVNamespaces, to the WorkerScripts that bind it.
+func (r *WorkerScriptReconciler) workersBinding(bound func(*cloudflarev1alpha1.WorkerScript) []string) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		return r.workersMatching(ctx, obj.GetNamespace(), func(ws *cloudflarev1alpha1.WorkerScript) bool {
+			return slices.Contains(bound(ws), obj.GetName())
+		})
+	}
 }
