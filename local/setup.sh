@@ -29,12 +29,12 @@ cd "$ROOT_DIR"
 make manifests
 kubectl apply -k config/crd/
 
-echo "==> Creating kflare-system namespace..."
-kubectl create namespace kflare-system --dry-run=client -o yaml | kubectl apply -f -
+echo "==> Creating kflare namespace..."
+kubectl create namespace kflare --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> Creating Cloudflare credentials secret..."
 kubectl create secret generic cloudflare-credentials \
-  --namespace kflare-system \
+  --namespace kflare \
   --from-literal=CF_API_TOKEN="$CF_API_TOKEN" \
   --dry-run=client -o yaml | kubectl apply -f -
 
@@ -48,7 +48,7 @@ spec:
   accountID: "${CF_ACCOUNT_ID}"
   tokenSecretRef:
     name: cloudflare-credentials
-    namespace: kflare-system
+    namespace: kflare
     key: CF_API_TOKEN
 EOF
 

@@ -76,11 +76,14 @@ Each release publishes the chart and the controller image to GitHub Container Re
 ```sh
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
   --version <version> \
-  --namespace kflare-system --create-namespace \
+  --namespace kflare --create-namespace \
   --values kflare-values.yaml
 ```
 
-Keep `kflare-values.yaml` in git (see [Configuration](#configuration)). The chart's version pins the image too:
+Install into a namespace of kflare's own, `kflare` here: kflare may read and write the Secrets of the release
+namespace, so the chart refuses to install into `default`, where Helm installs when `--namespace` is left out, unless
+`allowDefaultNamespace` is set. Keep `kflare-values.yaml` in git (see [Configuration](#configuration)). The chart's
+version pins the image too:
 `image.tag` defaults to the chart's `appVersion`. To pull from a registry mirror, set `image.repository` and, if it
 needs credentials, `imagePullSecrets`. From v0.2.1, the image and the chart are signed:
 [Verifying a release](#verifying-a-release) checks them, and pins the image by digest.
@@ -89,7 +92,7 @@ From a checkout of this repository, for example to run unreleased changes:
 
 ```sh
 helm install kflare ./helm/kflare \
-  --namespace kflare-system --create-namespace \
+  --namespace kflare --create-namespace \
   --set image.repository=<your-registry>/kflare,image.tag=<tag>
 ```
 
@@ -97,9 +100,10 @@ The chart installs:
 
 - the kflare CRDs (kept on uninstall, see [Uninstalling](#uninstalling))
 - the controller Deployment, ServiceAccount and a Service for metrics
-- a ClusterRole for the controller, plus a Role for leader election in the release namespace; with `watchNamespaces`,
-  a Role in each of those namespaces holds what the ClusterRole would on them (see
-  [Scoping an installation](#scoping-an-installation))
+- a ClusterRole for the controller, which grants nothing on Secrets, a Role for its Secrets in the release namespace
+  and in each of `secretNamespaces` (see [Security model](#security-model)), and a Role for leader election in the
+  release namespace; with `watchNamespaces`, a Role in each of those namespaces holds what the ClusterRole would on
+  them, Secrets included (see [Scoping an installation](#scoping-an-installation))
 - a `kflare-metrics-reader` ClusterRole for whoever scrapes the metrics (see [Monitoring](#monitoring))
 - a HorizontalPodAutoscaler, from 1 to 10 replicas (see [Scaling and resources](#scaling-and-resources))
 - a PodDisruptionBudget, when the Deployment can run more than one replica
@@ -109,7 +113,7 @@ The chart installs:
 Wait for the controller:
 
 ```sh
-kubectl -n kflare-system rollout status deployment/kflare
+kubectl -n kflare rollout status deployment/kflare
 ```
 
 ### With Argo CD or Flux
@@ -139,7 +143,7 @@ spec:
           minReplicas: 2
   destination:
     name: in-cluster
-    namespace: kflare-system
+    namespace: kflare
   syncPolicy:
     automated:
       selfHeal: true
@@ -174,8 +178,8 @@ spec:
   chartRef:
     kind: OCIRepository
     name: kflare
-  releaseName: kflare          # otherwise Flux names it kflare-system-kflare
-  targetNamespace: kflare-system
+  releaseName: kflare          # otherwise Flux names it kflare-kflare
+  targetNamespace: kflare
   install:
     createNamespace: true
   values:
@@ -226,8 +230,9 @@ Cloudflare object or configures the same settings (`NameConflict`, `TitleConflic
 or is missing, against the adoption policy (`AlreadyExists`, `NotFound`, `InvalidAdoptionPolicy`); a setting is wrong
 (`AccountNotAllowed`, `ZoneReferenceNotAllowed`, `AccountMismatch`, `InvalidAllowedNamespaces`,
 `R2BucketJurisdictionUnsupported`, `TokenKeyMissing`, `ScriptKeyMissing`, `BindingSecretKeyMissing`); the account, or
-a resource referenced, is outside what the installation watches (`NotWatched`). kflare retries any other reason, or
-waits for what it names to appear or become ready.
+a resource referenced, is outside what the installation watches (`NotWatched`), or a Secret is in a namespace where
+it may not use Secrets (`SecretNamespaceNotAllowed`). kflare retries any other reason, or waits for what it names to
+appear or become ready.
 
 [kstatus]: https://github.com/kubernetes-sigs/cli-utils/tree/master/pkg/kstatus
 
@@ -279,6 +284,7 @@ data:
           AccountNotAllowed = true,
           ZoneReferenceNotAllowed = true,
           NotWatched = true,
+          SecretNamespaceNotAllowed = true,
           AccountMismatch = true,
           InvalidAllowedNamespaces = true,
           R2BucketJurisdictionUnsupported = true,
@@ -470,10 +476,11 @@ spec:
       failed: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
         metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'TokenExpired', 'TokenDisabled',
-        'AccountNotAllowed', 'ZoneReferenceNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
-        'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing', 'BindingSecretKeyMissing',
-        'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict', 'TitleConflict', 'PatternConflict',
-        'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured', 'TunnelAlreadyConfigured'])
+        'AccountNotAllowed', 'ZoneReferenceNotAllowed', 'NotWatched', 'SecretNamespaceNotAllowed',
+        'AccountMismatch', 'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing',
+        'ScriptKeyMissing', 'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy',
+        'NameConflict', 'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict',
+        'AlreadyConfigured', 'TunnelAlreadyConfigured'])
       current: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
         metadata.generation)
@@ -497,10 +504,11 @@ spec:
       failed: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'False' && c.observedGeneration ==
         metadata.generation && c.reason in ['TerminalError', 'InvalidToken', 'TokenExpired', 'TokenDisabled',
-        'AccountNotAllowed', 'ZoneReferenceNotAllowed', 'NotWatched', 'AccountMismatch', 'InvalidAllowedNamespaces',
-        'R2BucketJurisdictionUnsupported', 'TokenKeyMissing', 'ScriptKeyMissing', 'BindingSecretKeyMissing',
-        'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy', 'NameConflict', 'TitleConflict', 'PatternConflict',
-        'RulesetConflict', 'CredentialsSecretConflict', 'AlreadyConfigured', 'TunnelAlreadyConfigured'])
+        'AccountNotAllowed', 'ZoneReferenceNotAllowed', 'NotWatched', 'SecretNamespaceNotAllowed',
+        'AccountMismatch', 'InvalidAllowedNamespaces', 'R2BucketJurisdictionUnsupported', 'TokenKeyMissing',
+        'ScriptKeyMissing', 'BindingSecretKeyMissing', 'AlreadyExists', 'NotFound', 'InvalidAdoptionPolicy',
+        'NameConflict', 'TitleConflict', 'PatternConflict', 'RulesetConflict', 'CredentialsSecretConflict',
+        'AlreadyConfigured', 'TunnelAlreadyConfigured'])
       current: >-
         status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration ==
         metadata.generation)
@@ -514,10 +522,11 @@ cannot read it, and Flux reports the resource Unknown and goes on waiting.
 ## 3. Connect your Cloudflare account
 
 Store the token in a Secret. kflare reads the key `CF_API_TOKEN` unless `tokenSecretRef.key` says otherwise.
-The Secret can live in any namespace; keeping it next to the controller is simplest.
+Keep it in the release namespace, where kflare may read it: a Secret in any other namespace needs that namespace in
+`secretNamespaces` (see [Security model](#security-model)).
 
 ```sh
-kubectl -n kflare-system create secret generic cloudflare-token \
+kubectl -n kflare create secret generic cloudflare-token \
   --from-literal=CF_API_TOKEN=<your-api-token>
 ```
 
@@ -532,7 +541,7 @@ spec:
   accountID: <your-account-id>
   tokenSecretRef:
     name: cloudflare-token
-    namespace: kflare-system
+    namespace: kflare
 ```
 
 ```sh
@@ -714,10 +723,15 @@ logging:
   level: info               # debug, info or error
   format: json              # json or console
 
-# The controller caches every Secret it watches, the whole cluster's unless
-# watchNamespaces limits it (token and credential Secrets are looked up by
-# reference). On a cluster with many, size its memory from them (see Scaling and
-# resources), such as:
+# The namespaces, besides the release's, where kflare may read and write
+# Secrets: those of your Tunnels, of WorkerScripts with secret bindings, and of
+# token Secrets kept elsewhere (see Security model). Each must exist first.
+secretNamespaces:
+  - edge
+
+# The controller caches the Secrets of those namespaces and of the release's
+# (token and credential Secrets are looked up by reference). With many, size its
+# memory from them (see Scaling and resources), such as:
 resources:
   requests:
     memory: 256Mi
@@ -809,7 +823,7 @@ spec:
   accountID: <your account ID>
   tokenSecretRef:
     name: cloudflare-token
-    namespace: kflare-system
+    namespace: kflare
   rateLimit:
     requestsPerFiveMinutes: 4500    # with a limit raised to 6,000
 ```
@@ -821,18 +835,19 @@ see [Reconciles at once](#reconciles-at-once).
 
 ### Scoping an installation
 
-By default an installation manages the kflare resources of every namespace, and its ClusterRole lets it read every
-Secret in the cluster. To limit it to some namespaces, list them:
+By default an installation manages the kflare resources of every namespace, and uses the Secrets of its release
+namespace and `secretNamespaces`. To limit it to some namespaces, list them:
 
 ```yaml
 watchNamespaces:
-  - kflare-system    # where the CloudflareAccounts' token Secrets are
+  - kflare    # where the CloudflareAccounts' token Secrets are
   - team-a
   - team-b
 ```
 
-- **The controller neither watches nor caches anything in other namespaces, Secrets included.** Its memory follows the
-  Secrets of the namespaces listed (see [Scaling and resources](#scaling-and-resources)).
+- **The controller neither watches nor caches anything in other namespaces, Secrets included.** It uses the Secrets
+  of the namespaces listed, in place of the release namespace and `secretNamespaces`, which the chart refuses beside
+  `watchNamespaces`. Its memory follows them (see [Scaling and resources](#scaling-and-resources)).
 - **Its permissions follow.** The chart grants what the controller needs on Secrets, ConfigMaps and the kflare kinds
   with a Role and a RoleBinding in each namespace listed, and keeps its ClusterRole to what is cluster-wide:
   `CloudflareAccount`s, reading Namespaces (for `spec.allowedNamespaces`), creating Events (a `CloudflareAccount`'s go
@@ -840,7 +855,7 @@ watchNamespaces:
   chart is installed: for namespaces created later, `rbac.namespaced: false` grants everything with the ClusterRole, as
   without `watchNamespaces`.
 - **It manages the `CloudflareAccount`s whose token Secret is in a namespace it watches**, the only tokens it can read,
-  so list the namespace of each token Secret too, such as `kflare-system` above. A resource that names another account
+  so list the namespace of each token Secret too, such as `kflare` above. A resource that names another account
   reports reason `NotWatched`, and kflare makes no Cloudflare call for it. An account's `spec.allowedNamespaces` still
   applies on top.
 
@@ -903,9 +918,22 @@ crds:
 
 ## Security model
 
-- **The controller can read every Secret in the cluster**, unless `watchNamespaces` limits it to some namespaces (see
-  [Scoping an installation](#scoping-an-installation)). It needs to read token Secrets wherever `CloudflareAccount`s
-  point, `WorkerScript` secret bindings, and to manage Tunnel credential Secrets.
+- **The controller reads and writes Secrets only in the namespaces it is given.** By default that is the release
+  namespace alone: a Role there grants its permissions on Secrets, its ClusterRole grants none, and it caches no other
+  Secret. `secretNamespaces` adds namespaces, each with a Role of its own. On a default install,
+  `kubectl auth can-i get secrets -n kube-system --as=system:serviceaccount:kflare:kflare` answers `no`. kflare uses
+  Secrets in three places, each of which must be in one of those namespaces:
+  - a `CloudflareAccount`'s token Secret, `spec.tokenSecretRef`, which kflare reads and protects with a finalizer;
+    keep token Secrets in the release namespace
+  - a `Tunnel`'s token Secret, which kflare writes in the Tunnel's namespace, where cloudflared reads it
+  - a `WorkerScript`'s secret bindings, read from the WorkerScript's namespace
+
+  Anything else reports reason `SecretNamespaceNotAllowed`, which names the namespace, and kflare makes no Cloudflare
+  call for it: list the namespace in `secretNamespaces`. With `watchNamespaces`, the controller uses Secrets in the
+  namespaces it watches instead (see [Scoping an installation](#scoping-an-installation)).
+  `rbac.clusterWideSecrets: true` grants Secrets in every namespace and caches them all, as releases up to 0.5 did,
+  for clusters with Tunnels or Workers in more namespaces than a list can keep up with: anyone who holds the
+  controller's ServiceAccount token can then read and write every Secret in the cluster.
 - **A CloudflareAccount is open to every namespace until it says otherwise.** Any namespaced resource can reference any
   `CloudflareAccount` by name, unless the account sets `spec.allowedNamespaces`. Without it, treat permission to create
   kflare resources as permission to use every account's token. See
@@ -915,8 +943,8 @@ crds:
   [Sharing a Zone with other namespaces](#sharing-a-zone-with-other-namespaces).
 - **Aggregated roles.** With `rbac.aggregateToDefaultRoles` (default), the built-in `view` role can read all
   kflare kinds, and `edit`/`admin` can manage the namespaced ones. `CloudflareAccount` is never added to
-  `edit`: an account can point the controller at a token Secret in any namespace, so only cluster
-  administrators should create one.
+  `edit`: an account can point the controller at a token Secret in any namespace where it may use Secrets, so only
+  cluster administrators should create one.
 - **Metrics** are served over HTTPS on port 8080, and only to callers the API server authenticates and authorizes: a
   request needs a bearer token, such as a ServiceAccount's, whose user may `get` the `/metrics` non-resource URL,
   which the `kflare-metrics-reader` ClusterRole grants. The controller checks a token with a TokenReview and a
@@ -939,7 +967,7 @@ spec:
   accountID: <your account ID>
   tokenSecretRef:
     name: payments-token
-    namespace: kflare-system
+    namespace: kflare
   allowedNamespaces:
     from: Selector
     selector:
@@ -965,7 +993,7 @@ one without it, since an account that looks restricted would otherwise be open t
   namespaces can move one into a selector. To name namespaces, as above, match `kubernetes.io/metadata.name`, which the
   API server sets and nobody can change. An empty selector (`selector: {}`) matches every namespace.
 - **It limits who may use a token, not what the controller can reach.** The controller still reads every Secret it
-  watches, and namespaces an account allows can adopt each other's objects in it. Give each team its own account where
+  may use, and namespaces an account allows can adopt each other's objects in it. Give each team its own account where
   that matters. For a tenant that must not share a controller at all, give it an installation of its own (see
   [Several installations in one cluster](#several-installations-in-one-cluster)), or a cluster of its own.
 
@@ -1072,7 +1100,7 @@ holds both platforms. To run exactly that image rather than whatever the tag poi
 digest="$(cosign verify "ghcr.io/jonathangraniero/kflare:$version" --certificate-identity "$identity" \
   --certificate-oidc-issuer "$issuer" | jq -r '.[0].critical.image."docker-manifest-digest"')"
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare --version "$version" \
-  --namespace kflare-system --create-namespace --values kflare-values.yaml \
+  --namespace kflare --create-namespace --values kflare-values.yaml \
   --set image.digest="${digest:?the image did not verify}"
 ```
 
@@ -1153,7 +1181,7 @@ capacity and do not make the leader's work go faster.
   (see [With Argo CD or Flux](#with-argo-cd-or-flux)).
 - **To keep a standby at all times**, set `autoscaling.minReplicas: 2`. `replicaCount` is ignored while autoscaling
   is on; with `autoscaling.enabled: false`, it sets the replicas again.
-- **Memory is left out by default.** The leader caches every Secret it watches and a standby caches nothing, so
+- **Memory is left out by default.** The leader caches the Secrets it may use and a standby caches nothing, so
   on a cluster with many Secrets a memory target (`autoscaling.targetMemoryUtilizationPercentage`) adds standbys that
   stay, as the leader's memory does not go down when they start.
 - **Tune it** with `autoscaling.behavior`, a HorizontalPodAutoscaler's [scaling behavior][hpa-behavior].
@@ -1191,10 +1219,12 @@ about 12 seconds, as without them.
   leader, last seconds to a minute, and the autoscaler waits 2 minutes above its target before it adds a replica
   (`autoscaling.behavior`). The limit of 1 CPU is above every burst but a takeover's peak of a few seconds, which it
   slows a little. Go sizes its threads from the limit: 2 under a limit of 1 CPU.
-- **Memory** is mostly the cache of every Secret the leader watches: the cluster's, or those of `watchNamespaces`. The
-  leader needs about 16 MiB, plus one and a half times the size of those Secrets as
-  `kubectl get secrets -A -o json | wc -c` counts them (`-n <namespace>` for each namespace listed), plus about 15 KiB
-  for each kflare resource. Helm keeps each release's history in Secrets, often most of a cluster's. The 100 MiB of
+- **Memory** is mostly the cache of the Secrets the leader may use: those of the release namespace and
+  `secretNamespaces`, of `watchNamespaces`, or the whole cluster's with `rbac.clusterWideSecrets`. The leader needs
+  about 16 MiB, plus one and a half times the size of those Secrets as
+  `kubectl get secrets -n <namespace> -o json | wc -c` counts them for each namespace (`-A` for the whole cluster),
+  plus about 15 KiB for each kflare resource. Helm keeps each release's history in Secrets, often most of a cluster's,
+  so a release namespace kept for kflare alone holds few. The 100 MiB of
   Secrets above came to 134 MiB that way, and the leader used 220 MiB of the 512Mi limit, which fits about 250 MiB of
   Secrets. For more, raise `resources.limits.memory` to at least a quarter above what the leader needs, and
   `resources.requests.memory` to what it needs, so that the scheduler places it on a node with that much free. The
@@ -1296,7 +1326,7 @@ The ServiceMonitor reads that token with `bearerTokenFile`, which a Prometheus w
 `arbitraryFSAccessThroughSMs.deny` refuses. To scrape by hand, with a token for a ServiceAccount bound to the role:
 
 ```sh
-kubectl -n kflare-system port-forward svc/kflare-metrics 8080 &
+kubectl -n kflare port-forward svc/kflare-metrics 8080 &
 curl -k -H "Authorization: Bearer $(kubectl -n monitoring create token prometheus)" https://localhost:8080/metrics
 ```
 
@@ -1309,11 +1339,11 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: kflare-metrics
-  namespace: kflare-system
+  namespace: kflare
 spec:
   secretName: kflare-metrics-tls     # metrics.certSecret: kflare-metrics-tls
   dnsNames:
-    - kflare-metrics.kflare-system.svc
+    - kflare-metrics.kflare.svc
   issuerRef:
     kind: ClusterIssuer
     name: my-ca-issuer
@@ -1331,7 +1361,7 @@ Five things to alert on:
   ```yaml
   - alert: KflareCloudflareErrors
     expr: >-
-      sum by (controller) (rate(kflare_cloudflare_api_requests_total{namespace="kflare-system",code=~"5..|error"}[15m]))
+      sum by (controller) (rate(kflare_cloudflare_api_requests_total{namespace="kflare",code=~"5..|error"}[15m]))
       > 0
     for: 30m
   ```
@@ -1341,7 +1371,7 @@ Five things to alert on:
 
   ```yaml
   - alert: KflareRateLimited
-    expr: sum by (account) (increase(kflare_cloudflare_api_rate_limited_total{namespace="kflare-system"}[15m])) > 0
+    expr: sum by (account) (increase(kflare_cloudflare_api_rate_limited_total{namespace="kflare"}[15m])) > 0
   ```
 
   Reconciles deferred with `reason="budget"` are expected during a large change or after a restart. If they go on for
@@ -1355,7 +1385,7 @@ Five things to alert on:
 
   ```yaml
   - alert: KflareResourcesNotReady
-    expr: sum by (kind, reason) (kflare_resources{namespace="kflare-system",ready="False"}) > 0
+    expr: sum by (kind, reason) (kflare_resources{namespace="kflare",ready="False"}) > 0
     for: 30m
   ```
 
@@ -1366,7 +1396,7 @@ Five things to alert on:
 
   ```yaml
   - alert: KflareDriftCorrected
-    expr: sum by (kind) (increase(kflare_drift_corrections_total{namespace="kflare-system"}[1h])) > 0
+    expr: sum by (kind) (increase(kflare_drift_corrections_total{namespace="kflare"}[1h])) > 0
   ```
 
 - **An API token that expires soon.** Everything still works until the token expires, so its account stays `Ready`;
@@ -1376,7 +1406,7 @@ Five things to alert on:
 
   ```yaml
   - alert: KflareTokenExpiresSoon
-    expr: kflare_account_token_expiry_timestamp_seconds{namespace="kflare-system"} - time() < 14 * 86400
+    expr: kflare_account_token_expiry_timestamp_seconds{namespace="kflare"} - time() < 14 * 86400
   ```
 
 The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name. Every response
@@ -1469,15 +1499,15 @@ at once. The controller connects to the API server as it starts, sooner than a C
 keeps that connection. To check the policy, connect from a pod under a copy of it, once the copy is in force:
 
 ```sh
-kubectl -n kflare-system get networkpolicy kflare -o json \
+kubectl -n kflare get networkpolicy kflare -o json \
   | jq '.metadata = {name: "kflare-probe"} | .spec.podSelector = {matchLabels: {run: "kflare-probe"}}' \
-  | kubectl -n kflare-system apply -f -
-kubectl -n kflare-system run kflare-probe --image=registry.k8s.io/e2e-test-images/agnhost:2.53 -- pause
-kubectl -n kflare-system wait --for=condition=Ready pod/kflare-probe && sleep 10
-kubectl -n kflare-system exec kflare-probe -- /agnhost connect kflare-metrics:8080 --timeout=5s  # TIMEOUT
-kubectl -n kflare-system exec kflare-probe -- /agnhost connect kubernetes.default.svc:443 --timeout=5s
-kubectl -n kflare-system exec kflare-probe -- /agnhost connect api.cloudflare.com:443 --timeout=5s
-kubectl -n kflare-system delete pod/kflare-probe networkpolicy/kflare-probe
+  | kubectl -n kflare apply -f -
+kubectl -n kflare run kflare-probe --image=registry.k8s.io/e2e-test-images/agnhost:2.53 -- pause
+kubectl -n kflare wait --for=condition=Ready pod/kflare-probe && sleep 10
+kubectl -n kflare exec kflare-probe -- /agnhost connect kflare-metrics:8080 --timeout=5s  # TIMEOUT
+kubectl -n kflare exec kflare-probe -- /agnhost connect kubernetes.default.svc:443 --timeout=5s
+kubectl -n kflare exec kflare-probe -- /agnhost connect api.cloudflare.com:443 --timeout=5s
+kubectl -n kflare delete pod/kflare-probe networkpolicy/kflare-probe
 ```
 
 Each `connect` prints nothing when it gets through, and `TIMEOUT` when the policy blocks it. The first must time
@@ -1505,7 +1535,7 @@ The image trusts only the public roots, so every call to Cloudflare fails with
 ConfigMap (or a Secret) in kflare's namespace, and name it in `trustedCA`:
 
 ```sh
-kubectl -n kflare-system create configmap corporate-ca --from-file=ca.crt=corporate-ca.pem
+kubectl -n kflare create configmap corporate-ca --from-file=ca.crt=corporate-ca.pem
 ```
 
 ```yaml
@@ -1515,7 +1545,7 @@ trustedCA:
 ```
 
 The chart mounts the bundle and sets `SSL_CERT_DIR`, so that the controller trusts the public roots and your CA. It
-reads the bundle when it starts: restart it (`kubectl -n kflare-system rollout restart deployment/kflare`) after the
+reads the bundle when it starts: restart it (`kubectl -n kflare rollout restart deployment/kflare`) after the
 bundle changes. The connection to the Kubernetes API server uses the cluster's own CA and is not affected. For any
 other file the controller needs, `extraVolumes` and `extraVolumeMounts` add volumes to the pod and mount them.
 
@@ -1669,11 +1699,15 @@ first.
 ## Upgrading
 
 ```sh
-helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version <new-version> -n kflare-system \
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version <new-version> -n kflare \
   --values kflare-values.yaml
 ```
 
 With Argo CD or Flux, change `targetRevision` or the `OCIRepository`'s tag in git instead.
+
+An installation keeps the namespace it was installed in, such as `kflare-system`, which earlier releases' docs used:
+`helm upgrade -n kflare-system` works as before, and kflare may use the Secrets of its release namespace whichever it
+is.
 
 The CRDs are part of the chart's templates, so `helm upgrade` upgrades them too. (Helm's `crds/` directory
 would only install them once.) To manage CRDs yourself, for example through GitOps with a separate sync
@@ -1708,7 +1742,7 @@ Order matters, because kflare's finalizers need the controller running to clean 
 2. **Uninstall the release.**
 
    ```sh
-   helm uninstall kflare -n kflare-system
+   helm uninstall kflare -n kflare
    ```
 
    With Argo CD or Flux, delete the kflare `Application` or `HelmRelease` instead.
@@ -1736,7 +1770,7 @@ Every kflare resource reports a single `Ready` condition. Start with:
 ```sh
 kubectl get <kind>.kflare.dev -A                      # READY column
 kubectl describe <kind>.kflare.dev <name> -n <ns>     # condition reason and message; Events of Ready changes
-kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
+kubectl -n kflare logs deploy/kflare           # controller log (JSON)
 ```
 
 | Reason | Meaning | What to do |
@@ -1749,6 +1783,7 @@ kubectl -n kflare-system logs deploy/kflare           # controller log (JSON)
 | `AccountNotFound`, `AccountNotReady` | The referenced `CloudflareAccount` is missing or not `Ready` | Check the account's own condition |
 | `AccountNotAllowed` | The `CloudflareAccount`'s `spec.allowedNamespaces` leaves out the resource's namespace | Move the resource, or have a cluster administrator [allow the namespace](#limiting-which-namespaces-may-use-an-account) |
 | `ZoneReferenceNotAllowed` | The resource's `zoneRef` names a `Zone` in another namespace whose `spec.allowedReferences` does not allow the resource's namespace, or its hostname. A resource being deleted then leaves its Cloudflare object, with a Warning Event | The message says which. Have the Zone's owner [allow the namespace and the hostname](#sharing-a-zone-with-other-namespaces), or change the resource |
+| `SecretNamespaceNotAllowed` | A Secret the resource uses is in a namespace where its installation may not use Secrets: a `CloudflareAccount`'s token Secret, a `Tunnel`'s (in its own namespace) or a `WorkerScript`'s secret bindings (likewise). kflare makes no Cloudflare call for it | The message names the namespace: list it in the chart's `secretNamespaces` (see [Security model](#security-model)), or move the Secret or the resource |
 | `NotWatched` | The resource's `CloudflareAccount`, or a resource it references, is outside what its installation watches: the account's token Secret is in a namespace it does not watch, or labels do not match its `watchSelector`. A resource being deleted then leaves its Cloudflare object, with a Warning Event | The message says which, and why: list the namespace in `watchNamespaces`, or label the resource (see [Scoping an installation](#scoping-an-installation)) |
 | `InvalidAllowedNamespaces` | A `CloudflareAccount`'s `spec.allowedNamespaces.selector` is invalid, such as `In` with no values. Until it is fixed, it allows no namespace | Fix the selector |
 | `SecretNotFound`, `TokenKeyMissing`, `InvalidToken` | The token Secret is missing, lacks the key, or is empty | Fix the Secret; the account re-validates immediately |

@@ -32,15 +32,15 @@ Note your account ID, shown on the account's overview page.
 
 ```sh
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
-  --version 0.5.0 --namespace kflare-system --create-namespace
-kubectl -n kflare-system rollout status deployment/kflare
+  --version 0.5.0 --namespace kflare --create-namespace
+kubectl -n kflare rollout status deployment/kflare
 ```
 
 **3. Connect your Cloudflare account.** The token goes in a Secret, and a cluster-scoped `CloudflareAccount` points
 at it:
 
 ```sh
-kubectl -n kflare-system create secret generic cloudflare-token --from-literal=CF_API_TOKEN=<your API token>
+kubectl -n kflare create secret generic cloudflare-token --from-literal=CF_API_TOKEN=<your API token>
 
 kubectl apply -f - <<'EOF'
 apiVersion: kflare.dev/v1alpha1
@@ -51,7 +51,7 @@ spec:
   accountID: <your account ID>
   tokenSecretRef:
     name: cloudflare-token
-    namespace: kflare-system
+    namespace: kflare
 EOF
 
 kubectl wait --for=condition=Ready cloudflareaccounts.kflare.dev/my-account --timeout=2m

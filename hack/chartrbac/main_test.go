@@ -35,7 +35,7 @@ func TestRulesAreCurrent(t *testing.T) {
 	if err := run(root); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	for _, file := range []string{clusterRulesPath, namespacedRulesPath} {
+	for _, file := range []string{rulesPath, secretRulesPath, clusterRulesPath, namespacedRulesPath} {
 		got, err := os.ReadFile(filepath.Join(root, file))
 		if err != nil {
 			t.Fatal(err)
@@ -123,6 +123,65 @@ func TestCommittedRulesSplitTheRole(t *testing.T) {
 		if !clusterGrants[want] {
 			t.Errorf("%+v is not granted across the cluster", want)
 		}
+	}
+}
+
+// TestCommittedRulesKeepSecretsApart checks the committed rules of an
+// installation that is not scoped against the role they come from: the Secret
+// rules grant only Secrets, the others none, and together exactly the role.
+func TestCommittedRulesKeepSecretsApart(t *testing.T) {
+	var role rbacv1.ClusterRole
+	readYAML(t, filepath.Join(repoRoot, rolePath), &role)
+	var others, secrets []rbacv1.PolicyRule
+	readYAML(t, filepath.Join(repoRoot, rulesPath), &others)
+	readYAML(t, filepath.Join(repoRoot, secretRulesPath), &secrets)
+
+	union := grants(others)
+	for g := range union {
+		if g.resource == "secrets" {
+			t.Errorf("%+v is granted across the cluster", g)
+		}
+	}
+	secretGrants := grants(secrets)
+	for g := range secretGrants {
+		if g.group != "" || g.resource != "secrets" {
+			t.Errorf("%+v is among the Secret rules", g)
+		}
+		union[g] = true
+	}
+	for _, verb := range []string{"get", "list", "watch", "create", "update", "patch", "delete"} {
+		if !secretGrants[grant{"", "secrets", verb}] {
+			t.Errorf("the Secret rules do not grant %s", verb)
+		}
+	}
+	if want := grants(role.Rules); !reflect.DeepEqual(union, want) {
+		t.Errorf("the rules grant %v, the role %v", union, want)
+	}
+}
+
+func TestSplitSecrets(t *testing.T) {
+	rules := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"configmaps", "secrets", "secrets/status"}, Verbs: []string{"get"}},
+		{APIGroups: []string{"kflare.dev"}, Resources: []string{"secrets"}, Verbs: []string{"list"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create"}},
+	}
+	others, secrets := splitSecrets(rules)
+	wantOthers := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get"}},
+		{APIGroups: []string{"kflare.dev"}, Resources: []string{"secrets"}, Verbs: []string{"list"}},
+	}
+	wantSecrets := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"secrets", "secrets/status"}, Verbs: []string{"get"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create"}},
+	}
+	if !reflect.DeepEqual(others, wantOthers) {
+		t.Errorf("others = %+v, want %+v", others, wantOthers)
+	}
+	if !reflect.DeepEqual(secrets, wantSecrets) {
+		t.Errorf("secrets = %+v, want %+v", secrets, wantSecrets)
+	}
+	if got := rules[0].Resources; len(got) != 3 {
+		t.Errorf("splitSecrets changed its input: %v", got)
 	}
 }
 
@@ -286,6 +345,8 @@ func TestRunRefuses(t *testing.T) {
 			"  - get\n", map[string]string{"zones.yaml": crd}, true, rolePath},
 		{"no rules on cluster-scoped resources", role, map[string]string{"zones.yaml": crd}, true,
 			"no rules for a scoped installation grants across the cluster"},
+		{"no rules on Secrets", role + "- apiGroups:\n  - \"\"\n  resources:\n  - namespaces\n  verbs:\n" +
+			"  - get\n", map[string]string{"zones.yaml": crd}, true, "no rules for an installation grants on Secrets"},
 		{"a chart it cannot write to", role + "- apiGroups:\n  - \"\"\n  resources:\n  - namespaces\n  verbs:\n" +
 			"  - get\n", map[string]string{"zones.yaml": crd}, false, "manager-cluster-rules.yaml"},
 	} {
@@ -298,7 +359,8 @@ func TestRunRefuses(t *testing.T) {
 	}
 
 	t.Run("a document that is not a CRD", func(t *testing.T) {
-		withNamespaces := role + "- apiGroups:\n  - \"\"\n  resources:\n  - namespaces\n  verbs:\n  - get\n"
+		withNamespaces := role + "- apiGroups:\n  - \"\"\n  resources:\n  - namespaces\n  - secrets\n  verbs:\n" +
+			"  - get\n"
 		root := setup(t, withNamespaces, map[string]string{"zones.yaml": "---\n" + crd + "---\nkind: ConfigMap\n"}, true)
 		if err := run(root); err != nil {
 			t.Fatal(err)

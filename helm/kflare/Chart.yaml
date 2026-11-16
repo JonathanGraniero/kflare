@@ -268,7 +268,7 @@ annotations:
         accountID: <your account ID>
         tokenSecretRef:
           name: cloudflare-token
-          namespace: kflare-system
+          namespace: kflare
     - apiVersion: kflare.dev/v1alpha1
       kind: ConfigurationRule
       metadata:

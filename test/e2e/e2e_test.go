@@ -172,6 +172,30 @@ var _ = Describe("controller-manager", func() {
 		Expect(body).To(ContainSubstring(`kflare_drift_corrections_total{kind="DNSRecord"}`))
 	})
 
+	It("may use Secrets only in its release namespace and secretNamespaces", func() {
+		// canI returns kubectl auth can-i's answer for the controller's
+		// ServiceAccount: its last line, as kubectl prints any warning before
+		// it, and exits with 1 for no.
+		canI := func(args ...string) string {
+			args = append(append([]string{"auth", "can-i"}, args...),
+				"--as", "system:serviceaccount:"+managerNamespace+":"+releaseName)
+			out, _ := utils.Run(exec.Command("kubectl", args...))
+			lines := utils.GetNonEmptyLines(string(out))
+			if len(lines) == 0 {
+				return ""
+			}
+			return strings.TrimSpace(lines[len(lines)-1])
+		}
+		for _, verb := range []string{"get", "list", "update"} {
+			for _, namespace := range []string{"kube-system", "default"} {
+				Expect(canI(verb, "secrets", "-n", namespace)).To(Equal("no"), "%s secrets in %s", verb, namespace)
+			}
+			Expect(canI(verb, "secrets", "-n", managerNamespace)).To(Equal("yes"), "%s secrets in the release's", verb)
+			Expect(canI(verb, "secrets", "-n", e2eNamespace)).To(Equal("yes"), "%s secrets in a listed one", verb)
+		}
+		Expect(canI("list", "secrets", "--all-namespaces")).To(Equal("no"))
+	})
+
 	It("lets through only DNS, the API server and port 443 under the NetworkPolicy", func() {
 		// The controller cannot show this itself: it connects to the API
 		// server within a second of starting, before the CNI applies the

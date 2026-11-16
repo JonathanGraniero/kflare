@@ -27,6 +27,7 @@ local needsPerson = {
   AccountNotAllowed = true,
   ZoneReferenceNotAllowed = true,
   NotWatched = true,
+  SecretNamespaceNotAllowed = true,
   AccountMismatch = true,
   InvalidAllowedNamespaces = true,
   R2BucketJurisdictionUnsupported = true,

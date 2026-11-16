@@ -10,6 +10,46 @@ upgrade, and one to a CRD names each kind it changes, which CI checks (`make crd
 under "Upgrading from" the release before, and a deprecation is under "Deprecated", with the earliest release that may
 remove it. Releases up to v0.4.2 describe their breaking changes in their opening paragraph and "Upgrading from".
 
+## Unreleased
+
+### Breaking changes
+
+- **kflare reads and writes Secrets only in its release namespace and the chart's new `secretNamespaces`**
+  ([#152](https://github.com/JonathanGraniero/kflare/issues/152)). The controller's ClusterRole no longer grants
+  Secrets: a Role in each of those namespaces does, and the controller caches no other Secret. A `CloudflareAccount`
+  whose token Secret, a `Tunnel`, or a `WorkerScript` with secret bindings elsewhere reports the new reason
+  `SecretNamespaceNotAllowed`, which names the namespace, and kflare makes no Cloudflare call for it: a Tunnel's token
+  Secret is no longer updated, and a Worker is no longer uploaded, until the namespace is listed. No manifest changes,
+  and installations with `watchNamespaces` are unchanged: they use the Secrets of the namespaces they watch, as before.
+
+  To upgrade, list the namespaces of your token Secrets, Tunnels and WorkerScripts with secret bindings, but the release
+  namespace, in your values, and create them first if the chart is not the one that does:
+
+  ```sh
+  kubectl get tunnels.kflare.dev -A --no-headers -o custom-columns=NS:.metadata.namespace
+  kubectl get workerscripts.kflare.dev -A -o json \
+    | jq -r '.items[] | select(any(.spec.bindings[]?; .secretKeyRef)) | .metadata.namespace'
+  kubectl get cloudflareaccounts.kflare.dev -o custom-columns=NS:.spec.tokenSecretRef.namespace --no-headers
+  ```
+
+  ```yaml
+  secretNamespaces:
+    - kflare-example
+  ```
+
+  Or keep the earlier behavior, Secrets in every namespace, with `rbac.clusterWideSecrets: true`.
+- **The chart refuses to install into the `default` namespace** unless `allowDefaultNamespace: true`. Helm installs
+  there when `--namespace` is left out, and the release namespace is now where kflare may write Secrets. An
+  installation in `default` sets the value to upgrade.
+
+### The Helm chart
+
+- **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
+  `config/default`'s kustomization, which still said `cloudflare-operator-system`. An existing installation keeps its
+  namespace: `helm upgrade -n kflare-system` works as before.
+- **A smaller cache.** The controller caches the Secrets of the namespaces it may use, not the whole cluster's, so
+  Helm's release Secrets elsewhere no longer count toward its memory (deploy.md's Scaling and resources).
+
 ## v0.5.0 (alpha)
 
 The ninth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. A `Zone` can now

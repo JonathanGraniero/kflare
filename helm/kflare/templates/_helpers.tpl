@@ -65,6 +65,19 @@ watchNamespaces rather than in its ClusterRole.
 {{- if and .Values.rbac.namespaced .Values.watchNamespaces }}true{{ end }}
 {{- end }}
 
+{{/*
+The namespaces where the controller holds its permissions on Secrets in a Role
+each, and the only ones whose Secrets it caches, separated by commas: the
+release's and secretNamespaces. Empty when it holds them another way: in the
+namespaces it watches (watchNamespaces) or across the cluster
+(rbac.clusterWideSecrets).
+*/}}
+{{- define "kflare.secretNamespaces" -}}
+{{- if not (or .Values.watchNamespaces .Values.rbac.clusterWideSecrets) }}
+{{- prepend .Values.secretNamespaces .Release.Namespace | uniq | join "," }}
+{{- end }}
+{{- end }}
+
 {{/* Controller image reference: by digest when one is set, otherwise by tag. */}}
 {{- define "kflare.image" -}}
 {{- if .Values.image.digest }}

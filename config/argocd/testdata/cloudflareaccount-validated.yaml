@@ -13,7 +13,7 @@ spec:
   tokenSecretRef:
     key: CF_API_TOKEN
     name: cloudflare-token
-    namespace: kflare-system
+    namespace: kflare
 status:
   accountName: Example Account
   conditions:
@@ -25,4 +25,4 @@ status:
     type: Ready
   protectedTokenSecret:
     name: cloudflare-token
-    namespace: kflare-system
+    namespace: kflare

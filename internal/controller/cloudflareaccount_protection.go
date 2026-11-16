@@ -94,6 +94,12 @@ func (r *CloudflareAccountReconciler) protectTokenSecret(
 		account.Status.ProtectedTokenSecret = nil
 	}
 
+	// A Secret where the installation may not use Secrets is left for the
+	// token lookup to report, as a missing one is.
+	if secretNamespaceNotAllowed(ctx, "", desired.Namespace) != nil {
+		return nil
+	}
+
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, secret); err != nil {
 		return client.IgnoreNotFound(err)
@@ -116,8 +122,9 @@ func (r *CloudflareAccountReconciler) protectTokenSecret(
 //
 // A Secret in a namespace the installation does not watch, which an account
 // protected before its spec.tokenSecretRef moved there from another
-// installation's scope, is out of reach: it keeps the finalizer, and a Warning
-// Event on the account says so.
+// installation's scope, or in one where it may no longer use Secrets, is out
+// of reach: it keeps the finalizer, and a Warning Event on the account says
+// so.
 func (r *CloudflareAccountReconciler) releaseTokenSecret(
 	ctx context.Context,
 	ref corev1.SecretReference,
@@ -141,6 +148,15 @@ func (r *CloudflareAccountReconciler) releaseTokenSecret(
 		log.FromContext(ctx).Info("Leaving the finalizer of a token Secret outside what this installation watches",
 			"secret", ref.Namespace+"/"+ref.Name)
 		recordWarning(releasing, reasonNotWatched, "Release", message)
+		return nil
+	}
+
+	if condErr := secretNamespaceNotAllowed(ctx, fmt.Sprintf("Token Secret %q", ref.Name), ref.Namespace); condErr != nil {
+		message := fmt.Sprintf("Token Secret %s/%s keeps its %s finalizer: %s. Remove the finalizer by hand once "+
+			"nothing uses the Secret", ref.Namespace, ref.Name, tokenSecretFinalizer, condErr.Message)
+		log.FromContext(ctx).Info("Leaving the finalizer of a token Secret where this installation may not use Secrets",
+			"secret", ref.Namespace+"/"+ref.Name)
+		recordWarning(releasing, condErr.Reason, "Release", message)
 		return nil
 	}
 

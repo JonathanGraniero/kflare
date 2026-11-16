@@ -79,6 +79,20 @@ hold, is told from a missing one by a read past the cache (`getReference`). Eith
 `NotWatched`, and kflare makes no Cloudflare call for it. The scope reaches every reconcile and watch handler through
 their context, which derives from the manager's base context.
 
+Apart from that scope, an installation reads and writes Secrets only in the namespaces `--secret-namespaces` lists,
+which the chart sets to the release namespace and its `secretNamespaces`, and for which it grants the Secret rules in a
+Role each and none in the ClusterRole (`hack/chartrbac` splits them from the markers' rules). The manager's cache then
+holds a Secret informer for those namespaces alone (`cache.Options.ByObject`): a cluster-wide one would be refused, and
+the cache would never sync. A cached read of a Secret elsewhere fails with an error that is not a NotFound, so each of
+the three paths that use a Secret checks the namespace first (`secretNamespaceNotAllowed`) and reports
+`SecretNamespaceNotAllowed`, with no Cloudflare call: an account's token Secret (`accountToken`, which every
+resource's credentials go through), a Tunnel's token Secret in its own namespace (its `resolve` hook, before the tunnel
+is created), and a WorkerScript's secret bindings (`bindingSecret`). Unlike `NotWatched`, a deletion that meets it is
+retried, as `SecretNotFound` is: the installation is missing a namespace in its list, which an upgrade from a release
+that used Secrets everywhere most likely left out, rather than another installation's token. Token protection leaves a
+Secret it may not use alone. Without the flag, as with the chart's `rbac.clusterWideSecrets` or `watchNamespaces`, the
+installation uses Secrets wherever it watches.
+
 Each controller declares a narrow interface over the Cloudflare SDK (for example `DNSRecordAPI`) holding only the calls it
 makes. The production client (`pkg/cloudflare.Client`) embeds cloudflare-go v0 and satisfies all of them, except those of
 the generated kinds, such as `KVNamespaceAPI`, and of the rule kinds (`RulesetRuleAPI`): each is part of a cloudflare-go
@@ -794,7 +808,9 @@ the Zone does not allow it: the Warning Event's reason is `ZoneReferenceNotAllow
 So does a resource whose account, or whose Zone or Tunnel, is outside its installation's scope, for the same reasons,
 with a Warning Event with reason `NotWatched`: the installation has lost the token. A token Secret in a namespace the
 installation no longer watches, which an account protected before its `spec.tokenSecretRef` moved, cannot be released
-by it: the Secret keeps `kflare.dev/token-protection`, and a Warning Event on the account says so.
+by it: the Secret keeps `kflare.dev/token-protection`, and a Warning Event on the account says so. The same goes for
+a token Secret in a namespace where the installation may no longer use Secrets, with reason
+`SecretNamespaceNotAllowed`.
 
 ## Known limitations
 

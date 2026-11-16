@@ -6,5 +6,5 @@ spec:
   accountID: "${CF_ACCOUNT_ID}"
   tokenSecretRef:
     name: cloudflare-credentials
-    namespace: kflare-system
+    namespace: kflare
     key: CF_API_TOKEN

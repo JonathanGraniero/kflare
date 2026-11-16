@@ -401,6 +401,10 @@ func boundR2Buckets(ws *cloudflarev1alpha1.WorkerScript) []string {
 func bindingSecret(ctx context.Context, c client.Client, namespace string,
 	b cloudflarev1alpha1.WorkerBinding) (string, string, *conditionError) {
 	ref := b.SecretKeyRef
+	if condErr := secretNamespaceNotAllowed(ctx, fmt.Sprintf("Secret %q for binding %q", ref.Name, b.Name),
+		namespace); condErr != nil {
+		return "", "", condErr
+	}
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: namespace}, secret); err != nil {
 		return "", "", &conditionError{

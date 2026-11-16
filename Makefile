@@ -199,29 +199,38 @@ helm: manifests ## Regenerate the chart's CRDs and RBAC rules from config/, and 
 helm-lint: helm ## Lint the chart and render it with default and non-default values.
 	@set -e; for v in $(HELM_KUBE_VERSIONS); do \
 		echo "==> Kubernetes $$v"; \
-		$(HELM) lint --strict --kube-version $$v helm/kflare; \
-		$(HELM) template kflare helm/kflare --kube-version $$v > /dev/null; \
-		$(HELM) template kflare helm/kflare --kube-version $$v \
+		$(HELM) lint --strict --namespace kflare --kube-version $$v helm/kflare; \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v > /dev/null; \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
 			--set crds.enabled=false,leaderElection=false,defaultDeletionPolicy=retain \
 			--set reconcileTimeout=90s,driftCheckInterval=30m,cloudflareRateLimit=6000000,renameGracePeriod=0s \
 			--set metrics.serviceMonitor.enabled=true \
 			--set autoscaling.enabled=false,replicaCount=2,networkPolicy.enabled=true \
 			--set metrics.certSecret=kflare-metrics-tls \
 			--set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 > /dev/null; \
-		$(HELM) template kflare helm/kflare --kube-version $$v \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
 			--set metrics.secure=false,metrics.serviceMonitor.enabled=true,replicaCount=2 \
 			--set trustedCA.configMap=corporate-ca,trustedCA.key=bundle.pem \
 			--set 'extraVolumes[0].name=scratch,extraVolumes[0].emptyDir.medium=Memory' \
 			--set 'extraVolumeMounts[0].name=scratch,extraVolumeMounts[0].mountPath=/scratch' > /dev/null; \
-		$(HELM) template kflare helm/kflare --kube-version $$v \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
 			--set trustedCA.secret=corporate-ca,metrics.certSecret=kflare-metrics-tls \
 			--set 'extraEnv[0].name=HTTPS_PROXY,extraEnv[0].value=http://proxy:3128' > /dev/null; \
-		$(HELM) template kflare helm/kflare --kube-version $$v \
-			--set 'watchNamespaces={kflare-system,team-a}',crds.enabled=false \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
+			--set 'watchNamespaces={kflare,team-a}',crds.enabled=false \
 			--set-string 'watchSelector=kflare.dev/instance in (team-a)' > /dev/null; \
-		$(HELM) template kflare helm/kflare --kube-version $$v \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
 			--set 'watchNamespaces={team-a}',rbac.namespaced=false,leaderElectionID=kflare-team-a > /dev/null; \
-		$(HELM) template kflare helm/kflare --kube-version $$v \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
+			--set 'secretNamespaces={team-a,team-b}' > /dev/null; \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
+			--set rbac.clusterWideSecrets=true > /dev/null; \
+		$(HELM) template kflare helm/kflare --namespace default --kube-version $$v \
+			--set allowDefaultNamespace=true > /dev/null; \
+		if $(HELM) template kflare helm/kflare --kube-version $$v > /dev/null 2>&1; then \
+			echo "the chart rendered into the default namespace without allowDefaultNamespace"; exit 1; \
+		fi; \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
 			--set autoscaling.minReplicas=2,autoscaling.maxReplicas=4 \
 			--set autoscaling.targetCPUUtilizationPercentage=null,autoscaling.targetMemoryUtilizationPercentage=90 \
 			--set autoscaling.behavior.scaleDown.stabilizationWindowSeconds=600 > /dev/null; \

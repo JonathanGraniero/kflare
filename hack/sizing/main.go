@@ -71,7 +71,7 @@ const namespaces = 10
 
 // leaseNamespace holds the leader election Lease. The controller reads its
 // namespace from the file a ServiceAccount token mount would provide.
-const leaseNamespace = "kflare-system"
+const leaseNamespace = "kflare"
 
 type options struct {
 	image       string

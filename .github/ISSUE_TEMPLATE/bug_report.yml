@@ -82,7 +82,7 @@ body:
     id: logs
     attributes:
       label: Manager log
-      description: "The controller's log lines about the resource: `kubectl -n kflare-system logs deploy/kflare` for the chart's default install."
+      description: "The controller's log lines about the resource: `kubectl -n kflare logs deploy/kflare` for the chart's default install."
       render: text
   - type: input
     id: plan

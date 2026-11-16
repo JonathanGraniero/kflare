@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -32,7 +33,7 @@ const (
 	// releaseName and managerNamespace are the Helm release the suite installs
 	// the chart as, and its namespace.
 	releaseName      = "kflare"
-	managerNamespace = "kflare-system"
+	managerNamespace = "kflare"
 
 	// leaderElectionID is the manager's lease (cmd/main.go).
 	leaderElectionID = "a634e97e.kflare.dev"
@@ -73,6 +74,26 @@ var installedMetricsServer bool
 // chartValues are the values the suite installs the chart with, and the
 // upgrade specs upgrade it with, as a user passes the same values again.
 var chartValues string
+
+// secretValues are the values this checkout's chart gets beside chartValues:
+// the namespaces besides the release's where the specs' Tunnels and token
+// Secrets are. A release's chart may not know the value.
+var secretValues string
+
+// run is this run's ID, which the live specs name what they create after: the
+// example's namespace, among others, which the chart must list before the
+// specs start.
+var run = func() string {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b)
+}()
+
+// exampleNamespace holds examples/expose-a-service for this run; the
+// example's tunnel is named after it too.
+func exampleNamespace() string { return "kflare-e2e-" + run + "-example" }
 
 // externalManager reports whether KFLARE_E2E_MANAGER=external asks the suite
 // to use a manager that is already running (for example `make run` against
@@ -156,9 +177,19 @@ var _ = BeforeSuite(func() {
 	}
 
 	// This checkout's chart and image, or a release's chart, whose image is the
-	// release's own.
+	// release's own. kflare may use Secrets in the release namespace and in
+	// the namespaces of the specs' Tunnels and token Secrets, which the chart
+	// gives a Role each, so they exist first.
+	secretNamespaces := []string{e2eNamespace, exampleNamespace()}
+	if upgradeFrom() != "" {
+		secretNamespaces = []string{upgradeNamespace}
+	}
+	for _, namespace := range secretNamespaces {
+		_, _ = utils.Run(exec.Command("kubectl", "create", "namespace", namespace))
+	}
+	secretValues = "secretNamespaces={" + strings.Join(secretNamespaces, ",") + "}"
 	chart := []string{"helm/kflare", "--set", "image.repository=" + managerImageRepository + ",image.tag=" +
-		managerImageTag}
+		managerImageTag, "--set", secretValues}
 	if release := upgradeFrom(); release != "" {
 		By("installing the chart of " + release + ", from its registry, which the upgrade specs upgrade")
 		chart = []string{releasedChart, "--version", strings.TrimPrefix(release, "v")}

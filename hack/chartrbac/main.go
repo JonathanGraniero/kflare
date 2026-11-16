@@ -6,19 +6,22 @@ SPDX-License-Identifier: MIT
 
 // Command chartrbac splits the controller's RBAC rules, which controller-gen
 // writes into config/rbac/role.yaml from the kubebuilder markers, for the Helm
-// chart's installations scoped to some namespaces (watchNamespaces, with
-// rbac.namespaced). Such an installation's ClusterRole grants the rules of
-// files/manager-cluster-rules.yaml, and a Role in each namespace it watches
-// those of files/manager-namespaced-rules.yaml:
+// chart. An installation's ClusterRole grants the rules of
+// files/manager-rules.yaml, every rule but those on Secrets, and a Role in
+// each namespace where it may use Secrets (the release's, and secretNamespaces)
+// those of files/manager-secret-rules.yaml; with rbac.clusterWideSecrets the
+// ClusterRole grants both.
+//
+// An installation scoped to some namespaces (watchNamespaces, with
+// rbac.namespaced) grants its ClusterRole the rules of
+// files/manager-cluster-rules.yaml instead, and a Role in each namespace it
+// watches those of files/manager-namespaced-rules.yaml:
 //
 //   - The cluster rules are those on cluster-scoped resources, such as
 //     CloudflareAccounts and Namespaces, and on Events: an Event about a
 //     cluster-scoped object goes to the default namespace.
 //   - The namespaced rules are all the others: Secrets, ConfigMaps and
 //     kflare's namespaced kinds.
-//
-// Every other installation grants all of them with its ClusterRole, from
-// files/manager-rules.yaml, which hack/sync-helm-chart.sh copies.
 //
 // A kflare kind's scope comes from its CRD. Any other resource must be listed
 // in coreResources, so that a marker for a new one fails the command until
@@ -48,6 +51,8 @@ import (
 const (
 	rolePath            = "config/rbac/role.yaml"
 	crdDir              = "config/crd/bases"
+	rulesPath           = "helm/kflare/files/manager-rules.yaml"
+	secretRulesPath     = "helm/kflare/files/manager-secret-rules.yaml"
 	clusterRulesPath    = "helm/kflare/files/manager-cluster-rules.yaml"
 	namespacedRulesPath = "helm/kflare/files/manager-namespaced-rules.yaml"
 )
@@ -101,12 +106,15 @@ func run(root string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", rolePath, err)
 	}
+	others, secrets := splitSecrets(role.Rules)
 	for _, out := range []struct {
 		path, what string
 		rules      []rbacv1.PolicyRule
 	}{
 		{clusterRulesPath, "a scoped installation grants across the cluster", cluster},
 		{namespacedRulesPath, "a scoped installation grants in each namespace it watches", namespaced},
+		{rulesPath, "an installation grants across the cluster, but for those on Secrets", others},
+		{secretRulesPath, "an installation grants on Secrets, in each namespace where it may use them", secrets},
 	} {
 		file, err := rulesFile(out.what, out.rules)
 		if err != nil {
@@ -193,6 +201,34 @@ func split(rules []rbacv1.PolicyRule, kinds map[groupResource]bool) (cluster, na
 		}
 	}
 	return cluster, namespaced, nil
+}
+
+// splitSecrets returns rules divided into those on Secrets, which the chart
+// grants an installation only in the namespaces where it may use them
+// (secretNamespaces), and all the others.
+func splitSecrets(rules []rbacv1.PolicyRule) (others, secrets []rbacv1.PolicyRule) {
+	isSecrets := func(resource string) bool {
+		base, _, _ := strings.Cut(resource, "/")
+		return base == "secrets"
+	}
+	for _, rule := range rules {
+		if !slices.Contains(rule.APIGroups, "") || !slices.ContainsFunc(rule.Resources, isSecrets) {
+			others = append(others, rule)
+			continue
+		}
+		// controller-gen writes one API group a rule; a core rule's other
+		// resources stay with the others.
+		on := func(keep func(string) bool) rbacv1.PolicyRule {
+			part := *rule.DeepCopy()
+			part.Resources = slices.DeleteFunc(part.Resources, func(resource string) bool { return !keep(resource) })
+			return part
+		}
+		secrets = append(secrets, on(isSecrets))
+		if rest := on(func(resource string) bool { return !isSecrets(resource) }); len(rest.Resources) > 0 {
+			others = append(others, rest)
+		}
+	}
+	return others, secrets
 }
 
 // rulesFile returns rules as a YAML list for the chart's rbac.yaml to include,

@@ -39,6 +39,18 @@ This installation manages:
     {{- if .Values.watchSelector }},{{ end }} whose token Secret is in one of those namespaces
     {{- end }}
 {{- end }}
+{{- with include "kflare.secretNamespaces" . }}
+
+kflare may read and write Secrets in: {{ splitList "," . | join ", " }}
+An account's token Secret, a Tunnel and a WorkerScript with secret bindings
+must be in one of them, or they report SecretNamespaceNotAllowed: list more
+namespaces in secretNamespaces.
+{{- end }}
+{{- if and .Values.rbac.clusterWideSecrets (not .Values.watchNamespaces) }}
+
+rbac.clusterWideSecrets is on: kflare can read and write every Secret in the
+cluster. List the namespaces it needs in secretNamespaces instead when you can.
+{{- end }}
 
 Next, connect a Cloudflare account. Store an API token in a Secret and point a
 CloudflareAccount at it:

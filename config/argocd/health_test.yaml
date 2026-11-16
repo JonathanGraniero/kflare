@@ -45,7 +45,7 @@ tests:
   inputPath: testdata/cloudflareaccount-validated.yaml
 - healthStatus:
     status: Progressing
-    message: 'Secret kflare-system/cloudflare-token not found: Secret "cloudflare-token" not found'
+    message: 'Secret kflare/cloudflare-token not found: Secret "cloudflare-token" not found'
   inputPath: testdata/cloudflareaccount-secret-not-found.yaml
 - healthStatus:
     status: Suspended

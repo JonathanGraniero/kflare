@@ -6,7 +6,7 @@ products. kflare is an alpha: its API is `v1alpha1`.
 
 ```sh
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
-  --version <version> --namespace kflare-system --create-namespace
+  --version <version> --namespace kflare --create-namespace
 ```
 
 Requires Kubernetes 1.34 or newer and Helm 3.8 or newer. Install one release per cluster, or several, each limited to
@@ -26,8 +26,9 @@ accounts, installing with Argo CD or Flux, running in production, upgrades and u
 
 - The kflare CRDs, as templates so that upgrades upgrade them, kept on uninstall (`crds.keep`)
 - The controller Deployment and its ServiceAccount, under the restricted Pod Security Standard
-- A ClusterRole for the controller, and a Role for leader election in the release namespace; with `watchNamespaces`,
-  a Role in each of them instead for what is not cluster-wide
+- A ClusterRole for the controller, without Secrets, a Role for its Secrets in the release namespace and each of
+  `secretNamespaces`, and a Role for leader election in the release namespace; with `watchNamespaces`, a Role in each
+  of them instead for what is not cluster-wide
 - Optionally, ClusterRoles that add kflare's kinds to the built-in `view`, `edit` and `admin` roles
 - A Service for metrics, served over HTTPS to callers allowed by the `<release>-metrics-reader` ClusterRole, and
   optionally a Prometheus Operator ServiceMonitor
@@ -59,9 +60,12 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `autoscaling.behavior` | scale up after 2 minutes above target | The autoscaler's scale-up and scale-down behavior |
 | `crds.enabled` | `true` | Install and upgrade the CRDs with the chart; `false` for every release but one in a cluster |
 | `crds.keep` | `true` | Keep the CRDs on uninstall |
+| `secretNamespaces` | `[]` | Namespaces, besides the release's, where kflare may read and write Secrets: those of Tunnels, WorkerScripts with secret bindings and token Secrets |
+| `allowDefaultNamespace` | `false` | Allow installing into `default`, which the chart refuses otherwise |
 | `watchNamespaces` | `[]` (all) | Namespaces whose kflare resources the release manages, and whose Secrets alone it reads |
 | `watchSelector` | unset (all) | A label selector, such as `kflare.dev/instance=team-a`, that its resources and accounts must match |
 | `rbac.namespaced` | `true` | With `watchNamespaces`, grant the controller its permissions with a Role in each namespace |
+| `rbac.clusterWideSecrets` | `false` | Grant Secrets in every namespace and cache them all, as releases up to 0.5 did |
 | `rbac.aggregateToDefaultRoles` | `true` | Extend the built-in `view`/`edit`/`admin` roles |
 | `leaderElection` | `true` | Run with leader election |
 | `leaderElectionID` | the release's, when scoped | The leader election Lease's name |

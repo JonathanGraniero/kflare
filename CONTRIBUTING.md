@@ -111,7 +111,7 @@ from your checkout:
 ```sh
 make docker-build IMG=kflare:dev
 kind load docker-image kflare:dev --name kflare-dev
-helm upgrade --install kflare ./helm/kflare -n kflare-system --create-namespace \
+helm upgrade --install kflare ./helm/kflare -n kflare --create-namespace \
   --set image.repository=kflare,image.tag=dev
 ```
 

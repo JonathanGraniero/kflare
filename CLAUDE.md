@@ -128,7 +128,9 @@ Planned, not yet present: the Docusaurus site under `docs/` (Phase 4).
    `spec.allowedReferences` leaves out its namespace or hostname, `zonereference.go`);
    `TokenExpired`/`TokenDisabled` (a CloudflareAccount whose token Cloudflare reports so, checked again at
    `--token-check-interval`); `NotWatched` (an account or a reference outside the installation's scope,
-   `watchscope.go`: a reference is read with `getReference`); `Paused` (the status kept, see convention 11). A new
+   `watchscope.go`: a reference is read with `getReference`); `SecretNamespaceNotAllowed` (a Secret in a namespace
+   where the installation may not use Secrets, `--secret-namespaces`, checked by `secretNamespaceNotAllowed`);
+   `Paused` (the status kept, see convention 11). A new
    reason goes into `readyReasons` (`test/gitopshealth`), and, if a person must act on it, into the Argo CD and Flux
    health checks' lists (`config/argocd/health.lua`, `config/flux/health-check-exprs.yaml`, and deploy.md's copies);
    its test finds a reason the controllers set that the table lacks
@@ -797,6 +799,21 @@ awaits review ([design notes](docs/design-notes.md#a-zone-shared-with-other-name
   all caught. The first run left one alive, an equivalent: a clause for a missing selector, which matches nothing
   anyway, now gone
 - Left: the merge. Not done, for later: `tunnelRef` and `workerScriptRef` across namespaces
+
+### Secrets in the release namespace (#152, `feat/secret-namespaces`)
+**Status:** 🚧 Built 2026-11-15 at the user's request ("pickup this issue"), as one pull request; awaits review. The
+issue's four decisions went as proposed, or as the [design notes](docs/design-notes.md#secrets-in-the-release-namespace)
+say: docs and kustomize default to `kflare` with a guard against `default`; `tokenSecretRef.namespace` stays required;
+the new default ships as the release's breaking change; the markers stay, and `hack/chartrbac` splits the Secret rule
+- [x] `--secret-namespaces`, `WatchScope.WithSecretNamespaces` (a Secret informer per namespace), reason
+  `SecretNamespaceNotAllowed` on the account's token, the Tunnel's Secret (its `resolve` hook) and the bindings
+- [x] Chart: `secretNamespaces`, `allowDefaultNamespace`, `rbac.clusterWideSecrets`; `files/manager-rules.yaml`
+  without Secrets and `files/manager-secret-rules.yaml`, both from `hack/chartrbac`
+- [x] envtest: a manager as a user holding the chart's default rules syncs and reconciles, an account elsewhere and a
+  Tunnel in an unlisted namespace report the reason; the e2e suite installs into `kflare` with `secretNamespaces`, and a
+  smoke spec checks the ServiceAccount against `kube-system` and `default`
+- [ ] Left for the release that carries it: README's quickstart installs with
+  `--set 'secretNamespaces={kflare-example}'` (0.5.0's schema refuses the value, so it waits for the version bump)
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first

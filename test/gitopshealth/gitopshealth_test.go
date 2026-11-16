@@ -448,6 +448,8 @@ var readyReasons = []struct {
 	{"False", "InvalidAllowedNamespaces", ArgoCDDegraded},
 	// The account, or a resource referenced, is outside what the installation watches (watchscope.go).
 	{"False", "NotWatched", ArgoCDDegraded},
+	// A Secret in a namespace where the installation may not use Secrets (watchscope.go).
+	{"False", "SecretNamespaceNotAllowed", ArgoCDDegraded},
 
 	// Parents and references.
 	{"False", "ZoneNotFound", ArgoCDProgressing},

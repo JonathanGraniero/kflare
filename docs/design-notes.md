@@ -2020,6 +2020,32 @@ credentials:
   and kept in memory: the cache would hold about a kilobyte of metadata per Secret instead of its data, so Helm's
   release Secrets would stop counting, at the cost of one read per change of a token Secret
 
+## Secrets in the release namespace
+
+Decisions behind [#152](https://github.com/JonathanGraniero/kflare/issues/152) (ARCHITECTURE.md's paragraph on
+`--secret-namespaces`; deploy.md's Security model). The issue left four open, and the user asked for it to be picked
+up without answering them, so each went as the issue proposed, or as noted.
+
+- **The namespace `kflare`**, as proposed: the docs, the e2e suite and `config/default` use it, and the chart refuses
+  `default` unless `allowDefaultNamespace`. Not a Namespace the chart creates, which would split the release's own
+  Secret from its objects, fight `--create-namespace`, Argo CD's `destination.namespace` and Flux's
+  `targetNamespace`, and be deleted with the token Secret on `helm uninstall`
+- **`tokenSecretRef.namespace` stays required.** Optional with the controller's namespace as default would need the
+  manager to know its namespace (`POD_NAMESPACE`) only for that, and a manifest's meaning would depend on where kflare
+  is installed. The chart passes the release namespace in `--secret-namespaces`, so the manager needs no downward API
+- **The upgrade is the release's breaking change**, with CHANGELOG.md's steps to list the namespaces, rather than
+  `rbac.clusterWideSecrets: true` for one release: that default would keep every install as exposed as before, which
+  is what the issue sets out to end, and the reason names the namespace to add
+- **Markers stay**, with `secrets` in them, and `hack/chartrbac`, which already split the role for `watchNamespaces`,
+  writes the rules without Secrets (`files/manager-rules.yaml`, which `hack/sync-helm-chart.sh` copied before) and the
+  Secret rules (`files/manager-secret-rules.yaml`). `config/rbac` keeps the whole role: the kustomize deploy passes no
+  `--secret-namespaces`, so it uses Secrets everywhere, as before
+- **A deletion that meets `SecretNamespaceNotAllowed` is retried**, as `SecretNotFound` is, not let go with its object
+  left as `NotWatched` is: after an upgrade it means a namespace missing from the list, not another installation's
+  token, and letting go would leave Cloudflare objects behind silently
+- **`secretNamespaces` is refused beside `watchNamespaces` and `rbac.clusterWideSecrets`**, which already decide where
+  the controller uses Secrets; with `watchNamespaces` (#79) the render is unchanged but for the rule files' headers
+
 ## Renames
 
 Decisions behind the hand-off of a renamed resource's object

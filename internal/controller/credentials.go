@@ -156,6 +156,10 @@ func accountToken(
 		Name:      account.Spec.TokenSecretRef.Name,
 		Namespace: account.Spec.TokenSecretRef.Namespace,
 	}
+	if condErr := secretNamespaceNotAllowed(ctx, fmt.Sprintf("Token Secret %q", secretKey.Name),
+		secretKey.Namespace); condErr != nil {
+		return "", condErr
+	}
 	if err := c.Get(ctx, secretKey, secret); err != nil {
 		return "", &conditionError{
 			Reason:  "SecretNotFound",

@@ -215,7 +215,7 @@ var _ = Describe("Upgrade from the last release", Ordered, Label("upgrade"), fun
 		_, err := utils.Run(exec.Command("helm", "upgrade", releaseName, "helm/kflare",
 			"--namespace", managerNamespace,
 			"--set", "image.repository="+managerImageRepository+",image.tag="+managerImageTag,
-			"--set", chartValues,
+			"--set", chartValues, "--set", secretValues,
 			"--wait", "--timeout", "3m"))
 		Expect(err).NotTo(HaveOccurred())
 	})

@@ -8,7 +8,6 @@ package e2e
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -127,7 +126,6 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		cfAPI     *cf.API
 		accountRC *cf.ResourceContainer
 		accountID string
-		run       string
 		zoneName  string
 		// databases is cloudflare-go v7's D1 service: v0 does not report a
 		// database's jurisdiction.
@@ -167,9 +165,6 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 	resourceName := func() string { return "kflare-e2e-" + run }
 	recordName := func() string { return resourceName() + "." + zoneName }
 	tunnelRecordName := func() string { return resourceName() + "-tunnel." + zoneName }
-	// exampleNamespace holds examples/expose-a-service for this run; the
-	// example's tunnel is named after it too.
-	exampleNamespace := func() string { return resourceName() + "-example" }
 	exampleTunnelName := func() string { return exampleNamespace() + "-hello" }
 	exampleHostname := func() string { return resourceName() + "-hello." + zoneName }
 	// listName is the name of the run's IP list: list names allow no hyphens.
@@ -255,10 +250,6 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}
 		zoneName = os.Getenv("CF_E2E_ZONE")
 
-		b := make([]byte, 3)
-		_, err := rand.Read(b)
-		Expect(err).NotTo(HaveOccurred())
-		run = hex.EncodeToString(b)
 		By("using run ID " + run)
 
 		root, err := utils.GetProjectDir()

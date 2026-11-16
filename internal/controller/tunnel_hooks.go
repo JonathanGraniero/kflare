@@ -66,11 +66,20 @@ func (s *tunnelService) CleanupConnections(ctx context.Context, accountID, tunne
 // deleted tunnel readable, and kflare keeps the tunnel's token in a Secret and
 // disconnects its connectors before it deletes it.
 var tunnelHooks = crudHooks[*cloudflarev1alpha1.Tunnel, TunnelAPI, shared.CloudflareTunnel]{
+	resolve:      tunnelSecretAllowed,
 	gone:         tunnelDeleted,
 	find:         findTunnel,
 	synced:       syncTunnelToken,
 	beforeDelete: disconnectTunnel,
 	watch:        watchTokenSecrets,
+}
+
+// tunnelSecretAllowed refuses, before any call to Cloudflare, a Tunnel in a
+// namespace where the installation may not write its token Secret.
+func tunnelSecretAllowed(ctx context.Context, _ client.Client, tunnel *cloudflarev1alpha1.Tunnel,
+	_ map[string]string) *conditionError {
+	return secretNamespaceNotAllowed(ctx,
+		fmt.Sprintf("Its credentials Secret %q", tunnel.Spec.CredentialsSecretRef.Name), tunnel.Namespace)
 }
 
 // tunnelDeleted reports whether Cloudflare keeps t only as a record: it answers

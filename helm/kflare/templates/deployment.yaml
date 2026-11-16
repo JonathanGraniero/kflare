@@ -1,3 +1,12 @@
+{{- if and (eq .Release.Namespace "default") (not .Values.allowDefaultNamespace) }}
+{{- fail "kflare may read and write the Secrets of its release namespace, so the chart refuses the default namespace: install with --namespace kflare --create-namespace, or set allowDefaultNamespace=true" }}
+{{- end }}
+{{- if and .Values.secretNamespaces .Values.watchNamespaces }}
+{{- fail "secretNamespaces is not used with watchNamespaces, which limits Secrets to the namespaces it lists: add the namespaces there" }}
+{{- end }}
+{{- if and .Values.secretNamespaces .Values.rbac.clusterWideSecrets }}
+{{- fail "secretNamespaces is not used with rbac.clusterWideSecrets, which grants Secrets in every namespace: set one of them" }}
+{{- end }}
 {{- if and .Values.metrics.certSecret (not .Values.metrics.secure) }}
 {{- fail "metrics.certSecret needs metrics.secure: the certificate is for HTTPS" }}
 {{- end }}
@@ -63,6 +72,9 @@ spec:
             {{- end }}
             {{- with .Values.watchNamespaces }}
             - --watch-namespaces={{ join "," . }}
+            {{- end }}
+            {{- with include "kflare.secretNamespaces" . }}
+            - --secret-namespaces={{ . }}
             {{- end }}
             {{- with .Values.watchSelector }}
             - {{ printf "--watch-selector=%s" . | quote }}

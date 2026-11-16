@@ -76,10 +76,27 @@ serviceAccount:
   # -- Annotations for the ServiceAccount.
   annotations: {}
 
+# -- Namespaces, besides the release's own, where kflare may read and write
+# Secrets, such as [team-a, team-b]. It holds its permissions on Secrets in a
+# Role in each, which must exist before the chart is installed, and caches no
+# other Secret. An account's token Secret, a Tunnel (kflare writes its token
+# Secret next to it) and a WorkerScript with secret bindings must each be in
+# one of them or in the release namespace: elsewhere they report
+# SecretNamespaceNotAllowed. Not used with watchNamespaces, which limits
+# Secrets to the namespaces it lists, nor with rbac.clusterWideSecrets. See
+# the deploy guide's Security model.
+secretNamespaces: []
+
+# -- Allow installing into the default namespace. The release namespace is
+# where kflare may read and write Secrets, and Helm installs into default when
+# --namespace is left out, so the chart refuses it unless this is set.
+allowDefaultNamespace: false
+
 # -- Namespaces whose kflare resources this installation manages, such as
 # [team-a, team-b]. The controller neither watches nor caches anything in
 # other namespaces, Secrets included, and with rbac.namespaced it holds its
-# permissions on Secrets in these namespaces only. It manages a
+# permissions on Secrets in these namespaces only, in place of the release
+# namespace and secretNamespaces. It manages a
 # CloudflareAccount only if the account's token Secret is in one of them, so
 # list the namespace of each token Secret too. Empty manages every namespace.
 # See the deploy guide's Scoping an installation.
@@ -102,6 +119,13 @@ rbac:
   # reading Namespaces, Events and the metrics reviews. false grants
   # everything with the ClusterRole, as without watchNamespaces.
   namespaced: true
+  # -- Grant the controller its permissions on Secrets in every namespace,
+  # with its ClusterRole, and let it cache every Secret in the cluster, as
+  # releases up to 0.5 did: for clusters with Tunnels or WorkerScripts in more
+  # namespaces than secretNamespaces can list. Anyone who holds the
+  # controller's ServiceAccount token can then read and write every Secret.
+  # Not used with watchNamespaces.
+  clusterWideSecrets: false
   # -- Create ClusterRoles that add read access to kflare resources to the
   # built-in `view` role, and write access to the namespaced kinds to `edit`
   # and `admin`. CloudflareAccount is never aggregated into `edit`: it points

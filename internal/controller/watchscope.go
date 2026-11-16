@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +32,10 @@ import (
 // it references, is outside what its kflare installation watches: another
 // installation's, or nobody's.
 const reasonNotWatched = "NotWatched"
+
+// reasonSecretNamespaceNotAllowed reports a resource that names a Secret in a
+// namespace where its kflare installation holds no permission on Secrets.
+const reasonSecretNamespaceNotAllowed = "SecretNamespaceNotAllowed"
 
 // maxListed caps how many names, of namespaces or CloudflareAccounts, a
 // message lists.
@@ -58,6 +63,9 @@ const maxListed = 5
 type WatchScope struct {
 	// namespaces is sorted; nil watches every namespace.
 	namespaces []string
+	// secretNamespaces is sorted; nil reads and writes Secrets wherever the
+	// installation watches.
+	secretNamespaces []string
 	// selector is nil for an installation that selects every resource.
 	selector labels.Selector
 	// reader reads from the API server, past the manager's cache, to tell a
@@ -72,17 +80,9 @@ type WatchScope struct {
 // is empty). reader reads from the API server, past the manager's cache.
 func NewWatchScope(namespaces, selector string, reader client.Reader) (WatchScope, error) {
 	scope := WatchScope{reader: reader}
-	if strings.TrimSpace(namespaces) != "" {
-		for name := range strings.SplitSeq(namespaces, ",") {
-			name = strings.TrimSpace(name)
-			if problems := validation.IsDNS1123Label(name); len(problems) > 0 {
-				return WatchScope{}, fmt.Errorf("namespace %q: %s", name, strings.Join(problems, "; "))
-			}
-			if !slices.Contains(scope.namespaces, name) {
-				scope.namespaces = append(scope.namespaces, name)
-			}
-		}
-		slices.Sort(scope.namespaces)
+	var err error
+	if scope.namespaces, err = parseNamespaces(namespaces); err != nil {
+		return WatchScope{}, err
 	}
 	if strings.TrimSpace(selector) != "" {
 		parsed, err := labels.Parse(selector)
@@ -94,6 +94,38 @@ func NewWatchScope(namespaces, selector string, reader client.Reader) (WatchScop
 	return scope, nil
 }
 
+// parseNamespaces returns the namespaces listed in list, separated by commas,
+// sorted and without repeats, or nil when it lists none.
+func parseNamespaces(list string) ([]string, error) {
+	if strings.TrimSpace(list) == "" {
+		return nil, nil
+	}
+	var namespaces []string
+	for name := range strings.SplitSeq(list, ",") {
+		name = strings.TrimSpace(name)
+		if problems := validation.IsDNS1123Label(name); len(problems) > 0 {
+			return nil, fmt.Errorf("namespace %q: %s", name, strings.Join(problems, "; "))
+		}
+		if !slices.Contains(namespaces, name) {
+			namespaces = append(namespaces, name)
+		}
+	}
+	slices.Sort(namespaces)
+	return namespaces, nil
+}
+
+// WithSecretNamespaces returns the scope of an installation that reads and
+// writes Secrets only in the namespaces listed in namespaces, separated by
+// commas, as one whose permissions on Secrets are Roles in those namespaces
+// must (the chart's secretNamespaces): its cache holds no other Secret, and a
+// resource that names one elsewhere reports SecretNamespaceNotAllowed. An
+// empty list leaves Secrets to the namespaces the installation watches.
+func (s WatchScope) WithSecretNamespaces(namespaces string) (WatchScope, error) {
+	var err error
+	s.secretNamespaces, err = parseNamespaces(namespaces)
+	return s, err
+}
+
 // String describes the scope, for the manager's log.
 func (s WatchScope) String() string {
 	namespaces, selector := "every namespace", "every resource"
@@ -103,13 +135,19 @@ func (s WatchScope) String() string {
 	if s.selector != nil {
 		selector = "resources matching " + s.selector.String()
 	}
-	return namespaces + ", " + selector
+	secrets := ""
+	if s.secretNamespaces != nil {
+		secrets = ", Secrets in namespaces " + strings.Join(s.secretNamespaces, ", ")
+	}
+	return namespaces + ", " + selector + secrets
 }
 
 // CacheOptions returns the manager's cache options for the scope: only the
 // namespaces it watches, and of kflare's kinds, but for CloudflareAccount,
 // only the resources its selector matches. Secrets, ConfigMaps and Namespaces
-// are cached whatever their labels: resources name them.
+// are cached whatever their labels: resources name them. Secrets are cached
+// only in the scope's Secret namespaces, when it has any: a cluster-wide
+// informer would be refused, and the cache would never sync.
 func (s WatchScope) CacheOptions(scheme *runtime.Scheme) cache.Options {
 	var opts cache.Options
 	if s.namespaces != nil {
@@ -123,6 +161,16 @@ func (s WatchScope) CacheOptions(scheme *runtime.Scheme) cache.Options {
 		for _, obj := range selectedKinds(scheme) {
 			opts.ByObject[obj] = cache.ByObject{Label: s.selector}
 		}
+	}
+	if s.secretNamespaces != nil {
+		if opts.ByObject == nil {
+			opts.ByObject = map[client.Object]cache.ByObject{}
+		}
+		namespaces := make(map[string]cache.Config, len(s.secretNamespaces))
+		for _, namespace := range s.secretNamespaces {
+			namespaces[namespace] = cache.Config{}
+		}
+		opts.ByObject[&corev1.Secret{}] = cache.ByObject{Namespaces: namespaces}
 	}
 	return opts
 }
@@ -152,6 +200,23 @@ func (s WatchScope) watches(namespace string) bool {
 	return s.namespaces == nil || slices.Contains(s.namespaces, namespace)
 }
 
+// secretNamespaceNotAllowed returns the condition of a resource that names a
+// Secret, what (such as its token Secret), in a namespace where the
+// installation holds no permission on Secrets, or nil when it may use it. The
+// manager's cache cannot read such a Secret, and answers with an error that is
+// not a NotFound.
+func secretNamespaceNotAllowed(ctx context.Context, what, namespace string) *conditionError {
+	scope := watchScopeFrom(ctx)
+	if scope.secretNamespaces == nil || slices.Contains(scope.secretNamespaces, namespace) {
+		return nil
+	}
+	return &conditionError{
+		Reason: reasonSecretNamespaceNotAllowed,
+		Message: fmt.Sprintf("%s is in namespace %q, where this kflare installation may not use Secrets (it may in %s): "+
+			"add the namespace to the chart's secretNamespaces", what, namespace, listed(scope.secretNamespaces)),
+	}
+}
+
 // selects reports whether obj's labels match the scope's selector.
 func (s WatchScope) selects(obj client.Object) bool {
 	return s.selector == nil || s.selector.Matches(labels.Set(obj.GetLabels()))
@@ -178,12 +243,15 @@ func (s WatchScope) labelsOutside() string {
 // namespacesOutside completes a sentence about a namespace outside the scope,
 // naming the namespaces it watches.
 func (s WatchScope) namespacesOutside() string {
-	listed := s.namespaces
-	more := ""
-	if len(listed) > maxListed {
-		listed, more = listed[:maxListed], fmt.Sprintf(" and %d more", len(s.namespaces)-maxListed)
+	return fmt.Sprintf("this installation does not watch (it watches %s)", listed(s.namespaces))
+}
+
+// listed lists maxListed of names at most, and then how many more there are.
+func listed(names []string) string {
+	if len(names) > maxListed {
+		return fmt.Sprintf("%s and %d more", strings.Join(names[:maxListed], ", "), len(names)-maxListed)
 	}
-	return fmt.Sprintf("this installation does not watch (it watches %s%s)", strings.Join(listed, ", "), more)
+	return strings.Join(names, ", ")
 }
 
 // accountsElsewhere returns the names of the CloudflareAccounts for the

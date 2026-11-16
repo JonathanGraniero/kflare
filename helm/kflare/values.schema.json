@@ -69,6 +69,18 @@
         }
       }
     },
+    "secretNamespaces": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 63,
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+      }
+    },
+    "allowDefaultNamespace": {
+      "type": "boolean"
+    },
     "watchNamespaces": {
       "type": "array",
       "uniqueItems": true,
@@ -89,6 +101,9 @@
           "type": "boolean"
         },
         "namespaced": {
+          "type": "boolean"
+        },
+        "clusterWideSecrets": {
           "type": "boolean"
         },
         "aggregateToDefaultRoles": {
