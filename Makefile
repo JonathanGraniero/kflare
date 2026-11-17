@@ -217,7 +217,7 @@ helm-lint: helm ## Lint the chart and render it with default and non-default val
 			--set trustedCA.secret=corporate-ca,metrics.certSecret=kflare-metrics-tls \
 			--set 'extraEnv[0].name=HTTPS_PROXY,extraEnv[0].value=http://proxy:3128' > /dev/null; \
 		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
-			--set 'watchNamespaces={kflare,team-a}',crds.enabled=false \
+			--set 'watchNamespaces={kflare,team-a}',crds.enabled=false,driftCheckInterval= \
 			--set-string 'watchSelector=kflare.dev/instance in (team-a)' > /dev/null; \
 		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
 			--set 'watchNamespaces={team-a}',rbac.namespaced=false,leaderElectionID=kflare-team-a > /dev/null; \

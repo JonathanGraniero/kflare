@@ -769,9 +769,11 @@ driftCheckInterval: 1h
 ```
 
 Every resource is checked against Cloudflare that long after each successful reconcile, give or take a tenth at
-random, so that resources synced together spread their checks: a change is corrected within 66 minutes. To keep a
-change made by hand, such as a fix during an incident, annotate the resource `kflare.dev/paused: "true"` until the
-spec says the same. A check reads the resource's object and writes only
+random, so that resources synced together spread their checks: an object's next check is at most 66 minutes away,
+and it can be seconds away. To make a change by hand, such as a fix during an incident, annotate the resource
+`kflare.dev/paused: "true"` first, then change the object, and remove the annotation once the spec says the same. A
+check kflare holds back for the rate limit runs later than that, and a resource whose reconcile fails is retried
+with back-off instead. A check reads the resource's object and writes only
 what differs. The read is one Cloudflare API call for most kinds and two for a `Tunnel`. An `IPList` takes two, plus
 one per 500 items past the first 500.
 
@@ -781,7 +783,11 @@ call for five minutes
 ([Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/)). Checks of N
 resources take about N calls per interval, so an interval of at least N seconds keeps them to a quarter of the limit:
 10 minutes for 600 resources, 30 minutes for 1,800, and the default of an hour for up to 3,600. That leaves room for
-kflare's own changes and for anything else using the token's budget. The count is of every resource that spends one
+kflare's own changes and for anything else using the token's budget. It is an average: after a restart or a
+failover, every resource is reconciled in one paced pass, so their checks come due together, and the tenth they
+move by spreads them out again only over several hours. Until then, checks take most of kflare's budget for part of
+each hour, and its other changes wait their turn (`reason="budget"` in
+`kflare_cloudflare_reconciles_deferred_total`). The count is of every resource that spends one
 budget: a user's token used for several accounts is one budget, not one per account. **Raise the interval for more
 than 3,600 resources per budget**, and lower it to correct changes sooner when there are fewer.
 

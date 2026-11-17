@@ -607,7 +607,7 @@ resolve to the versions their comments name.
 - [ ] Be around for the first hours to answer comments, and file issues for the bugs people report
 
 **After the announcement**, not blocking it: the drift correction period (Known limitations), bounded since #55 by
-`--drift-check-interval`, off by default. The live e2e suite has run in GitHub Actions since 2026-10-21 (Release and
+`--drift-check-interval` (`1h` in the chart since #135). The live e2e suite has run in GitHub Actions since 2026-10-21 (Release and
 CI below).
 
 #### Chart hardening for v0.2.0 (`feat/chart-hardening`)
