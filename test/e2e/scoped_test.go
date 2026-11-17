@@ -61,7 +61,7 @@ var _ = Describe("an installation scoped to a namespace", Ordered, func() {
 
 	It("runs one pod, which holds a Lease of its own while the suite's installation holds its own", func() {
 		Eventually(func() error {
-			pod, err := runningControllerIn(scopedNamespace, scopedSelector)
+			pod, err := runningControllerIn(scopedNamespace, scopedSelector, scopedLease, 1)
 			if err != nil {
 				return err
 			}

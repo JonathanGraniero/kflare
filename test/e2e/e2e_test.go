@@ -36,7 +36,7 @@ var _ = Describe("controller-manager", func() {
 		}
 	})
 
-	It("runs one pod whose containers are all ready and have not restarted", func() {
+	It("runs a leader and a standby whose containers are all ready and have not restarted", func() {
 		Eventually(func() error {
 			_, err := runningController()
 			return err
@@ -56,10 +56,39 @@ var _ = Describe("controller-manager", func() {
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 
-	It("reads the controller's CPU with its HorizontalPodAutoscaler, and keeps one replica while idle", func() {
+	It("hands over to the standby within about 15 seconds when the leader's pod goes", func() {
+		var leader string
+		Eventually(func() (err error) {
+			leader, err = runningController()
+			return err
+		}, 2*time.Minute, time.Second).Should(Succeed())
+		_, err := utils.Run(exec.Command("kubectl", "delete", "pod", leader, "-n", managerNamespace, "--wait=false"))
+		Expect(err).NotTo(HaveOccurred())
+		// The lease lasts 15 seconds, and a leader that shuts down gives it up
+		// sooner. Starting a pod would take longer than winning the lease.
+		Eventually(func() error {
+			out, err := utils.Run(exec.Command("kubectl", "get", "lease", leaderElectionID, "-n", managerNamespace,
+				"-o", "jsonpath={.spec.holderIdentity}"))
+			if err != nil {
+				return err
+			}
+			if holder := string(out); holder == "" || strings.HasPrefix(holder, leader+"_") {
+				return fmt.Errorf("the lease is still held by %q", holder)
+			}
+			return nil
+		}, 30*time.Second, time.Second).Should(Succeed())
+		By("running a leader and a standby again")
+		Eventually(func() error {
+			_, err := runningController()
+			return err
+		}, 2*time.Minute, time.Second).Should(Succeed())
+	})
+
+	It("reads the controller's CPU with its HorizontalPodAutoscaler, and keeps one standby while idle", func() {
 		// The autoscaler compares the pods' CPU use, from the metrics API, with
 		// a share of the chart's CPU request. An idle controller uses a few
-		// millicores, far below it, so the autoscaler keeps one replica.
+		// millicores, far below it, so the autoscaler keeps its minimum: the
+		// leader and a standby.
 		Eventually(func() error {
 			out, err := utils.Run(exec.Command("kubectl", "get", "hpa", releaseName, "-n", managerNamespace,
 				"-o", "json"))
@@ -90,8 +119,8 @@ var _ = Describe("controller-manager", func() {
 				return fmt.Errorf("the idle controller uses %d%% of its CPU request, the target is %d%%",
 					*current, *target)
 			}
-			if hpa.Status.CurrentReplicas != 1 || hpa.Status.DesiredReplicas != 1 {
-				return fmt.Errorf("the autoscaler runs %d replicas and wants %d, not 1",
+			if hpa.Status.CurrentReplicas != 2 || hpa.Status.DesiredReplicas != 2 {
+				return fmt.Errorf("the autoscaler runs %d replicas and wants %d, not 2",
 					hpa.Status.CurrentReplicas, hpa.Status.DesiredReplicas)
 			}
 			return nil
@@ -267,16 +296,17 @@ var _ = Describe("controller-manager", func() {
 	})
 })
 
-// runningController returns the name of the one controller pod that is not
-// being deleted, once it runs with every container ready and none restarted.
+// runningController returns the name of the suite's leader: the pod that
+// holds the lease, once the chart's two pods, the leader and its standby, run
+// with every container ready and none restarted.
 func runningController() (string, error) {
-	return runningControllerIn(managerNamespace, managerSelector)
+	return runningControllerIn(managerNamespace, managerSelector, leaderElectionID, 2)
 }
 
-// runningControllerIn returns the name of the one controller pod in
-// namespace that selector selects, once it runs with every container ready
-// and none restarted.
-func runningControllerIn(namespace, selector string) (string, error) {
+// runningControllerIn returns the name of the pod that holds lease, once
+// exactly replicas pods that selector selects in namespace, not counting any
+// being deleted, run with every container ready and none restarted.
+func runningControllerIn(namespace, selector, lease string, replicas int) (string, error) {
 	out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", namespace,
 		"-l", selector, "-o",
 		`go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}`+
@@ -286,19 +316,28 @@ func runningControllerIn(namespace, selector string) (string, error) {
 		return "", err
 	}
 	pods := utils.GetNonEmptyLines(string(out))
-	if len(pods) != 1 {
-		return "", fmt.Errorf("expected 1 controller pod, got %d: %v", len(pods), pods)
+	if len(pods) != replicas {
+		return "", fmt.Errorf("expected %d controller pods, got %d: %v", replicas, len(pods), pods)
 	}
-	fields := strings.Fields(pods[0])
-	if fields[1] != "Running" {
-		return "", fmt.Errorf("controller pod is %s", fields[1])
-	}
-	for _, c := range fields[2:] {
-		if c != "true/0" {
-			return "", fmt.Errorf("container not ready or restarted (ready/restarts = %s)", c)
+	leader := ""
+	for _, pod := range pods {
+		fields := strings.Fields(pod)
+		if fields[1] != "Running" {
+			return "", fmt.Errorf("controller pod %s is %s", fields[0], fields[1])
+		}
+		for _, c := range fields[2:] {
+			if c != "true/0" {
+				return "", fmt.Errorf("container of %s not ready or restarted (ready/restarts = %s)", fields[0], c)
+			}
+		}
+		if holdsLeaseIn(namespace, lease, fields[0]) == nil {
+			leader = fields[0]
 		}
 	}
-	return fields[0], nil
+	if leader == "" {
+		return "", fmt.Errorf("none of the running pods holds the lease %s: %v", lease, pods)
+	}
+	return leader, nil
 }
 
 // holdsLease checks that pod holds the manager's lease. It must be the running

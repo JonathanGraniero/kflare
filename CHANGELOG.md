@@ -82,6 +82,13 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **`kflare_cloudflare_api_rate_limited_total` starts at 0** for each `CloudflareAccount`, with the account's first
   call. It first appeared with the account's first 429, at 1, which `increase()` does not see, so an alert on it
   missed that one.
+- **A default install runs two pods, a leader and a standby**
+  ([#136](https://github.com/JonathanGraniero/kflare/issues/136)): `autoscaling.minReplicas` is now `2` (it was `1`)
+  and `autoscaling.maxReplicas` `3` (it was `10`). With one pod, reconciling waited for a new pod to start when the
+  leader's went; the standby takes over within about 15 seconds. It costs one idle pod: about 1m CPU and 9 MiB in use,
+  100m and 64Mi requested. Only the leader reconciles, so the replicas the autoscaler added up to 10 were idle
+  requests, not capacity: `maxConcurrentReconciles` is what raises throughput. Values that set either number are
+  unchanged, and `autoscaling.minReplicas: 1` runs a single pod as before.
 - **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
   `config/default`'s kustomization, which still said `cloudflare-operator-system`. An existing installation keeps its
   namespace: `helm upgrade -n kflare-system` works as before.

@@ -52,9 +52,9 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `image.digest` | `""` | Image digest, run instead of the tag when set: the digest whose signature you verified |
 | `imagePullSecrets` | `[]` | Secrets for pulling the image from a private registry or mirror |
 | `replicaCount` | `1` | Replicas while `autoscaling.enabled` is `false`; leader election keeps one active |
-| `autoscaling.enabled` | `true` | Create a HorizontalPodAutoscaler, which then owns the replica count |
-| `autoscaling.minReplicas` | `1` | Fewest replicas; `2` keeps a standby at all times |
-| `autoscaling.maxReplicas` | `10` | Most replicas |
+| `autoscaling.enabled` | `true` | Create a HorizontalPodAutoscaler, which then owns the replica count. It holds standbys and adds no reconcile capacity |
+| `autoscaling.minReplicas` | `2` | Fewest replicas; `2` keeps a standby at all times |
+| `autoscaling.maxReplicas` | `3` | Most replicas; every one but the leader is a standby |
 | `autoscaling.targetCPUUtilizationPercentage` | `80` | Average CPU use, as a share of `resources.requests.cpu`, above which replicas are added |
 | `autoscaling.targetMemoryUtilizationPercentage` | unset | The same for memory, off by default |
 | `autoscaling.behavior` | scale up after 2 minutes above target | The autoscaler's scale-up and scale-down behavior |
