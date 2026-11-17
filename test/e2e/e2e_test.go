@@ -37,26 +37,16 @@ var _ = Describe("controller-manager", func() {
 	})
 
 	It("runs a leader and a standby whose containers are all ready and have not restarted", func() {
+		// Ready pods only prove the probes answer; one of them holding the
+		// lease (runningController) proves the manager can talk to the API
+		// server and has started its controllers.
 		Eventually(func() error {
 			_, err := runningController()
 			return err
 		}, 2*time.Minute, time.Second).Should(Succeed())
 	})
 
-	It("reaches the API server and becomes leader", func() {
-		// A ready pod only proves the probes answer; holding the lease proves
-		// the manager can talk to the API server and has started its
-		// controllers.
-		Eventually(func() error {
-			pod, err := runningController()
-			if err != nil {
-				return err
-			}
-			return holdsLease(pod)
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
-	})
-
-	It("hands over to the standby within about 15 seconds when the leader's pod goes", func() {
+	It("hands over to the standby when the leader's pod goes, before a new pod could start", func() {
 		var leader string
 		Eventually(func() (err error) {
 			leader, err = runningController()
@@ -64,19 +54,19 @@ var _ = Describe("controller-manager", func() {
 		}, 2*time.Minute, time.Second).Should(Succeed())
 		_, err := utils.Run(exec.Command("kubectl", "delete", "pod", leader, "-n", managerNamespace, "--wait=false"))
 		Expect(err).NotTo(HaveOccurred())
-		// The lease lasts 15 seconds, and a leader that shuts down gives it up
-		// sooner. Starting a pod would take longer than winning the lease.
+		// A leader that goes does not give the lease up: the standby takes it
+		// once its 15 seconds have run out, at its next try, 17 to 19 seconds
+		// in CI. The minute leaves a slow runner room.
 		Eventually(func() error {
-			out, err := utils.Run(exec.Command("kubectl", "get", "lease", leaderElectionID, "-n", managerNamespace,
-				"-o", "jsonpath={.spec.holderIdentity}"))
+			holder, err := leaseHolder(managerNamespace, leaderElectionID)
 			if err != nil {
 				return err
 			}
-			if holder := string(out); holder == "" || strings.HasPrefix(holder, leader+"_") {
+			if holder == "" || strings.HasPrefix(holder, leader+"_") {
 				return fmt.Errorf("the lease is still held by %q", holder)
 			}
 			return nil
-		}, 30*time.Second, time.Second).Should(Succeed())
+		}, time.Minute, time.Second).Should(Succeed())
 		By("running a leader and a standby again")
 		Eventually(func() error {
 			_, err := runningController()
@@ -151,15 +141,9 @@ var _ = Describe("controller-manager", func() {
 		}
 		reader, stranger := token("e2e-metrics-reader"), token("e2e-metrics-stranger")
 
-		// The leader's: a standby serves no controller's metrics, and a
-		// forward to the Service picks either pod.
-		var leader string
-		Eventually(func() (err error) {
-			leader, err = runningController()
-			return err
-		}, 2*time.Minute, time.Second).Should(Succeed())
-		By("forwarding a local port to the leader's metrics port")
-		port, stop, err := utils.PortForward(managerNamespace, "pod/"+leader, 8080)
+		By("forwarding a local port to the metrics Service")
+		// Either pod answers: both refuse and allow alike.
+		port, stop, err := utils.PortForward(managerNamespace, "svc/"+releaseName+"-metrics", 8080)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(stop)
 
@@ -201,6 +185,17 @@ var _ = Describe("controller-manager", func() {
 		By("serving the metrics to a token with the role")
 		// The binding reaches the API server's authorizer within seconds.
 		Eventually(status("https", reader), time.Minute, time.Second).Should(Equal(http.StatusOK))
+
+		By("reading the leader's metrics: a standby serves no controller's")
+		var leader string
+		Eventually(func() (err error) {
+			leader, err = runningController()
+			return err
+		}, 2*time.Minute, time.Second).Should(Succeed())
+		stop()
+		port, stop, err = utils.PortForward(managerNamespace, "pod/"+leader, 8080)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(stop)
 		// A leader that has just taken over serves its controllers' metrics
 		// once they have started.
 		var body string
@@ -316,7 +311,9 @@ func runningController() (string, error) {
 
 // runningControllerIn returns the name of the pod that holds lease, once
 // exactly replicas pods that selector selects in namespace, not counting any
-// being deleted, run with every container ready and none restarted.
+// being deleted, run with every container ready and none restarted. A pod
+// that is gone keeps its name in the lease until the lease expires, so the
+// holder must be one of the running pods.
 func runningControllerIn(namespace, selector, lease string, replicas int) (string, error) {
 	out, err := utils.Run(exec.Command("kubectl", "get", "pods", "-n", namespace,
 		"-l", selector, "-o",
@@ -330,6 +327,10 @@ func runningControllerIn(namespace, selector, lease string, replicas int) (strin
 	if len(pods) != replicas {
 		return "", fmt.Errorf("expected %d controller pods, got %d: %v", replicas, len(pods), pods)
 	}
+	holder, err := leaseHolder(namespace, lease)
+	if err != nil {
+		return "", err
+	}
 	leader := ""
 	for _, pod := range pods {
 		fields := strings.Fields(pod)
@@ -341,34 +342,22 @@ func runningControllerIn(namespace, selector, lease string, replicas int) (strin
 				return "", fmt.Errorf("container of %s not ready or restarted (ready/restarts = %s)", fields[0], c)
 			}
 		}
-		if holdsLeaseIn(namespace, lease, fields[0]) == nil {
+		// The holder identity is the pod's name, then "_" and a UUID.
+		if strings.HasPrefix(holder, fields[0]+"_") {
 			leader = fields[0]
 		}
 	}
 	if leader == "" {
-		return "", fmt.Errorf("none of the running pods holds the lease %s: %v", lease, pods)
+		return "", fmt.Errorf("the lease %s is held by %q, none of the running pods: %v", lease, holder, pods)
 	}
 	return leader, nil
 }
 
-// holdsLease checks that pod holds the manager's lease. It must be the running
-// pod: a pod that is gone keeps its name in the lease until the lease expires.
-func holdsLease(pod string) error {
-	return holdsLeaseIn(managerNamespace, leaderElectionID, pod)
-}
-
-// holdsLeaseIn checks that pod holds the Lease lease in namespace.
-func holdsLeaseIn(namespace, lease, pod string) error {
+// leaseHolder returns the holder identity of the Lease lease in namespace.
+func leaseHolder(namespace, lease string) (string, error) {
 	out, err := utils.Run(exec.Command("kubectl", "get", "lease", lease, "-n", namespace,
 		"-o", "jsonpath={.spec.holderIdentity}"))
-	if err != nil {
-		return err
-	}
-	// The holder identity is the pod's name, then "_" and a UUID.
-	if holder := string(out); !strings.HasPrefix(holder, pod+"_") {
-		return fmt.Errorf("the lease is held by %q, not by the running pod %s", holder, pod)
-	}
-	return nil
+	return string(out), err
 }
 
 // cpuUtilization returns a HorizontalPodAutoscaler's CPU target and the pods'

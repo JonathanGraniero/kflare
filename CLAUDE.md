@@ -710,7 +710,12 @@ sizing guidance; its concurrent reconciles came later, in
   12 s, as without the limit
 - [x] e2e: the suite installs metrics-server v0.9.0 (July 2026; v0.9.1 was a day old) unless the cluster serves the
   metrics API, and removes only what it installed. A smoke spec checks that the autoscaler reads the controller's CPU,
-  below its target, and keeps one replica
+  below its target, and keeps one replica (two since #136)
+- [x] A standby by default (#136, `feat/chart-standby-default`, 2026-11-16): `minReplicas: 2` and `maxReplicas: 3`,
+  the autoscaler described as a way to hold standbys. The e2e suite's `runningController` returns the pod that holds
+  the lease, of two; a smoke spec deletes it and waits for the standby to take the lease (17 and 19 seconds in CI: a
+  leader that goes does not release the lease, so the standby waits out its 15 seconds), and the metrics spec reads
+  the leader's pod, since a standby serves no controller's metrics
 - Checked here: the chart's guards; a server-side dry run of the rendered chart (defaults, autoscaling options, and
   autoscaling off with `replicaCount: 2`) against envtest's API server; `make helm-lint`. Not here: kind cannot start
   pods in this session's container (runc cannot set `oom_score_adj`), so the e2e spec first runs in CI

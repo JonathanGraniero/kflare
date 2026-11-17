@@ -705,7 +705,7 @@ A values file for a production cluster usually sets:
 ```yaml
 # High availability: one replica is active, and the standby the chart keeps by
 # default (autoscaling.minReplicas: 2) waits on the leader lease and takes over
-# within about 15 seconds (the lease's duration) if it goes. A
+# within about 20 seconds (once the lease's 15 have run out) if it goes. A
 # PodDisruptionBudget lets a node drain evict one pod at a time. Spread the two
 # over nodes, so that one node's loss leaves a pod:
 topologySpreadConstraints:
@@ -1194,7 +1194,7 @@ expressions match the issuer above and the policy's `subjectRegExp`.
 ### Scaling and resources
 
 kflare runs one active controller. With leader election, the replica that holds the lease reconciles every resource,
-and the others wait to take over within about 15 seconds (the lease's duration) if it goes. **Replicas are standbys,
+and the others wait to take over within about 20 seconds if it goes: once the lease's 15 seconds have run out. **Replicas are standbys,
 not capacity**: they add no reconcile capacity and do not make the leader's work go faster, at any count. For
 throughput, see [Reconciles at once](#reconciles-at-once), under Cloudflare's rate limit whatever kflare does.
 
@@ -1356,9 +1356,13 @@ The ServiceMonitor reads that token with `bearerTokenFile`, which a Prometheus w
 `arbitraryFSAccessThroughSMs.deny` refuses. To scrape by hand, with a token for a ServiceAccount bound to the role:
 
 ```sh
-kubectl -n kflare port-forward svc/kflare-metrics 8080 &
+# The leader's pod: a standby serves the Go runtime's metrics, and no controller's.
+leader=$(kubectl -n kflare get lease a634e97e.kflare.dev -o jsonpath='{.spec.holderIdentity}' | cut -d_ -f1)
+kubectl -n kflare port-forward "pod/$leader" 8080 &
 curl -k -H "Authorization: Bearer $(kubectl -n monitoring create token prometheus)" https://localhost:8080/metrics
 ```
+
+A [scoped installation](#scoping-an-installation)'s Lease is named after its release, `<release>.kflare.dev`.
 
 The controller's certificate is self-signed, and the ServiceMonitor skips verifying it, unless `metrics.certSecret`
 names a Secret in the release namespace that holds one: `tls.crt` and `tls.key`, and `ca.crt` for the ServiceMonitor
@@ -1867,7 +1871,7 @@ Every kflare resource reports a single `Ready` condition. Start with:
 ```sh
 kubectl get <kind>.kflare.dev -A                      # READY column
 kubectl describe <kind>.kflare.dev <name> -n <ns>     # condition reason and message; Events of Ready changes
-kubectl -n kflare logs deploy/kflare           # controller log (JSON)
+kubectl -n kflare logs -l app.kubernetes.io/name=kflare --prefix --tail=-1   # the log (JSON) of every controller pod
 ```
 
 | Reason | Meaning | What to do |

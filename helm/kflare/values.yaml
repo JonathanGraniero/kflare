@@ -10,7 +10,7 @@ replicaCount: 1
 # replica count while it is on. It needs the metrics API (metrics-server).
 # It holds standbys, not capacity: leader election keeps one replica active
 # whatever the count, so every other replica is a standby, which takes over
-# within about 15 seconds when the leader goes but adds no reconcile capacity
+# within about 20 seconds when the leader goes but adds no reconcile capacity
 # and does not make the leader's work go faster. For throughput, raise
 # maxConcurrentReconciles. The leader's use is what rises with load, and the
 # pods' average is what the autoscaler compares with its targets.

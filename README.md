@@ -125,7 +125,7 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
 - **One installation per cluster, or one per team.** An installation can be limited to some namespaces, with
   permissions on those alone, or to resources with some labels, so that several share a cluster
   ([deploy guide](docs/deploy.md#scoping-an-installation)). Each runs with leader election, and keeps a standby
-  replica that takes over within about 15 seconds. Replicas add no throughput: only the leader reconciles.
+  replica that takes over within about 20 seconds. Replicas add no throughput: only the leader reconciles.
 - **kflare never takes over what it did not create**, unless a resource asks with the
   `kflare.dev/adoption-policy` annotation. Objects it adopted are kept when their resource is deleted, and
   `kflare.dev/deletion-policy: retain` keeps any object, for zones and storage that must outlive a manifest.
