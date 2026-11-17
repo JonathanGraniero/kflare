@@ -41,7 +41,9 @@ install() {
 
   echo "==> Adding kflare's dashboard to Grafana..."
   # Server-side: the dashboard is too large for the annotation client-side apply writes.
-  kubectl create configmap kflare-dashboard -n "$NAMESPACE" --from-file="$SCRIPT_DIR/prometheus/kflare-dashboard.json" \
+  # The chart's own (metrics.grafanaDashboard), from its file: the manager on this machine has no chart.
+  kubectl create configmap kflare-dashboard -n "$NAMESPACE" \
+    --from-file="$SCRIPT_DIR/../helm/kflare/files/kflare-dashboard.json" \
     --dry-run=client -o yaml |
     kubectl label --local -f - -o yaml grafana_dashboard=1 |
     kubectl apply --server-side --force-conflicts -f -

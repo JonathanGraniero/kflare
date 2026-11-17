@@ -1,7 +1,7 @@
 {
   "uid": "kflare",
   "title": "kflare",
-  "description": "kflare's own metrics and controller-runtime's, from local/prometheus.sh's Prometheus.",
+  "description": "kflare's own metrics and controller-runtime's. The Helm chart ships it (metrics.grafanaDashboard.enabled).",
   "tags": [
     "kflare"
   ],
@@ -10,10 +10,10 @@
   "schemaVersion": 39,
   "version": 1,
   "time": {
-    "from": "now-30m",
+    "from": "now-1h",
     "to": "now"
   },
-  "refresh": "10s",
+  "refresh": "30s",
   "timezone": "browser",
   "templating": {
     "list": [
@@ -1208,6 +1208,66 @@
     },
     {
       "type": "timeseries",
+      "id": 26,
+      "title": "Leader",
+      "description": "The pod that holds the leader lease (1) and the standbys (0). Only the leader reconciles.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 56
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (pod) (leader_election_master_status{job=~\"$job\"})",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
       "id": 23,
       "title": "CPU",
       "description": "CPU the manager uses, in cores.",
@@ -1217,8 +1277,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 0,
+        "w": 6,
+        "x": 6,
         "y": 56
       },
       "targets": [
@@ -1276,8 +1336,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 12,
         "y": 56
       },
       "targets": [
@@ -1344,8 +1404,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 18,
         "y": 56
       },
       "targets": [

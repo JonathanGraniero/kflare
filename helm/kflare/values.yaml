@@ -239,6 +239,53 @@ metrics:
     # the default: verify against `ca.crt` of metrics.certSecret, or skip
     # verification without one.
     tlsConfig: {}
+  # kflare's alerts, as a Prometheus Operator PrometheusRule. They select the
+  # series the ServiceMonitor scrapes, so they need metrics.serviceMonitor
+  # too. The deploy guide's Monitoring says what each alert means, and its
+  # Troubleshooting what to do when one fires.
+  prometheusRule:
+    # -- Create the PrometheusRule (needs the Prometheus Operator's CRDs).
+    enabled: false
+    # -- Extra labels, e.g. to match your Prometheus' ruleSelector.
+    labels: {}
+    # -- The page each alert's runbook_url annotation links to, at the anchor
+    # of the alert's name in lower case.
+    runbookURL: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md
+    # Each alert: enabled leaves it out when false, for is how long its
+    # condition must hold before it fires (empty fires at once), and severity
+    # is its severity label. For another expression, turn the alert off and
+    # write your own rule.
+    alerts:
+      # -- No kflare pod is up in Prometheus.
+      KflareDown: {enabled: true, for: 5m, severity: critical}
+      # -- A controller's reconciles keep ending in errors.
+      KflareReconcileErrors: {enabled: true, for: 30m, severity: warning}
+      # -- A controller's queue has not emptied. A restart with thousands of
+      # resources is paced to Cloudflare's rate limit, and stays under an hour
+      # up to about 10,000 resources per API token.
+      KflareWorkqueueBacklog: {enabled: true, for: 1h, severity: warning}
+      # -- Cloudflare answers 5xx, or not at all.
+      KflareCloudflareErrors: {enabled: true, for: 30m, severity: warning}
+      # -- Cloudflare answered 429 to an account's API token.
+      KflareRateLimited: {enabled: true, for: "", severity: warning}
+      # -- Resources report Ready=False.
+      KflareResourcesNotReady: {enabled: true, for: 30m, severity: warning}
+      # -- kflare undid a change made outside it.
+      KflareDriftCorrected: {enabled: true, for: "", severity: info}
+      # -- An account's API token expires within 14 days.
+      KflareTokenExpiresSoon: {enabled: true, for: "", severity: warning}
+  # kflare's Grafana dashboard, as a ConfigMap for the sidecar that loads
+  # dashboards from labelled ConfigMaps, as kube-prometheus-stack's Grafana
+  # runs. It shows what the ServiceMonitor scrapes.
+  grafanaDashboard:
+    # -- Create the dashboard's ConfigMap.
+    enabled: false
+    # -- The ConfigMap's namespace, for a sidecar that only looks in Grafana's.
+    # Empty is the release namespace.
+    namespace: ""
+    # -- Labels the sidecar selects ConfigMaps by.
+    labels:
+      grafana_dashboard: "1"
 
 # A PodDisruptionBudget that lets a node drain evict one controller pod at a
 # time. Only created when replicaCount is above 1, so that a single replica

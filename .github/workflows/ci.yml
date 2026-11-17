@@ -62,6 +62,10 @@ jobs:
       - name: Lint Helm chart
         run: make helm-lint
 
+      # promtool, from the Prometheus image, on the PrometheusRule as rendered.
+      - name: Test the chart's alerts
+        run: make test-alerts
+
       - name: Check generated and formatted files are committed
         run: git diff --exit-code
 

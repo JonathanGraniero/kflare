@@ -1,0 +1,235 @@
+# promtool's unit tests for the chart's alerts (make test-alerts), one per alert:
+# each fires on the series that should set it off, and stays quiet otherwise.
+# rules.yaml is the chart's PrometheusRule as rendered for the release kflare
+# in the namespace kflare.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+
+tests:
+  - name: A healthy installation fires nothing
+    interval: 1m
+    input_series:
+      - series: up{job="kflare-metrics",namespace="kflare",pod="kflare-a"}
+        values: 1x180
+      - series: up{job="kflare-metrics",namespace="kflare",pod="kflare-b"}
+        values: 1x180
+      - series: controller_runtime_reconcile_errors_total{job="kflare-metrics",namespace="kflare",controller="dnsrecord"}
+        values: 0x180
+      - series: workqueue_depth{job="kflare-metrics",namespace="kflare",name="dnsrecord"}
+        values: 0x180
+      - series: kflare_cloudflare_api_requests_total{job="kflare-metrics",namespace="kflare",controller="dnsrecord",code="200"}
+        values: 0+10x180
+      - series: kflare_cloudflare_api_requests_total{job="kflare-metrics",namespace="kflare",controller="dnsrecord",code="404"}
+        values: 0+1x180
+      - series: kflare_cloudflare_api_rate_limited_total{job="kflare-metrics",namespace="kflare",account="main"}
+        values: 0x180
+      - series: kflare_resources{job="kflare-metrics",namespace="kflare",kind="DNSRecord",ready="True",reason="Synced"}
+        values: 40x180
+      - series: kflare_resources{job="kflare-metrics",namespace="kflare",kind="DNSRecord",ready="False",reason="APIError"}
+        values: 0x180
+      - series: kflare_drift_corrections_total{job="kflare-metrics",namespace="kflare",kind="DNSRecord"}
+        values: 0x180
+      # Expires 30 days after the test's start.
+      - series: kflare_account_token_expiry_timestamp_seconds{job="kflare-metrics",namespace="kflare",account="main"}
+        values: 2592000x180
+    alert_rule_test:
+      - {eval_time: 3h, alertname: KflareDown}
+      - {eval_time: 3h, alertname: KflareReconcileErrors}
+      - {eval_time: 3h, alertname: KflareWorkqueueBacklog}
+      - {eval_time: 3h, alertname: KflareCloudflareErrors}
+      - {eval_time: 3h, alertname: KflareRateLimited}
+      - {eval_time: 3h, alertname: KflareResourcesNotReady}
+      - {eval_time: 3h, alertname: KflareDriftCorrected}
+      - {eval_time: 3h, alertname: KflareTokenExpiresSoon}
+
+  - name: KflareDown fires when no pod is up, and not while the standby is
+    interval: 1m
+    input_series:
+      - series: up{job="kflare-metrics",namespace="kflare",pod="kflare-a"}
+        values: 1x10 0x30
+      - series: up{job="kflare-metrics",namespace="kflare",pod="kflare-b"}
+        values: 1x20 0x20
+      # Another release's pods do not count.
+      - series: up{job="other-metrics",namespace="kflare"}
+        values: 1x40
+    alert_rule_test:
+      - {eval_time: 19m, alertname: KflareDown}
+      - {eval_time: 24m, alertname: KflareDown}
+      - eval_time: 27m
+        alertname: KflareDown
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: No kflare pod is being scraped.
+              description: >-
+                Prometheus has no kflare target that is up, so nothing shows whether kflare is reconciling, and the
+                other alerts cannot fire.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflaredown
+
+  - name: KflareDown fires when Prometheus has no kflare target at all
+    interval: 1m
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: KflareDown
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: No kflare pod is being scraped.
+              description: >-
+                Prometheus has no kflare target that is up, so nothing shows whether kflare is reconciling, and the
+                other alerts cannot fire.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflaredown
+
+  - name: KflareReconcileErrors fires after 30 minutes of errors, for the controller that has them
+    interval: 1m
+    input_series:
+      - series: controller_runtime_reconcile_errors_total{job="kflare-metrics",namespace="kflare",controller="dnsrecord"}
+        values: 0+1x60
+      - series: controller_runtime_reconcile_errors_total{job="kflare-metrics",namespace="kflare",controller="zone"}
+        values: 0x60
+    alert_rule_test:
+      - {eval_time: 20m, alertname: KflareReconcileErrors}
+      - eval_time: 45m
+        alertname: KflareReconcileErrors
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: dnsrecord}
+            exp_annotations:
+              summary: kflare's dnsrecord controller keeps failing reconciles.
+              description: >-
+                Reconciles of dnsrecord resources have ended in errors kflare retries, from Cloudflare or the
+                Kubernetes API, for the whole period.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflarereconcileerrors
+
+  - name: KflareWorkqueueBacklog fires when a queue has not emptied for an hour, and not when it has
+    interval: 1m
+    input_series:
+      - series: workqueue_depth{job="kflare-metrics",namespace="kflare",name="dnsrecord"}
+        values: 12x90
+      - series: workqueue_depth{job="kflare-metrics",namespace="kflare",name="zone"}
+        values: 5x30 0 5x59
+    alert_rule_test:
+      - {eval_time: 50m, alertname: KflareWorkqueueBacklog}
+      - eval_time: 75m
+        alertname: KflareWorkqueueBacklog
+        exp_alerts:
+          - exp_labels: {severity: warning, name: dnsrecord}
+            exp_annotations:
+              summary: kflare's dnsrecord queue has not emptied.
+              description: >-
+                12 dnsrecord resources are waiting for a reconcile, and the queue has not been empty for the whole
+                period: the controller has more work than it gets through.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflareworkqueuebacklog
+
+  - name: KflareCloudflareErrors fires for 5xx and requests without a response, not for 4xx
+    interval: 1m
+    input_series:
+      - series: kflare_cloudflare_api_requests_total{job="kflare-metrics",namespace="kflare",controller="dnsrecord",code="502"}
+        values: 0+1x60
+      - series: kflare_cloudflare_api_requests_total{job="kflare-metrics",namespace="kflare",controller="tunnel",code="error"}
+        values: 0+1x60
+      - series: kflare_cloudflare_api_requests_total{job="kflare-metrics",namespace="kflare",controller="zone",code="403"}
+        values: 0+1x60
+    alert_rule_test:
+      - {eval_time: 20m, alertname: KflareCloudflareErrors}
+      - eval_time: 45m
+        alertname: KflareCloudflareErrors
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: dnsrecord}
+            exp_annotations:
+              summary: Cloudflare keeps failing kflare's dnsrecord requests.
+              description: >-
+                Requests of the dnsrecord controller to Cloudflare have ended in a 5xx or no response for the whole
+                period: kflare cannot reach Cloudflare, or Cloudflare is failing.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflarecloudflareerrors
+          - exp_labels: {severity: warning, controller: tunnel}
+            exp_annotations:
+              summary: Cloudflare keeps failing kflare's tunnel requests.
+              description: >-
+                Requests of the tunnel controller to Cloudflare have ended in a 5xx or no response for the whole
+                period: kflare cannot reach Cloudflare, or Cloudflare is failing.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflarecloudflareerrors
+
+  - name: KflareRateLimited fires at once on a 429, and clears 15 minutes after the last
+    interval: 1m
+    input_series:
+      - series: kflare_cloudflare_api_rate_limited_total{job="kflare-metrics",namespace="kflare",account="main"}
+        values: 0x10 1x40
+    alert_rule_test:
+      - {eval_time: 10m, alertname: KflareRateLimited}
+      - eval_time: 12m
+        alertname: KflareRateLimited
+        exp_alerts:
+          - exp_labels: {severity: warning, account: main}
+            exp_annotations:
+              summary: Cloudflare rate limited the API token of main.
+              description: >-
+                Cloudflare answered 429 to the API token of the CloudflareAccount main: something spent its quota,
+                kflare or another tool, and every call with it is refused for a while.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflareratelimited
+      - {eval_time: 30m, alertname: KflareRateLimited}
+
+  - name: KflareResourcesNotReady fires after 30 minutes of Ready=False, by kind and reason
+    interval: 1m
+    input_series:
+      - series: kflare_resources{job="kflare-metrics",namespace="kflare",kind="DNSRecord",ready="False",reason="TerminalError"}
+        values: 3x60
+      # What clears by itself does not fire.
+      - series: kflare_resources{job="kflare-metrics",namespace="kflare",kind="IPList",ready="False",reason="Pending"}
+        values: 1x10 0x50
+      - series: kflare_resources{job="kflare-metrics",namespace="kflare",kind="Zone",ready="Unknown",reason=""}
+        values: 2x60
+    alert_rule_test:
+      - {eval_time: 20m, alertname: KflareResourcesNotReady}
+      - eval_time: 45m
+        alertname: KflareResourcesNotReady
+        exp_alerts:
+          - exp_labels: {severity: warning, kind: DNSRecord, reason: TerminalError}
+            exp_annotations:
+              summary: 3 DNSRecord resources are not Ready (TerminalError).
+              description: >-
+                3 DNSRecord resources have reported Ready=False with reason TerminalError for the whole period.
+                kubectl get DNSRecord.kflare.dev -A lists them.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflareresourcesnotready
+
+  - name: KflareDriftCorrected fires for the hour after a correction
+    interval: 1m
+    input_series:
+      - series: kflare_drift_corrections_total{job="kflare-metrics",namespace="kflare",kind="DNSRecord"}
+        values: 0x10 1x120
+      - series: kflare_drift_corrections_total{job="kflare-metrics",namespace="kflare",kind="Zone"}
+        values: 0x130
+    alert_rule_test:
+      - {eval_time: 10m, alertname: KflareDriftCorrected}
+      - eval_time: 30m
+        alertname: KflareDriftCorrected
+        exp_alerts:
+          - exp_labels: {severity: info, kind: DNSRecord}
+            exp_annotations:
+              summary: kflare undid changes made outside it to DNSRecord objects.
+              description: >-
+                kflare found DNSRecord objects in Cloudflare that differed from a spec that had not changed, and
+                wrote the spec back: someone, or another tool, changes what kflare manages.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflaredriftcorrected
+      - {eval_time: 90m, alertname: KflareDriftCorrected}
+
+  - name: KflareTokenExpiresSoon fires within 14 days of a token's expiry, and after it
+    interval: 1m
+    input_series:
+      # 10 days after the test's start.
+      - series: kflare_account_token_expiry_timestamp_seconds{job="kflare-metrics",namespace="kflare",account="main"}
+        values: 864000x10
+      # 30 days after it.
+      - series: kflare_account_token_expiry_timestamp_seconds{job="kflare-metrics",namespace="kflare",account="other"}
+        values: 2592000x10
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: KflareTokenExpiresSoon
+        exp_alerts:
+          - exp_labels: {severity: warning, account: main, job: kflare-metrics, namespace: kflare}
+            exp_annotations:
+              summary: The API token of main expires within 14 days.
+              description: >-
+                The API token of the CloudflareAccount main expires in 10d 0h 0m 0s, or has expired if that is
+                negative. Once it has, kflare can do nothing for the account's resources.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflaretokenexpiressoon

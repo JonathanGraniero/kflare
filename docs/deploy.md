@@ -718,6 +718,12 @@ metrics:
     enabled: true
     labels:
       release: prometheus   # match your Prometheus' serviceMonitorSelector
+  prometheusRule:           # kflare's alerts
+    enabled: true
+    labels:
+      release: prometheus   # match your Prometheus' ruleSelector
+  grafanaDashboard:         # kflare's dashboard, for Grafana's dashboard sidecar
+    enabled: true
 
 logging:
   level: info               # debug, info or error
@@ -1352,62 +1358,81 @@ spec:
 The controller reloads the certificate when it is renewed. `metrics.serviceMonitor.tlsConfig` replaces the
 ServiceMonitor's TLS settings, for a CA kept elsewhere.
 
-Five things to alert on:
+#### Alerts and a dashboard
 
-- **Errors from Cloudflare that kflare retries** (5xx, network failures, timeouts). A rate that stays above zero means
-  kflare cannot reach Cloudflare, or Cloudflare is failing. `controller_runtime_reconcile_errors_total` rises too, but
-  it also counts errors from the Kubernetes API, and does not tell them apart:
+The chart ships kflare's alerts as a Prometheus Operator PrometheusRule, and a Grafana dashboard as a ConfigMap, both
+off by default. They read the series the ServiceMonitor scrapes, so they need it too:
 
-  ```yaml
-  - alert: KflareCloudflareErrors
-    expr: >-
-      sum by (controller) (rate(kflare_cloudflare_api_requests_total{namespace="kflare",code=~"5..|error"}[15m]))
-      > 0
-    for: 30m
-  ```
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+  prometheusRule:
+    enabled: true
+    labels:
+      release: prometheus       # match your Prometheus' ruleSelector
+  grafanaDashboard:
+    enabled: true
+    namespace: monitoring       # for a sidecar that only looks in Grafana's namespace
+```
 
-- **429s from Cloudflare.** A rate limit counts as no error, since kflare waits it out, so it needs its own alert. One
-  means that something spent the token's quota, kflare or another tool, and every call with it was refused for a while:
+The dashboard's ConfigMap carries the label `grafana_dashboard: "1"`, which the dashboard sidecar of
+kube-prometheus-stack's Grafana loads; `metrics.grafanaDashboard.labels` sets another. It shows the resources by
+`Ready` and reason, requests to Cloudflare by controller and status, rate limits, drift corrections, reconciles, errors
+and time per controller, queue depth, the leader, and the manager's CPU and memory.
 
-  ```yaml
-  - alert: KflareRateLimited
-    expr: sum by (account) (increase(kflare_cloudflare_api_rate_limited_total{namespace="kflare"}[15m])) > 0
-  ```
+| Alert | Fires when | For | Severity |
+|---|---|---|---|
+| `KflareDown` | Prometheus has no kflare pod that is up | 5m | critical |
+| `KflareReconcileErrors` | A controller's reconciles keep ending in errors, from Cloudflare or the Kubernetes API | 30m | warning |
+| `KflareWorkqueueBacklog` | A controller's queue has not been empty | 1h | warning |
+| `KflareCloudflareErrors` | Cloudflare answers a controller's requests with 5xx, or not at all | 30m | warning |
+| `KflareRateLimited` | Cloudflare answered 429 to an account's API token in the last 15 minutes | | warning |
+| `KflareResourcesNotReady` | Resources of a kind report `Ready=False` with one reason | 30m | warning |
+| `KflareDriftCorrected` | kflare undid a change made outside it in the last hour | | info |
+| `KflareTokenExpiresSoon` | An account's API token expires within 14 days, or has expired | | warning |
 
-  Reconciles deferred with `reason="budget"` are expected during a large change or after a restart. If they go on for
-  hours, the account has more work than its budget: raise `cloudflareRateLimit` or lengthen `driftCheckInterval`.
-  `sum(rate(kflare_cloudflare_api_requests_total[5m])) * 300` shows what kflare sends per five minutes, for all its
-  tokens together.
+Each alert has a summary, a description and a `runbook_url` that links to what to do under
+[When an alert fires](#when-an-alert-fires). To change one, set its `enabled`, `for` or `severity`:
 
-- **Resources that are not `Ready`.** Errors kflare does not retry, such as a spec Cloudflare refuses or a missing
-  token permission (`TerminalError`), and waits such as `AlreadyExists` or a parent that is not ready, do not count as
-  reconcile errors. `for` leaves out what clears by itself, such as an `IPList` whose items Cloudflare is replacing:
+```yaml
+metrics:
+  prometheusRule:
+    alerts:
+      KflareDriftCorrected:
+        enabled: false
+      KflareResourcesNotReady:
+        for: 2h
+```
 
-  ```yaml
-  - alert: KflareResourcesNotReady
-    expr: sum by (kind, reason) (kflare_resources{namespace="kflare",ready="False"}) > 0
-    for: 30m
-  ```
+For another expression, turn the alert off and write a rule of your own. Without the Prometheus Operator, this prints
+the rules, for a Prometheus rule file:
 
-- **Changes made outside kflare.** Someone edits by hand what kflare manages, or another tool does. If it never stops,
-  the two keep rewriting the same object, or Cloudflare stores something other than what the spec says. kflare only
-  finds such a change when it reconciles, so set a
-  [drift check interval](#correcting-changes-made-outside-kflare):
+```sh
+helm template kflare oci://ghcr.io/jonathangraniero/charts/kflare --namespace kflare \
+  --set metrics.prometheusRule.enabled=true --show-only templates/prometheusrule.yaml
+```
 
-  ```yaml
-  - alert: KflareDriftCorrected
-    expr: sum by (kind) (increase(kflare_drift_corrections_total{namespace="kflare"}[1h])) > 0
-  ```
+What the alerts on kflare's own metrics tell apart:
 
-- **An API token that expires soon.** Everything still works until the token expires, so its account stays `Ready`;
-  the metric holds the expiry Cloudflare reported, so the alert can give the time a rotation needs. Once the token has
-  expired, the account turns `READY=False` with `TokenExpired`, which the alert on resources that are not `Ready` finds,
-  and the expiry, now past, still fires this one:
-
-  ```yaml
-  - alert: KflareTokenExpiresSoon
-    expr: kflare_account_token_expiry_timestamp_seconds{namespace="kflare"} - time() < 14 * 86400
-  ```
+- **Errors from Cloudflare that kflare retries** (5xx, network failures, timeouts): `KflareCloudflareErrors`.
+  `controller_runtime_reconcile_errors_total`, which `KflareReconcileErrors` reads, rises too, but it also counts
+  errors from the Kubernetes API, and does not tell them apart.
+- **429s from Cloudflare**: `KflareRateLimited`. A rate limit counts as no error, since kflare waits it out, so it has
+  its own alert. Reconciles deferred with `reason="budget"` are expected during a large change or after a restart. If
+  they go on for hours, the account has more work than its budget: raise `cloudflareRateLimit` or lengthen
+  `driftCheckInterval`. `sum(rate(kflare_cloudflare_api_requests_total[5m])) * 300` shows what kflare sends per five
+  minutes, for all its tokens together.
+- **Resources that are not `Ready`**: `KflareResourcesNotReady`. Errors kflare does not retry, such as a spec
+  Cloudflare refuses or a missing token permission (`TerminalError`), and waits such as `AlreadyExists` or a parent
+  that is not ready, do not count as reconcile errors. Its 30 minutes leave out what clears by itself, such as an
+  `IPList` whose items Cloudflare is replacing.
+- **Changes made outside kflare**: `KflareDriftCorrected`. Someone edits by hand what kflare manages, or another tool
+  does. If it never stops, the two keep rewriting the same object. kflare only finds such a change when it reconciles,
+  so set a [drift check interval](#correcting-changes-made-outside-kflare).
+- **An API token that expires soon**: `KflareTokenExpiresSoon`. Everything still works until the token expires, so its
+  account stays `Ready`, and the alert gives the time a rotation needs. Once the token has expired, the account turns
+  `READY=False` with `TokenExpired`, which `KflareResourcesNotReady` finds too.
 
 The log is JSON by default, and each reconcile's lines name the resource's kind, namespace and name. Every response
 from Cloudflare with an error status is logged with its `cfRay`, the ID Cloudflare support asks for. A 404, which kflare
@@ -1813,3 +1838,65 @@ kubectl -n kflare logs deploy/kflare           # controller log (JSON)
 | `ListInUse` | A deleted `IPList`'s list is still used by a rule, and Cloudflare does not delete it until no rule does | Remove the `$name` from the rules that use it (a kflare rule's goes with its resource), or annotate the IPList `kflare.dev/deletion-policy: retain` to keep the list |
 | `BucketNotEmpty` | A deleted `R2Bucket`'s bucket still holds objects; kflare does not delete them | Empty the bucket, or annotate the R2Bucket `kflare.dev/deletion-policy: retain` to keep it |
 | `InUse` | A `CloudflareAccount`, `Zone`, `Tunnel`, `KVNamespace` or `R2Bucket` being deleted is still referenced | Delete the resources listed in the message |
+
+### When an alert fires
+
+What to do for each of the chart's alerts (see [Alerts and a dashboard](#alerts-and-a-dashboard)). Their
+`runbook_url` links here.
+
+#### KflareDown
+
+Prometheus scrapes no kflare pod that is up. `kubectl -n kflare get pods` shows whether the pods run: for one that
+does not, `kubectl -n kflare describe pod` and `kubectl -n kflare logs deploy/kflare --previous` say why. If they
+run, the scrape fails: Prometheus' Targets page gives the error. A 403 means Prometheus' ServiceAccount is not bound
+to the `kflare-metrics-reader` ClusterRole, and a connection that times out can be the chart's NetworkPolicy, which
+lets in only the sources `networkPolicy.metricsFrom` lists (see [Monitoring](#monitoring)).
+
+#### KflareReconcileErrors
+
+A controller's reconciles keep ending in errors kflare retries. The controller's log names each resource and its
+error: `kubectl -n kflare logs deploy/kflare | grep '"level":"error"'`. With `KflareCloudflareErrors` firing too,
+the errors are Cloudflare's. Without it, they are the Kubernetes API's, such as a permission the controller lacks
+after a change to its RBAC, or a webhook that refuses its writes.
+
+#### KflareWorkqueueBacklog
+
+A controller has had resources waiting for an hour. After a restart or a large change, kflare paces its calls to
+[Cloudflare's rate limit](#cloudflares-api-rate-limit), 900 resources per five minutes for one token: wait, or raise
+this alert's `for`. Otherwise the controller reconciles more slowly than resources change: look for slow answers
+from Cloudflare (`kflare_cloudflare_api_request_duration_seconds`) and reconciles that time out, and see
+[Reconciles at once](#reconciles-at-once) for `maxConcurrentReconciles`.
+
+#### KflareCloudflareErrors
+
+Cloudflare answers with a 5xx, or kflare gets no answer. Check [Cloudflare's status](https://www.cloudflarestatus.com),
+then the path from the pod to `api.cloudflare.com`: a proxy, a firewall or a NetworkPolicy (see
+[Network access](#network-access)). kflare retries by itself, and resources that were `Ready` stay `Ready`. For
+Cloudflare support, the log has each failed response's `cfRay`.
+
+#### KflareRateLimited
+
+Cloudflare answered 429 to an account's API token, and refuses every call with it for about five minutes. kflare
+waits and carries on by itself. It keeps to three quarters of the limit, so something else spent the rest: another
+tool or installation using the same token, or the same user's other tokens and dashboard use. Give kflare a token of
+its own, or lower `cloudflareRateLimit` to leave the others room (see
+[Cloudflare's API rate limit](#cloudflares-api-rate-limit)).
+
+#### KflareResourcesNotReady
+
+Resources have reported `Ready=False` for 30 minutes. The alert names the kind and the reason:
+`kubectl get <kind>.kflare.dev -A` lists them, `kubectl describe` shows each message, and the table above says what
+to do for the reason.
+
+#### KflareDriftCorrected
+
+kflare found an object in Cloudflare that differed from its spec, and wrote the spec back. Someone changed it in the
+dashboard, or another tool manages the same object. Cloudflare's audit log shows who. If the change was right, put it in the spec. To hold a resource while a change made by hand is needed, annotate it
+`kflare.dev/paused: "true"` (see [Pausing a resource](#pausing-a-resource)). An alert that keeps firing for one kind
+means two tools rewrite the same objects: take them out of one.
+
+#### KflareTokenExpiresSoon
+
+An account's API token expires within 14 days, at the time `kubectl get cloudflareaccount` shows. Extend its expiry
+in Cloudflare, or create a new token with the same permissions and put it in the account's Secret, which kflare
+validates at once. After the expiry, the account reports `TokenExpired` and kflare can do nothing for its resources.

@@ -25,7 +25,8 @@ coreDns:
   enabled: false
 
 grafana:
-  # Only kflare's dashboard (local/prometheus/kflare-dashboard.json), which the sidecar loads from its ConfigMap.
+  # Only kflare's dashboard (helm/kflare/files/kflare-dashboard.json, the one the chart ships), which the sidecar
+  # loads from its ConfigMap.
   defaultDashboardsEnabled: false
   # Dashboards without a login; the admin login, for editing, is in the prometheus-grafana Secret.
   grafana.ini:

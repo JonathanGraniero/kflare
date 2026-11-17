@@ -1,0 +1,15 @@
+{{- if .Values.metrics.grafanaDashboard.enabled }}
+# kflare's Grafana dashboard, for the sidecar that loads dashboards from
+# labelled ConfigMaps, as kube-prometheus-stack's Grafana runs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kflare.fullname" . }}-dashboard
+  namespace: {{ .Values.metrics.grafanaDashboard.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+    {{- toYaml .Values.metrics.grafanaDashboard.labels | nindent 4 }}
+data:
+  kflare-dashboard.json: |-
+    {{- .Files.Get "files/kflare-dashboard.json" | nindent 4 }}
+{{- end }}

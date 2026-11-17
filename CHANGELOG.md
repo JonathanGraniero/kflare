@@ -44,6 +44,14 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 
 ### The Helm chart
 
+- **Alerts and a Grafana dashboard** ([#76](https://github.com/JonathanGraniero/kflare/issues/76)), both off by
+  default. `metrics.prometheusRule.enabled` creates a Prometheus Operator PrometheusRule with eight alerts:
+  `KflareDown`, `KflareReconcileErrors`, `KflareWorkqueueBacklog`, `KflareCloudflareErrors`, `KflareRateLimited`,
+  `KflareResourcesNotReady`, `KflareDriftCorrected` and `KflareTokenExpiresSoon`. Each has a runbook in the deploy
+  guide, and its `enabled`, `for` and `severity` are values. `metrics.grafanaDashboard.enabled` creates a ConfigMap
+  with kflare's dashboard, labelled for the sidecar kube-prometheus-stack's Grafana runs. Both read what the
+  ServiceMonitor scrapes (`metrics.serviceMonitor.enabled`). See
+  [Alerts and a dashboard](docs/deploy.md#alerts-and-a-dashboard).
 - **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
   `config/default`'s kustomization, which still said `cloudflare-operator-system`. An existing installation keeps its
   namespace: `helm upgrade -n kflare-system` works as before.

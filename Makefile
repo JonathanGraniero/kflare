@@ -234,7 +234,25 @@ helm-lint: helm ## Lint the chart and render it with default and non-default val
 			--set autoscaling.minReplicas=2,autoscaling.maxReplicas=4 \
 			--set autoscaling.targetCPUUtilizationPercentage=null,autoscaling.targetMemoryUtilizationPercentage=90 \
 			--set autoscaling.behavior.scaleDown.stabilizationWindowSeconds=600 > /dev/null; \
+		$(HELM) template kflare helm/kflare --namespace kflare --kube-version $$v \
+			--set metrics.serviceMonitor.enabled=true,metrics.prometheusRule.enabled=true \
+			--set metrics.prometheusRule.labels.release=prometheus \
+			--set metrics.prometheusRule.alerts.KflareDriftCorrected.enabled=false \
+			--set metrics.prometheusRule.alerts.KflareDown.for=10m \
+			--set metrics.grafanaDashboard.enabled=true,metrics.grafanaDashboard.namespace=monitoring > /dev/null; \
 	done
+
+# promtool comes with the Prometheus image: the one local/prometheus.sh's kube-prometheus-stack runs.
+PROMTOOL_IMAGE ?= quay.io/prometheus/prometheus:v3.15.0
+.PHONY: test-alerts
+test-alerts: ## Unit-test the chart's alerts with promtool (test/alerts/alerts_test.yaml).
+	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
+	$(HELM) template kflare helm/kflare --namespace kflare --kube-version $(firstword $(HELM_KUBE_VERSIONS)) \
+		--set metrics.prometheusRule.enabled=true --show-only templates/prometheusrule.yaml \
+		| sed -n '/^spec:/,$$p' | sed '1d;s/^  //' > "$$d/rules.yaml"; \
+	cp test/alerts/alerts_test.yaml "$$d/"; chmod 644 "$$d"/*; \
+	$(CONTAINER_TOOL) run --rm -v "$$d:/alerts:ro" --entrypoint promtool $(PROMTOOL_IMAGE) \
+		test rules /alerts/alerts_test.yaml
 
 .PHONY: helm-package
 helm-package: helm ## Package the chart into dist/.

@@ -224,6 +224,215 @@
               "type": "object"
             }
           }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "labels": {
+              "type": "object"
+            },
+            "runbookURL": {
+              "type": "string",
+              "minLength": 1
+            },
+            "alerts": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "KflareDown": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "severity"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "for": {
+                      "type": "string",
+                      "pattern": "^$|^([0-9]+(ms|s|m|h|d|w|y))+$"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "KflareReconcileErrors": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "severity"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "for": {
+                      "type": "string",
+                      "pattern": "^$|^([0-9]+(ms|s|m|h|d|w|y))+$"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "KflareWorkqueueBacklog": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "severity"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "for": {
+                      "type": "string",
+                      "pattern": "^$|^([0-9]+(ms|s|m|h|d|w|y))+$"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "KflareCloudflareErrors": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "severity"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "for": {
+                      "type": "string",
+                      "pattern": "^$|^([0-9]+(ms|s|m|h|d|w|y))+$"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "KflareRateLimited": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "severity"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "for": {
+                      "type": "string",
+                      "pattern": "^$|^([0-9]+(ms|s|m|h|d|w|y))+$"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "KflareResourcesNotReady": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "severity"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "for": {
+                      "type": "string",
+                      "pattern": "^$|^([0-9]+(ms|s|m|h|d|w|y))+$"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "KflareDriftCorrected": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "severity"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "for": {
+                      "type": "string",
+                      "pattern": "^$|^([0-9]+(ms|s|m|h|d|w|y))+$"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "KflareTokenExpiresSoon": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "enabled",
+                    "severity"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "for": {
+                      "type": "string",
+                      "pattern": "^$|^([0-9]+(ms|s|m|h|d|w|y))+$"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "grafanaDashboard": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     },

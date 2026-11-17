@@ -92,7 +92,7 @@ With:
 │                          #   the upgrade from the last release (make test-e2e-upgrade, testdata/upgrade.yaml)
 ├── test/gitopshealth/     # Runs the Argo CD and Flux health checks as those tools do, for their tests and the specs
 ├── local/                 # kind cluster setup for running the controller with make run; Argo CD and Prometheus
-│                          #   (prometheus.sh: Grafana's kflare dashboard, scraping the e2e suite's manager)
+│                          #   (prometheus.sh: Grafana with the chart's dashboard, scraping the e2e suite's manager)
 ├── helm/kflare/           # Helm chart; templates/crds and files/manager-rules.yaml generated (make helm)
 ├── helm/artifacthub-repo.yml  # Artifact Hub metadata; the Artifact Hub workflow pushes it (verified publisher)
 ├── generator/             # kflare-gen: generator.yaml, SDK and OpenAPI readers, emitters (make codegen);
@@ -338,6 +338,9 @@ make resync RESYNC_ARGS="-accounts 20 -resources 1000 -workers 1,4,16"
 # Regenerate the Helm chart's CRDs/RBAC from config/ and its Artifact Hub annotations, and lint + render it
 make helm
 make helm-lint
+
+# Unit-test the chart's alerts (metrics.prometheusRule) with promtool, from the Prometheus image
+make test-alerts
 
 # Build and push controller image
 make docker-build docker-push IMG=ghcr.io/your-org/kflare:latest

@@ -1,0 +1,69 @@
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+{{- $rule := .Values.metrics.prometheusRule }}
+{{- /* Every series of this release: the job is its metrics Service. */}}
+{{- $sel := printf `job="%s-metrics",namespace="%s"` (include "kflare.fullname" .) .Release.Namespace }}
+{{- $alerts := list
+  (dict "name" "KflareDown"
+    "expr" (printf `absent(up{%s} == 1)` $sel)
+    "summary" "No kflare pod is being scraped."
+    "description" "Prometheus has no kflare target that is up, so nothing shows whether kflare is reconciling, and the other alerts cannot fire.")
+  (dict "name" "KflareReconcileErrors"
+    "expr" (printf `sum by (controller) (rate(controller_runtime_reconcile_errors_total{%s}[15m])) > 0` $sel)
+    "summary" "kflare's {{ $labels.controller }} controller keeps failing reconciles."
+    "description" "Reconciles of {{ $labels.controller }} resources have ended in errors kflare retries, from Cloudflare or the Kubernetes API, for the whole period.")
+  (dict "name" "KflareWorkqueueBacklog"
+    "expr" (printf `sum by (name) (workqueue_depth{%s}) > 0` $sel)
+    "summary" "kflare's {{ $labels.name }} queue has not emptied."
+    "description" "{{ $value }} {{ $labels.name }} resources are waiting for a reconcile, and the queue has not been empty for the whole period: the controller has more work than it gets through.")
+  (dict "name" "KflareCloudflareErrors"
+    "expr" (printf `sum by (controller) (rate(kflare_cloudflare_api_requests_total{%s,code=~"5..|error"}[15m])) > 0` $sel)
+    "summary" "Cloudflare keeps failing kflare's {{ $labels.controller }} requests."
+    "description" "Requests of the {{ $labels.controller }} controller to Cloudflare have ended in a 5xx or no response for the whole period: kflare cannot reach Cloudflare, or Cloudflare is failing.")
+  (dict "name" "KflareRateLimited"
+    "expr" (printf `sum by (account) (increase(kflare_cloudflare_api_rate_limited_total{%s}[15m])) > 0` $sel)
+    "summary" "Cloudflare rate limited the API token of {{ $labels.account }}."
+    "description" "Cloudflare answered 429 to the API token of the CloudflareAccount {{ $labels.account }}: something spent its quota, kflare or another tool, and every call with it is refused for a while.")
+  (dict "name" "KflareResourcesNotReady"
+    "expr" (printf `sum by (kind, reason) (kflare_resources{%s,ready="False"}) > 0` $sel)
+    "summary" "{{ $value }} {{ $labels.kind }} resources are not Ready ({{ $labels.reason }})."
+    "description" "{{ $value }} {{ $labels.kind }} resources have reported Ready=False with reason {{ $labels.reason }} for the whole period. kubectl get {{ $labels.kind }}.kflare.dev -A lists them.")
+  (dict "name" "KflareDriftCorrected"
+    "expr" (printf `sum by (kind) (increase(kflare_drift_corrections_total{%s}[1h])) > 0` $sel)
+    "summary" "kflare undid changes made outside it to {{ $labels.kind }} objects."
+    "description" "kflare found {{ $labels.kind }} objects in Cloudflare that differed from a spec that had not changed, and wrote the spec back: someone, or another tool, changes what kflare manages.")
+  (dict "name" "KflareTokenExpiresSoon"
+    "expr" (printf `kflare_account_token_expiry_timestamp_seconds{%s} - time() < 14 * 86400` $sel)
+    "summary" "The API token of {{ $labels.account }} expires within 14 days."
+    "description" "The API token of the CloudflareAccount {{ $labels.account }} expires in {{ $value | humanizeDuration }}, or has expired if that is negative. Once it has, kflare can do nothing for the account's resources.")
+}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "kflare.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kflare.labels" . | nindent 4 }}
+    {{- with $rule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: kflare
+      rules:
+        {{- range $alerts }}
+        {{- $alert := index $rule.alerts .name }}
+        {{- if $alert.enabled }}
+        - alert: {{ .name }}
+          expr: {{ .expr | quote }}
+          {{- with $alert.for }}
+          for: {{ . }}
+          {{- end }}
+          labels:
+            severity: {{ $alert.severity }}
+          annotations:
+            summary: {{ .summary | quote }}
+            description: {{ .description | quote }}
+            runbook_url: {{ printf "%s#%s" $rule.runbookURL (lower .name) }}
+        {{- end }}
+        {{- end }}
+{{- end }}

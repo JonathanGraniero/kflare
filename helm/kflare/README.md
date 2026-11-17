@@ -83,6 +83,12 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `metrics.secure` | `true` | HTTPS, only to tokens allowed `get` on `/metrics`; `false`: plain HTTP |
 | `metrics.certSecret` | unset | Secret with the metrics certificate (`tls.crt`, `tls.key`, `ca.crt`) |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor |
+| `metrics.prometheusRule.enabled` | `false` | Create a Prometheus Operator PrometheusRule with kflare's alerts, which read what the ServiceMonitor scrapes |
+| `metrics.prometheusRule.labels` | `{}` | Extra labels, to match your Prometheus' `ruleSelector` |
+| `metrics.prometheusRule.alerts.<name>` | on | Each alert's `enabled`, `for` and `severity` |
+| `metrics.grafanaDashboard.enabled` | `false` | Create a ConfigMap with kflare's Grafana dashboard, for Grafana's dashboard sidecar |
+| `metrics.grafanaDashboard.namespace` | the release's | The ConfigMap's namespace |
+| `metrics.grafanaDashboard.labels` | `grafana_dashboard: "1"` | Labels the sidecar selects ConfigMaps by |
 | `podDisruptionBudget.enabled` | `true` | Create a PodDisruptionBudget (`maxUnavailable: 1`) when there can be several replicas |
 | `networkPolicy.enabled` | `false` | Allow only metrics scrapes in, and DNS, the API server and port 443 out |
 | `resources` | 100m/64Mi requests, 1/512Mi limits | Controller resources; raise memory for clusters with many Secrets |

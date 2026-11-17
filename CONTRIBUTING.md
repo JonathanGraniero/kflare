@@ -34,8 +34,8 @@ make vulncheck  # govulncheck: known vulnerabilities in the modules and the Go s
 make crd-compat # breaking changes to the CRDs since the last release (see Changing a CRD; needs the tags)
 ```
 
-CI runs `make test`, `make lint`, `make helm-lint`, `make vulncheck`, `make crd-compat` and a Docker build, scans the
-image with Grype
+CI runs `make test`, `make lint`, `make helm-lint`, `make test-alerts`, `make vulncheck`, `make crd-compat` and a
+Docker build, scans the image with Grype
 (failing on a fixable vulnerability of high or critical severity), runs the envtest suites again on the newest
 Kubernetes (`make test ENVTEST_K8S_VERSION=1.37.0`), and fails if `git diff` shows anything afterwards: commit what
 the generators write, and run `go fix ./...` (part of `make test`) before you push. [SECURITY.md](SECURITY.md) lists
@@ -127,7 +127,10 @@ sudo sysctl fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288
 `helm/kflare/templates/crds/` and `helm/kflare/files/manager-rules.yaml` are generated from `config/` by
 `hack/sync-helm-chart.sh`. Run `make helm` after changing API types or RBAC markers; CI fails when they are out of
 sync. `make helm-lint` lints and renders the chart. A new value goes in `values.yaml`, with a comment, and in
-`values.schema.json`.
+`values.schema.json`. The chart's alerts are in `templates/prometheusrule.yaml`: a new or changed one gets a case in
+`test/alerts/alerts_test.yaml`, which `make test-alerts` runs with promtool (it needs Docker), a row in deploy.md's
+Alerts and a dashboard, and a heading of its name under When an alert fires, where its `runbook_url` points. The
+Grafana dashboard is `files/kflare-dashboard.json`, which `local/prometheus.sh` installs too.
 
 An installation scoped by `watchNamespaces` grants the RBAC markers' rules in two parts: those on what is cluster-wide
 with its ClusterRole, and the others with a Role in each namespace it watches. `make helm` writes both from
