@@ -862,7 +862,8 @@ kflare-gen capabilities, in the order the candidates above need them:
    and union variants told apart by a number or a bool
 
 Cross-cutting, from ARCHITECTURE.md's known limitations:
-- **Drift correction period:** ✅ `--drift-check-interval` (#55; the chart's `driftCheckInterval`, off by default):
+- **Drift correction period:** ✅ `--drift-check-interval` (#55; the chart's `driftCheckInterval`, `1h` by default since #135;
+  the flag's own default stays `0`):
   a successful reconcile requeues after the interval, give or take a tenth, which deploy.md sizes against
   Cloudflare's rate limit
 - **R2Bucket and Tunnel onto v7:** jurisdictions and storage class for buckets, renames for tunnels (both blocked on

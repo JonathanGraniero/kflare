@@ -164,12 +164,13 @@ reconcileTimeout: 5m
 # -- How long after a successful reconcile each resource is checked against
 # Cloudflare again, as a duration such as 30m or 1h, so that a change made
 # outside kflare (in the dashboard, through the API, by Terraform) is
-# corrected within about that long. Empty turns the checks off: a resource is
-# then reconciled again only when it, or something it watches, changes, or at
-# the 10-hour resync. Each check makes Cloudflare API calls, which count
-# against Cloudflare's rate limit: the deploy guide's Configuration says how
-# to pick an interval for the number of resources.
-driftCheckInterval: ""
+# corrected within about that long (1.1 times the interval at most). Empty
+# turns the checks off: a resource is then reconciled again only when it, or
+# something it watches, changes, or at the 10-hour resync. Each check makes
+# Cloudflare API calls, which count against Cloudflare's rate limit: 1h suits
+# up to 3,600 resources per API token, and the deploy guide's Configuration
+# says how to pick an interval for more.
+driftCheckInterval: 1h
 # -- How long after a CloudflareAccount is validated it is validated again, as
 # a duration such as 1h or 30m: its API token's status and expiry are read
 # from Cloudflare, and the account with the token. A token revoked, disabled

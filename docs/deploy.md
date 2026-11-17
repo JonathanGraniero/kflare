@@ -760,16 +760,18 @@ capabilities dropped and a read-only root filesystem.
 
 ### Correcting changes made outside kflare
 
-kflare reverts a change made in the Cloudflare dashboard, through the API or by Terraform only when it reconciles the
-resource: when the resource, or something it depends on, changes, or at the resync every 10 hours (see
-[When drift is detected](../ARCHITECTURE.md#when-drift-is-detected)). To bound that, set a drift check interval:
+kflare reverts a change made in the Cloudflare dashboard, through the API or by Terraform when it reconciles the
+resource: when the resource, or something it depends on, changes, and at each drift check (see
+[When drift is detected](../ARCHITECTURE.md#when-drift-is-detected)). The chart checks every hour by default:
 
 ```yaml
-driftCheckInterval: 30m
+driftCheckInterval: 1h
 ```
 
-Every resource is then checked against Cloudflare that long after each successful reconcile, give or take a tenth at
-random, so that resources synced together spread their checks. A check reads the resource's object and writes only
+Every resource is checked against Cloudflare that long after each successful reconcile, give or take a tenth at
+random, so that resources synced together spread their checks: a change is corrected within 66 minutes. To keep a
+change made by hand, such as a fix during an incident, annotate the resource `kflare.dev/paused: "true"` until the
+spec says the same. A check reads the resource's object and writes only
 what differs. The read is one Cloudflare API call for most kinds and two for a `Tunnel`. An `IPList` takes two, plus
 one per 500 items past the first 500.
 
@@ -778,8 +780,14 @@ user, counting the dashboard and all of the user's tokens, or for an account-own
 call for five minutes
 ([Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/)). Checks of N
 resources take about N calls per interval, so an interval of at least N seconds keeps them to a quarter of the limit:
-10 minutes for 600 resources, 30 minutes for 1,800. That leaves room for kflare's own changes and for anything else
-using the token's budget. `0s`, or leaving the value empty, turns the checks off.
+10 minutes for 600 resources, 30 minutes for 1,800, and the default of an hour for up to 3,600. That leaves room for
+kflare's own changes and for anything else using the token's budget. The count is of every resource that spends one
+budget: a user's token used for several accounts is one budget, not one per account. **Raise the interval for more
+than 3,600 resources per budget**, and lower it to correct changes sooner when there are fewer.
+
+`driftCheckInterval: ""` (or `0s`) turns the checks off. A resource is then reconciled again only when it, or
+something it depends on, changes, or at the resync every 10 hours, so a change made outside kflare can stay that
+long. `kflare_drift_corrections_total` counts the changes kflare corrects (see [Monitoring](#monitoring)).
 
 ### Cloudflare's API rate limit
 
@@ -1390,9 +1398,9 @@ Five things to alert on:
   ```
 
 - **Changes made outside kflare.** Someone edits by hand what kflare manages, or another tool does. If it never stops,
-  the two keep rewriting the same object, or Cloudflare stores something other than what the spec says. kflare only
-  finds such a change when it reconciles, so set a
-  [drift check interval](#correcting-changes-made-outside-kflare):
+  the two keep rewriting the same object, or Cloudflare stores something other than what the spec says. kflare finds
+  such a change when it reconciles, so at each
+  [drift check](#correcting-changes-made-outside-kflare), every hour by default:
 
   ```yaml
   - alert: KflareDriftCorrected

@@ -170,9 +170,10 @@ trigger a reconcile**. Reconciles are triggered by:
 - the informer resync, which re-reconciles every resource. kflare does not set a sync period, so it uses
   controller-runtime's default of **10 hours**.
 
-Without a drift check interval, the default, a successful reconcile does not schedule another one, and a record edited
-in the dashboard can stay changed for up to about 10 hours before kflare reverts it. With one, it stays changed for at
-most 1.1 times the interval. A drift check is an ordinary reconcile, idle when nothing changed (see
+With a drift check interval, a record edited in the dashboard stays changed for at most 1.1 times the interval: 66
+minutes with the chart's default of `1h`. Without one (the chart's `driftCheckInterval: ""`, and the flag's own
+default, as under `make run`), a successful reconcile does not schedule another one, and the record can stay changed
+for up to about 10 hours before kflare reverts it. A drift check is an ordinary reconcile, idle when nothing changed (see
 [The reconcile loop](#the-reconcile-loop)). It reads the object from Cloudflare and writes only what differs. The
 reads are one call for most kinds and two for a Tunnel (the tunnel and its token). An IPList takes two, plus one per
 500 items past the first 500. The short requeues stay as they are: an IPList whose items Cloudflare is replacing checks
@@ -814,10 +815,10 @@ a token Secret in a namespace where the installation may no longer use Secrets, 
 
 ## Known limitations
 
-- **Drift is corrected promptly only with a drift check interval.** Without `--drift-check-interval`, the default,
-  out-of-band changes wait for the next trigger, at worst the 10-hour resync. With it, they wait about the interval,
-  and every resource's checks cost Cloudflare API calls, which count against Cloudflare's rate limit (see
-  [When drift is detected](#when-drift-is-detected)).
+- **Drift is corrected at the drift check interval, not at once.** Out-of-band changes wait about the interval, an
+  hour with the chart's default, and every resource's checks cost Cloudflare API calls, which count against
+  Cloudflare's rate limit (see [When drift is detected](#when-drift-is-detected)). Without an interval (the chart's
+  `driftCheckInterval: ""`), they wait for the next trigger, at worst the 10-hour resync.
 - **A budget is one manager's.** Budgets live in memory, and only the leader calls Cloudflare, so one manager is exact.
   A new leader starts with full budgets, two installations sharing a token each spend their own, and two of a user's
   tokens have a budget each though Cloudflare counts them as one. All of these learn otherwise from `Ratelimit` and

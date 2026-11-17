@@ -42,6 +42,18 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   there when `--namespace` is left out, and the release namespace is now where kflare may write Secrets. An
   installation in `default` sets the value to upgrade.
 
+- **The chart checks every resource against Cloudflare every hour** (`driftCheckInterval: 1h`, which was empty:
+  [#135](https://github.com/JonathanGraniero/kflare/issues/135)). A change made outside kflare to an object it
+  manages, in the dashboard, through the API or by Terraform, is now reverted within 66 minutes, not at the 10-hour
+  resync. That includes a fix made by hand during an incident: annotate the resource `kflare.dev/paused: "true"` to
+  hold it, or put the fix in the spec. An installation that already sets `driftCheckInterval` is unchanged.
+
+  Checks of N resources make about N Cloudflare API calls per interval, which `1h` keeps to a quarter of Cloudflare's
+  rate limit for up to 3,600 resources per API token (a user's token used for several accounts is one budget). With
+  more, set a longer interval; kflare paces its calls and waits out a 429 either way
+  ([Cloudflare's API rate limit](docs/deploy.md#cloudflares-api-rate-limit)). `driftCheckInterval: ""` turns the
+  checks off, as before. The `--drift-check-interval` flag's own default stays `0`.
+
 ### The Helm chart
 
 - **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
