@@ -73,7 +73,7 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `observeOnly` | `false` | `true` writes nothing to Cloudflare: every resource only reports how its object differs from its spec |
 | `renameGracePeriod` | `30s` | How long a deleted resource keeps its Cloudflare object for a resource that replaces it, so a rename that deletes first keeps the object; `0s` deletes at once |
 | `reconcileTimeout` | `5m` | How long a reconcile may run before it ends with `APIError` and is retried; `0s` turns it off |
-| `driftCheckInterval` | unset (off) | Check each resource against Cloudflare this often, such as `30m`, to correct changes made outside kflare |
+| `driftCheckInterval` | `1h` | Check each resource against Cloudflare this often, to correct changes made outside kflare; `""` turns the checks off |
 | `tokenCheckInterval` | `1h` | Validate each `CloudflareAccount` this often, so a token revoked, disabled or expired in Cloudflare shows; `0s` turns it off |
 | `tokenExpiryWarning` | `336h` (14 days) | Record a `TokenExpiresSoon` Warning Event at each validation once the token expires within this; `0s` records none |
 | `cloudflareRateLimit` | `900` | Requests per five minutes per API token, unless its `CloudflareAccount` sets `spec.rateLimit`; `0` turns the pacing off |
