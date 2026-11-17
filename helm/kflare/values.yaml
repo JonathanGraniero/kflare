@@ -251,7 +251,8 @@ metrics:
     # -- The page each alert's runbook_url annotation links to, at the anchor
     # of the alert's name in lower case.
     runbookURL: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md
-    # Each alert: enabled leaves it out when false, for is how long its
+    # Each alert: enabled leaves it out when false, as does null for the whole
+    # alert, for is how long its
     # condition must hold before it fires (empty fires at once), and severity
     # is its severity label. For another expression, turn the alert off and
     # write your own rule.
@@ -260,9 +261,9 @@ metrics:
       KflareDown: {enabled: true, for: 5m, severity: critical}
       # -- A controller's reconciles keep ending in errors.
       KflareReconcileErrors: {enabled: true, for: 30m, severity: warning}
-      # -- A controller's queue has not emptied. A restart with thousands of
-      # resources is paced to Cloudflare's rate limit, and stays under an hour
-      # up to about 10,000 resources per API token.
+      # -- A controller's queue has not emptied: it reconciles more slowly
+      # than resources change. A reconcile kept back for Cloudflare's rate
+      # limit is not in the queue, so a paced restart does not fire this.
       KflareWorkqueueBacklog: {enabled: true, for: 1h, severity: warning}
       # -- Cloudflare answers 5xx, or not at all.
       KflareCloudflareErrors: {enabled: true, for: 30m, severity: warning}
@@ -276,7 +277,9 @@ metrics:
       KflareTokenExpiresSoon: {enabled: true, for: "", severity: warning}
   # kflare's Grafana dashboard, as a ConfigMap for the sidecar that loads
   # dashboards from labelled ConfigMaps, as kube-prometheus-stack's Grafana
-  # runs. It shows what the ServiceMonitor scrapes.
+  # runs. It shows what the ServiceMonitor scrapes. Turn it on for one release
+  # per Grafana: every release's dashboard has the UID kflare, and its Manager
+  # variable picks among the releases Prometheus scrapes.
   grafanaDashboard:
     # -- Create the dashboard's ConfigMap.
     enabled: false

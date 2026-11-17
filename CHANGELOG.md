@@ -52,6 +52,9 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   with kflare's dashboard, labelled for the sidecar kube-prometheus-stack's Grafana runs. Both read what the
   ServiceMonitor scrapes (`metrics.serviceMonitor.enabled`). See
   [Alerts and a dashboard](docs/deploy.md#alerts-and-a-dashboard).
+- **`kflare_cloudflare_api_rate_limited_total` starts at 0** for each `CloudflareAccount`, with the account's first
+  call. It first appeared with the account's first 429, at 1, which `increase()` does not see, so an alert on it
+  missed that one.
 - **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
   `config/default`'s kustomization, which still said `cloudflare-operator-system`. An existing installation keeps its
   namespace: `helm upgrade -n kflare-system` works as before.

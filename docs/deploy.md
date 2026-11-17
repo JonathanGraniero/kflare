@@ -1361,7 +1361,8 @@ ServiceMonitor's TLS settings, for a CA kept elsewhere.
 #### Alerts and a dashboard
 
 The chart ships kflare's alerts as a Prometheus Operator PrometheusRule, and a Grafana dashboard as a ConfigMap, both
-off by default. They read the series the ServiceMonitor scrapes, so they need it too:
+off by default. They read the series the ServiceMonitor scrapes, under its job (`<release>-metrics`), so they need
+it too: without it, or with a scrape of your own under another job, `KflareDown` fires and the others cannot.
 
 ```yaml
 metrics:
@@ -1842,30 +1843,37 @@ kubectl -n kflare logs deploy/kflare           # controller log (JSON)
 ### When an alert fires
 
 What to do for each of the chart's alerts (see [Alerts and a dashboard](#alerts-and-a-dashboard)). Their
-`runbook_url` links here.
+`runbook_url` links here. The commands are for a release named `kflare` in the namespace `kflare`, as the alerts'
+labels are for yours.
 
 #### KflareDown
 
 Prometheus scrapes no kflare pod that is up. `kubectl -n kflare get pods` shows whether the pods run: for one that
-does not, `kubectl -n kflare describe pod` and `kubectl -n kflare logs deploy/kflare --previous` say why. If they
-run, the scrape fails: Prometheus' Targets page gives the error. A 403 means Prometheus' ServiceAccount is not bound
+does not, `kubectl -n kflare describe pod <pod>` and `kubectl -n kflare logs <pod> --previous` say why. If they run,
+the scrape fails: Prometheus' Targets page gives the error. A 403 means Prometheus' ServiceAccount is not bound
 to the `kflare-metrics-reader` ClusterRole, and a connection that times out can be the chart's NetworkPolicy, which
 lets in only the sources `networkPolicy.metricsFrom` lists (see [Monitoring](#monitoring)).
 
 #### KflareReconcileErrors
 
 A controller's reconciles keep ending in errors kflare retries. The controller's log names each resource and its
-error: `kubectl -n kflare logs deploy/kflare | grep '"level":"error"'`. With `KflareCloudflareErrors` firing too,
-the errors are Cloudflare's. Without it, they are the Kubernetes API's, such as a permission the controller lacks
-after a change to its RBAC, or a webhook that refuses its writes.
+error:
+
+```sh
+kubectl -n kflare logs -l app.kubernetes.io/name=kflare --tail=-1 | grep '"level":"error"'
+```
+
+With `KflareCloudflareErrors` firing too, the errors are Cloudflare's. Without it, they are the Kubernetes API's, such
+as a permission the controller lacks after a change to its RBAC, or a webhook that refuses its writes.
 
 #### KflareWorkqueueBacklog
 
-A controller has had resources waiting for an hour. After a restart or a large change, kflare paces its calls to
-[Cloudflare's rate limit](#cloudflares-api-rate-limit), 900 resources per five minutes for one token: wait, or raise
-this alert's `for`. Otherwise the controller reconciles more slowly than resources change: look for slow answers
-from Cloudflare (`kflare_cloudflare_api_request_duration_seconds`) and reconciles that time out, and see
-[Reconciles at once](#reconciles-at-once) for `maxConcurrentReconciles`.
+A controller has had resources waiting for an hour: it reconciles more slowly than resources change. Look for slow
+answers from Cloudflare (`kflare_cloudflare_api_request_duration_seconds`) and reconciles that time out, and see
+[Reconciles at once](#reconciles-at-once) for `maxConcurrentReconciles`. It is not the rate limit: a reconcile kflare
+keeps back for [Cloudflare's rate limit](#cloudflares-api-rate-limit) leaves the queue and comes back later, so a
+restart paced over many minutes does not fire this alert. Resources that wait that way and were not `Ready` report
+`RateLimited`.
 
 #### KflareCloudflareErrors
 
@@ -1891,9 +1899,10 @@ to do for the reason.
 #### KflareDriftCorrected
 
 kflare found an object in Cloudflare that differed from its spec, and wrote the spec back. Someone changed it in the
-dashboard, or another tool manages the same object. Cloudflare's audit log shows who. If the change was right, put it in the spec. To hold a resource while a change made by hand is needed, annotate it
-`kflare.dev/paused: "true"` (see [Pausing a resource](#pausing-a-resource)). An alert that keeps firing for one kind
-means two tools rewrite the same objects: take them out of one.
+dashboard, or another tool manages the same object. Cloudflare's audit log shows who. If the change was right, put it
+in the spec. To hold a resource while a change made by hand is needed, annotate it `kflare.dev/paused: "true"` (see
+[Pausing a resource](#pausing-a-resource)). An alert that keeps firing for one kind means two tools rewrite the same
+objects: take them out of one.
 
 #### KflareTokenExpiresSoon
 

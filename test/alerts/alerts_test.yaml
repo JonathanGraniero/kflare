@@ -101,6 +101,29 @@ tests:
                 Kubernetes API, for the whole period.
               runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflarereconcileerrors
 
+  - name: KflareReconcileErrors holds for one resource retried every 1,000 seconds, and not for one error
+    interval: 1m
+    input_series:
+      # controller-runtime's longest back-off: an error every 17 minutes.
+      - series: controller_runtime_reconcile_errors_total{job="kflare-metrics",namespace="kflare",controller="dnsrecord"}
+        values: 0x16 1x16 2x16 3x16 4x16 5x16 6x16
+      - series: controller_runtime_reconcile_errors_total{job="kflare-metrics",namespace="kflare",controller="zone"}
+        values: 0x10 1x110
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: KflareReconcileErrors
+        exp_alerts: &retried
+          - exp_labels: {severity: warning, controller: dnsrecord}
+            exp_annotations:
+              summary: kflare's dnsrecord controller keeps failing reconciles.
+              description: >-
+                Reconciles of dnsrecord resources have ended in errors kflare retries, from Cloudflare or the
+                Kubernetes API, for the whole period.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflarereconcileerrors
+      - {eval_time: 75m, alertname: KflareReconcileErrors, exp_alerts: *retried}
+      - {eval_time: 90m, alertname: KflareReconcileErrors, exp_alerts: *retried}
+      - {eval_time: 110m, alertname: KflareReconcileErrors, exp_alerts: *retried}
+
   - name: KflareWorkqueueBacklog fires when a queue has not emptied for an hour, and not when it has
     interval: 1m
     input_series:
@@ -213,23 +236,36 @@ tests:
               runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflaredriftcorrected
       - {eval_time: 90m, alertname: KflareDriftCorrected}
 
-  - name: KflareTokenExpiresSoon fires within 14 days of a token's expiry, and after it
+  - name: KflareTokenExpiresSoon fires within 14 days of a token's expiry, and after it, once for each account
     interval: 1m
     input_series:
-      # 10 days after the test's start.
-      - series: kflare_account_token_expiry_timestamp_seconds{job="kflare-metrics",namespace="kflare",account="main"}
-        values: 864000x10
+      # 10 days after the test's start: the leader's series, then a new leader's.
+      - series: kflare_account_token_expiry_timestamp_seconds{job="kflare-metrics",namespace="kflare",account="main",pod="a"}
+        values: 864000x5 _x10
+      - series: kflare_account_token_expiry_timestamp_seconds{job="kflare-metrics",namespace="kflare",account="main",pod="b"}
+        values: _x3 864000x12
       # 30 days after it.
-      - series: kflare_account_token_expiry_timestamp_seconds{job="kflare-metrics",namespace="kflare",account="other"}
-        values: 2592000x10
+      - series: kflare_account_token_expiry_timestamp_seconds{job="kflare-metrics",namespace="kflare",account="other",pod="a"}
+        values: 2592000x15
     alert_rule_test:
       - eval_time: 0m
         alertname: KflareTokenExpiresSoon
-        exp_alerts:
-          - exp_labels: {severity: warning, account: main, job: kflare-metrics, namespace: kflare}
+        exp_alerts: &expires
+          - exp_labels: {severity: warning, account: main}
             exp_annotations:
               summary: The API token of main expires within 14 days.
               description: >-
                 The API token of the CloudflareAccount main expires in 10d 0h 0m 0s, or has expired if that is
+                negative. Once it has, kflare can do nothing for the account's resources.
+              runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflaretokenexpiressoon
+      # Both leaders' series at once, during the hand-over: still one alert.
+      - eval_time: 4m
+        alertname: KflareTokenExpiresSoon
+        exp_alerts:
+          - exp_labels: {severity: warning, account: main}
+            exp_annotations:
+              summary: The API token of main expires within 14 days.
+              description: >-
+                The API token of the CloudflareAccount main expires in 9d 23h 56m 0s, or has expired if that is
                 negative. Once it has, kflare can do nothing for the account's resources.
               runbook_url: https://github.com/JonathanGraniero/kflare/blob/main/docs/deploy.md#kflaretokenexpiressoon

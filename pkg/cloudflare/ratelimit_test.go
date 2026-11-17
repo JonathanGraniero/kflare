@@ -621,6 +621,18 @@ func TestObserve(t *testing.T) {
 		}
 	})
 
+	t.Run("an account's 429s are counted from 0, from its first use of the token", func(t *testing.T) {
+		b, account := newTokenBudget(DefaultRateLimit), t.Name()
+		series := testutil.CollectAndCount(rateLimitedResponses)
+		b.admit(Admission{Account: account}, time.Now())
+		if got := testutil.CollectAndCount(rateLimitedResponses); got != series+1 {
+			t.Errorf("%d series after the account's first use, want %d", got, series+1)
+		}
+		if got := testutil.ToFloat64(rateLimitedResponses.WithLabelValues(account)); got != 0 {
+			t.Errorf("%v 429s counted before any, want 0", got)
+		}
+	})
+
 	t.Run("429s count for every account using the token, and holds do not", func(t *testing.T) {
 		b, now := newTokenBudget(DefaultRateLimit), time.Now()
 		first, second := t.Name()+"-first", t.Name()+"-second"

@@ -265,8 +265,11 @@ func (b *tokenBudget) admit(a Admission, now time.Time) (time.Duration, string) 
 
 // use records that a's account uses the token, and applies the lowest limit
 // among the accounts doing so. An account not seen for budgetIdle no longer
-// counts, so a deleted one's limit does not outlive it.
+// counts, so a deleted one's limit does not outlive it. The account's count of
+// 429s starts here, at 0: a counter that first appears at 1 shows no increase,
+// and an alert on it misses the account's first 429.
 func (b *tokenBudget) use(a Admission, now time.Time) {
+	rateLimitedResponses.WithLabelValues(a.Account)
 	b.accounts[a.Account] = accountUse{limit: a.RateLimit, seen: now}
 	lowest := 0
 	for name, use := range b.accounts {

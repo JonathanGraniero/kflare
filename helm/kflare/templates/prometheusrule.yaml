@@ -1,6 +1,15 @@
 {{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
 {{- $rule := .Values.metrics.prometheusRule }}
-{{- /* Every series of this release: the job is its metrics Service. */}}
+{{- /*
+Every series of this release: the job is its metrics Service.
+
+A retried reconcile backs off to 1,000 seconds, so the error alerts look back
+30 minutes: a shorter window is empty between two retries of one resource, and
+the alert would clear while it still fails. KflareRateLimited's increase()
+sees an account's first 429 because the manager starts each account's counter
+at 0 (pkg/cloudflare's tokenBudget.use). The token's expiry is the leader's
+series, aggregated so that a new leader does not make a new alert.
+*/}}
 {{- $sel := printf `job="%s-metrics",namespace="%s"` (include "kflare.fullname" .) .Release.Namespace }}
 {{- $alerts := list
   (dict "name" "KflareDown"
@@ -8,7 +17,7 @@
     "summary" "No kflare pod is being scraped."
     "description" "Prometheus has no kflare target that is up, so nothing shows whether kflare is reconciling, and the other alerts cannot fire.")
   (dict "name" "KflareReconcileErrors"
-    "expr" (printf `sum by (controller) (rate(controller_runtime_reconcile_errors_total{%s}[15m])) > 0` $sel)
+    "expr" (printf `sum by (controller) (rate(controller_runtime_reconcile_errors_total{%s}[30m])) > 0` $sel)
     "summary" "kflare's {{ $labels.controller }} controller keeps failing reconciles."
     "description" "Reconciles of {{ $labels.controller }} resources have ended in errors kflare retries, from Cloudflare or the Kubernetes API, for the whole period.")
   (dict "name" "KflareWorkqueueBacklog"
@@ -16,7 +25,7 @@
     "summary" "kflare's {{ $labels.name }} queue has not emptied."
     "description" "{{ $value }} {{ $labels.name }} resources are waiting for a reconcile, and the queue has not been empty for the whole period: the controller has more work than it gets through.")
   (dict "name" "KflareCloudflareErrors"
-    "expr" (printf `sum by (controller) (rate(kflare_cloudflare_api_requests_total{%s,code=~"5..|error"}[15m])) > 0` $sel)
+    "expr" (printf `sum by (controller) (rate(kflare_cloudflare_api_requests_total{%s,code=~"5..|error"}[30m])) > 0` $sel)
     "summary" "Cloudflare keeps failing kflare's {{ $labels.controller }} requests."
     "description" "Requests of the {{ $labels.controller }} controller to Cloudflare have ended in a 5xx or no response for the whole period: kflare cannot reach Cloudflare, or Cloudflare is failing.")
   (dict "name" "KflareRateLimited"
@@ -32,7 +41,7 @@
     "summary" "kflare undid changes made outside it to {{ $labels.kind }} objects."
     "description" "kflare found {{ $labels.kind }} objects in Cloudflare that differed from a spec that had not changed, and wrote the spec back: someone, or another tool, changes what kflare manages.")
   (dict "name" "KflareTokenExpiresSoon"
-    "expr" (printf `kflare_account_token_expiry_timestamp_seconds{%s} - time() < 14 * 86400` $sel)
+    "expr" (printf `max by (account) (kflare_account_token_expiry_timestamp_seconds{%s}) - time() < 14 * 86400` $sel)
     "summary" "The API token of {{ $labels.account }} expires within 14 days."
     "description" "The API token of the CloudflareAccount {{ $labels.account }} expires in {{ $value | humanizeDuration }}, or has expired if that is negative. Once it has, kflare can do nothing for the account's resources.")
 }}
@@ -51,7 +60,7 @@ spec:
     - name: kflare
       rules:
         {{- range $alerts }}
-        {{- $alert := index $rule.alerts .name }}
+        {{- $alert := index $rule.alerts .name | default dict }}
         {{- if $alert.enabled }}
         - alert: {{ .name }}
           expr: {{ .expr | quote }}
@@ -59,11 +68,11 @@ spec:
           for: {{ . }}
           {{- end }}
           labels:
-            severity: {{ $alert.severity }}
+            severity: {{ $alert.severity | quote }}
           annotations:
             summary: {{ .summary | quote }}
             description: {{ .description | quote }}
-            runbook_url: {{ printf "%s#%s" $rule.runbookURL (lower .name) }}
+            runbook_url: {{ printf "%s#%s" $rule.runbookURL (lower .name) | quote }}
         {{- end }}
         {{- end }}
 {{- end }}
