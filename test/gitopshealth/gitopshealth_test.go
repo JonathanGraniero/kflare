@@ -424,6 +424,7 @@ var readyReasons = []struct {
 }{
 	{"True", "Synced", ArgoCDHealthy},
 	{"True", "Validated", ArgoCDHealthy},
+	{"True", "InSync", ArgoCDHealthy},
 	{"Unknown", "Paused", ArgoCDSuspended},
 	{"True", "Paused", ArgoCDSuspended},
 	{"False", "Paused", ArgoCDSuspended},
@@ -475,6 +476,11 @@ var readyReasons = []struct {
 	{"False", "AlreadyExists", ArgoCDDegraded},
 	{"False", "NotFound", ArgoCDDegraded},
 	{"False", "InvalidAdoptionPolicy", ArgoCDDegraded},
+
+	// Observe mode (lifecycle.go).
+	{"False", "DriftDetected", ArgoCDDegraded},
+	{"False", "ObserveNotSupported", ArgoCDDegraded},
+	{"False", "InvalidManagementPolicy", ArgoCDDegraded},
 
 	// Another resource manages the object, or configures the same settings.
 	{"False", "NameConflict", ArgoCDDegraded},

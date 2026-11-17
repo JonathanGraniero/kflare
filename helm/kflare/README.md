@@ -70,6 +70,7 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `leaderElection` | `true` | Run with leader election |
 | `leaderElectionID` | the release's, when scoped | The leader election Lease's name |
 | `defaultDeletionPolicy` | `delete` | `retain` keeps the Cloudflare objects of deleted resources, unless they say `delete` |
+| `observeOnly` | `false` | `true` writes nothing to Cloudflare: every resource only reports how its object differs from its spec |
 | `renameGracePeriod` | `30s` | How long a deleted resource keeps its Cloudflare object for a resource that replaces it, so a rename that deletes first keeps the object; `0s` deletes at once |
 | `reconcileTimeout` | `5m` | How long a reconcile may run before it ends with `APIError` and is retried; `0s` turns it off |
 | `driftCheckInterval` | unset (off) | Check each resource against Cloudflare this often, such as `30m`, to correct changes made outside kflare |

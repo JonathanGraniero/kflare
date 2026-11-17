@@ -743,6 +743,28 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("paused-deleted"), specs.newObject()))).To(BeTrue())
 		})
 
+		It("reports ObserveNotSupported for an observed resource, writes nothing, and leaves its rule when it is deleted",
+			func() {
+				sample := specs.samples[0]
+				createSynced("observed", sample.spec)
+				setManagementPolicy(ctx, get("observed"), reconciler.ManagementPolicyObserve)
+				for _, deleted := range []bool{false, true} {
+					if deleted {
+						Expect(k8sClient.Delete(ctx, get("observed"))).To(Succeed())
+					}
+					before := storedRule(sample.phase, "observed")
+					result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("observed")})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result).To(BeZero())
+					Expect(storedRule(sample.phase, "observed")).To(Equal(before))
+					if !deleted {
+						Expect(readyOf("observed").Status).To(Equal(metav1.ConditionFalse))
+						Expect(readyOf("observed").Reason).To(Equal(reasonObserveNotSupported))
+					}
+				}
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("observed"), specs.newObject()))).To(BeTrue())
+			})
+
 		It("adds no finalizer to a resource created paused", func() {
 			obj := object("created-paused", specs.samples[0].spec)
 			obj.SetAnnotations(map[string]string{reconciler.PausedAnnotation: "true"})

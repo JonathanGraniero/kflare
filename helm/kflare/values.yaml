@@ -147,6 +147,12 @@ leaderElectionID: ""
 # or retain it. The annotation always wins, and an object kflare adopted is
 # kept unless the annotation says delete.
 defaultDeletionPolicy: delete
+# -- Run the whole installation read-only, for an audit or before moving to
+# kflare: it writes nothing to Cloudflare, observes every resource whatever
+# its kflare.dev/management-policy annotation says, and reports in status how
+# each Cloudflare object differs from its spec (docs/deploy.md, "Observing
+# without writing"). Its token needs read permissions only.
+observeOnly: false
 # -- How long a resource that is deleted keeps the Cloudflare object kflare
 # would delete with it, for a resource that replaces it, as a duration such
 # as 30s or 1m. A rename is a new resource and the old one's deletion, and a

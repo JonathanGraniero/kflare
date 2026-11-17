@@ -806,6 +806,55 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		recordKey = renamedKey
 	})
 
+	It("observes a DNS record without changing it, and leaves it when the observing DNSRecord is deleted", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		// A second DNSRecord describes the record the first one manages, with
+		// another comment, and only observes it.
+		managed := &cloudflarev1alpha1.DNSRecord{}
+		Expect(k8s.Get(ctx, recordKey, managed)).To(Succeed())
+		before, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), recordID)
+		Expect(err).NotTo(HaveOccurred())
+
+		observedKey := client.ObjectKey{Namespace: e2eNamespace, Name: "record-observed"}
+		observed := &cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(observedKey), Spec: managed.Spec}
+		observed.Annotations = map[string]string{"kflare.dev/management-policy": "observe"}
+		observed.Spec.Comment = "kflare e2e observed " + run
+		Expect(k8s.Create(ctx, observed)).To(Succeed())
+		conditions := func() []metav1.Condition { return observed.Status.Conditions }
+		expectNotReady(observedKey, observed, conditions, "DriftDetected", gitopshealth.ArgoCDDegraded,
+			gitopshealth.FluxFailed)
+		Expect(meta.FindStatusCondition(observed.Status.Conditions, cloudflarev1alpha1.ConditionReady).Message).To(
+			ContainSubstring("differs from the spec in: comment."))
+		Expect(observed.Status.CloudflareMetadata.RecordID).To(Equal(recordID))
+		Expect(observed.Labels).NotTo(HaveKey(cloudflarev1alpha1.DNSRecordIDLabel), "an observed record is not claimed")
+
+		By("reporting InSync once the manifest matches the record")
+		patch := client.MergeFrom(observed.DeepCopy())
+		observed.Spec.Comment = managed.Spec.Comment
+		Expect(k8s.Patch(ctx, observed, patch)).To(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, observedKey, observed)).To(Succeed())
+			ready := meta.FindStatusCondition(observed.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(ready.Reason).To(Equal("InSync"))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+
+		By("deleting the observing DNSRecord, which leaves the record as it was")
+		Expect(k8s.Delete(ctx, observed)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8s.Get(ctx, observedKey, &cloudflarev1alpha1.DNSRecord{}))
+		}, e2eTimeout, e2ePoll).Should(BeTrue())
+		after, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), recordID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(after.ModifiedOn).To(Equal(before.ModifiedOn), "Cloudflare kept the record unchanged")
+		Expect(after.Comment).To(Equal(before.Comment))
+		Expect(k8s.Get(ctx, recordKey, managed)).To(Succeed())
+		Expect(meta.IsStatusConditionTrue(managed.Status.Conditions, cloudflarev1alpha1.ConditionReady)).To(BeTrue())
+	})
+
 	It("points a DNSRecord at the Tunnel, and follows the tunnel when it is recreated", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")

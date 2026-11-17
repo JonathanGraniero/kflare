@@ -1004,6 +1004,26 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(ready(name).Reason).To(Equal(reasonPaused))
 		}
 
+		It("reports ObserveNotSupported for an observed resource, calls Cloudflare for nothing, and leaves its settings "+
+			"when it is deleted", func() {
+			createSynced("observed", specs.samples[0].spec)
+			setManagementPolicy(ctx, get("observed"), reconciler.ManagementPolicyObserve)
+			calls := len(fake.zoneIDs)
+			result, err := reconcileOnce("observed")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsZero()).To(BeTrue())
+			Expect(ready("observed").Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready("observed").Reason).To(Equal(reasonObserveNotSupported))
+
+			Expect(k8sClient.Delete(ctx, get("observed"))).To(Succeed())
+			_, err = reconcileOnce("observed")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fake.zoneIDs).To(HaveLen(calls), "an observed resource called Cloudflare")
+			Expect(holds(specs.samples[0].settings)).To(BeTrue())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("observed"), specs.newObject()))).To(BeTrue())
+			fake.seed(zoneID, specs.unconfigured)
+		})
+
 		It("calls Cloudflare for nothing from a namespace its account leaves out, and writes its settings once allowed",
 			func() {
 				withFinalizer("denied", specs.samples[0].spec, nil)

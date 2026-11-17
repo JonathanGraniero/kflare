@@ -42,6 +42,20 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   there when `--namespace` is left out, and the release namespace is now where kflare may write Secrets. An
   installation in `default` sets the value to upgrade.
 
+### Observing without writing
+
+- **A resource annotated `kflare.dev/management-policy: observe` is only observed**
+  ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
+  in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
+  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
+  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
+  [Observing without writing](docs/deploy.md#observing-without-writing).
+- **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
+  token.
+- New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
+  use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
+
 ### The Helm chart
 
 - **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
@@ -364,6 +378,20 @@ yourself (`crds.enabled=false`), apply `config/crd/bases` first.
   ([deploy guide](docs/deploy.md#limiting-which-namespaces-may-use-an-account)).
   ([#77](https://github.com/JonathanGraniero/kflare/issues/77))
 
+### Observing without writing
+
+- **A resource annotated `kflare.dev/management-policy: observe` is only observed**
+  ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
+  in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
+  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
+  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
+  [Observing without writing](docs/deploy.md#observing-without-writing).
+- **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
+  token.
+- New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
+  use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
+
 ### The Helm chart
 
 - **Trust your organization's CA, for a proxy that inspects TLS.** Behind an egress proxy that presents its own
@@ -484,6 +512,20 @@ They keep their spec fields, and now behave as the generated kinds do:
   remotely-managed one with the token, which Cloudflare issues all the same (checked 2026-10-30)
 - **A resource whose status was never written still deletes its object**, through its claim, as only IPList did
 - **`ListInUse`'s message is the shared one**: the list, what to do and how to keep it. Its reason does not change
+
+### Observing without writing
+
+- **A resource annotated `kflare.dev/management-policy: observe` is only observed**
+  ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
+  in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
+  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
+  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
+  [Observing without writing](docs/deploy.md#observing-without-writing).
+- **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
+  token.
+- New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
+  use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
 
 ### The Helm chart
 
@@ -782,6 +824,20 @@ spec:
   Cloudflare zone, through any `Zone`. One whose `CloudflareAccount` or `Zone` is gone no longer keeps another
   resource from adopting the object
 
+### Observing without writing
+
+- **A resource annotated `kflare.dev/management-policy: observe` is only observed**
+  ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
+  in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
+  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
+  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
+  [Observing without writing](docs/deploy.md#observing-without-writing).
+- **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
+  token.
+- New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
+  use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
+
 ### The Helm chart
 
 - **The chart's Artifact Hub page** lists its license, its CRDs with an example of each, each release's changes, and
@@ -825,6 +881,20 @@ Nothing to change: the CRDs, the controller's permissions and the chart's defaul
   release has the SBOMs as files, each with a Sigstore bundle. The deploy guide's
   [Verifying a release](docs/deploy.md#verifying-a-release) has the commands, and a Kyverno policy that admits only
   signed kflare images ([#84](https://github.com/JonathanGraniero/kflare/issues/84))
+
+### Observing without writing
+
+- **A resource annotated `kflare.dev/management-policy: observe` is only observed**
+  ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
+  in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
+  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
+  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
+  [Observing without writing](docs/deploy.md#observing-without-writing).
+- **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
+  token.
+- New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
+  use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
 
 ### The Helm chart
 
@@ -874,6 +944,20 @@ the first time, follow the [README's quickstart](README.md#quickstart-expose-a-s
 **If you manage the CRDs yourself** (`crds.enabled=false`), apply `config/crd/bases` from v0.2.0 before upgrading
 the chart: it adds the `ManagedTransform` CRD, which the controller watches, and puts every CRD in the `kflare`
 category.
+
+### Observing without writing
+
+- **A resource annotated `kflare.dev/management-policy: observe` is only observed**
+  ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
+  in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
+  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
+  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
+  [Observing without writing](docs/deploy.md#observing-without-writing).
+- **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
+  token.
+- New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
+  use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
 
 ### The Helm chart
 
@@ -975,6 +1059,20 @@ permissions the deploy guide lists.
 - Resources can be deleted in any order, a whole namespace included: parents wait for the resources that need them.
 
 See [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership) and [Deletion](ARCHITECTURE.md#deletion).
+
+### Observing without writing
+
+- **A resource annotated `kflare.dev/management-policy: observe` is only observed**
+  ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
+  in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
+  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
+  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
+  [Observing without writing](docs/deploy.md#observing-without-writing).
+- **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
+  token.
+- New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
+  use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
 
 ### The Helm chart
 

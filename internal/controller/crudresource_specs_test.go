@@ -3155,6 +3155,8 @@ func describeCRUDKind[O conditionedObject, A any, R any, L any](t crudKindSpecs[
 			})
 		})
 
+		describeCRUDObserve(e)
+
 		describeCRUDRateLimit(e)
 
 		describeCRUDAllowedNamespaces(e)

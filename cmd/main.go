@@ -64,6 +64,7 @@ func main() {
 	var metricsCertPath string
 	var enableHTTP2 bool
 	var defaultDeletionPolicy string
+	var observeOnly bool
 	var reconcileTimeout time.Duration
 	var driftCheckInterval time.Duration
 	var renameGracePeriod time.Duration
@@ -108,6 +109,9 @@ func main() {
 		"What deleting a resource without a kflare.dev/deletion-policy annotation does to the Cloudflare object "+
 			"kflare created for it: delete or retain it. An object kflare adopted is kept unless the annotation "+
 			"says delete.")
+	flag.BoolVar(&observeOnly, "observe-only", false,
+		"If set, kflare writes nothing to Cloudflare: it observes every resource, whatever its "+
+			"kflare.dev/management-policy annotation says, and reports how its Cloudflare object differs from its spec.")
 	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 5*time.Minute,
 		"How long a reconcile may run. A reconcile that runs out of time, such as one waiting on a call that gets "+
 			"no answer, ends with reason APIError and is retried with back-off, and its controller goes on to the "+
@@ -148,6 +152,7 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	exitOnError(reconciler.SetDefaultDeletionPolicy(defaultDeletionPolicy), "invalid --default-deletion-policy")
+	reconciler.SetObserveOnly(observeOnly)
 	exitOnError(offOrPositive(reconcileTimeout), "invalid --reconcile-timeout")
 	exitOnError(reconciler.SetDriftCheckInterval(driftCheckInterval), "invalid --drift-check-interval")
 	exitOnError(reconciler.SetRenameGracePeriod(renameGracePeriod), "invalid --rename-grace-period")

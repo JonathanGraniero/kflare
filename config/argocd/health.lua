@@ -39,6 +39,11 @@ local needsPerson = {
   AlreadyExists = true,
   NotFound = true,
   InvalidAdoptionPolicy = true,
+  -- Observe mode (the kflare.dev/management-policy annotation, or --observe-only): the object differs
+  -- from the spec, the kind cannot be observed yet, or the annotation is wrong
+  DriftDetected = true,
+  ObserveNotSupported = true,
+  InvalidManagementPolicy = true,
   -- Another resource manages the Cloudflare object, or configures the same settings
   NameConflict = true,
   TitleConflict = true,

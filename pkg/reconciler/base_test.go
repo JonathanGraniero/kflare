@@ -330,3 +330,36 @@ func TestPaused(t *testing.T) {
 		})
 	}
 }
+
+func TestObserved(t *testing.T) {
+	withPolicy := func(policy string) client.Object {
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{reconciler.ManagementPolicyAnnotation: policy},
+		}}
+	}
+	t.Cleanup(func() { reconciler.SetObserveOnly(false) })
+	for _, tc := range []struct {
+		policy                string
+		observeOnly, observed bool
+		invalid               bool
+	}{
+		{policy: ""},
+		{policy: reconciler.ManagementPolicyManage},
+		{policy: reconciler.ManagementPolicyObserve, observed: true},
+		{policy: "", observeOnly: true, observed: true},
+		{policy: reconciler.ManagementPolicyManage, observeOnly: true, observed: true},
+		{policy: reconciler.ManagementPolicyObserve, observeOnly: true, observed: true},
+		{policy: "observ", invalid: true},
+		{policy: "Observe", observeOnly: true, invalid: true},
+	} {
+		reconciler.SetObserveOnly(tc.observeOnly)
+		observed, err := reconciler.Observed(withPolicy(tc.policy))
+		if observed != tc.observed || (err != nil) != tc.invalid {
+			t.Errorf("policy %q, observe only %t: observed %t, error %v", tc.policy, tc.observeOnly, observed, err)
+		}
+	}
+	reconciler.SetObserveOnly(false)
+	if observed, err := reconciler.Observed(&corev1.ConfigMap{}); observed || err != nil {
+		t.Errorf("no annotation: observed %t, error %v", observed, err)
+	}
+}

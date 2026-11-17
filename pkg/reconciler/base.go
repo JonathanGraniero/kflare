@@ -67,6 +67,19 @@ const (
 	// until the annotation is removed: kflare makes no Cloudflare call for
 	// it, and does not finish deleting it.
 	PausedAnnotation = "kflare.dev/paused"
+
+	// ManagementPolicyAnnotation chooses whether kflare manages a resource's
+	// Cloudflare resource or only observes it. Without it, kflare manages it,
+	// unless the whole installation observes (SetObserveOnly).
+	ManagementPolicyAnnotation = "kflare.dev/management-policy"
+
+	// ManagementPolicyManage creates, corrects and deletes the Cloudflare
+	// resource: what kflare does without the annotation.
+	ManagementPolicyManage = "manage"
+
+	// ManagementPolicyObserve finds the Cloudflare resource and reports how
+	// it differs from the spec, and never creates, updates or deletes one.
+	ManagementPolicyObserve = "observe"
 )
 
 // Adopted reports whether kflare adopted obj's Cloudflare resource.
@@ -78,6 +91,32 @@ func Adopted(obj client.Object) bool {
 // "false" included, counts as none.
 func Paused(obj client.Object) bool {
 	return obj.GetAnnotations()[PausedAnnotation] == "true"
+}
+
+// observeOnly is whether the installation observes every resource.
+var observeOnly atomic.Bool
+
+// SetObserveOnly makes the installation observe every resource, whatever its
+// management-policy annotation says, so that it never writes to Cloudflare.
+// The manager calls it once, before its controllers start (--observe-only).
+func SetObserveOnly(observe bool) {
+	observeOnly.Store(observe)
+}
+
+// Observed reports whether kflare only observes obj's Cloudflare resource:
+// its management-policy annotation says observe, or the installation observes
+// everything. Any other value of the annotation than manage, or none, is an
+// error: a misspelt observe must not write to Cloudflare.
+func Observed(obj client.Object) (bool, error) {
+	switch policy := obj.GetAnnotations()[ManagementPolicyAnnotation]; policy {
+	case "", ManagementPolicyManage:
+		return observeOnly.Load(), nil
+	case ManagementPolicyObserve:
+		return true, nil
+	default:
+		return false, fmt.Errorf("annotation %s is %q: use %q or %q, or remove it to manage", ManagementPolicyAnnotation,
+			policy, ManagementPolicyObserve, ManagementPolicyManage)
+	}
 }
 
 // retainByDefault is the default deletion policy: whether a resource without

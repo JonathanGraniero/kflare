@@ -2092,3 +2092,34 @@ be picked up without answering them, so each went as the issue proposed, or as n
 - **Not verified live yet:** the live spec renames a `DNSRecord` and polls the zone through it; it has not run
   against Cloudflare. The other kinds' hand-offs call Cloudflare for nothing, so the fake API's record of no delete
   and no create is what the shared specs check
+
+## Observe-only resources
+
+Decisions behind observe mode ([#82](https://github.com/JonathanGraniero/kflare/issues/82); ARCHITECTURE.md's
+[Observing a resource](../ARCHITECTURE.md#observing-a-resource)). The issue left two open, and the user asked for it
+to be started without answering them, so each went as the issue proposed.
+
+- **The annotation is `kflare.dev/management-policy`, `observe` or `manage`,** and drift is `Ready=False` with
+  `DriftDetected`: an alert on not-Ready fires for every object that differs, which in an audit is the point. The
+  message names spec fields and never values: a later kind's may be secret, as a Worker's bindings are
+- **An unknown value stops everything, deletion included.** A misspelt `observe` read as `manage` would write to
+  production, which is what the mode exists to prevent, and nobody said what a deletion should do with the object
+- **`--observe-only` wins over `manage`,** so that an audit installation cannot be made to write by an annotation, and
+  a kind that cannot be observed reports `ObserveNotSupported` rather than being managed. Its deletion leaves the
+  object, with a Warning Event, as a deletion without usable credentials does
+- **Kinds opt in with `crudHooks.differences`.** The shared loop's `matches` returns a bool, and a kind's step after
+  the sync (`synced`: a Zone's plan, an IPList's items) writes what `matches` never compares, so a kind is observable
+  only once something names every field it would write. `Zone` and `DNSRecord` are hand-written; the generated kinds
+  need kflare-gen to write it next to `matches`
+- **A drifted, observed Zone still serves its records** (`isZoneReady`). Otherwise a zone whose plan or type differs
+  would keep every record under it at `ZoneNotReady`, and the migration the mode is for could not read them
+- **The switch to `manage` adopts through `kflare.dev/adopted`,** which observing sets on a resource whose object is
+  not its own (no claim label names it). The alternatives were a new status field on every kind, or inferring it
+  from the last `Ready` reason, which an API error between the two would lose. The issue says an observed resource
+  "never marks one as its own": the annotation says the opposite of ownership, that kflare did not create the object,
+  and the claim label is still not written
+- **An observed DNSRecord finds its record as one with an adoption policy does:** the record holding its content, or
+  else the only record of its name and type. Without that, a record whose content differs would read as `NotFound`
+  rather than as drift in `content`
+- **Not verified live yet:** the live spec observes the suite's record through a second DNSRecord and checks that its
+  `modified_on` stays; it first runs with the pull request's Live E2E

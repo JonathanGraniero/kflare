@@ -962,6 +962,9 @@ var _ = Describe("isZoneReady", func() {
 		Expect(isZoneReady(zone)).To(BeFalse(), "not ready")
 		zone.Status.Conditions[0].Status = metav1.ConditionTrue
 		Expect(isZoneReady(zone)).To(BeTrue())
+		zone.Status.Conditions[0] = metav1.Condition{Type: cloudflarev1alpha1.ConditionReady,
+			Status: metav1.ConditionFalse, Reason: reasonDriftDetected}
+		Expect(isZoneReady(zone)).To(BeTrue(), "an observed zone that differs from its spec is there")
 		zone.Status.CloudflareMetadata.ZoneID = ""
 		Expect(isZoneReady(zone)).To(BeFalse(), "no zone ID")
 	})
