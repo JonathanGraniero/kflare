@@ -1699,11 +1699,16 @@ reports one of:
 | `False` | `DriftDetected` | The object differs; the message names the spec fields, never their values |
 | `False` | `NotFound` | Cloudflare holds no such object. kflare creates none |
 
-kflare checks a resource that reports `DriftDetected` or `NotFound` again every minute, and one that is `InSync` at
-the [drift check interval](#correcting-changes-made-outside-kflare), if you set one. Deleting an observed resource
-leaves its object in Cloudflare, whatever its deletion policy. An observed Zone whose zone differs from its spec still
-serves its records. A resource of another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for
-it.
+kflare reads an observed resource's object again at the
+[drift check interval](#correcting-changes-made-outside-kflare), and when its manifest changes. Without an interval,
+it reads one that reports `DriftDetected` or `NotFound` again every minute, and one that is `InSync` not at all: set
+an interval for more than a few hundred observed resources, since a read every minute for each spends the API
+token's budget. Deleting an observed resource leaves its object in Cloudflare, whatever its deletion policy.
+
+An observed Zone whose zone differs from its spec still serves the records kflare observes. A record kflare manages
+waits (`ZoneNotReady`) until its Zone is `InSync` or managed. A resource of another kind reports
+`ObserveNotSupported`, and kflare makes no Cloudflare call for it; a DNSRecord whose `tunnelRef` names a Tunnel in
+that state waits for it (`TunnelNotReady`), so records that point at a Tunnel cannot be observed yet.
 
 **Moving to kflare** from the dashboard, Terraform or another tool, without a manifest's mistake reaching production:
 
@@ -1712,7 +1717,9 @@ it.
 3. Fix the manifests until every resource is `InSync`
 4. Remove the annotation, or set it to `manage`. kflare then manages the object as one it adopted, with no
    `adoption-policy` needed: it changes nothing while the object matches, corrects it from then on, and keeps it when
-   the resource is deleted unless `kflare.dev/deletion-policy: delete` says otherwise
+   the resource is deleted unless `kflare.dev/deletion-policy: delete` says otherwise. If another resource already
+   manages the object, this one reports `NameConflict` and leaves it alone. Switch a Zone before its records: a
+   managed record waits for a Zone that still reports `DriftDetected`
 
 **Auditing** that Cloudflare matches git: install a release with `observeOnly: true`. It observes every resource,
 whatever its annotation says, and never writes to Cloudflare, so its API token needs only the read permissions of the

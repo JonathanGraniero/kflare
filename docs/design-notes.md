@@ -2111,8 +2111,25 @@ to be started without answering them, so each went as the issue proposed.
   the sync (`synced`: a Zone's plan, an IPList's items) writes what `matches` never compares, so a kind is observable
   only once something names every field it would write. `Zone` and `DNSRecord` are hand-written; the generated kinds
   need kflare-gen to write it next to `matches`
-- **A drifted, observed Zone still serves its records** (`isZoneReady`). Otherwise a zone whose plan or type differs
-  would keep every record under it at `ZoneNotReady`, and the migration the mode is for could not read them
+- **A drifted, observed Zone still serves the records kflare observes** (`isZoneReady`). Otherwise a zone whose plan
+  or type differs would keep every record under it at `ZoneNotReady`, and the migration the mode is for could not
+  read them. A managed record waits (the review, 2026-11-17): nothing under a Zone that is not `Ready` wrote before,
+  and an observed Zone has adopted nothing
+- **The switch to `manage` checks for a claim first** (the review, 2026-11-17). An observed resource records an
+  object another resource may manage, as the live spec's does, and `sync` claimed whatever status named: two
+  resources then owned one record. With a status ID it does not claim, a resource holds its key and asks `claimant`,
+  as `findOrCreate` does, and reports the conflict reason. Not covered: such a resource keeps the ID in status, so
+  with `kflare.dev/deletion-policy: delete` its deletion would still delete the other's object
+- **Observed resources are read again at the drift check, not every minute** (`observedNotReady`; the review). At a
+  migration's start most resources differ, and 500 of them at a read a minute are 2,500 calls per five minutes
+  against a budget of 900. Without an interval the minute stays, as nothing else would notice a fix made in
+  Cloudflare
+- **A kind kflare cannot observe goes through the shared deletion** (the review): `startReconcile` let its deleted
+  resource go at once, past the wait for what uses it, so an annotation got a Tunnel deleted under its
+  TunnelConfiguration. The CRUD reconciler refuses such a kind itself, after `startReconcile`
+- **Under `--observe-only`, a record with a `tunnelRef` waits** (`TunnelNotReady`): its Tunnel reports
+  `ObserveNotSupported`, and a Tunnel never reconciled has no ID to compare the record's content with. It goes once
+  `Tunnel` can be observed
 - **The switch to `manage` adopts through `kflare.dev/adopted`,** which observing sets on a resource whose object is
   not its own (no claim label names it). The alternatives were a new status field on every kind, or inferring it
   from the last `Ready` reason, which an API error between the two would lose. The issue says an observed resource
@@ -2121,5 +2138,5 @@ to be started without answering them, so each went as the issue proposed.
 - **An observed DNSRecord finds its record as one with an adoption policy does:** the record holding its content, or
   else the only record of its name and type. Without that, a record whose content differs would read as `NotFound`
   rather than as drift in `content`
-- **Not verified live yet:** the live spec observes the suite's record through a second DNSRecord and checks that its
-  `modified_on` stays; it first runs with the pull request's Live E2E
+- **Verified live:** the live spec observes the suite's record through a second DNSRecord and checks that its
+  `modified_on` stays; it passed in the pull request's Live E2E (run 43992271846, 36 of 36)

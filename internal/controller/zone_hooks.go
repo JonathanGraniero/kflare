@@ -216,13 +216,14 @@ func desiredZoneType(zone *cloudflarev1alpha1.Zone) string {
 	return zone.Spec.Type
 }
 
-// isZoneReady reports whether zone has a zone ID and is Ready, or is an
-// observed Zone whose zone differs from its spec: the zone is there, and its
-// resources can be observed, or managed, in it.
-func isZoneReady(zone *cloudflarev1alpha1.Zone) bool {
+// isZoneReady reports whether zone has a zone ID and is Ready. For a resource
+// kflare only observes (forObserved), an observed Zone whose zone differs from
+// its spec is ready too: the zone is there, and reading its objects changes
+// nothing. A resource kflare manages waits, as for any Zone that is not Ready.
+func isZoneReady(zone *cloudflarev1alpha1.Zone, forObserved bool) bool {
 	ready := meta.FindStatusCondition(zone.GetConditions(), cloudflarev1alpha1.ConditionReady)
 	return zone.Status.CloudflareMetadata.ZoneID != "" && ready != nil &&
-		(ready.Status == metav1.ConditionTrue || ready.Reason == reasonDriftDetected)
+		(ready.Status == metav1.ConditionTrue || (forObserved && ready.Reason == reasonDriftDetected))
 }
 
 // readyZone returns the Zone name in obj's namespace once it is ready, or why
@@ -235,7 +236,8 @@ func readyZone(ctx context.Context, c client.Reader, obj client.Object, name str
 	if condErr := getReference(ctx, c, key, zone, what, "ZoneNotFound"); condErr != nil {
 		return nil, condErr
 	}
-	if !isZoneReady(zone) {
+	// The kinds that call this cannot be observed (startReconcile).
+	if !isZoneReady(zone, false) {
 		return nil, &conditionError{Reason: "ZoneNotReady", Message: what + " is not ready"}
 	}
 	return zone, nil

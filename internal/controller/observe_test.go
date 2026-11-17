@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"maps"
 
 	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/dns"
@@ -17,6 +18,8 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -96,12 +99,17 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 					Expect(e.ready().Status).To(Equal(metav1.ConditionFalse))
 					Expect(e.ready().Reason).To(Equal(reasonObserveNotSupported))
 
+					recorder := events.NewFakeRecorder(10)
+					SetEventRecorder(recorder)
+					DeferCleanup(func() { SetEventRecorder(nil) })
 					Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
 					_, err = e.reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
 					expectGone()
 					Expect(e.store.objects).To(HaveKey(id))
 					Expect(e.store.parentIDs).To(HaveLen(calls), "an observed resource called Cloudflare")
+					Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+reasonObserveNotSupported),
+						ContainSubstring("stays in Cloudflare"))))
 				})
 			}
 			return
@@ -166,6 +174,83 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 					Expect(e.store.writes).To(BeZero())
 					Expect(e.store.objects).To(Equal(map[string]R{id: before}))
 				})
+		}
+
+		It("reads a "+k.noun+" that is missing or differs again at the drift check, not every minute", func() {
+			turnOnDriftChecks()
+			id := observe(t.changes[0].edit)
+			result, err := e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
+			Expect(result.RequeueAfter).To(BeNumerically("~", driftCheckTestInterval, driftCheckTestSpread))
+
+			delete(e.store.objects, id)
+			result, err = e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready().Reason).To(Equal(reasonNotFound))
+			Expect(result.RequeueAfter).To(BeNumerically("~", driftCheckTestInterval, driftCheckTestSpread))
+		})
+
+		It("keeps a "+k.noun+" it was creating its own: not marked adopted", func() {
+			e.createParent(true)
+			obj := t.newResource(e.key, e.parentName)
+			obj.SetFinalizers([]string{reconciler.Finalizer})
+			annotations := maps.Clone(observeAnnotation)
+			annotations[reconciler.CreatingAnnotation] = e.r.crud().objectKey(obj, e.refs)
+			obj.SetAnnotations(annotations)
+			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+			id := e.seed("created", k.key(obj))
+			_, err := e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready().Reason).To(Equal(reasonInSync))
+			Expect(k.statusID(e.get())).To(Equal(id))
+			Expect(e.get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			Expect(e.get().GetAnnotations()).To(HaveKey(reconciler.CreatingAnnotation))
+		})
+
+		if !k.sharedObjects {
+			It("reports "+k.conflictReason+" once switched to manage, for a "+k.noun+" another "+k.name+
+				" has claimed, and leaves it to that one", func() {
+				id := observe(t.changes[len(t.changes)-1].edit)
+				Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
+				other := t.newResource(e.otherKey, e.parentName)
+				other.SetFinalizers([]string{reconciler.Finalizer})
+				other.SetLabels(map[string]string{k.claimLabel: id})
+				Expect(k8sClient.Create(ctx, other)).To(Succeed())
+
+				setManagementPolicy(ctx, e.get(), reconciler.ManagementPolicyManage)
+				result, err := e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+				Expect(e.ready().Reason).To(Equal(k.conflictReason))
+				Expect(e.ready().Message).To(ContainSubstring(e.otherKey.String()))
+				Expect(e.get().GetLabels()).NotTo(HaveKey(k.claimLabel))
+				Expect(e.store.writes).To(BeZero())
+			})
+		}
+
+		if e.zoned {
+			It("is observed in a Zone kflare only observes and that differs, where a managed one waits", func() {
+				e.createParent(true)
+				zone := &cloudflarev1alpha1.Zone{}
+				zoneKey := types.NamespacedName{Name: e.zoneName, Namespace: crudSpecNamespace}
+				Expect(k8sClient.Get(ctx, zoneKey, zone)).To(Succeed())
+				zone.Status.Conditions = []metav1.Condition{{Type: cloudflarev1alpha1.ConditionReady,
+					Status: metav1.ConditionFalse, Reason: reasonDriftDetected, LastTransitionTime: metav1.Now()}}
+				Expect(k8sClient.Status().Update(ctx, zone)).To(Succeed())
+
+				e.create(e.key, nil)
+				_, err := e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.ready().Reason).To(Equal("ZoneNotReady"))
+				Expect(e.store.parentIDs).To(BeEmpty(), "a managed resource called Cloudflare for a zone that is not Ready")
+
+				setManagementPolicy(ctx, e.get(), reconciler.ManagementPolicyObserve)
+				_, err = e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.ready().Reason).To(Equal(reasonNotFound))
+				Expect(e.store.writes).To(BeZero())
+			})
 		}
 
 		It("reports NotFound without a "+k.noun+", and creates none", func() {

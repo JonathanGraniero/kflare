@@ -272,10 +272,16 @@ type crudResourceReconciler[O conditionedObject, A any, R any, L any] struct {
 
 func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	obj := r.kind.newObject()
-	if done, result, err := startReconcile(ctx, r.Client, req, obj, r.kind.hooks.differences != nil, func() (ctrl.Result, error) {
+	// reconcileDelete leaves an observed resource's object itself, once
+	// nothing uses the resource, so startReconcile is not asked to.
+	if done, result, err := startReconcile(ctx, r.Client, req, obj, true, func() (ctrl.Result, error) {
 		return r.reconcileDelete(ctx, obj)
 	}); done {
 		return result, err
+	}
+	// startReconcile refused an unknown policy.
+	if observed, _ := reconciler.Observed(obj); observed && r.kind.hooks.differences == nil {
+		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, reasonObserveNotSupported, observeNotSupportedMessage)
 	}
 
 	// A zone's kind waits for its Zone (the Zone watch re-triggers this
@@ -373,7 +379,8 @@ func (r *crudResourceReconciler[O, A, R, L]) zone(ctx context.Context, obj O) (*
 			return nil, condErr
 		}
 	}
-	if !isZoneReady(zone) {
+	observed, _ := reconciler.Observed(obj)
+	if !isZoneReady(zone, observed) {
 		return nil, &conditionError{Reason: "ZoneNotReady", Message: what + " is not ready"}
 	}
 	return zone, nil
@@ -472,6 +479,28 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 			if sharedZone != nil {
 				if condErr := r.checkObjectHostname(ctx, obj, sharedZone, got); condErr != nil {
 					return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
+				}
+			}
+			// Status names an object the resource does not claim: one it
+			// recorded while kflare only observed it (observeOnly), which
+			// another resource may manage. It claims the object below, so it
+			// holds the key and looks for a claim first, as findOrCreate does.
+			if !ownsID(obj, k.claimLabel, id) {
+				release, err := r.lockObjectKey(ctx, obj, parentID, refs)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				defer release()
+				owner, err := r.claimant(ctx, obj, parentID, id)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				if owner != "" {
+					return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
+						Reason: k.conflictReason,
+						Message: fmt.Sprintf("%s %q is already managed by %s %s", k.noun, r.objectKey(obj, refs), k.name,
+							owner),
+					})
 				}
 			}
 			current = got
@@ -579,7 +608,7 @@ func (r *crudResourceReconciler[O, A, R, L]) observeOnly(ctx context.Context, ob
 		}
 	}
 	if current == nil {
-		return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
+		return observedNotReady(ctx, r.Client, obj, &conditionError{
 			Reason:  reasonNotFound,
 			Message: what + " does not exist; kflare only observes this resource, and creates none",
 		})
@@ -594,7 +623,9 @@ func (r *crudResourceReconciler[O, A, R, L]) observeOnly(ctx context.Context, ob
 			return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
 		}
 	}
-	if !ownsID(obj, k.claimLabel, k.id(current)) {
+	// An object the resource was creating when it stopped is its own too
+	// (creating): marking it adopted would keep it when the resource goes.
+	if !ownsID(obj, k.claimLabel, k.id(current)) && !creating(obj, key) {
 		if err := markAdopted(ctx, r.Client, obj); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -605,13 +636,27 @@ func (r *crudResourceReconciler[O, A, R, L]) observeOnly(ctx context.Context, ob
 	}
 	k.observe(obj, current)
 	if fields := k.hooks.differences(obj, current, refs); len(fields) > 0 {
-		return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
+		return observedNotReady(ctx, r.Client, obj, &conditionError{
 			Reason: reasonDriftDetected,
 			Message: fmt.Sprintf("%s differs from the spec in: %s. kflare only observes this resource, and changes "+
 				"nothing in Cloudflare", what, strings.Join(fields, ", ")),
 		})
 	}
 	return readyWithDriftCheck(ctx, r.Client, obj, reasonInSync, what+" matches the spec; kflare only observes it")
+}
+
+// observedNotReady reports condErr on an observed resource whose object is
+// missing or differs from its spec, and reads the object again at the next
+// drift check, as for one that matches, or after credentialsRetryInterval
+// without a drift check interval. A migration starts with most resources in
+// this state, and reading each every minute would spend their token's budget.
+func observedNotReady(ctx context.Context, c client.StatusClient, obj conditionedObject,
+	condErr *conditionError) (ctrl.Result, error) {
+	retry := reconciler.NextDriftCheck()
+	if retry == 0 {
+		retry = credentialsRetryInterval
+	}
+	return ctrl.Result{RequeueAfter: retry}, updateNotReady(ctx, c, obj, condErr.Reason, condErr.Message)
 }
 
 // upToDate reports whether obj, as the cache gives it, is the version the API
@@ -908,7 +953,8 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 	if id == "" {
 		id = obj.GetLabels()[r.kind.claimLabel]
 	}
-	if observed, _ := reconciler.Observed(obj); id != "" && !observed {
+	observed, _ := reconciler.Observed(obj)
+	if id != "" && !observed {
 		handed, err := r.handOff(ctx, obj, id)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -935,6 +981,10 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 		}
 	}
 
+	if observed && r.kind.hooks.differences == nil {
+		recordWarning(obj, reasonObserveNotSupported, "Delete", observeNotSupportedMessage+
+			"; its Cloudflare object stays in Cloudflare")
+	}
 	// Remove the finalizer to allow Kubernetes to complete the deletion.
 	_, err = reconciler.RemoveFinalizer(ctx, r.Client, obj)
 	return ctrl.Result{}, err
