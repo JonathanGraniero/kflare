@@ -145,9 +145,10 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
   API calls, rate limits, readiness and drift.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how kflare finds, owns, corrects and deletes Cloudflare objects, and its
-known limitations. One to know up front: a change made in the Cloudflare dashboard is corrected on the next
-reconcile, which can be up to 10 hours away, unless you set a drift check interval (the chart's `driftCheckInterval`,
-from v0.2.0).
+known limitations. One to know up front: a change made in the Cloudflare dashboard is corrected at the next drift
+check, within about an hour by default (the chart's `driftCheckInterval`), not at once. An installation with more
+than 3,600 resources per API token needs a
+[longer interval](docs/deploy.md#correcting-changes-made-outside-kflare).
 
 ## Why kflare
 

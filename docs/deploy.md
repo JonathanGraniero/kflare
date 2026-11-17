@@ -766,16 +766,20 @@ capabilities dropped and a read-only root filesystem.
 
 ### Correcting changes made outside kflare
 
-kflare reverts a change made in the Cloudflare dashboard, through the API or by Terraform only when it reconciles the
-resource: when the resource, or something it depends on, changes, or at the resync every 10 hours (see
-[When drift is detected](../ARCHITECTURE.md#when-drift-is-detected)). To bound that, set a drift check interval:
+kflare reverts a change made in the Cloudflare dashboard, through the API or by Terraform when it reconciles the
+resource: when the resource, or something it depends on, changes, and at each drift check (see
+[When drift is detected](../ARCHITECTURE.md#when-drift-is-detected)). The chart checks every hour by default:
 
 ```yaml
-driftCheckInterval: 30m
+driftCheckInterval: 1h
 ```
 
-Every resource is then checked against Cloudflare that long after each successful reconcile, give or take a tenth at
-random, so that resources synced together spread their checks. A check reads the resource's object and writes only
+Every resource is checked against Cloudflare that long after each successful reconcile, give or take a tenth at
+random, so that resources synced together spread their checks: an object's next check is at most 66 minutes away,
+and it can be seconds away. To make a change by hand, such as a fix during an incident, annotate the resource
+`kflare.dev/paused: "true"` first, then change the object, and remove the annotation once the spec says the same. A
+check kflare holds back for the rate limit runs later than that, and a resource whose reconcile fails is retried
+with back-off instead. A check reads the resource's object and writes only
 what differs. The read is one Cloudflare API call for most kinds and two for a `Tunnel`. An `IPList` takes two, plus
 one per 500 items past the first 500.
 
@@ -784,8 +788,18 @@ user, counting the dashboard and all of the user's tokens, or for an account-own
 call for five minutes
 ([Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/)). Checks of N
 resources take about N calls per interval, so an interval of at least N seconds keeps them to a quarter of the limit:
-10 minutes for 600 resources, 30 minutes for 1,800. That leaves room for kflare's own changes and for anything else
-using the token's budget. `0s`, or leaving the value empty, turns the checks off.
+10 minutes for 600 resources, 30 minutes for 1,800, and the default of an hour for up to 3,600. That leaves room for
+kflare's own changes and for anything else using the token's budget. It is an average: after a restart or a
+failover, every resource is reconciled in one paced pass, so their checks come due together, and the tenth they
+move by spreads them out again only over several hours. Until then, checks take most of kflare's budget for part of
+each hour, and its other changes wait their turn (`reason="budget"` in
+`kflare_cloudflare_reconciles_deferred_total`). The count is of every resource that spends one
+budget: a user's token used for several accounts is one budget, not one per account. **Raise the interval for more
+than 3,600 resources per budget**, and lower it to correct changes sooner when there are fewer.
+
+`driftCheckInterval: ""` (or `0s`) turns the checks off. A resource is then reconciled again only when it, or
+something it depends on, changes, or at the resync every 10 hours, so a change made outside kflare can stay that
+long. `kflare_drift_corrections_total` counts the changes kflare corrects (see [Monitoring](#monitoring)).
 
 ### Cloudflare's API rate limit
 
@@ -1429,8 +1443,8 @@ What the alerts on kflare's own metrics tell apart:
   that is not ready, do not count as reconcile errors. Its 30 minutes leave out what clears by itself, such as an
   `IPList` whose items Cloudflare is replacing.
 - **Changes made outside kflare**: `KflareDriftCorrected`. Someone edits by hand what kflare manages, or another tool
-  does. If it never stops, the two keep rewriting the same object. kflare only finds such a change when it reconciles,
-  so set a [drift check interval](#correcting-changes-made-outside-kflare).
+  does. If it never stops, the two keep rewriting the same object. kflare finds such a change when it reconciles, so
+  at each [drift check](#correcting-changes-made-outside-kflare), every hour by default.
 - **An API token that expires soon**: `KflareTokenExpiresSoon`. Everything still works until the token expires, so its
   account stays `Ready`, and the alert gives the time a rotation needs. Once the token has expired, the account turns
   `READY=False` with `TokenExpired`, which `KflareResourcesNotReady` finds too.

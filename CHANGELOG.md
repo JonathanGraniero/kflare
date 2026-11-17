@@ -41,6 +41,19 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **The chart refuses to install into the `default` namespace** unless `allowDefaultNamespace: true`. Helm installs
   there when `--namespace` is left out, and the release namespace is now where kflare may write Secrets. An
   installation in `default` sets the value to upgrade.
+- **The chart checks every resource against Cloudflare every hour** (`driftCheckInterval: 1h`, which was empty:
+  [#135](https://github.com/JonathanGraniero/kflare/issues/135)). A change made outside kflare to an object it
+  manages, in the dashboard, through the API or by Terraform, is now reverted at the object's next check, at most 66
+  minutes later, not at the 10-hour resync. That includes a fix made by hand during an incident, whose check can be
+  seconds away: annotate the resource `kflare.dev/paused: "true"` first, then make the fix, or put the fix in the
+  spec. An installation that already sets `driftCheckInterval` is unchanged.
+
+  A check takes one Cloudflare API call for most kinds (two for a `Tunnel`, more for a large `IPList`), so `1h` keeps
+  the checks to about a quarter of Cloudflare's rate limit, on average, for up to 3,600 resources per API token (a
+  user's token used for several accounts is one budget). With more, set a longer interval. kflare paces its calls
+  and waits out a 429 either way, so checks that do not fit run late rather than fail
+  ([Cloudflare's API rate limit](docs/deploy.md#cloudflares-api-rate-limit)). `driftCheckInterval: ""` turns the
+  checks off, as before. The `--drift-check-interval` flag's own default stays `0`.
 
 ### The Helm chart
 
