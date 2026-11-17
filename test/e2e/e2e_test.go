@@ -151,8 +151,15 @@ var _ = Describe("controller-manager", func() {
 		}
 		reader, stranger := token("e2e-metrics-reader"), token("e2e-metrics-stranger")
 
-		By("forwarding a local port to the metrics Service")
-		port, stop, err := utils.PortForward(managerNamespace, "svc/"+releaseName+"-metrics", 8080)
+		// The leader's: a standby serves no controller's metrics, and a
+		// forward to the Service picks either pod.
+		var leader string
+		Eventually(func() (err error) {
+			leader, err = runningController()
+			return err
+		}, 2*time.Minute, time.Second).Should(Succeed())
+		By("forwarding a local port to the leader's metrics port")
+		port, stop, err := utils.PortForward(managerNamespace, "pod/"+leader, 8080)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(stop)
 
@@ -194,9 +201,13 @@ var _ = Describe("controller-manager", func() {
 		By("serving the metrics to a token with the role")
 		// The binding reaches the API server's authorizer within seconds.
 		Eventually(status("https", reader), time.Minute, time.Second).Should(Equal(http.StatusOK))
-		_, body, err := get("https", reader)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(body).To(ContainSubstring("controller_runtime_reconcile_total"))
+		// A leader that has just taken over serves its controllers' metrics
+		// once they have started.
+		var body string
+		Eventually(func() (string, error) {
+			_, body, err = get("https", reader)
+			return body, err
+		}, time.Minute, time.Second).Should(ContainSubstring("controller_runtime_reconcile_total"))
 		By("serving kflare's own, whose corrections every kind has from the start")
 		Expect(body).To(ContainSubstring(`kflare_drift_corrections_total{kind="DNSRecord"}`))
 	})
