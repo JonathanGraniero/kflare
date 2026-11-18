@@ -13,6 +13,8 @@ import (
 	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -116,8 +118,22 @@ var zoneKind = crudResourceKind[*cloudflarev1alpha1.Zone, ZoneAPI, zoneObject, z
 
 	dependents: zoneDependents,
 	hooks: crudHooks[*cloudflarev1alpha1.Zone, ZoneAPI, zoneObject]{
-		synced: syncZonePlan,
+		synced:      syncZonePlan,
+		differences: zoneDifferences,
 	},
+}
+
+// zoneDifferences names the spec fields whose value a zone does not hold: its
+// type, and the plan syncZonePlan would subscribe it to.
+func zoneDifferences(zone *cloudflarev1alpha1.Zone, current *cf.Zone, _ map[string]string) []string {
+	var fields []string
+	if current.Type != desiredZoneType(zone) {
+		fields = append(fields, "type")
+	}
+	if _, drifted := zonePlanDrift(zone, *current); drifted {
+		fields = append(fields, "plan")
+	}
+	return fields
 }
 
 // observeZone records a zone in status.
@@ -200,9 +216,14 @@ func desiredZoneType(zone *cloudflarev1alpha1.Zone) string {
 	return zone.Spec.Type
 }
 
-// isZoneReady reports whether zone is Ready and has a zone ID.
-func isZoneReady(zone *cloudflarev1alpha1.Zone) bool {
-	return zone.Status.CloudflareMetadata.ZoneID != "" && isReady(zone)
+// isZoneReady reports whether zone has a zone ID and is Ready. For a resource
+// kflare only observes (forObserved), an observed Zone whose zone differs from
+// its spec is ready too: the zone is there, and reading its objects changes
+// nothing. A resource kflare manages waits, as for any Zone that is not Ready.
+func isZoneReady(zone *cloudflarev1alpha1.Zone, forObserved bool) bool {
+	ready := meta.FindStatusCondition(zone.GetConditions(), cloudflarev1alpha1.ConditionReady)
+	return zone.Status.CloudflareMetadata.ZoneID != "" && ready != nil &&
+		(ready.Status == metav1.ConditionTrue || (forObserved && ready.Reason == reasonDriftDetected))
 }
 
 // readyZone returns the Zone name in obj's namespace once it is ready, or why
@@ -215,7 +236,8 @@ func readyZone(ctx context.Context, c client.Reader, obj client.Object, name str
 	if condErr := getReference(ctx, c, key, zone, what, "ZoneNotFound"); condErr != nil {
 		return nil, condErr
 	}
-	if !isZoneReady(zone) {
+	// The kinds that call this cannot be observed (startReconcile).
+	if !isZoneReady(zone, false) {
 		return nil, &conditionError{Reason: "ZoneNotReady", Message: what + " is not ready"}
 	}
 	return zone, nil

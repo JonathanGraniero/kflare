@@ -109,7 +109,7 @@ type settingsReconciler[A any] struct {
 
 func (r *settingsReconciler[A]) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	obj := r.kind.newObject()
-	if done, result, err := startReconcile(ctx, r.Client, req, obj, func() (ctrl.Result, error) {
+	if done, result, err := startReconcile(ctx, r.Client, req, obj, false, func() (ctrl.Result, error) {
 		return r.reconcileDelete(ctx, obj)
 	}); done {
 		return result, err

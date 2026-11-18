@@ -126,6 +126,29 @@ var _ = Describe("KVNamespace and the WorkerScripts bound to it", func() {
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, kvKey, &cloudflarev1alpha1.KVNamespace{}))).To(BeTrue())
 	})
 
+	It("waits for them when kflare only observes it too, then leaves its KV namespace", func() {
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: kvKey})
+		Expect(err).NotTo(HaveOccurred())
+		bind("kv-bound-missing")
+		obj := &cloudflarev1alpha1.KVNamespace{}
+		Expect(k8sClient.Get(ctx, kvKey, obj)).To(Succeed())
+		setManagementPolicy(ctx, obj, reconciler.ManagementPolicyObserve)
+		Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
+
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: kvKey})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, kvKey, obj)).To(Succeed())
+		ready := meta.FindStatusCondition(obj.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Reason).To(Equal("InUse"))
+
+		forceDelete(ctx, &cloudflarev1alpha1.WorkerScript{}, workerKey)
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: kvKey})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, kvKey, &cloudflarev1alpha1.KVNamespace{}))).To(BeTrue())
+		Expect(store.objects).To(HaveLen(1), "an observed resource's KV namespace stays")
+	})
+
 	It("is re-triggered by the deletion of a WorkerScript bound to it, once it is being deleted", func() {
 		bind("kv-bound-missing")
 		worker := &cloudflarev1alpha1.WorkerScript{}

@@ -155,6 +155,11 @@ var _ = Describe("Upgrade from the last release", Ordered, Label("upgrade"), fun
 			By(release + " predates " + upgradeManifests + ": applying this checkout's copy to it")
 			theirs = string(ours)
 		}
+		if live {
+			// R2 is off: the test account's R2 subscription was cancelled (2026-11-17). Delete this and withoutR2
+			// once it is paid for again.
+			theirs, ours = withoutR2(theirs), []byte(withoutR2(string(ours)))
+		}
 		released, err = renderManifests(theirs, data)
 		Expect(err).NotTo(HaveOccurred(), "%s's %s", release, upgradeManifests)
 		current, err = renderManifests(string(ours), data)
@@ -414,6 +419,34 @@ func TestUpgradeManifests(t *testing.T) {
 	}
 }
 
+// TestWithoutR2 checks that withoutR2 leaves no R2 in this checkout's upgrade manifests, and nothing else out.
+// R2 is off: delete this test with withoutR2.
+func TestWithoutR2(t *testing.T) {
+	root, err := utils.GetProjectDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := os.ReadFile(filepath.Join(root, upgradeManifests))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := newManifestData("abc123", upgradeNamespace, placeholderZone, placeholderAccountID)
+	all, err := renderManifests(string(text), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := renderManifests(withoutR2(string(text)), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(m.objects), len(all.objects)-1; got != want {
+		t.Errorf("%d objects, want %d: only the R2Bucket goes", got, want)
+	}
+	if strings.Contains(m.yaml, "R2Bucket") || strings.Contains(m.yaml, "r2BucketRef") {
+		t.Errorf("R2 left in:\n%s", m.yaml)
+	}
+}
+
 // manifestProblems returns what is wrong with m, the upgrade manifests, for
 // CRDs of kinds: each object must be a named kflare resource, held once, and
 // every kind must have one.
@@ -570,6 +603,16 @@ func newManifestData(run, namespace, zone, accountID string) manifestData {
 type manifests struct {
 	yaml    string
 	objects []*unstructured.Unstructured
+}
+
+// withoutR2 drops the R2Bucket, and the WorkerScript's binding to it, from the upgrade manifests' template text.
+// shortcut: matches the text of v0.4.3's to v0.5.0's upgrade.yaml; delete it once R2 is back on the test account.
+func withoutR2(text string) string {
+	docs := slices.DeleteFunc(strings.Split(text, "\n---\n"), func(doc string) bool {
+		return strings.Contains(doc, "\nkind: R2Bucket\n")
+	})
+	return strings.Replace(strings.Join(docs, "\n---\n"),
+		"  - name: ASSETS\n    r2BucketRef:\n      name: bucket\n", "", 1)
 }
 
 // renderManifests renders the template text with data.
@@ -1070,7 +1113,8 @@ func rulePhase(obj *unstructured.Unstructured) (string, bool) {
 
 // cloudflareLeftovers returns what Cloudflare still holds of the run's
 // objects: the zone excepted, which the run adopts and keeps.
-func cloudflareLeftovers(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceContainer, buckets *r2.BucketService,
+// R2 is off: name the *r2.BucketService parameter buckets again once it is paid for again.
+func cloudflareLeftovers(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceContainer, _ *r2.BucketService,
 	transforms *managed_transforms.ManagedTransformService, zoneID string, data manifestData, m manifests,
 	ids cloudflareIDs) []string {
 	GinkgoHelper()
@@ -1089,11 +1133,12 @@ func cloudflareLeftovers(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceCont
 	if _, ok := kvNamespaces(ctx, cfAPI, rc)[ids.kvNamespace]; ok {
 		left = append(left, "KV namespace "+ids.kvNamespace)
 	}
-	var bucket r2.BucketGetParams
-	bucket.AccountID.Value, bucket.AccountID.Present = rc.Identifier, true
-	if _, err := buckets.Get(ctx, data.Name, bucket); !cfpkg.IsNotFound(err) {
-		left = append(left, fmt.Sprintf("R2 bucket %s (%v)", data.Name, err))
-	}
+	// R2 is off: uncomment once it is paid for again.
+	// var bucket r2.BucketGetParams
+	// bucket.AccountID.Value, bucket.AccountID.Present = rc.Identifier, true
+	// if _, err := buckets.Get(ctx, data.Name, bucket); !cfpkg.IsNotFound(err) {
+	// 	left = append(left, fmt.Sprintf("R2 bucket %s (%v)", data.Name, err))
+	// }
 	if found := d1DatabaseIDs(ctx, cfAPI, rc, data.Name); len(found) > 0 {
 		left = append(left, fmt.Sprintf("D1 databases %v", found))
 	}
@@ -1141,7 +1186,8 @@ func cloudflareLeftovers(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceCont
 // by their names and refs, and the entry points of newEntrypointPhases, the
 // phases that had none before the run, if they are empty. It only reports problems: it runs after the specs,
 // whether or not they passed.
-func sweepUpgrade(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceContainer, buckets *r2.BucketService,
+// R2 is off: name the *r2.BucketService parameter buckets again once it is paid for again.
+func sweepUpgrade(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceContainer, _ *r2.BucketService,
 	ruleService *rulesets.RuleService, transforms *managed_transforms.ManagedTransformService, zoneID string,
 	newEntrypointPhases []string, data manifestData, all ...manifests) {
 	zrc := cf.ZoneIdentifier(zoneID)
@@ -1169,11 +1215,12 @@ func sweepUpgrade(ctx context.Context, cfAPI *cf.API, rc *cf.ResourceContainer, 
 			GinkgoWriter.Printf("cleanup: deleting KV namespace %s: %v\n", ns.ID, err)
 		}
 	}
-	var bucket r2.BucketDeleteParams
-	bucket.AccountID.Value, bucket.AccountID.Present = rc.Identifier, true
-	if _, err := buckets.Delete(ctx, data.Name, bucket); err != nil && !cfpkg.IsNotFound(err) {
-		GinkgoWriter.Printf("cleanup: deleting R2 bucket %s: %v\n", data.Name, err)
-	}
+	// R2 is off: uncomment once it is paid for again.
+	// var bucket r2.BucketDeleteParams
+	// bucket.AccountID.Value, bucket.AccountID.Present = rc.Identifier, true
+	// if _, err := buckets.Delete(ctx, data.Name, bucket); err != nil && !cfpkg.IsNotFound(err) {
+	// 	GinkgoWriter.Printf("cleanup: deleting R2 bucket %s: %v\n", data.Name, err)
+	// }
 	cleanupD1Database(ctx, cfAPI, rc, data.Name)
 	refs := map[string][]string{}
 	for _, m := range all {

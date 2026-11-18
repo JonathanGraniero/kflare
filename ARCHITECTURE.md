@@ -239,6 +239,43 @@ made in Cloudflare meanwhile unless the spec was changed to match.
   rule keeps its place in its phase, as a rule created outside kflare does: the other rules' reconciles order kflare's
   rules around it, and it takes its place again once unpaused (see [Rules](#rules)).
 
+## Observing a resource
+
+kflare only observes a resource annotated `kflare.dev/management-policy: observe`, and every resource of an
+installation started with `--observe-only` (the chart's `observeOnly`), whatever its annotation says. The default,
+`manage`, is everything else this document describes. Any other value reports `InvalidManagementPolicy`: kflare then
+makes no Cloudflare call for the resource, and does not finish deleting it, as nobody said what to do with its object.
+
+The shared CRUD reconciler observes the kinds that can name the spec fields an object differs in (`crudHooks`'
+`differences`): `Zone` and `DNSRecord` so far. A resource of another kind, the rule and settings kinds included,
+reports `ObserveNotSupported` without a call to Cloudflare. A rule kind finds its rule by the ref kflare stores in it,
+so observing a rule kflare did not create first needs a way to name it.
+
+- **What it reads.** The object its status names, or else the parent's object with its key, found as the `adopt`
+  policy finds it (a DNSRecord: the record holding its content, or the only record of its name and type). It takes no
+  lock and claims nothing: it sets no claim label, and another resource's claim does not stop it.
+- **What it reports.** The object's ID and metadata in status, and `Ready=True` with reason `InSync`, or `Ready=False`
+  with `DriftDetected` and the spec fields that differ, or `NotFound`. A message names fields and never values, which
+  can be secret. Every observed resource is read again at the drift check interval, as a managed one is. Without an
+  interval, `DriftDetected` and `NotFound` are read again every minute and `InSync` not at all: a migration starts
+  with most resources differing, and reading each every minute would spend the token's budget.
+- **Its Zone and references.** A Zone that reports `DriftDetected` still serves the observed resources that name it:
+  the zone is there, and reading it changes nothing. A managed resource waits (`ZoneNotReady`), as for any Zone that
+  is not `Ready`, so nothing writes to a zone whose Zone was never adopted. A resource that references one of a kind
+  kflare cannot observe yet, as a DNSRecord's `tunnelRef` does, waits for it (`TunnelNotReady`) while that one reports
+  `ObserveNotSupported`.
+- **What it never does.** Create, update or delete an object, or run a kind's step after the sync (a Zone's plan is
+  compared instead).
+- **Deletion.** The object stays, whatever the deletion policy, and nothing is handed to a successor. A resource
+  still waits for the resources that use it, one of a kind kflare cannot observe included.
+- **Switching to manage.** An observed resource whose object is not its own is marked `kflare.dev/adopted`. Once the
+  policy is `manage`, the resource reads the object by the ID in status, claims it and corrects it, with no adoption
+  policy asked for, and keeps it on deletion as an adopted object (see [Deletion](#deletion)). It first holds its key
+  and looks for another resource's claim on the object, as a resource that adopts does: if one manages it, the
+  resource reports the kind's conflict reason and claims nothing. A resource that created its object and is then
+  observed is not marked, nor is one observed while it was creating its object (`kflare.dev/creating`), so the
+  object is still deleted with it once it is managed again.
+
 ## Adoption and ownership
 
 A resource creates its Cloudflare object. When an object with the resource's key already exists and kflare did not

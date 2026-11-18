@@ -55,6 +55,20 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   ([Cloudflare's API rate limit](docs/deploy.md#cloudflares-api-rate-limit)). `driftCheckInterval: ""` turns the
   checks off, as before. The `--drift-check-interval` flag's own default stays `0`.
 
+### Observing without writing
+
+- **A resource annotated `kflare.dev/management-policy: observe` is only observed**
+  ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
+  in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
+  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
+  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
+  [Observing without writing](docs/deploy.md#observing-without-writing).
+- **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
+  token.
+- New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
+  use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
+
 ### The Helm chart
 
 - **Alerts and a Grafana dashboard** ([#76](https://github.com/JonathanGraniero/kflare/issues/76)), both off by

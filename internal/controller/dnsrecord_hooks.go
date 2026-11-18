@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 // automaticTTL is the TTL Cloudflare reports for "automatic". It is also what
@@ -40,6 +41,7 @@ var dnsRecordHooks = crudHooks[*cloudflarev1alpha1.DNSRecord, DNSRecordAPI, dns.
 	find:           findDNSRecord,
 	refuseAdoption: refuseUnproxying,
 	matches:        dnsRecordMatches,
+	differences:    dnsRecordDifferences,
 	describes:      dnsRecordDescribes,
 }
 
@@ -169,21 +171,43 @@ func readDNSRecord(current *dns.RecordResponse) storedDNSRecord {
 	return stored
 }
 
-// dnsRecordMatches compares a record with its spec. Unset fields are compared
-// against Cloudflare's defaults, because Cloudflare always reports a value for
-// them: an unset ttl means automatic and an unset proxied means false. An unset
-// priority is left to Cloudflare. Content is not compared when spec.data is
-// set, or for SRV records, because Cloudflare derives it from the data fields.
+// dnsRecordMatches compares a record with its spec (dnsRecordDifferences).
 func dnsRecordMatches(record *cloudflarev1alpha1.DNSRecord, current *dns.RecordResponse, refs map[string]string) bool {
+	return len(dnsRecordDifferences(record, current, refs)) == 0
+}
+
+// dnsRecordDifferences names the spec fields whose value a record does not
+// hold. Unset fields are compared against Cloudflare's defaults, because
+// Cloudflare always reports a value for them: an unset ttl means automatic and
+// an unset proxied means false. An unset priority is left to Cloudflare.
+// Content is not compared when spec.data is set, or for SRV records, because
+// Cloudflare derives it from the data fields.
+func dnsRecordDifferences(record *cloudflarev1alpha1.DNSRecord, current *dns.RecordResponse,
+	refs map[string]string) []string {
 	spec, stored := &record.Spec, readDNSRecord(current)
 	contentFromData := spec.Data != nil || spec.Type == "SRV"
-	return (contentFromData || dnsRecordContent(record, refs) == current.Content) &&
-		dnsRecordTTL(record) == current.TTL &&
-		dnsRecordProxied(record, refs) == current.Proxied &&
-		(spec.Priority == nil || float64(*spec.Priority) == current.Priority) &&
-		spec.Comment == current.Comment &&
-		tagsEqual(spec.Tags, stored.Tags) &&
-		reflect.DeepEqual(dnsRecordData(record), stored.Data)
+	content := "content"
+	if dnsRecordTunnelName(record) != "" {
+		content = tunnelRefField
+	}
+	var fields []string
+	for _, field := range []struct {
+		name    string
+		matches bool
+	}{
+		{content, contentFromData || dnsRecordContent(record, refs) == current.Content},
+		{"ttl", dnsRecordTTL(record) == current.TTL},
+		{"proxied", dnsRecordProxied(record, refs) == current.Proxied},
+		{"priority", spec.Priority == nil || float64(*spec.Priority) == current.Priority},
+		{"comment", spec.Comment == current.Comment},
+		{"tags", tagsEqual(spec.Tags, stored.Tags)},
+		{"data", reflect.DeepEqual(dnsRecordData(record), stored.Data)},
+	} {
+		if !field.matches {
+			fields = append(fields, field.name)
+		}
+	}
+	return fields
 }
 
 // tagsEqual returns true if both tag slices contain the same elements (order-independent).
@@ -217,7 +241,10 @@ func findDNSRecord(ctx context.Context, c client.Client, api DNSRecordAPI, recor
 		}
 	}
 	// An unknown policy is reported by the shared loop, by mayAdopt or mayCreate.
-	if policy, _ := adoptionPolicy(record); policy == "" || len(candidates) != 1 {
+	// An observed DNSRecord looks for its record as one with a policy does.
+	policy, _ := adoptionPolicy(record)
+	observed, _ := reconciler.Observed(record)
+	if (policy == "" && !observed) || len(candidates) != 1 {
 		return "", nil, nil
 	}
 	claimed, err := claimedIDs(ctx, c, &cloudflarev1alpha1.DNSRecordList{}, cloudflarev1alpha1.DNSRecordIDLabel, record)

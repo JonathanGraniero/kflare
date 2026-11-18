@@ -312,17 +312,19 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 					GinkgoWriter.Printf("cleanup: deleting KV namespace %s: %v\n", kvNamespaceID, err)
 				}
 			}
-			for _, jurisdiction := range []r2.BucketDeleteParamsCfR2Jurisdiction{
-				r2.BucketDeleteParamsCfR2JurisdictionDefault, r2.BucketDeleteParamsCfR2JurisdictionEu,
-			} {
-				var params r2.BucketDeleteParams
-				params.AccountID.Value, params.AccountID.Present = accountID, true
-				params.CfR2Jurisdiction.Value, params.CfR2Jurisdiction.Present = jurisdiction, true
-				_, err := buckets.Delete(ctx, resourceName(), params)
-				if err != nil && !cfpkg.IsNotFound(err) {
-					GinkgoWriter.Printf("cleanup: deleting R2 bucket %s (%s): %v\n", resourceName(), jurisdiction, err)
-				}
-			}
+			// R2 is off: the test account's R2 subscription was cancelled (2026-11-17). Uncomment once it is paid for
+			// again, with the other R2 lines marked "R2 is off" in this file and upgrade_test.go.
+			// for _, jurisdiction := range []r2.BucketDeleteParamsCfR2Jurisdiction{
+			// 	r2.BucketDeleteParamsCfR2JurisdictionDefault, r2.BucketDeleteParamsCfR2JurisdictionEu,
+			// } {
+			// 	var params r2.BucketDeleteParams
+			// 	params.AccountID.Value, params.AccountID.Present = accountID, true
+			// 	params.CfR2Jurisdiction.Value, params.CfR2Jurisdiction.Present = jurisdiction, true
+			// 	_, err := buckets.Delete(ctx, resourceName(), params)
+			// 	if err != nil && !cfpkg.IsNotFound(err) {
+			// 		GinkgoWriter.Printf("cleanup: deleting R2 bucket %s (%s): %v\n", resourceName(), jurisdiction, err)
+			// 	}
+			// }
 			cleanupD1Database(ctx, cfAPI, accountRC, resourceName())
 			if zoneID != "" {
 				cleanupRules(ctx, cfAPI, ruleService, zoneID, customRulesPhase, ruleRef("WAFCustomRule", wafKey),
@@ -478,6 +480,9 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 
 	It("creates an R2Bucket, changes its storage class in place, and keeps a bucket of its name in the EU "+
 		"jurisdiction apart", func() {
+		// R2 is off: the test account's R2 subscription was cancelled (2026-11-17). Remove this Skip once it is paid
+		// for again.
+		Skip("R2 is off on the test account")
 		bucket := &cloudflarev1alpha1.R2Bucket{
 			ObjectMeta: objectMeta(bucketKey),
 			Spec: cloudflarev1alpha1.R2BucketSpec{
@@ -604,7 +609,8 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(db.Status.CloudflareMetadata.DatabaseID).To(Equal(databaseID))
 	})
 
-	It("uploads a WorkerScript bound to the KVNamespace and R2Bucket", func() {
+	// R2 is off: put back "and R2Bucket" and the ASSETS lines below once R2 is paid for again.
+	It("uploads a WorkerScript bound to the KVNamespace", func() {
 		script := `export default { async fetch(request, env) { return new Response(env.GREETING); } };`
 		greeting := "hello from kflare e2e"
 		worker := &cloudflarev1alpha1.WorkerScript{
@@ -618,7 +624,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 					Bindings: []cloudflarev1alpha1.WorkerBinding{
 						{Name: "GREETING", PlainText: &greeting},
 						{Name: "CACHE", KVNamespaceRef: &corev1.LocalObjectReference{Name: kvKey.Name}},
-						{Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: bucketKey.Name}},
+						// {Name: "ASSETS", R2BucketRef: &corev1.LocalObjectReference{Name: bucketKey.Name}},
 					},
 				},
 			},
@@ -632,7 +638,7 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(bindings.BindingList).To(ContainElements(
 			cf.WorkerBindingListItem{Name: "CACHE", Binding: cf.WorkerKvNamespaceBinding{NamespaceID: kvNamespaceID}},
-			cf.WorkerBindingListItem{Name: "ASSETS", Binding: cf.WorkerR2BucketBinding{BucketName: resourceName()}},
+			// cf.WorkerBindingListItem{Name: "ASSETS", Binding: cf.WorkerR2BucketBinding{BucketName: resourceName()}},
 		))
 	})
 
@@ -804,6 +810,55 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(renamed.Labels).To(HaveKeyWithValue(cloudflarev1alpha1.DNSRecordIDLabel, recordID))
 		Expect(renamed.Annotations).NotTo(HaveKey("kflare.dev/adopted"), "kflare created the record")
 		recordKey = renamedKey
+	})
+
+	It("observes a DNS record without changing it, and leaves it when the observing DNSRecord is deleted", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		// A second DNSRecord describes the record the first one manages, with
+		// another comment, and only observes it.
+		managed := &cloudflarev1alpha1.DNSRecord{}
+		Expect(k8s.Get(ctx, recordKey, managed)).To(Succeed())
+		before, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), recordID)
+		Expect(err).NotTo(HaveOccurred())
+
+		observedKey := client.ObjectKey{Namespace: e2eNamespace, Name: "record-observed"}
+		observed := &cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(observedKey), Spec: managed.Spec}
+		observed.Annotations = map[string]string{"kflare.dev/management-policy": "observe"}
+		observed.Spec.Comment = "kflare e2e observed " + run
+		Expect(k8s.Create(ctx, observed)).To(Succeed())
+		conditions := func() []metav1.Condition { return observed.Status.Conditions }
+		expectNotReady(observedKey, observed, conditions, "DriftDetected", gitopshealth.ArgoCDDegraded,
+			gitopshealth.FluxFailed)
+		Expect(meta.FindStatusCondition(observed.Status.Conditions, cloudflarev1alpha1.ConditionReady).Message).To(
+			ContainSubstring("differs from the spec in: comment."))
+		Expect(observed.Status.CloudflareMetadata.RecordID).To(Equal(recordID))
+		Expect(observed.Labels).NotTo(HaveKey(cloudflarev1alpha1.DNSRecordIDLabel), "an observed record is not claimed")
+
+		By("reporting InSync once the manifest matches the record")
+		patch := client.MergeFrom(observed.DeepCopy())
+		observed.Spec.Comment = managed.Spec.Comment
+		Expect(k8s.Patch(ctx, observed, patch)).To(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, observedKey, observed)).To(Succeed())
+			ready := meta.FindStatusCondition(observed.Status.Conditions, cloudflarev1alpha1.ConditionReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(ready.Reason).To(Equal("InSync"))
+		}, e2eTimeout, e2ePoll).Should(Succeed())
+
+		By("deleting the observing DNSRecord, which leaves the record as it was")
+		Expect(k8s.Delete(ctx, observed)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8s.Get(ctx, observedKey, &cloudflarev1alpha1.DNSRecord{}))
+		}, e2eTimeout, e2ePoll).Should(BeTrue())
+		after, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), recordID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(after.ModifiedOn).To(Equal(before.ModifiedOn), "Cloudflare kept the record unchanged")
+		Expect(after.Comment).To(Equal(before.Comment))
+		Expect(k8s.Get(ctx, recordKey, managed)).To(Succeed())
+		Expect(meta.IsStatusConditionTrue(managed.Status.Conditions, cloudflarev1alpha1.ConditionReady)).To(BeTrue())
 	})
 
 	It("points a DNSRecord at the Tunnel, and follows the tunnel when it is recreated", func() {
@@ -1788,12 +1843,13 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}
 		Expect(workerNames(ctx, cfAPI, accountRC)).NotTo(ContainElement(resourceName()))
 		Expect(kvNamespaces(ctx, cfAPI, accountRC)).NotTo(HaveKey(kvNamespaceID))
-		for _, jurisdiction := range []r2.BucketGetParamsCfR2Jurisdiction{
-			r2.BucketGetParamsCfR2JurisdictionDefault, r2.BucketGetParamsCfR2JurisdictionEu,
-		} {
-			_, err = getBucket(jurisdiction)
-			Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "the %s bucket was not deleted: %v", jurisdiction, err)
-		}
+		// R2 is off: uncomment once it is paid for again.
+		// for _, jurisdiction := range []r2.BucketGetParamsCfR2Jurisdiction{
+		// 	r2.BucketGetParamsCfR2JurisdictionDefault, r2.BucketGetParamsCfR2JurisdictionEu,
+		// } {
+		// 	_, err = getBucket(jurisdiction)
+		// 	Expect(cfpkg.IsNotFound(err)).To(BeTrue(), "the %s bucket was not deleted: %v", jurisdiction, err)
+		// }
 		Expect(d1DatabaseIDs(ctx, cfAPI, accountRC, resourceName())).To(BeEmpty(), "the D1 database was not deleted")
 		if listID != "" {
 			_, err = cfAPI.GetList(ctx, accountRC, listID)

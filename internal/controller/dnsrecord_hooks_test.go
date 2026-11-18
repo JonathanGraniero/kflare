@@ -955,15 +955,20 @@ var _ = Describe("DNSRecord hooks", func() {
 var _ = Describe("isZoneReady", func() {
 	It("needs both the Ready condition and a zone ID", func() {
 		zone := &cloudflarev1alpha1.Zone{}
-		Expect(isZoneReady(zone)).To(BeFalse())
+		Expect(isZoneReady(zone, false)).To(BeFalse())
 		zone.Status.CloudflareMetadata.ZoneID = "zone"
-		Expect(isZoneReady(zone)).To(BeFalse(), "no condition")
+		Expect(isZoneReady(zone, false)).To(BeFalse(), "no condition")
 		zone.Status.Conditions = []metav1.Condition{{Type: cloudflarev1alpha1.ConditionReady, Status: metav1.ConditionFalse}}
-		Expect(isZoneReady(zone)).To(BeFalse(), "not ready")
+		Expect(isZoneReady(zone, false)).To(BeFalse(), "not ready")
+		Expect(isZoneReady(zone, true)).To(BeFalse(), "not ready, for an observed resource either")
 		zone.Status.Conditions[0].Status = metav1.ConditionTrue
-		Expect(isZoneReady(zone)).To(BeTrue())
+		Expect(isZoneReady(zone, false)).To(BeTrue())
+		zone.Status.Conditions[0] = metav1.Condition{Type: cloudflarev1alpha1.ConditionReady,
+			Status: metav1.ConditionFalse, Reason: reasonDriftDetected}
+		Expect(isZoneReady(zone, true)).To(BeTrue(), "an observed zone that differs from its spec is there")
+		Expect(isZoneReady(zone, false)).To(BeFalse(), "a resource kflare manages writes to no zone that is not Ready")
 		zone.Status.CloudflareMetadata.ZoneID = ""
-		Expect(isZoneReady(zone)).To(BeFalse(), "no zone ID")
+		Expect(isZoneReady(zone, true)).To(BeFalse(), "no zone ID")
 	})
 })
 
