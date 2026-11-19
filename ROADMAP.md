@@ -82,7 +82,7 @@ Before more resource kinds, the work that decides whether kflare can be trusted 
 - **A standby by default**, on another node from the leader
   ([#185](https://github.com/JonathanGraniero/kflare/pull/185),
   [#192](https://github.com/JonathanGraniero/kflare/issues/192))
-- **One Cloudflare SDK**: `Zone`, `TunnelConfiguration` and `WorkerScript` still call the older one
+- **One Cloudflare SDK**: `Zone` and `WorkerScript` still call the older one
   ([#134](https://github.com/JonathanGraniero/kflare/issues/134)), and `WorkerScript`'s binding field names need a
   decision before any kind can become `v1beta1` ([#194](https://github.com/JonathanGraniero/kflare/issues/194))
 
