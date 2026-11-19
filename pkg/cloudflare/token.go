@@ -60,3 +60,11 @@ func (c *Client) VerifyToken(ctx context.Context, accountID string) (TokenVerifi
 	}
 	return TokenVerification{}, err
 }
+
+// Account reads the account accountID, which the token must be allowed to
+// read (Account Settings Read).
+func (c *Client) Account(ctx context.Context, accountID string) (*accounts.Account, error) {
+	var params accounts.AccountGetParams
+	params.AccountID.Value, params.AccountID.Present = accountID, true
+	return accounts.NewAccountService(c.V7Options()...).Get(ctx, params)
+}

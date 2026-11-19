@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -462,7 +462,7 @@ var _ = Describe("An installation's scope and its CloudflareAccounts", func() {
 		var r *CloudflareAccountReconciler
 
 		BeforeEach(func() {
-			r = reconcilerWithFake(&fakeCFClient{account: cloudflare.Account{Name: "Scoped Account"}})
+			r = reconcilerWithFake(&fakeCFClient{account: accounts.Account{Name: "Scoped Account"}})
 		})
 
 		create := func(name string, labels map[string]string) *cloudflarev1alpha1.CloudflareAccount {

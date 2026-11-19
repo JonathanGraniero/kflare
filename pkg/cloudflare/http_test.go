@@ -39,7 +39,7 @@ const invalidBaseURL = "https://api.kflare.invalid/client/v4"
 
 // getAccount calls v0, and getNamespace v7, the way the controllers do.
 func getAccount(ctx context.Context, client *Client) error {
-	_, _, err := client.Account(ctx, "account-id")
+	_, _, err := client.API.Account(ctx, "account-id")
 	return err
 }
 

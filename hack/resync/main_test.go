@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	cf "github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	"github.com/cloudflare/cloudflare-go/v7/kv"
 	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/zones"
 
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 )
@@ -68,11 +68,9 @@ func TestStandInAnswersTheSDKsThroughTheProxy(t *testing.T) {
 	if err != nil || verified.Status != accounts.TokenVerifyResponseStatusActive {
 		t.Fatalf("Verify() = %+v, %v; want an active token", verified, err)
 	}
-	api, err := cf.NewWithAPIToken("resync-token-0", cf.HTTPClient(hc))
-	if err != nil {
-		t.Fatal(err)
-	}
-	read, _, err := api.Account(ctx, account)
+	var acct accounts.AccountGetParams
+	acct.AccountID.Value, acct.AccountID.Present = account, true
+	read, err := accounts.NewAccountService(opts...).Get(ctx, acct)
 	if err != nil || read.ID != account {
 		t.Fatalf("Account() = %+v, %v; want account %s", read, err, account)
 	}
@@ -163,7 +161,7 @@ func TestStandInAnswersTheSDKsThroughTheProxy(t *testing.T) {
 		t.Errorf("unknownCalls() = %v", unknown)
 	}
 
-	if _, err := api.ListZones(ctx); err == nil {
+	if _, err := zones.NewZoneService(opts...).List(ctx, zones.ZoneListParams{}); err == nil {
 		t.Error("ListZones() succeeded against a stand-in that holds no zones")
 	}
 	if unknown := f.unknownCalls(); len(unknown) != 1 {

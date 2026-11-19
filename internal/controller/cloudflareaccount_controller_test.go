@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,7 +28,7 @@ import (
 // verifications count the calls. Its zero verification is an active token
 // that never expires.
 type fakeCFClient struct {
-	account cloudflare.Account
+	account accounts.Account
 	err     error
 
 	verification cfpkg.TokenVerification
@@ -37,9 +37,12 @@ type fakeCFClient struct {
 	reads, verifications int
 }
 
-func (f *fakeCFClient) Account(_ context.Context, _ string) (cloudflare.Account, cloudflare.ResultInfo, error) {
+func (f *fakeCFClient) Account(_ context.Context, _ string) (*accounts.Account, error) {
 	f.reads++
-	return f.account, cloudflare.ResultInfo{}, f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &f.account, nil
 }
 
 func (f *fakeCFClient) VerifyToken(_ context.Context, _ string) (cfpkg.TokenVerification, error) {
@@ -187,9 +190,8 @@ var _ = Describe("CloudflareAccount Controller", func() {
 			createAccount()
 			createSecret(tokenKey, fakeToken)
 
-			// cloudflare-go returns a pointer to this type for HTTP 403.
-			forbidden := cloudflare.NewAuthenticationError(&cloudflare.Error{StatusCode: 403, Type: cloudflare.ErrorTypeAuthentication})
-			r := reconcilerWithFake(&fakeCFClient{err: &forbidden})
+			forbidden := v7APIError("GET", "accounts/"+fakeAcctID, 403, 9109, "Unauthorized to access requested resource")
+			r := reconcilerWithFake(&fakeCFClient{err: forbidden})
 			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.IsZero()).To(BeTrue())
@@ -218,7 +220,7 @@ var _ = Describe("CloudflareAccount Controller", func() {
 			createAccount()
 			createSecret(tokenKey, fakeToken)
 
-			fake := &fakeCFClient{account: cloudflare.Account{Name: "My CF Account"}}
+			fake := &fakeCFClient{account: accounts.Account{Name: "My CF Account"}}
 			r := reconcilerWithFake(fake)
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
 			Expect(err).NotTo(HaveOccurred())
@@ -236,7 +238,7 @@ var _ = Describe("CloudflareAccount Controller", func() {
 		It("schedules a drift check after a successful validation, once the manager sets an interval", func() {
 			createAccount()
 			createSecret(tokenKey, fakeToken)
-			r := reconcilerWithFake(&fakeCFClient{account: cloudflare.Account{Name: "My CF Account"}})
+			r := reconcilerWithFake(&fakeCFClient{account: accounts.Account{Name: "My CF Account"}})
 			expectDriftCheck(func() (reconcile.Result, error) {
 				return r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
 			})
@@ -258,7 +260,7 @@ var _ = Describe("CloudflareAccount Controller", func() {
 			Expect(k8sClient.Create(ctx, acct)).To(Succeed())
 			createSecret("CF_API_TOKEN", fakeToken)
 
-			fake := &fakeCFClient{account: cloudflare.Account{Name: "Default Key Account"}}
+			fake := &fakeCFClient{account: accounts.Account{Name: "Default Key Account"}}
 			r := reconcilerWithFake(fake)
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: accountKey})
 			Expect(err).NotTo(HaveOccurred())

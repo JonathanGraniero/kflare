@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -131,7 +131,7 @@ var _ = Describe("CloudflareAccount Controller (nil factory fallback)", func() {
 			Scheme: k8sClient.Scheme(),
 			NewCFClient: func(_ string) (CloudflareAccountAPI, error) {
 				return &fakeCFClient{
-					account: cloudflare.Account{},
+					account: accounts.Account{},
 					err:     errors.New("rate limited"),
 				}, nil
 			},

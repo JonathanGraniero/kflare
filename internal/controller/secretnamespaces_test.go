@@ -10,7 +10,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	"github.com/cloudflare/cloudflare-go/v7/shared"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -178,7 +178,7 @@ var _ = Describe("An installation that may use Secrets in some namespaces", func
 			}
 			r = &CloudflareAccountReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
 				NewCFClient: func(string) (CloudflareAccountAPI, error) {
-					return &fakeCFClient{account: cloudflare.Account{Name: "Secret Account"}}, nil
+					return &fakeCFClient{account: accounts.Account{Name: "Secret Account"}}, nil
 				}}
 		})
 
@@ -310,7 +310,7 @@ var _ = Describe("An installation that may use Secrets in some namespaces", func
 			mustSecretScope(release+","+listed), func(mgr manager.Manager) error {
 				accounts := &CloudflareAccountReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 					NewCFClient: func(string) (CloudflareAccountAPI, error) {
-						return &fakeCFClient{account: cloudflare.Account{Name: "Secret Scoped"}}, nil
+						return &fakeCFClient{account: accounts.Account{Name: "Secret Scoped"}}, nil
 					}}
 				if err := accounts.SetupWithManager(mgr); err != nil {
 					return err

@@ -10,6 +10,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,24 @@ func TestVerifyToken_Errors(t *testing.T) {
 				t.Errorf("asked %v, want %v", server.asked, tc.asked)
 			}
 		})
+	}
+}
+
+func TestAccount(t *testing.T) {
+	const path = "/client/v4/accounts/acct-1"
+	server := &verifyServer{answers: map[string]answer{path: {http.StatusOK,
+		`{"result":{"id":"acct-1","name":"My Account","type":"standard"},"success":true,"errors":[],"messages":[]}`}}}
+	got, err := server.client(t).Account(context.Background(), "acct-1")
+	if err != nil || got.ID != "acct-1" || got.Name != "My Account" {
+		t.Errorf("Account = %+v, %v; want acct-1, My Account", got, err)
+	}
+
+	server = &verifyServer{answers: map[string]answer{path: {http.StatusForbidden,
+		`{"success":false,"errors":[{"code":9109,"message":"Unauthorized to access requested resource"}],"result":null}`}}}
+	if _, err := server.client(t).Account(context.Background(), "acct-1"); !IsTerminalError(err) {
+		t.Errorf("Account's error = %v, want a terminal error", err)
+	}
+	if want := []string{path}; !slices.Equal(server.asked, want) {
+		t.Errorf("asked %v, want %v", server.asked, want)
 	}
 }

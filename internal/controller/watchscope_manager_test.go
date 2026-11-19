@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	"github.com/cloudflare/cloudflare-go/v7/kv"
 	"github.com/cloudflare/cloudflare-go/v7/option"
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
@@ -115,7 +115,7 @@ func setupInstallation(name string, kvs *scopedKV) func(mgr manager.Manager) err
 	return func(mgr manager.Manager) error {
 		accounts := &CloudflareAccountReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 			NewCFClient: func(string) (CloudflareAccountAPI, error) {
-				return &fakeCFClient{account: cloudflare.Account{Name: name}}, nil
+				return &fakeCFClient{account: accounts.Account{Name: name}}, nil
 			}}
 		if err := accounts.SetupWithManager(mgr); err != nil {
 			return err

@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cf "github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
@@ -32,7 +32,7 @@ import (
 // CloudflareAccountAPI is the part of the Cloudflare API this controller
 // calls; *cfpkg.Client satisfies it, and tests inject a fake.
 type CloudflareAccountAPI interface {
-	Account(ctx context.Context, accountID string) (cf.Account, cf.ResultInfo, error)
+	Account(ctx context.Context, accountID string) (*accounts.Account, error)
 	VerifyToken(ctx context.Context, accountID string) (cfpkg.TokenVerification, error)
 }
 
@@ -177,7 +177,7 @@ func (r *CloudflareAccountReconciler) Reconcile(ctx context.Context, req ctrl.Re
 					"a new token in the Secret", secret))
 	}
 
-	cfAccount, _, err := cfClient.Account(ctx, account.Spec.AccountID)
+	cfAccount, err := cfClient.Account(ctx, account.Spec.AccountID)
 	if err != nil {
 		return handleCloudflareError(ctx, r.Client, account, err)
 	}

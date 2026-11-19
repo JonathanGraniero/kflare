@@ -17,7 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -53,7 +53,7 @@ var _ = Describe("A CloudflareAccount's API token", func() {
 	var recorder *events.FakeRecorder
 
 	BeforeEach(func() {
-		fake = &fakeCFClient{account: cloudflare.Account{Name: "Token Account"}}
+		fake = &fakeCFClient{account: accounts.Account{Name: "Token Account"}}
 		r = reconcilerWithFake(fake)
 		r.TokenCheckInterval = tokenCheckTestInterval
 		r.TokenExpiryWarning = tokenExpiryTestWarning
@@ -435,8 +435,8 @@ func (l *lockedTokenAPI) count() int {
 	return l.verifications
 }
 
-func (l *lockedTokenAPI) Account(context.Context, string) (cloudflare.Account, cloudflare.ResultInfo, error) {
-	return cloudflare.Account{Name: "Scheduled"}, cloudflare.ResultInfo{}, nil
+func (l *lockedTokenAPI) Account(context.Context, string) (*accounts.Account, error) {
+	return &accounts.Account{Name: "Scheduled"}, nil
 }
 
 func (l *lockedTokenAPI) VerifyToken(context.Context, string) (cfpkg.TokenVerification, error) {

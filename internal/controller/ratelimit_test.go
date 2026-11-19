@@ -17,6 +17,7 @@ import (
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	"github.com/cloudflare/cloudflare-go/v7/kv"
 	"github.com/cloudflare/cloudflare-go/v7/option"
 	. "github.com/onsi/ginkgo/v2"
@@ -212,7 +213,7 @@ var _ = Describe("Waiting for a rate limit", func() {
 		Entry("a call the token's hold kept back", func() error {
 			client, err := cfpkg.New(newHeldToken())
 			Expect(err).NotTo(HaveOccurred())
-			_, _, err = client.Account(ctx, "account-id")
+			_, err = client.Account(ctx, "account-id")
 			Expect(err).To(HaveOccurred())
 			return err
 		}),
@@ -242,7 +243,7 @@ var _ = Describe("Waiting for a rate limit", func() {
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				NewCFClient: func(string) (CloudflareAccountAPI, error) {
 					built++
-					return &fakeCFClient{account: cf.Account{ID: account.Spec.AccountID, Name: "Name"}}, nil
+					return &fakeCFClient{account: accounts.Account{ID: account.Spec.AccountID, Name: "Name"}}, nil
 				},
 			}
 			Expect(k8sClient.Create(ctx, &corev1.Secret{

@@ -9,7 +9,7 @@ package controller
 import (
 	"context"
 
-	cf "github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -42,7 +42,7 @@ var _ = Describe("CloudflareAccount deletion protection", func() {
 
 	r := &CloudflareAccountReconciler{
 		NewCFClient: func(string) (CloudflareAccountAPI, error) {
-			return &fakeCFClient{account: cf.Account{Name: "Protected"}}, nil
+			return &fakeCFClient{account: accounts.Account{Name: "Protected"}}, nil
 		},
 	}
 

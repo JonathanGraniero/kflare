@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
 	"github.com/cloudflare/cloudflare-go/v7/kv"
 	"github.com/cloudflare/cloudflare-go/v7/managed_transforms"
 	"github.com/cloudflare/cloudflare-go/v7/option"
@@ -45,12 +46,17 @@ import (
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
 )
 
-// activeTokenClient is a real client whose token Cloudflare reports active,
-// so that a CloudflareAccount goes on to read its account through v0. Its
-// own VerifyToken calls v7, which a test cannot point at another server
-// (pkg/cloudflare's tests cover it).
+// activeTokenClient reads the account as *cfpkg.Client does, through v7 with
+// options, which a test can point at another server, and reports its token
+// active, so that a CloudflareAccount goes on to read its account.
 type activeTokenClient struct {
-	*cfpkg.Client
+	options []option.RequestOption
+}
+
+func (c activeTokenClient) Account(ctx context.Context, accountID string) (*accounts.Account, error) {
+	var params accounts.AccountGetParams
+	params.AccountID.Value, params.AccountID.Present = accountID, true
+	return accounts.NewAccountService(c.options...).Get(ctx, params)
 }
 
 func (activeTokenClient) VerifyToken(context.Context, string) (cfpkg.TokenVerification, error) {
@@ -323,17 +329,12 @@ var _ = Describe("kflare's metrics", func() {
 							return managed_transforms.NewManagedTransformService(v7Options(token)...), nil
 						}}).SetupWithManager(mgr)
 				}),
-			Entry("of the CloudflareAccount controller, through v0", "cloudflareaccount",
+			Entry("of the CloudflareAccount controller, through v7", "cloudflareaccount",
 				func() conditionedObject { return createAccount(false) },
 				func(mgr manager.Manager) error {
 					return (&CloudflareAccountReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 						NewCFClient: func(token string) (CloudflareAccountAPI, error) {
-							client, err := cfpkg.New(token)
-							if err != nil {
-								return nil, err
-							}
-							client.BaseURL = cloudflare.URL
-							return activeTokenClient{client}, nil
+							return activeTokenClient{v7Options(token)}, nil
 						}}).SetupWithManager(mgr)
 				}),
 		)
