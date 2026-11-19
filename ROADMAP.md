@@ -53,8 +53,8 @@ again every hour, so that one disabled or expired in Cloudflare shows on the acc
 Since v0.4.3, several installations can share a cluster, each limited to some namespaces or to resources with some
 labels (see [Scoping an installation](docs/deploy.md#scoping-an-installation)), and an installation can reconcile
 several resources of a kind at once (see [Reconciles at once](docs/deploy.md#reconciles-at-once)). Renaming a resource
-hands its Cloudflare object to the new resource instead of deleting and recreating it, even when Argo CD deletes the
-old resource first (see [Renaming a resource](docs/deploy.md#renaming-a-resource)).
+hands its Cloudflare object to the new resource instead of deleting and recreating it, and since v0.5.0 even when
+Argo CD deletes the old resource first (see [Renaming a resource](docs/deploy.md#renaming-a-resource)).
 
 Merged for the next release (see CHANGELOG.md's Unreleased, which lists its breaking changes): kflare reads Secrets
 only in its release namespace and the namespaces the chart's `secretNamespaces` lists. A `Zone` or a `DNSRecord` can
