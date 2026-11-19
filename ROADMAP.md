@@ -18,7 +18,9 @@ since what people ask for decides the order. What a release may change meanwhile
 | Zone settings | `ManagedTransform` |
 
 Each is tested live against a real Cloudflare account on the Free plan, in GitHub Actions, with an API token holding
-only the permissions the [deploy guide](docs/deploy.md) lists. Existing Cloudflare objects are only taken over when a
+only the permissions the [deploy guide](docs/deploy.md) lists. The exception is `R2Bucket`: since 2026-11-17 the test
+account has no R2 subscription, so it is tested against envtest only
+([#193](https://github.com/JonathanGraniero/kflare/issues/193)). Existing Cloudflare objects are only taken over when a
 resource asks for it (see [Adoption and ownership](ARCHITECTURE.md#adoption-and-ownership)). The Helm chart installs
 the CRDs and the controller; the deploy guide shows it installed with Helm, Argo CD or Flux. Since v0.2.0 it serves
 metrics over HTTPS to authorized scrapers only, adds a PodDisruptionBudget to a high-availability install, and has an
@@ -48,7 +50,43 @@ calls to Cloudflare, how many resources are `Ready`, and how often it undoes a c
 again every hour, so that one disabled or expired in Cloudflare shows on the account, and warns before the expiry (see
 [Connect your Cloudflare account](docs/deploy.md#3-connect-your-cloudflare-account)).
 
+Since v0.4.3, several installations can share a cluster, each limited to some namespaces or to resources with some
+labels (see [Scoping an installation](docs/deploy.md#scoping-an-installation)), and an installation can reconcile
+several resources of a kind at once (see [Reconciles at once](docs/deploy.md#reconciles-at-once)). Renaming a resource
+hands its Cloudflare object to the new resource instead of deleting and recreating it, even when Argo CD deletes the
+old resource first (see [Renaming a resource](docs/deploy.md#renaming-a-resource)).
+
+Merged for the next release (see CHANGELOG.md's Unreleased, which lists its breaking changes): kflare reads Secrets
+only in its release namespace and the namespaces the chart's `secretNamespaces` lists. A `Zone` or a `DNSRecord` can
+be observed without kflare writing to Cloudflare, to check manifests against what is already there before handing it
+over (see [Observing without writing](docs/deploy.md#observing-without-writing)). The chart can install Prometheus
+alerts, each with a runbook, and a Grafana dashboard (see
+[Alerts and a dashboard](docs/deploy.md#alerts-and-a-dashboard)).
+
 ## Next
+
+### Correctness and trust first
+
+Before more resource kinds, the work that decides whether kflare can be trusted with production objects:
+
+- **Releases only after the live suite passes**: since the live suite moved to a workflow of its own, a release no
+  longer waits for it ([#188](https://github.com/JonathanGraniero/kflare/issues/188))
+- **Observe every kind**, so that a move from Terraform or the dashboard can start with any resource, not just zones
+  and records: the generated CRUD kinds ([#191](https://github.com/JonathanGraniero/kflare/issues/191)), then the
+  settings and rule kinds ([#195](https://github.com/JonathanGraniero/kflare/issues/195))
+- **The last reads from a cache that is behind**: an IP list's bulk operation and a settings kind's owner
+  ([#190](https://github.com/JonathanGraniero/kflare/issues/190))
+- **Installations that overlap**: tests where two installations meet, or where someone relabels a resource or a
+  namespace to cross from one to the other, then a warning when two scopes overlap
+  ([#189](https://github.com/JonathanGraniero/kflare/issues/189))
+- **A standby by default**, on another node from the leader
+  ([#185](https://github.com/JonathanGraniero/kflare/pull/185),
+  [#192](https://github.com/JonathanGraniero/kflare/issues/192))
+- **One Cloudflare SDK**: `Zone`, `TunnelConfiguration` and `WorkerScript` still call the older one
+  ([#134](https://github.com/JonathanGraniero/kflare/issues/134)), and `WorkerScript`'s binding field names need a
+  decision before any kind can become `v1beta1` ([#194](https://github.com/JonathanGraniero/kflare/issues/194))
+
+### More resource kinds
 
 Candidates that a Free account can use and test, roughly in the order the code generator can support them:
 
@@ -71,8 +109,9 @@ For running kflare, see the [production-readiness issues](https://github.com/Jon
 | Standalone health checks | A Pro plan or higher |
 | Zone plans (`Zone` `spec.plan`) | Built, but not tested live: changing a plan bills the account |
 | Custom block responses on WAF custom rules | Built to Cloudflare's documented limits, but a Free zone cannot use them, so not tested live |
+| `R2Bucket` tested live again | An R2 subscription ([#193](https://github.com/JonathanGraniero/kflare/issues/193)) |
 
-A Pro zone and the Load Balancing add-on would unblock all of these but Zero Trust. They are the first thing
+A Pro zone, the Load Balancing add-on and R2 would unblock all of these but Zero Trust. They are the first thing
 [sponsorship](README.md#sponsoring-kflare) pays for.
 
 Later, beyond these: an OLM bundle, and a documentation site.
