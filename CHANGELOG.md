@@ -69,6 +69,13 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
   use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
 
+### Resources
+
+- **A `TunnelConfiguration` rule sets cloudflared's timeouts to its origin**: `originRequest.connectTimeout`,
+  `tlsTimeout`, `tcpKeepAlive` and `keepAliveTimeout`, in seconds. Its calls moved to cloudflare-go v7, whose integer
+  timeouts lift the limitation of v0.119 ([#134](https://github.com/JonathanGraniero/kflare/issues/134)). Nothing
+  changes for existing manifests: a configuration kflare wrote reads as unchanged, and is not written again
+
 ### The Helm chart
 
 - **Alerts and a Grafana dashboard** ([#76](https://github.com/JonathanGraniero/kflare/issues/76)), both off by

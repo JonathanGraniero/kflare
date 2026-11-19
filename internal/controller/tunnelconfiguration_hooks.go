@@ -8,10 +8,12 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 
-	cf "github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,21 +30,35 @@ const defaultTunnelService = "http_status:404"
 // tunnelConfigurationObject and tunnelConfigurationListed are what a
 // TunnelConfiguration's calls return. A configuration is never listed.
 type (
-	tunnelConfigurationObject = cf.TunnelConfigurationResult
-	tunnelConfigurationListed = cf.TunnelConfigurationResult
+	tunnelConfigurationObject = zero_trust.TunnelCloudflaredConfigurationGetResponse
+	tunnelConfigurationListed = zero_trust.TunnelCloudflaredConfigurationGetResponse
 )
 
-// TunnelConfigurationAPI is the subset of the Cloudflare API used by a
-// TunnelConfiguration. In production, *cfpkg.Client satisfies this interface
-// because it embeds *cf.API.
+// tunnelConfig is a tunnel's configuration as kflare writes it.
+type tunnelConfig = zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfig
+
+// tunnelIngressRule is one of a tunnelConfig's rules.
+type tunnelIngressRule = zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress
+
+// TunnelConfigurationAPI is the part of cloudflare-go v7's
+// zero_trust.TunnelCloudflaredConfigurationService a TunnelConfiguration
+// calls; tests inject a fake.
 type TunnelConfigurationAPI interface {
-	GetTunnelConfiguration(ctx context.Context, rc *cf.ResourceContainer, tunnelID string) (cf.TunnelConfigurationResult, error)
-	UpdateTunnelConfiguration(ctx context.Context, rc *cf.ResourceContainer, params cf.TunnelConfigurationParams) (cf.TunnelConfigurationResult, error)
+	Get(ctx context.Context, tunnelID string, query zero_trust.TunnelCloudflaredConfigurationGetParams,
+		opts ...option.RequestOption) (*zero_trust.TunnelCloudflaredConfigurationGetResponse, error)
+	Update(ctx context.Context, tunnelID string, params zero_trust.TunnelCloudflaredConfigurationUpdateParams,
+		opts ...option.RequestOption) (*zero_trust.TunnelCloudflaredConfigurationUpdateResponse, error)
 }
 
-// defaultTunnelConfigurationAPI returns the production TunnelConfigurationAPI, a *cfpkg.Client.
+// defaultTunnelConfigurationAPI is the production factory: cloudflare-go v7's
+// zero_trust.TunnelCloudflaredConfigurationService, built from cfpkg.New's
+// options for the token.
 func defaultTunnelConfigurationAPI(token string) (TunnelConfigurationAPI, error) {
-	return cfpkg.New(token)
+	client, err := cfpkg.New(token)
+	if err != nil {
+		return nil, err
+	}
+	return zero_trust.NewTunnelCloudflaredConfigurationService(client.V7Options()...), nil
 }
 
 // tunnelConfigurationKind describes TunnelConfigurations to the shared CRUD
@@ -66,36 +82,34 @@ var tunnelConfigurationKind = crudResourceKind[*cloudflarev1alpha1.TunnelConfigu
 	statusID: func(obj *cloudflarev1alpha1.TunnelConfiguration) string {
 		return obj.Status.CloudflareMetadata.TunnelID
 	},
-	observe: func(obj *cloudflarev1alpha1.TunnelConfiguration, current *cf.TunnelConfigurationResult) {
+	observe: func(obj *cloudflarev1alpha1.TunnelConfiguration, current *tunnelConfigurationObject) {
 		obj.Status.CloudflareMetadata.TunnelID = current.TunnelID
-		obj.Status.CloudflareMetadata.Version = current.Version
+		obj.Status.CloudflareMetadata.Version = int(current.Version)
 	},
 
-	id: func(current *cf.TunnelConfigurationResult) string { return current.TunnelID },
-	matches: func(obj *cloudflarev1alpha1.TunnelConfiguration, current *cf.TunnelConfigurationResult,
+	id: func(current *tunnelConfigurationObject) string { return current.TunnelID },
+	matches: func(obj *cloudflarev1alpha1.TunnelConfiguration, current *tunnelConfigurationObject,
 		_ map[string]string) bool {
 		return tunnelConfigurationMatches(desiredTunnelConfiguration(obj), current.Config)
 	},
 
 	get: func(ctx context.Context, api TunnelConfigurationAPI, _ *cloudflarev1alpha1.TunnelConfiguration,
-		accountID, id string) (*cf.TunnelConfigurationResult, error) {
+		accountID, id string) (*tunnelConfigurationObject, error) {
 		return readTunnelConfiguration(ctx, api, accountID, id)
 	},
 	create: func(ctx context.Context, api TunnelConfigurationAPI, accountID string,
-		obj *cloudflarev1alpha1.TunnelConfiguration, refs map[string]string) (*cf.TunnelConfigurationResult, error) {
+		obj *cloudflarev1alpha1.TunnelConfiguration, refs map[string]string) (*tunnelConfigurationObject, error) {
 		return writeTunnelConfiguration(ctx, api, accountID, refs[tunnelRefField], desiredTunnelConfiguration(obj))
 	},
 	update: func(ctx context.Context, api TunnelConfigurationAPI, obj *cloudflarev1alpha1.TunnelConfiguration,
-		accountID, id string, _ map[string]string) (*cf.TunnelConfigurationResult, error) {
+		accountID, id string, _ map[string]string) (*tunnelConfigurationObject, error) {
 		return writeTunnelConfiguration(ctx, api, accountID, id, desiredTunnelConfiguration(obj))
 	},
 	// Cloudflare does not allow an empty configuration, so deleting one leaves
 	// the catch-all rule.
 	delete: func(ctx context.Context, api TunnelConfigurationAPI, _ *cloudflarev1alpha1.TunnelConfiguration,
 		accountID, id string) error {
-		_, err := writeTunnelConfiguration(ctx, api, accountID, id, cf.TunnelConfiguration{
-			Ingress: []cf.UnvalidatedIngressRule{{Service: defaultTunnelService}},
-		})
+		_, err := writeTunnelConfiguration(ctx, api, accountID, id, ingressConfig(nil, defaultTunnelService))
 		return err
 	},
 
@@ -198,7 +212,7 @@ func olderThan(a, b *cloudflarev1alpha1.TunnelConfiguration) bool {
 // one kflare reset, holds.
 func findTunnelConfiguration(ctx context.Context, _ client.Client, api TunnelConfigurationAPI,
 	_ *cloudflarev1alpha1.TunnelConfiguration, accountID string,
-	refs map[string]string) (string, *cf.TunnelConfigurationResult, error) {
+	refs map[string]string) (string, *tunnelConfigurationObject, error) {
 	current, err := readTunnelConfiguration(ctx, api, accountID, refs[tunnelRefField])
 	if err != nil {
 		return "", nil, err
@@ -211,96 +225,153 @@ func findTunnelConfiguration(ctx context.Context, _ client.Client, api TunnelCon
 
 // readTunnelConfiguration reads the configuration of the tunnel id.
 func readTunnelConfiguration(ctx context.Context, api TunnelConfigurationAPI, accountID,
-	id string) (*cf.TunnelConfigurationResult, error) {
-	current, err := api.GetTunnelConfiguration(ctx, cf.AccountIdentifier(accountID), id)
+	id string) (*tunnelConfigurationObject, error) {
+	var params zero_trust.TunnelCloudflaredConfigurationGetParams
+	params.AccountID.Value, params.AccountID.Present = accountID, true
+	current, err := api.Get(ctx, id, params)
 	if err != nil {
 		return nil, err
 	}
 	current.TunnelID = id
-	return &current, nil
+	return current, nil
 }
 
-// writeTunnelConfiguration replaces the configuration of the tunnel id.
+// writeTunnelConfiguration replaces the configuration of the tunnel id, and
+// returns it as Cloudflare answered, which is what a read returns.
 func writeTunnelConfiguration(ctx context.Context, api TunnelConfigurationAPI, accountID, id string,
-	config cf.TunnelConfiguration) (*cf.TunnelConfigurationResult, error) {
-	updated, err := api.UpdateTunnelConfiguration(ctx, cf.AccountIdentifier(accountID), cf.TunnelConfigurationParams{
-		TunnelID: id, Config: config,
-	})
+	config tunnelConfig) (*tunnelConfigurationObject, error) {
+	var params zero_trust.TunnelCloudflaredConfigurationUpdateParams
+	params.AccountID.Value, params.AccountID.Present = accountID, true
+	params.Config.Value, params.Config.Present = config, true
+	updated, err := api.Update(ctx, id, params)
 	if err != nil {
 		return nil, err
 	}
-	// What was just written is what the resource asks for, however Cloudflare
-	// encodes its answer.
-	updated.TunnelID, updated.Config = id, config
-	return &updated, nil
+	written := &tunnelConfigurationObject{}
+	if err := json.Unmarshal([]byte(updated.JSON.RawJSON()), written); err != nil {
+		return nil, fmt.Errorf("reading the tunnel configuration Cloudflare answered with: %w", err)
+	}
+	written.TunnelID = id
+	return written, nil
 }
 
 // desiredTunnelConfiguration builds the configuration to send to Cloudflare:
 // the spec's rules followed by the catch-all rule.
-func desiredTunnelConfiguration(tc *cloudflarev1alpha1.TunnelConfiguration) cf.TunnelConfiguration {
-	rules := make([]cf.UnvalidatedIngressRule, 0, len(tc.Spec.Ingress)+1)
-	for _, rule := range tc.Spec.Ingress {
-		rules = append(rules, cf.UnvalidatedIngressRule{
-			Hostname:      rule.Hostname,
-			Path:          rule.Path,
-			Service:       rule.Service,
-			OriginRequest: originRequestConfig(rule.OriginRequest),
-		})
-	}
+func desiredTunnelConfiguration(tc *cloudflarev1alpha1.TunnelConfiguration) tunnelConfig {
 	defaultService := tc.Spec.DefaultService
 	if defaultService == "" {
 		defaultService = defaultTunnelService
 	}
-	rules = append(rules, cf.UnvalidatedIngressRule{Service: defaultService})
-	return cf.TunnelConfiguration{Ingress: rules}
+	return ingressConfig(tc.Spec.Ingress, defaultService)
 }
 
-// originRequestConfig converts the spec's origin settings to the SDK type.
-func originRequestConfig(o *cloudflarev1alpha1.TunnelOriginRequest) *cf.OriginRequestConfig {
-	if o == nil {
-		return nil
+// ingressConfig is a configuration of rules, then a catch-all rule to
+// defaultService.
+func ingressConfig(rules []cloudflarev1alpha1.TunnelIngressRule, defaultService string) tunnelConfig {
+	ingress := make([]tunnelIngressRule, 0, len(rules)+1)
+	for _, rule := range rules {
+		var out tunnelIngressRule
+		out.Hostname.Value, out.Hostname.Present = rule.Hostname, true
+		out.Service.Value, out.Service.Present = rule.Service, true
+		if rule.Path != "" {
+			out.Path.Value, out.Path.Present = rule.Path, true
+		}
+		if rule.OriginRequest != nil {
+			out.OriginRequest.Value, out.OriginRequest.Present = originRequestConfig(rule.OriginRequest), true
+		}
+		ingress = append(ingress, out)
 	}
-	return &cf.OriginRequestConfig{
-		HTTPHostHeader:         o.HTTPHostHeader,
-		OriginServerName:       o.OriginServerName,
-		NoTLSVerify:            o.NoTLSVerify,
-		Http2Origin:            o.HTTP2Origin,
-		DisableChunkedEncoding: o.DisableChunkedEncoding,
-	}
+	var catchAll tunnelIngressRule
+	catchAll.Service.Value, catchAll.Service.Present = defaultService, true
+	var config tunnelConfig
+	config.Ingress.Value, config.Ingress.Present = append(ingress, catchAll), true
+	return config
 }
 
-// tunnelConfigurationMatches reports whether actual already equals desired.
-// kflare owns the whole configuration, so any rule, origin setting or
-// top-level option that differs — including ones the spec cannot express,
-// such as settings added in the dashboard — counts as drift and is
-// overwritten.
-func tunnelConfigurationMatches(desired, actual cf.TunnelConfiguration) bool {
-	if !reflect.DeepEqual(normalizeIngress(desired.Ingress), normalizeIngress(actual.Ingress)) {
+// originRequestConfig converts a rule's origin settings to the SDK's, with
+// only the fields the spec sets.
+func originRequestConfig(
+	o *cloudflarev1alpha1.TunnelOriginRequest) zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngressOriginRequest {
+	var out zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngressOriginRequest
+	if o.HTTPHostHeader != nil {
+		out.HTTPHostHeader.Value, out.HTTPHostHeader.Present = *o.HTTPHostHeader, true
+	}
+	if o.OriginServerName != nil {
+		out.OriginServerName.Value, out.OriginServerName.Present = *o.OriginServerName, true
+	}
+	if o.NoTLSVerify != nil {
+		out.NoTLSVerify.Value, out.NoTLSVerify.Present = *o.NoTLSVerify, true
+	}
+	if o.HTTP2Origin != nil {
+		out.HTTP2Origin.Value, out.HTTP2Origin.Present = *o.HTTP2Origin, true
+	}
+	if o.DisableChunkedEncoding != nil {
+		out.DisableChunkedEncoding.Value, out.DisableChunkedEncoding.Present = *o.DisableChunkedEncoding, true
+	}
+	if o.ConnectTimeout != nil {
+		out.ConnectTimeout.Value, out.ConnectTimeout.Present = *o.ConnectTimeout, true
+	}
+	if o.TLSTimeout != nil {
+		out.TLSTimeout.Value, out.TLSTimeout.Present = *o.TLSTimeout, true
+	}
+	if o.TCPKeepAlive != nil {
+		out.TCPKeepAlive.Value, out.TCPKeepAlive.Present = *o.TCPKeepAlive, true
+	}
+	if o.KeepAliveTimeout != nil {
+		out.KeepAliveTimeout.Value, out.KeepAliveTimeout.Present = *o.KeepAliveTimeout, true
+	}
+	return out
+}
+
+// tunnelConfigurationMatches reports whether actual, as Cloudflare stores it,
+// already equals desired. kflare owns the whole configuration, so any rule,
+// origin setting or top-level option that differs — including ones the spec
+// cannot express, such as settings added in the dashboard — counts as drift
+// and is overwritten. Both compare as JSON without their zero values:
+// Cloudflare stores an empty originRequest and warp-routing disabled for a
+// configuration that sets neither (verified live), and a setting at its zero
+// value is one left unset.
+func tunnelConfigurationMatches(desired tunnelConfig,
+	actual zero_trust.TunnelCloudflaredConfigurationGetResponseConfig) bool {
+	sent, err := desired.MarshalJSON()
+	if err != nil {
 		return false
 	}
-	if !reflect.DeepEqual(actual.OriginRequest, cf.OriginRequestConfig{}) {
+	var want, got any
+	if json.Unmarshal(sent, &want) != nil || json.Unmarshal([]byte(actual.JSON.RawJSON()), &got) != nil {
 		return false
 	}
-	// Cloudflare reports warp-routing as disabled when it was never set.
-	return actual.WarpRouting == nil || !actual.WarpRouting.Enabled
+	return reflect.DeepEqual(withoutZeros(want), withoutZeros(got))
+}
+
+// withoutZeros drops the nulls, false, 0 and "", and the objects and arrays
+// that are or end up empty, from the objects in a decoded JSON value, as
+// withoutEmpty does with nulls alone. Array elements stay: their positions
+// matter.
+func withoutZeros(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			if item = withoutZeros(item); !isEmptyJSON(item) && item != false && item != 0.0 && item != "" {
+				out[key] = item
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = withoutZeros(item)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // tunnelConfigured reports whether config routes anything: it holds more
 // than the catch-all rule a configuration must end with. A new tunnel has no
 // rules, and one kflare reset only the catch-all rule.
-func tunnelConfigured(config cf.TunnelConfiguration) bool {
+func tunnelConfigured(config zero_trust.TunnelCloudflaredConfigurationGetResponseConfig) bool {
 	return len(config.Ingress) > 1
-}
-
-// normalizeIngress treats an empty originRequest object the same as an
-// absent one, so equivalent rules compare equal however the API encoded them.
-func normalizeIngress(rules []cf.UnvalidatedIngressRule) []cf.UnvalidatedIngressRule {
-	out := make([]cf.UnvalidatedIngressRule, len(rules))
-	for i, rule := range rules {
-		if rule.OriginRequest != nil && reflect.DeepEqual(*rule.OriginRequest, cf.OriginRequestConfig{}) {
-			rule.OriginRequest = nil
-		}
-		out[i] = rule
-	}
-	return out
 }

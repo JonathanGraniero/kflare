@@ -148,9 +148,9 @@ a user of its CloudflareAccount or its Zone.
 
 Step 6 is deliberate: an idle reconcile makes read calls only. The live e2e suite checks this for DNSRecord,
 WAFCustomRule, RateLimitRule, ManagedRuleset, TransformRule (each type), RedirectRule, CacheRule, ConfigurationRule,
-OriginRule and IPList, and TunnelConfiguration's comparison ignores fields Cloudflare adds on its own so an unchanged
-config does not bump its version. A zone's managed transforms carry no version to check this by, so ManagedTransform's
-envtest specs check it instead.
+OriginRule, IPList and TunnelConfiguration, whose comparison ignores what Cloudflare adds on its own (an empty
+`originRequest`, `warp-routing` disabled) so an unchanged config does not bump its version. A zone's managed transforms
+carry no version to check this by, so ManagedTransform's envtest specs check it instead.
 
 ## When drift is detected
 
@@ -877,8 +877,7 @@ a token Secret in a namespace where the installation may no longer use Secrets, 
   `CloudflareAccount` the other may use. With the annotation, though, two installations can each manage one object or
   one zone's settings, and each orders only its own rules in a phase, with a Warning Event (`OtherKflareRules`) where
   their rules share one. Overlapping scopes are not detected: both installations reconcile what both select.
-- **Three kinds are pinned to the legacy SDK.** Zone, TunnelConfiguration and WorkerScript call cloudflare-go v0.119,
-  the newest of the v0 line; every other kind uses the generated SDK, v7. Some limitations come from v0.119:
-  `originRequest` timeouts are not exposed because `TunnelDuration` does not round-trip, and a WorkerScript binds only
-  R2 buckets in the default jurisdiction (`R2BucketJurisdictionUnsupported` otherwise): the SDK's Worker R2 binding has
+- **Two kinds are pinned to the legacy SDK.** Zone and WorkerScript call cloudflare-go v0.119, the newest of the v0
+  line; every other kind uses the generated SDK, v7. A limitation comes from v0.119: a WorkerScript binds only R2
+  buckets in the default jurisdiction (`R2BucketJurisdictionUnsupported` otherwise): the SDK's Worker R2 binding has
   no jurisdiction field. R2Bucket itself, generated on v7, manages buckets in any jurisdiction.

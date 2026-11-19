@@ -10,7 +10,6 @@ import (
 	"context"
 	"time"
 
-	cf "github.com/cloudflare/cloudflare-go"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -70,9 +69,40 @@ var _ = Describe("desiredTunnelConfiguration", func() {
 				},
 			},
 		}
-		rules := desiredTunnelConfiguration(tc).Ingress
-		Expect(rules).To(HaveLen(2))
-		Expect(rules[1]).To(Equal(cf.UnvalidatedIngressRule{Service: "http_status:404"}))
+		raw, err := desiredTunnelConfiguration(tc).MarshalJSON()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(raw).To(MatchJSON(`{"ingress":[{"hostname":"a.example.com","service":"http://a:80"},` +
+			`{"service":"http_status:404"}]}`))
+	})
+
+	It("sends every origin setting the spec sets, under the API's names, and no other", func() {
+		tc := &cloudflarev1alpha1.TunnelConfiguration{
+			Spec: cloudflarev1alpha1.TunnelConfigurationSpec{
+				TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
+					DefaultService: "http_status:503",
+					Ingress: []cloudflarev1alpha1.TunnelIngressRule{
+						{Hostname: "a.example.com", Path: "^/a/", Service: "https://a:443",
+							OriginRequest: &cloudflarev1alpha1.TunnelOriginRequest{
+								HTTPHostHeader: new("a.internal"), OriginServerName: new("a.example.com"),
+								NoTLSVerify: new(false), HTTP2Origin: new(true), DisableChunkedEncoding: new(true),
+								ConnectTimeout: new(int64(10)), TLSTimeout: new(int64(11)),
+								TCPKeepAlive: new(int64(12)), KeepAliveTimeout: new(int64(13)),
+							}},
+						{Hostname: "b.example.com", Service: "http://b:80",
+							OriginRequest: &cloudflarev1alpha1.TunnelOriginRequest{ConnectTimeout: new(int64(0))}},
+					},
+				},
+			},
+		}
+		raw, err := desiredTunnelConfiguration(tc).MarshalJSON()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(raw).To(MatchJSON(`{"ingress":[
+			{"hostname":"a.example.com","path":"^/a/","service":"https://a:443","originRequest":{
+				"httpHostHeader":"a.internal","originServerName":"a.example.com","noTLSVerify":false,
+				"http2Origin":true,"disableChunkedEncoding":true,
+				"connectTimeout":10,"tlsTimeout":11,"tcpKeepAlive":12,"keepAliveTimeout":13}},
+			{"hostname":"b.example.com","service":"http://b:80","originRequest":{"connectTimeout":0}},
+			{"service":"http_status:503"}]}`))
 	})
 })
 
