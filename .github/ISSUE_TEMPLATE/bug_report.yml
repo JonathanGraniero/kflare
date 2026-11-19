@@ -82,7 +82,7 @@ body:
     id: logs
     attributes:
       label: Manager log
-      description: "The controller's log lines about the resource: `kubectl -n kflare logs deploy/kflare` for the chart's default install."
+      description: "The controller's log lines about the resource: `kubectl -n kflare logs -l app.kubernetes.io/name=kflare --prefix --tail=-1` for the chart's default install (the leader's pod is the one that reconciles)."
       render: text
   - type: input
     id: plan

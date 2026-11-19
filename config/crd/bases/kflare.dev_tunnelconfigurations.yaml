@@ -85,6 +85,13 @@ spec:
                       description: OriginRequest tunes how cloudflared connects to
                         the service.
                       properties:
+                        connectTimeout:
+                          description: |-
+                            ConnectTimeout is how long, in seconds, cloudflared waits for a new TCP
+                            connection to the origin, TLS aside (tlsTimeout).
+                          format: int64
+                          minimum: 0
+                          type: integer
                         disableChunkedEncoding:
                           description: |-
                             DisableChunkedEncoding turns off chunked transfer encoding, which some
@@ -98,6 +105,13 @@ spec:
                           description: HTTPHostHeader overrides the Host header sent
                             to the origin.
                           type: string
+                        keepAliveTimeout:
+                          description: |-
+                            KeepAliveTimeout is how long, in seconds, an idle keepalive connection to
+                            the origin is kept before cloudflared closes it.
+                          format: int64
+                          minimum: 0
+                          type: integer
                         noTLSVerify:
                           description: NoTLSVerify disables verification of the origin's
                             TLS certificate.
@@ -106,6 +120,20 @@ spec:
                           description: OriginServerName is the hostname expected on
                             the origin's TLS certificate.
                           type: string
+                        tcpKeepAlive:
+                          description: |-
+                            TCPKeepAlive is how long, in seconds, a connection to the origin may stay
+                            idle before cloudflared sends it a TCP keepalive.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        tlsTimeout:
+                          description: |-
+                            TLSTimeout is how long, in seconds, cloudflared waits for the TLS
+                            handshake with an HTTPS origin.
+                          format: int64
+                          minimum: 0
+                          type: integer
                       type: object
                     path:
                       description: Path is a regular expression matched against the

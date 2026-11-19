@@ -78,6 +78,30 @@ type TunnelOriginRequest struct {
 	// WSGI servers need.
 	// +optional
 	DisableChunkedEncoding *bool `json:"disableChunkedEncoding,omitempty"`
+
+	// ConnectTimeout is how long, in seconds, cloudflared waits for a new TCP
+	// connection to the origin, TLS aside (tlsTimeout).
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ConnectTimeout *int64 `json:"connectTimeout,omitempty"`
+
+	// TLSTimeout is how long, in seconds, cloudflared waits for the TLS
+	// handshake with an HTTPS origin.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	TLSTimeout *int64 `json:"tlsTimeout,omitempty"`
+
+	// TCPKeepAlive is how long, in seconds, a connection to the origin may stay
+	// idle before cloudflared sends it a TCP keepalive.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	TCPKeepAlive *int64 `json:"tcpKeepAlive,omitempty"`
+
+	// KeepAliveTimeout is how long, in seconds, an idle keepalive connection to
+	// the origin is kept before cloudflared closes it.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	KeepAliveTimeout *int64 `json:"keepAliveTimeout,omitempty"`
 }
 
 // TunnelConfigurationMetadataExtras holds what Cloudflare reports about a

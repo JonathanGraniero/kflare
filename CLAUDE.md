@@ -710,7 +710,12 @@ sizing guidance; its concurrent reconciles came later, in
   12 s, as without the limit
 - [x] e2e: the suite installs metrics-server v0.9.0 (July 2026; v0.9.1 was a day old) unless the cluster serves the
   metrics API, and removes only what it installed. A smoke spec checks that the autoscaler reads the controller's CPU,
-  below its target, and keeps one replica
+  below its target, and keeps one replica (two since #136)
+- [x] A standby by default (#136, `feat/chart-standby-default`, 2026-11-16): `minReplicas: 2` and `maxReplicas: 3`,
+  the autoscaler described as a way to hold standbys. The e2e suite's `runningController` returns the pod that holds
+  the lease, of two; a smoke spec deletes it and waits for the standby to take the lease (17 and 19 seconds in CI: a
+  leader that goes does not release the lease, so the standby waits out its 15 seconds), and the metrics spec reads
+  the leader's pod, since a standby serves no controller's metrics
 - Checked here: the chart's guards; a server-side dry run of the rendered chart (defaults, autoscaling options, and
   autoscaling off with `replicaCount: 2`) against envtest's API server; `make helm-lint`. Not here: kind cannot start
   pods in this session's container (runc cannot set `oom_score_adj`), so the e2e spec first runs in CI
@@ -1294,7 +1299,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > **Phases 1 and 2 complete. Phase 3 in progress: `KVNamespace`, `R2Bucket`, `WAFCustomRule`, `RateLimitRule`, `IPList`,
 > `ManagedRuleset`, `D1Database`, `TransformRule`, `RedirectRule`, `CacheRule`, `ConfigurationRule` and `OriginRule`
 > done.**
-> cloudflare-go is at v7.14.0, with v0.119 next to it for `Zone`, `TunnelConfiguration` and `WorkerScript`. Every kind
+> cloudflare-go is at v7.14.0, with v0.119 next to it for `Zone` and `WorkerScript` (#134 removes it). Every kind
 > but `CloudflareAccount` runs on a shared reconciler: the shared CRUD reconciler, the shared rule controller or the shared
 > settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
 > hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:

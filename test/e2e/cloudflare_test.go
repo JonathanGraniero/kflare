@@ -433,7 +433,10 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 				TunnelConfigurationSpecExtras: cloudflarev1alpha1.TunnelConfigurationSpecExtras{
 					TunnelRef: corev1.LocalObjectReference{Name: tunnelKey.Name},
 					Ingress: []cloudflarev1alpha1.TunnelIngressRule{
-						{Hostname: hostname, Service: "http://localhost:8080"},
+						{Hostname: hostname, Service: "http://localhost:8080",
+							OriginRequest: &cloudflarev1alpha1.TunnelOriginRequest{
+								ConnectTimeout: new(int64(10)), NoTLSVerify: new(false),
+							}},
 					},
 				},
 			},
@@ -446,7 +449,20 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfConfig.Config.Ingress).To(HaveLen(2))
 		Expect(cfConfig.Config.Ingress[0].Hostname).To(Equal(hostname))
+		Expect(cfConfig.Config.Ingress[0].OriginRequest).NotTo(BeNil())
+		Expect(cfConfig.Config.Ingress[0].OriginRequest.ConnectTimeout).NotTo(BeNil())
+		Expect(cfConfig.Config.Ingress[0].OriginRequest.ConnectTimeout.Duration).To(Equal(10 * time.Second))
 		Expect(cfConfig.Config.Ingress[1].Service).To(Equal("http_status:404"))
+
+		By("re-triggering the reconcile and checking the configuration is not written to again")
+		patch := client.MergeFrom(tc.DeepCopy())
+		tc.SetAnnotations(map[string]string{"e2e.kflare.dev/touched": time.Now().Format(time.RFC3339)})
+		Expect(k8s.Patch(ctx, tc, patch)).To(Succeed())
+		Consistently(func(g Gomega) int {
+			current, err := cfAPI.GetTunnelConfiguration(ctx, accountRC, tunnelID)
+			g.Expect(err).NotTo(HaveOccurred())
+			return current.Version
+		}, 15*time.Second, 3*time.Second).Should(Equal(cfConfig.Version))
 	})
 
 	It("creates a KVNamespace and renames it in place", func() {

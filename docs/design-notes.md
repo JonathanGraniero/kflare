@@ -265,12 +265,16 @@ kubectl get secret example-tunnel-token -o yaml  # TUNNEL_TOKEN for cloudflared
 - [x] `config/samples/cloudflare_v1alpha1_tunnelconfiguration.yaml`
 
 **TunnelConfiguration-specific design notes:**
-- `TunnelConfigurationAPI` interface: `GetTunnelConfiguration/UpdateTunnelConfiguration` (account-scoped `rc`)
+- `TunnelConfigurationAPI` interface: v7's `zero_trust.TunnelCloudflaredConfigurationService` `Get` and `Update`
+  (v0.119's `GetTunnelConfiguration/UpdateTunnelConfiguration` until #134)
 - Cloudflare rejects a config whose last rule has a hostname or path, and rejects an empty rule list (verified live)
 - Cloudflare returns the config exactly as written plus `warp-routing: {enabled: false}` and an empty top-level
-  `originRequest`; both count as "unchanged" (verified live — an idle reconcile does not bump the version)
-- `originRequest` timeouts are not exposed: cloudflare-go v0's `TunnelDuration` (still in v0.119) marshals float
-  seconds but only unmarshals integers
+  `originRequest`; both count as "unchanged" (verified live — an idle reconcile does not bump the version). On v7
+  (#134) the comparison is of the JSON sent and the JSON Cloudflare returns, both without zero values, so that a
+  setting Cloudflare holds and v7 does not know still counts as drift
+- `originRequest` timeouts were not exposed while the calls were on v0.119, whose `TunnelDuration` marshals float
+  seconds but only unmarshals integers. v7 types them as integer seconds: `connectTimeout`, `tlsTimeout`,
+  `tcpKeepAlive` and `keepAliveTimeout` since #134, which the live spec writes and reads back
 - Each hostname still needs a proxied CNAME to `<tunnelID>.cfargotunnel.com`: a `DNSRecord` with `tunnelRef` (since
   Launch readiness L3)
 - Drift is only corrected when something triggers a reconcile (spec change, Tunnel change, resync period)

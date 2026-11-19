@@ -69,6 +69,13 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
   use them. `InSync` (healthy), and `DriftDetected`, `ObserveNotSupported` and `InvalidManagementPolicy` (degraded).
 
+### Resources
+
+- **A `TunnelConfiguration` rule sets cloudflared's timeouts to its origin**: `originRequest.connectTimeout`,
+  `tlsTimeout`, `tcpKeepAlive` and `keepAliveTimeout`, in seconds. Its calls moved to cloudflare-go v7, whose integer
+  timeouts lift the limitation of v0.119 ([#134](https://github.com/JonathanGraniero/kflare/issues/134)). Nothing
+  changes for existing manifests: a configuration kflare wrote reads as unchanged, and is not written again
+
 ### The Helm chart
 
 - **Alerts and a Grafana dashboard** ([#76](https://github.com/JonathanGraniero/kflare/issues/76)), both off by
@@ -82,6 +89,18 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **`kflare_cloudflare_api_rate_limited_total` starts at 0** for each `CloudflareAccount`, with the account's first
   call. It first appeared with the account's first 429, at 1, which `increase()` does not see, so an alert on it
   missed that one.
+- **A default install runs two pods, a leader and a standby**
+  ([#136](https://github.com/JonathanGraniero/kflare/issues/136)): `autoscaling.minReplicas` is now `2` (it was `1`)
+  and `autoscaling.maxReplicas` `3` (it was `10`). With one pod, reconciling waited for a new pod to start when the
+  leader's went; the standby takes over within about 20 seconds. It costs one idle pod: about 1m CPU and 9 MiB in use,
+  100m and 64Mi requested. Only the leader reconciles, so the replicas the autoscaler added up to 10 were idle
+  requests, not capacity: `maxConcurrentReconciles` is what raises throughput. `autoscaling.minReplicas: 1` runs a
+  single pod as before. **Values that set `autoscaling.minReplicas` above 3 without `maxReplicas` no longer render**
+  ("minReplicas cannot be above maxReplicas"): set `autoscaling.maxReplicas` too. Other values that set either number
+  are unchanged. The two pods can share a node unless `topologySpreadConstraints` spreads them
+  ([Configuration](docs/deploy.md#configuration)), and a node's loss then takes both. With two pods,
+  `kubectl logs deploy/kflare` and a port-forward to the metrics Service reach either: the deploy guide's commands
+  now read every pod's log, and the leader's metrics.
 - **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
   `config/default`'s kustomization, which still said `cloudflare-operator-system`. An existing installation keeps its
   namespace: `helm upgrade -n kflare-system` works as before.

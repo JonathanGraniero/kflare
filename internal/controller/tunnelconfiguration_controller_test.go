@@ -8,10 +8,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"time"
 
-	cf "github.com/cloudflare/cloudflare-go"
+	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -25,38 +26,101 @@ import (
 	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
-// fakeTunnelConfigurationAPI is a test double for TunnelConfigurationAPI.
-// Like cloudflare-go, it rejects an update without a tunnel ID.
+// tunnelConfigJSON is a tunnel configuration as Cloudflare's JSON holds it:
+// what the fake answers with, and what the specs expect kflare to send. An
+// originRequest or warp-routing holds a decoded JSON object.
+type tunnelConfigJSON struct {
+	Ingress       []ingressRuleJSON `json:"ingress,omitempty"`
+	OriginRequest any               `json:"originRequest,omitempty"`
+	WarpRouting   any               `json:"warp-routing,omitempty"`
+}
+
+type ingressRuleJSON struct {
+	Hostname      string `json:"hostname,omitempty"`
+	Path          string `json:"path,omitempty"`
+	Service       string `json:"service"`
+	OriginRequest any    `json:"originRequest,omitempty"`
+}
+
+// storedTunnelConfig is what Cloudflare answers for a tunnel's configuration.
+type storedTunnelConfig struct {
+	TunnelID string           `json:"tunnel_id,omitempty"`
+	Version  int64            `json:"version"`
+	Config   tunnelConfigJSON `json:"config"`
+}
+
+// sentConfig is the configuration an update sent, as JSON.
+func sentConfig(params zero_trust.TunnelCloudflaredConfigurationUpdateParams) tunnelConfigJSON {
+	GinkgoHelper()
+	raw, err := params.Config.Value.MarshalJSON()
+	Expect(err).NotTo(HaveOccurred())
+	var config tunnelConfigJSON
+	Expect(json.Unmarshal(raw, &config)).To(Succeed())
+	return config
+}
+
+// fakeTunnelConfigurationAPI is a test double for TunnelConfigurationAPI. Get
+// answers with getResult; Update answers as Cloudflare does, with the
+// configuration it was sent, under updateResult's ID and version. Like
+// cloudflare-go, it rejects a call without a tunnel or an account ID.
 type fakeTunnelConfigurationAPI struct {
-	getResult cf.TunnelConfigurationResult
+	getResult storedTunnelConfig
 	getErr    error
 	getIDs    []string
 
-	updateResult cf.TunnelConfigurationResult
+	updateResult storedTunnelConfig
 	updateErr    error
-	updates      []cf.TunnelConfigurationParams
+	updates      []zero_trust.TunnelCloudflaredConfigurationUpdateParams
+	updateIDs    []string
 
-	// accountIDs records the resource container identifier of every call.
+	// accountIDs records the account ID of every call.
 	accountIDs []string
 	// calls records the method names in call order.
 	calls []string
 }
 
-func (f *fakeTunnelConfigurationAPI) GetTunnelConfiguration(_ context.Context, rc *cf.ResourceContainer, tunnelID string) (cf.TunnelConfigurationResult, error) {
-	f.accountIDs = append(f.accountIDs, rc.Identifier)
-	f.calls = append(f.calls, "GetTunnelConfiguration")
+func (f *fakeTunnelConfigurationAPI) Get(_ context.Context, tunnelID string,
+	query zero_trust.TunnelCloudflaredConfigurationGetParams,
+	_ ...option.RequestOption) (*zero_trust.TunnelCloudflaredConfigurationGetResponse, error) {
+	f.accountIDs = append(f.accountIDs, query.AccountID.Value)
+	f.calls = append(f.calls, "Get")
 	f.getIDs = append(f.getIDs, tunnelID)
-	return f.getResult, f.getErr
+	if tunnelID == "" || query.AccountID.Value == "" {
+		return nil, errors.New("missing required parameter")
+	}
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return decodeTunnelConfig[zero_trust.TunnelCloudflaredConfigurationGetResponse](f.getResult), nil
 }
 
-func (f *fakeTunnelConfigurationAPI) UpdateTunnelConfiguration(_ context.Context, rc *cf.ResourceContainer, params cf.TunnelConfigurationParams) (cf.TunnelConfigurationResult, error) {
-	f.accountIDs = append(f.accountIDs, rc.Identifier)
-	f.calls = append(f.calls, "UpdateTunnelConfiguration")
+func (f *fakeTunnelConfigurationAPI) Update(_ context.Context, tunnelID string,
+	params zero_trust.TunnelCloudflaredConfigurationUpdateParams,
+	_ ...option.RequestOption) (*zero_trust.TunnelCloudflaredConfigurationUpdateResponse, error) {
+	f.accountIDs = append(f.accountIDs, params.AccountID.Value)
+	f.calls = append(f.calls, "Update")
 	f.updates = append(f.updates, params)
-	if params.TunnelID == "" {
-		return cf.TunnelConfigurationResult{}, cf.ErrMissingTunnelID
+	f.updateIDs = append(f.updateIDs, tunnelID)
+	if tunnelID == "" || params.AccountID.Value == "" {
+		return nil, errors.New("missing required parameter")
 	}
-	return f.updateResult, f.updateErr
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	answer := f.updateResult
+	answer.Config = sentConfig(params)
+	return decodeTunnelConfig[zero_trust.TunnelCloudflaredConfigurationUpdateResponse](answer), nil
+}
+
+// decodeTunnelConfig reads stored into v7's type R, as cloudflare-go reads
+// Cloudflare's answer.
+func decodeTunnelConfig[R any](stored storedTunnelConfig) *R {
+	GinkgoHelper()
+	raw, err := json.Marshal(stored)
+	Expect(err).NotTo(HaveOccurred())
+	out := new(R)
+	Expect(json.Unmarshal(raw, out)).To(Succeed())
+	return out
 }
 
 // reconcilerWithFakeTunnelConfigurationAPI returns a reconciler wired to a pre-built fake.
@@ -87,14 +151,9 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 	configKey := types.NamespacedName{Name: configName, Namespace: ns}
 	tunnelKey := types.NamespacedName{Name: tunnelCRName, Namespace: ns}
 
-	notFoundErr := func() error {
-		v := cf.NewNotFoundError(&cf.Error{StatusCode: 404, Type: cf.ErrorTypeNotFound})
-		return &v
-	}
-	terminalErr := func() error {
-		v := cf.NewAuthorizationError(&cf.Error{StatusCode: 403, Type: cf.ErrorTypeAuthorization})
-		return &v
-	}
+	configPath := "accounts/" + fakeAcctID + "/cfd_tunnel/" + fakeTunnelID + "/configurations"
+	notFoundErr := func() error { return v7APIError("GET", configPath, 404, 1003, "Tunnel not found") }
+	terminalErr := func() error { return v7APIError("PUT", configPath, 403, 10000, "Authentication error") }
 
 	createAccount := func(ready bool) {
 		acct := &cloudflarev1alpha1.CloudflareAccount{
@@ -193,14 +252,14 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 	}
 
 	// expectedRules is what createConfig's spec should produce, including the catch-all.
-	expectedRules := func(defaultService string) []cf.UnvalidatedIngressRule {
-		return []cf.UnvalidatedIngressRule{
+	expectedRules := func(defaultService string) []ingressRuleJSON {
+		return []ingressRuleJSON{
 			{
 				Hostname: "app.example.com",
 				Service:  "http://app.default:80",
-				OriginRequest: &cf.OriginRequestConfig{
-					HTTPHostHeader: new("app.internal"),
-					NoTLSVerify:    new(true),
+				OriginRequest: map[string]any{
+					"httpHostHeader": "app.internal",
+					"noTLSVerify":    true,
 				},
 			},
 			{Hostname: "api.example.com", Path: "^/v1/", Service: "https://api.default:443"},
@@ -357,19 +416,19 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		It("writes the rules plus the catch-all to a tunnel with no configuration", func() {
 			readyEnv(nil)
 			fake := &fakeTunnelConfigurationAPI{
-				getResult:    cf.TunnelConfigurationResult{TunnelID: fakeTunnelID, Version: 0},
-				updateResult: cf.TunnelConfigurationResult{TunnelID: fakeTunnelID, Version: 1},
+				getResult:    storedTunnelConfig{TunnelID: fakeTunnelID, Version: 0},
+				updateResult: storedTunnelConfig{TunnelID: fakeTunnelID, Version: 1},
 			}
 			result, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(reconcile.Result{}))
 
-			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration", "UpdateTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Get", "Update"}))
 			Expect(fake.accountIDs).To(HaveEach(fakeAcctID))
 			Expect(fake.getIDs).To(Equal([]string{fakeTunnelID}))
 			Expect(fake.updates).To(HaveLen(1))
-			Expect(fake.updates[0].TunnelID).To(Equal(fakeTunnelID))
-			Expect(fake.updates[0].Config).To(Equal(cf.TunnelConfiguration{Ingress: expectedRules("http_status:404")}))
+			Expect(fake.updateIDs).To(Equal([]string{fakeTunnelID}))
+			Expect(sentConfig(fake.updates[0])).To(Equal(tunnelConfigJSON{Ingress: expectedRules("http_status:404")}))
 
 			tc := getConfig()
 			Expect(tc.Spec.DefaultService).To(Equal("http_status:404"), "API server should default defaultService")
@@ -388,24 +447,25 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.updates).To(HaveLen(1))
-			Expect(fake.updates[0].Config.Ingress).To(Equal(expectedRules("http://fallback.default:80")))
+			Expect(sentConfig(fake.updates[0]).Ingress).To(Equal(expectedRules("http://fallback.default:80")))
 		})
 
 		It("does not write when Cloudflare already has the desired configuration", func() {
 			readyEnv(nil)
 			setStatusTunnelID(fakeTunnelID)
-			fake := &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{
+			fake := &fakeTunnelConfigurationAPI{getResult: storedTunnelConfig{
 				TunnelID: fakeTunnelID,
 				Version:  7,
 				// What Cloudflare returns: the defaults it fills in do not count as drift.
-				Config: cf.TunnelConfiguration{
-					Ingress:     expectedRules("http_status:404"),
-					WarpRouting: &cf.WarpRoutingConfig{Enabled: false},
+				Config: tunnelConfigJSON{
+					Ingress:       expectedRules("http_status:404"),
+					OriginRequest: map[string]any{},
+					WarpRouting:   map[string]any{"enabled": false},
 				},
 			}}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Get"}))
 			Expect(getConfig().Status.CloudflareMetadata.Version).To(Equal(7))
 			expectReady(configKey, metav1.ConditionTrue, "Synced")
 		})
@@ -413,69 +473,79 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		It("schedules a drift check after a sync, once the manager sets an interval", func() {
 			readyEnv(nil)
 			setStatusTunnelID(fakeTunnelID)
-			fake := &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{
+			fake := &fakeTunnelConfigurationAPI{getResult: storedTunnelConfig{
 				TunnelID: fakeTunnelID,
 				Version:  7,
-				Config: cf.TunnelConfiguration{
+				Config: tunnelConfigJSON{
 					Ingress:     expectedRules("http_status:404"),
-					WarpRouting: &cf.WarpRoutingConfig{Enabled: false},
+					WarpRouting: map[string]any{"enabled": false},
 				},
 			}}
 			r := reconcilerWithFakeTunnelConfigurationAPI(fake)
 			expectDriftCheck(func() (reconcile.Result, error) { return reconcileConfig(r, configKey) })
-			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration", "GetTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Get", "Get"}))
 		})
 
 		DescribeTable("overwrites drift made outside kflare",
-			func(mutate func(*cf.TunnelConfiguration)) {
+			func(mutate func(*tunnelConfigJSON)) {
 				readyEnv(nil)
 				setStatusTunnelID(fakeTunnelID)
-				actual := cf.TunnelConfiguration{Ingress: expectedRules("http_status:404")}
+				actual := tunnelConfigJSON{Ingress: expectedRules("http_status:404")}
 				mutate(&actual)
 				fake := &fakeTunnelConfigurationAPI{
-					getResult:    cf.TunnelConfigurationResult{TunnelID: fakeTunnelID, Version: 3, Config: actual},
-					updateResult: cf.TunnelConfigurationResult{TunnelID: fakeTunnelID, Version: 4},
+					getResult:    storedTunnelConfig{TunnelID: fakeTunnelID, Version: 3, Config: actual},
+					updateResult: storedTunnelConfig{TunnelID: fakeTunnelID, Version: 4},
 				}
 				_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration", "UpdateTunnelConfiguration"}))
-				Expect(fake.updates[0].Config).To(Equal(cf.TunnelConfiguration{Ingress: expectedRules("http_status:404")}))
+				Expect(fake.calls).To(Equal([]string{"Get", "Update"}))
+				Expect(sentConfig(fake.updates[0])).To(Equal(tunnelConfigJSON{Ingress: expectedRules("http_status:404")}))
 				Expect(getConfig().Status.CloudflareMetadata.Version).To(Equal(4))
 			},
-			Entry("changed service", func(c *cf.TunnelConfiguration) {
+			Entry("changed service", func(c *tunnelConfigJSON) {
 				c.Ingress[0].Service = "http://elsewhere:80"
 			}),
-			Entry("extra rule", func(c *cf.TunnelConfiguration) {
-				c.Ingress = append([]cf.UnvalidatedIngressRule{{Hostname: "x.example.com", Service: "http://x:80"}}, c.Ingress...)
+			Entry("extra rule", func(c *tunnelConfigJSON) {
+				c.Ingress = append([]ingressRuleJSON{{Hostname: "x.example.com", Service: "http://x:80"}}, c.Ingress...)
 			}),
-			Entry("origin setting the spec cannot express", func(c *cf.TunnelConfiguration) {
-				c.Ingress[1].OriginRequest = &cf.OriginRequestConfig{ConnectTimeout: &cf.TunnelDuration{Duration: 30 * time.Second}}
+			Entry("a rule's path", func(c *tunnelConfigJSON) {
+				c.Ingress[0].Path = "^/admin/"
 			}),
-			Entry("top-level origin settings", func(c *cf.TunnelConfiguration) {
-				c.OriginRequest = cf.OriginRequestConfig{NoTLSVerify: new(true)}
+			Entry("a changed origin setting", func(c *tunnelConfigJSON) {
+				c.Ingress[0].OriginRequest = map[string]any{"httpHostHeader": "elsewhere", "noTLSVerify": true}
 			}),
-			Entry("warp routing enabled", func(c *cf.TunnelConfiguration) {
-				c.WarpRouting = &cf.WarpRoutingConfig{Enabled: true}
+			Entry("an origin setting the spec does not set", func(c *tunnelConfigJSON) {
+				c.Ingress[1].OriginRequest = map[string]any{"connectTimeout": 30}
+			}),
+			Entry("an origin setting kflare does not know", func(c *tunnelConfigJSON) {
+				c.Ingress[1].OriginRequest = map[string]any{"access": map[string]any{"required": true}}
+			}),
+			Entry("top-level origin settings", func(c *tunnelConfigJSON) {
+				c.OriginRequest = map[string]any{"noTLSVerify": true}
+			}),
+			Entry("warp routing enabled", func(c *tunnelConfigJSON) {
+				c.WarpRouting = map[string]any{"enabled": true}
 			}),
 		)
 
-		It("treats an empty originRequest object as absent", func() {
+		It("treats an empty originRequest object, and settings at their zero value, as absent", func() {
 			readyEnv(nil)
 			setStatusTunnelID(fakeTunnelID)
 			actual := expectedRules("http_status:404")
-			actual[1].OriginRequest = &cf.OriginRequestConfig{}
-			fake := &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{
-				Config: cf.TunnelConfiguration{Ingress: actual},
+			actual[1].OriginRequest = map[string]any{}
+			actual[2].OriginRequest = map[string]any{"connectTimeout": 0, "noTLSVerify": false, "caPool": ""}
+			fake := &fakeTunnelConfigurationAPI{getResult: storedTunnelConfig{
+				Config: tunnelConfigJSON{Ingress: actual},
 			}}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Get"}))
 		})
 
 		// configuredOutside is a tunnel's configuration that routes a hostname,
 		// as one written outside kflare would.
-		configuredOutside := cf.TunnelConfigurationResult{TunnelID: fakeTunnelID, Version: 5,
-			Config: cf.TunnelConfiguration{Ingress: []cf.UnvalidatedIngressRule{
+		configuredOutside := storedTunnelConfig{TunnelID: fakeTunnelID, Version: 5,
+			Config: tunnelConfigJSON{Ingress: []ingressRuleJSON{
 				{Hostname: "legacy.example.com", Service: "http://legacy:80"}, {Service: "http_status:404"},
 			}}}
 		adoptPolicy := map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdopt}
@@ -487,7 +557,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 				result, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
-				Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+				Expect(fake.calls).To(Equal([]string{"Get"}))
 				expectReady(configKey, metav1.ConditionFalse, "AlreadyExists")
 				Expect(getConfig().Status.CloudflareMetadata.TunnelID).To(BeEmpty())
 			})
@@ -495,22 +565,22 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		It("replaces a tunnel's configuration with the adopt policy, and records the adoption", func() {
 			readyEnv(adoptPolicy)
 			fake := &fakeTunnelConfigurationAPI{getResult: configuredOutside,
-				updateResult: cf.TunnelConfigurationResult{TunnelID: fakeTunnelID, Version: 6}}
+				updateResult: storedTunnelConfig{TunnelID: fakeTunnelID, Version: 6}}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration", "UpdateTunnelConfiguration"}))
-			Expect(fake.updates[0].Config.Ingress).To(Equal(expectedRules("http_status:404")))
+			Expect(fake.calls).To(Equal([]string{"Get", "Update"}))
+			Expect(sentConfig(fake.updates[0]).Ingress).To(Equal(expectedRules("http_status:404")))
 			Expect(getConfig().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 			Expect(getConfig().Status.CloudflareMetadata.TunnelID).To(Equal(fakeTunnelID))
 		})
 
 		It("reports NotFound with the adopt policy for a tunnel with nothing to adopt", func() {
 			readyEnv(adoptPolicy)
-			fake := &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{TunnelID: fakeTunnelID,
-				Config: cf.TunnelConfiguration{Ingress: []cf.UnvalidatedIngressRule{{Service: "http_status:404"}}}}}
+			fake := &fakeTunnelConfigurationAPI{getResult: storedTunnelConfig{TunnelID: fakeTunnelID,
+				Config: tunnelConfigJSON{Ingress: []ingressRuleJSON{{Service: "http_status:404"}}}}}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Get"}))
 			expectReady(configKey, metav1.ConditionFalse, "NotFound")
 		})
 
@@ -522,11 +592,11 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			Expect(getConfig().Annotations).To(HaveKeyWithValue(reconciler.CreatingAnnotation, fakeTunnelID))
 
 			By("finding the rules the lost write stored, without an adoption policy")
-			fake = &fakeTunnelConfigurationAPI{getResult: cf.TunnelConfigurationResult{TunnelID: fakeTunnelID,
-				Version: 2, Config: cf.TunnelConfiguration{Ingress: expectedRules("http_status:404")}}}
+			fake = &fakeTunnelConfigurationAPI{getResult: storedTunnelConfig{TunnelID: fakeTunnelID,
+				Version: 2, Config: tunnelConfigJSON{Ingress: expectedRules("http_status:404")}}}
 			_, err = reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Get"}))
 			expectReady(configKey, metav1.ConditionTrue, "Synced")
 			Expect(getConfig().Annotations).NotTo(HaveKey(reconciler.AdoptedAnnotation))
 
@@ -542,7 +612,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			fake := &fakeTunnelConfigurationAPI{getResult: configuredOutside}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"GetTunnelConfiguration"}), "what it wrote to the old tunnel is no claim")
+			Expect(fake.calls).To(Equal([]string{"Get"}), "what it wrote to the old tunnel is no claim")
 			expectReady(configKey, metav1.ConditionFalse, "AlreadyExists")
 		})
 
@@ -553,7 +623,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.getIDs).To(Equal([]string{fakeTunnelID}))
-			Expect(fake.updates[0].TunnelID).To(Equal(fakeTunnelID))
+			Expect(fake.updateIDs).To(Equal([]string{fakeTunnelID}))
 			Expect(getConfig().Status.CloudflareMetadata.TunnelID).To(Equal(fakeTunnelID))
 		})
 
@@ -587,7 +657,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 
 			_, err = reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(ContainElement("UpdateTunnelConfiguration"))
+			Expect(fake.calls).To(ContainElement("Update"))
 			expectReady(configKey, metav1.ConditionTrue, "Synced")
 		})
 	})
@@ -607,7 +677,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 		fake := &fakeTunnelConfigurationAPI{}
 		_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(fake.calls).To(ContainElement("UpdateTunnelConfiguration"))
+		Expect(fake.calls).To(ContainElement("Update"))
 		expectReady(configKey, metav1.ConditionTrue, "Synced")
 	})
 
@@ -620,12 +690,10 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			fake := &fakeTunnelConfigurationAPI{}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"UpdateTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Update"}))
 			Expect(fake.accountIDs).To(HaveEach(fakeAcctID))
-			Expect(fake.updates[0]).To(Equal(cf.TunnelConfigurationParams{
-				TunnelID: fakeTunnelID,
-				Config:   cf.TunnelConfiguration{Ingress: []cf.UnvalidatedIngressRule{{Service: "http_status:404"}}},
-			}))
+			Expect(fake.updateIDs).To(Equal([]string{fakeTunnelID}))
+			Expect(sentConfig(fake.updates[0])).To(Equal(tunnelConfigJSON{Ingress: []ingressRuleJSON{{Service: "http_status:404"}}}))
 			expectConfigGone()
 		})
 
@@ -636,7 +704,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			_, err := reconcileConfig(r, configKey)
 			Expect(err).NotTo(HaveOccurred())
 			expectReady(configKey, metav1.ConditionTrue, "Synced")
-			fake.getResult.Config = fake.updates[0].Config
+			fake.getResult.Config = sentConfig(fake.updates[0])
 			createConfig(otherConfig, nil, true)
 			otherKey := types.NamespacedName{Name: otherConfig, Namespace: ns}
 			_, err = reconcileConfig(r, otherKey)
@@ -711,7 +779,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			fake := &fakeTunnelConfigurationAPI{}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"UpdateTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Update"}))
 			expectConfigGone()
 		})
 
@@ -723,7 +791,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			fake := &fakeTunnelConfigurationAPI{}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.calls).To(Equal([]string{"UpdateTunnelConfiguration"}))
+			Expect(fake.calls).To(Equal([]string{"Update"}))
 			expectConfigGone()
 		})
 
@@ -736,7 +804,7 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			fake := &fakeTunnelConfigurationAPI{}
 			_, err := reconcileConfig(reconcilerWithFakeTunnelConfigurationAPI(fake), configKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.updates[0].TunnelID).To(Equal("tun-written"))
+			Expect(fake.updateIDs).To(Equal([]string{"tun-written"}))
 		})
 
 		DescribeTable("skips Cloudflare and removes the finalizer",
@@ -843,6 +911,24 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			tc.Spec.TunnelRef.Name = "another-tunnel"
 			Expect(k8sClient.Update(ctx, tc)).To(MatchError(ContainSubstring("tunnelRef is immutable")))
 		})
+
+		DescribeTable("rejects a negative timeout",
+			func(field string, set func(*cloudflarev1alpha1.TunnelOriginRequest)) {
+				createConfig(configName, nil, false)
+				tc := getConfig()
+				set(tc.Spec.Ingress[0].OriginRequest)
+				Expect(k8sClient.Update(ctx, tc)).To(MatchError(ContainSubstring(
+					"spec.ingress[0].originRequest." + field)))
+			},
+			Entry("connectTimeout", "connectTimeout",
+				func(o *cloudflarev1alpha1.TunnelOriginRequest) { o.ConnectTimeout = new(int64(-1)) }),
+			Entry("tlsTimeout", "tlsTimeout",
+				func(o *cloudflarev1alpha1.TunnelOriginRequest) { o.TLSTimeout = new(int64(-1)) }),
+			Entry("tcpKeepAlive", "tcpKeepAlive",
+				func(o *cloudflarev1alpha1.TunnelOriginRequest) { o.TCPKeepAlive = new(int64(-1)) }),
+			Entry("keepAliveTimeout", "keepAliveTimeout",
+				func(o *cloudflarev1alpha1.TunnelOriginRequest) { o.KeepAliveTimeout = new(int64(-1)) }),
+		)
 
 		It("rejects an empty ingress list", func() {
 			createConfig(configName, nil, false)
