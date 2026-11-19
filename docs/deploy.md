@@ -33,7 +33,7 @@ account, and covers running it in production, upgrades, uninstalling and trouble
   [Several installations in one cluster](#several-installations-in-one-cluster)).
 - Outbound HTTPS from the controller to `api.cloudflare.com` (see [Network access](#network-access)).
 - For the HorizontalPodAutoscaler the chart creates, the metrics API, which metrics-server provides. Without it, the
-  autoscaler cannot scale on use, and a new install runs `autoscaling.minReplicas` replicas (see
+  autoscaler cannot scale on use, and a new install runs `autoscaling.minReplicas` replicas, 2 by default (see
   [Scaling and resources](#scaling-and-resources)).
 
 ## 1. Create a Cloudflare API token
@@ -139,8 +139,7 @@ spec:
     targetRevision: <version>
     helm:
       valuesObject:
-        autoscaling:
-          minReplicas: 2
+        driftCheckInterval: 30m
   destination:
     name: in-cluster
     namespace: kflare
@@ -183,8 +182,7 @@ spec:
   install:
     createNamespace: true
   values:
-    autoscaling:
-      minReplicas: 2
+    driftCheckInterval: 30m
 ```
 
 Things to know:
@@ -705,13 +703,11 @@ Every value is documented in [`helm/kflare/values.yaml`](../helm/kflare/values.y
 A values file for a production cluster usually sets:
 
 ```yaml
-# High availability: one replica is active, the others wait on the leader lease
-# and take over within about 15 seconds (the lease's duration) if it goes. The
-# HorizontalPodAutoscaler adds standbys while the leader is busy; minReplicas: 2
-# keeps one at all times. A PodDisruptionBudget lets a node drain evict one pod
-# at a time.
-autoscaling:
-  minReplicas: 2
+# High availability: one replica is active, and the standby the chart keeps by
+# default (autoscaling.minReplicas: 2) waits on the leader lease and takes over
+# within about 20 seconds (once the lease's 15 have run out) if it goes. A
+# PodDisruptionBudget lets a node drain evict one pod at a time. Spread the two
+# over nodes, so that one node's loss leaves a pod:
 topologySpreadConstraints:
   - maxSkew: 1
     topologyKey: kubernetes.io/hostname
@@ -1198,18 +1194,23 @@ expressions match the issuer above and the policy's `subjectRegExp`.
 ### Scaling and resources
 
 kflare runs one active controller. With leader election, the replica that holds the lease reconciles every resource,
-and the others wait to take over within about 15 seconds (the lease's duration) if it goes. The chart's
-HorizontalPodAutoscaler scales the Deployment between `autoscaling.minReplicas` (1) and `autoscaling.maxReplicas`
-(10) replicas on the pods' average CPU use, against `autoscaling.targetCPUUtilizationPercentage` (80) percent of
-`resources.requests.cpu`. A standby uses almost no CPU, so the average follows the leader's use, and the replicas
-the autoscaler adds while the leader is busy are standbys: they shorten a failover, but they add no reconcile
-capacity and do not make the leader's work go faster.
+and the others wait to take over within about 20 seconds if it goes: once the lease's 15 seconds have run out. **Replicas are standbys,
+not capacity**: they add no reconcile capacity and do not make the leader's work go faster, at any count. For
+throughput, see [Reconciles at once](#reconciles-at-once), under Cloudflare's rate limit whatever kflare does.
+
+The chart's HorizontalPodAutoscaler is a way to hold those standbys. It keeps `autoscaling.minReplicas` (2)
+replicas, so a default install has a standby at all times: it costs one idle pod, about 1m CPU and 9 MiB in use, and
+100m and 64Mi in requests. Without one, reconciling waits for a new pod to start when the leader's goes. The
+autoscaler adds a second standby, up to `autoscaling.maxReplicas` (3), while the pods' average CPU use is above
+`autoscaling.targetCPUUtilizationPercentage` (80) percent of `resources.requests.cpu`. A standby uses almost no CPU,
+so that average is the leader's use divided by the number of pods.
 
 - **It needs the metrics API**, which metrics-server provides. Without it, `kubectl get hpa` shows the target as
   `<unknown>`, the Deployment keeps `autoscaling.minReplicas` replicas, and Argo CD reports the autoscaler Degraded
   (see [With Argo CD or Flux](#with-argo-cd-or-flux)).
-- **To keep a standby at all times**, set `autoscaling.minReplicas: 2`. `replicaCount` is ignored while autoscaling
-  is on; with `autoscaling.enabled: false`, it sets the replicas again.
+- **To run a single pod**, as a small or a test cluster may, set `autoscaling.minReplicas: 1`, or
+  `autoscaling.enabled: false`, with which `replicaCount` (1) sets the replicas again: it is ignored while
+  autoscaling is on.
 - **Memory is left out by default.** The leader caches the Secrets it may use and a standby caches nothing, so
   on a cluster with many Secrets a memory target (`autoscaling.targetMemoryUtilizationPercentage`) adds standbys that
   stay, as the leader's memory does not go down when they start.
@@ -1355,9 +1356,13 @@ The ServiceMonitor reads that token with `bearerTokenFile`, which a Prometheus w
 `arbitraryFSAccessThroughSMs.deny` refuses. To scrape by hand, with a token for a ServiceAccount bound to the role:
 
 ```sh
-kubectl -n kflare port-forward svc/kflare-metrics 8080 &
+# The leader's pod: a standby serves the Go runtime's metrics, and no controller's.
+leader=$(kubectl -n kflare get lease a634e97e.kflare.dev -o jsonpath='{.spec.holderIdentity}' | cut -d_ -f1)
+kubectl -n kflare port-forward "pod/$leader" 8080 &
 curl -k -H "Authorization: Bearer $(kubectl -n monitoring create token prometheus)" https://localhost:8080/metrics
 ```
+
+A [scoped installation](#scoping-an-installation)'s Lease is named after its release, `<release>.kflare.dev`.
 
 The controller's certificate is self-signed, and the ServiceMonitor skips verifying it, unless `metrics.certSecret`
 names a Secret in the release namespace that holds one: `tls.crt` and `tls.key`, and `ca.crt` for the ServiceMonitor
@@ -1866,7 +1871,7 @@ Every kflare resource reports a single `Ready` condition. Start with:
 ```sh
 kubectl get <kind>.kflare.dev -A                      # READY column
 kubectl describe <kind>.kflare.dev <name> -n <ns>     # condition reason and message; Events of Ready changes
-kubectl -n kflare logs deploy/kflare           # controller log (JSON)
+kubectl -n kflare logs -l app.kubernetes.io/name=kflare --prefix --tail=-1   # the log (JSON) of every controller pod
 ```
 
 | Reason | Meaning | What to do |

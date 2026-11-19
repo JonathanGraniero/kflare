@@ -8,17 +8,22 @@ replicaCount: 1
 
 # A HorizontalPodAutoscaler for the controller's Deployment, which owns the
 # replica count while it is on. It needs the metrics API (metrics-server).
-# Leader election keeps one replica active whatever the count: the replicas it
-# adds are standbys, which take over sooner when the leader goes but add no
-# reconcile capacity. The leader's use is what rises with load, and the pods'
-# average is what the autoscaler compares with its targets.
+# It holds standbys, not capacity: leader election keeps one replica active
+# whatever the count, so every other replica is a standby, which takes over
+# within about 20 seconds when the leader goes but adds no reconcile capacity
+# and does not make the leader's work go faster. For throughput, raise
+# maxConcurrentReconciles. The leader's use is what rises with load, and the
+# pods' average is what the autoscaler compares with its targets.
 autoscaling:
   # -- Create the HorizontalPodAutoscaler.
   enabled: true
-  # -- Fewest replicas. 2 keeps a standby at all times.
-  minReplicas: 1
-  # -- Most replicas.
-  maxReplicas: 10
+  # -- Fewest replicas. 2 keeps a standby at all times; 1 runs a single pod
+  # while the leader is not busy, and reconciling then waits for a new pod to
+  # start when it goes.
+  minReplicas: 2
+  # -- Most replicas. A second standby adds little, and more add nothing but
+  # their requests.
+  maxReplicas: 3
   # -- Average CPU use across the pods, as a percentage of
   # resources.requests.cpu, above which replicas are added. Empty leaves CPU
   # out.
@@ -298,10 +303,11 @@ metrics:
       grafana_dashboard: "1"
 
 # A PodDisruptionBudget that lets a node drain evict one controller pod at a
-# time. Only created when replicaCount is above 1, so that a single replica
-# never blocks a drain.
+# time. Only created when the Deployment can run more than one replica
+# (autoscaling.maxReplicas, or replicaCount while autoscaling is off), so that
+# a single replica never blocks a drain.
 podDisruptionBudget:
-  # -- Create the PodDisruptionBudget when replicaCount > 1.
+  # -- Create the PodDisruptionBudget when there can be more than one replica.
   enabled: true
   # -- Pods a disruption may take down at once (a number or a percentage).
   maxUnavailable: 1

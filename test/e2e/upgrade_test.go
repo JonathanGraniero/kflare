@@ -256,9 +256,6 @@ var _ = Describe("Upgrade from the last release", Ordered, Label("upgrade"), fun
 			if image := string(out); image != managerImageRepository+":"+managerImageTag {
 				return fmt.Errorf("pod %s runs %s, not this checkout's image", pod, image)
 			}
-			if err := holdsLease(pod); err != nil {
-				return err
-			}
 			leader = pod
 			return nil
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
@@ -336,9 +333,14 @@ var _ = Describe("Upgrade from the last release", Ordered, Label("upgrade"), fun
 		if !live {
 			Skip("no Cloudflare credentials: the manager has not called Cloudflare")
 		}
-		pod, err := runningController()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(pod).To(Equal(leader), "a new controller pod has new metrics")
+		// The standby may still be starting, after an upgrade from a release
+		// that ran one pod.
+		var pod string
+		Eventually(func() (err error) {
+			pod, err = runningController()
+			return err
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		Expect(pod).To(Equal(leader), "a new leader has new metrics")
 		// A migration may write, and so may a new kind's controller.
 		allowed := map[string]bool{}
 		for key := range changed {

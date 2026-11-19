@@ -61,18 +61,12 @@ var _ = Describe("an installation scoped to a namespace", Ordered, func() {
 
 	It("runs one pod, which holds a Lease of its own while the suite's installation holds its own", func() {
 		Eventually(func() error {
-			pod, err := runningControllerIn(scopedNamespace, scopedSelector)
-			if err != nil {
+			// Each returns the pod that holds its release's Lease.
+			if _, err := runningControllerIn(scopedNamespace, scopedSelector, scopedLease, 1); err != nil {
 				return err
 			}
-			if err := holdsLeaseIn(scopedNamespace, scopedLease, pod); err != nil {
-				return err
-			}
-			first, err := runningController()
-			if err != nil {
-				return err
-			}
-			return holdsLease(first)
+			_, err := runningController()
+			return err
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 
