@@ -97,10 +97,14 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   requests, not capacity: `maxConcurrentReconciles` is what raises throughput. `autoscaling.minReplicas: 1` runs a
   single pod as before. **Values that set `autoscaling.minReplicas` above 3 without `maxReplicas` no longer render**
   ("minReplicas cannot be above maxReplicas"): set `autoscaling.maxReplicas` too. Other values that set either number
-  are unchanged. The two pods can share a node unless `topologySpreadConstraints` spreads them
-  ([Configuration](docs/deploy.md#configuration)), and a node's loss then takes both. With two pods,
-  `kubectl logs deploy/kflare` and a port-forward to the metrics Service reach either: the deploy guide's commands
-  now read every pod's log, and the leader's metrics.
+  are unchanged. With two pods, `kubectl logs deploy/kflare` and a port-forward to the metrics Service reach either:
+  the deploy guide's commands now read every pod's log, and the leader's metrics.
+- **The pods go on different nodes** where the cluster has them
+  ([#192](https://github.com/JonathanGraniero/kflare/issues/192)): while there can be more than one replica and
+  `topologySpreadConstraints` is empty, the chart spreads them over nodes (`kubernetes.io/hostname`,
+  `whenUnsatisfiable: ScheduleAnyway`), so that a node's loss does not take the standby with the leader. A one-node
+  cluster still runs both. Your own `topologySpreadConstraints` replace it, and `topologySpreadDefault: false` turns it
+  off. A spread over zones is yours to add ([Configuration](docs/deploy.md#configuration)).
 - **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
   `config/default`'s kustomization, which still said `cloudflare-operator-system`. An existing installation keeps its
   namespace: `helm upgrade -n kflare-system` works as before.

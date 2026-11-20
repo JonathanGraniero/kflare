@@ -707,15 +707,24 @@ A values file for a production cluster usually sets:
 # High availability: one replica is active, and the standby the chart keeps by
 # default (autoscaling.minReplicas: 2) waits on the leader lease and takes over
 # within about 20 seconds (once the lease's 15 have run out) if it goes. A
-# PodDisruptionBudget lets a node drain evict one pod at a time. Spread the two
-# over nodes, so that one node's loss leaves a pod:
+# PodDisruptionBudget lets a node drain evict one pod at a time, and the chart
+# spreads the pods over nodes (topologySpreadDefault). Your own constraints
+# replace that spread, so one over zones keeps the nodes' too:
 topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: kflare
+    matchLabelKeys: [pod-template-hash]
   - maxSkew: 1
     topologyKey: kubernetes.io/hostname
     whenUnsatisfiable: ScheduleAnyway
     labelSelector:
       matchLabels:
         app.kubernetes.io/name: kflare
+    matchLabelKeys: [pod-template-hash]
 
 # Prometheus Operator scraping, over HTTPS with Prometheus' own ServiceAccount
 # token (see Monitoring).
@@ -1209,6 +1218,11 @@ so that average is the leader's use divided by the number of pods.
 - **It needs the metrics API**, which metrics-server provides. Without it, `kubectl get hpa` shows the target as
   `<unknown>`, the Deployment keeps `autoscaling.minReplicas` replicas, and Argo CD reports the autoscaler Degraded
   (see [With Argo CD or Flux](#with-argo-cd-or-flux)).
+- **The pods go on different nodes** where the cluster has them: while there can be more than one replica and
+  `topologySpreadConstraints` is empty, the chart spreads them over nodes with `whenUnsatisfiable: ScheduleAnyway`,
+  so that a node's loss does not take the standby with the leader, and a one-node cluster still runs both.
+  `topologySpreadDefault: false` turns it off. A spread over zones (`topology.kubernetes.io/zone`) is yours to add,
+  as in [Configuration](#configuration): many clusters have one zone, where a hard zone rule leaves a pod pending.
 - **To run a single pod**, as a small or a test cluster may, set `autoscaling.minReplicas: 1`, or
   `autoscaling.enabled: false`, with which `replicaCount` (1) sets the replicas again: it is ignored while
   autoscaling is on.

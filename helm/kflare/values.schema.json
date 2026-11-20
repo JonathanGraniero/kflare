@@ -440,6 +440,9 @@
     "topologySpreadConstraints": {
       "type": "array"
     },
+    "topologySpreadDefault": {
+      "type": "boolean"
+    },
     "extraArgs": {
       "type": "array",
       "items": {

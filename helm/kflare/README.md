@@ -93,7 +93,8 @@ All values are documented in [`values.yaml`](values.yaml) and validated by
 | `podDisruptionBudget.enabled` | `true` | Create a PodDisruptionBudget (`maxUnavailable: 1`) when there can be several replicas |
 | `networkPolicy.enabled` | `false` | Allow only metrics scrapes in, and DNS, the API server and port 443 out |
 | `resources` | 100m/64Mi requests, 1/512Mi limits | Controller resources; raise memory for clusters with many Secrets |
-| `topologySpreadConstraints`, `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` | unset | Pod scheduling |
+| `topologySpreadDefault` | `true` | Spread the pods over nodes, softly, while `topologySpreadConstraints` is empty and there can be several replicas |
+| `topologySpreadConstraints`, `affinity`, `nodeSelector`, `tolerations`, `priorityClassName` | unset | Pod scheduling; `topologySpreadConstraints` replaces the default spread |
 | `extraEnv` | `[]` | Extra environment variables, such as `HTTPS_PROXY` and `NO_PROXY` |
 | `trustedCA.configMap`, `trustedCA.secret`, `trustedCA.key` | unset, unset, `ca.crt` | A CA bundle to trust besides the public roots, for a proxy that inspects TLS |
 | `extraVolumes`, `extraVolumeMounts` | `[]` | Extra volumes for the pod, and their mounts in the controller container |
