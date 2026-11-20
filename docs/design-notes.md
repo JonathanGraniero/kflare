@@ -2149,6 +2149,15 @@ to be started without answering them, so each went as the issue proposed.
   records no zone in status, which would otherwise give it the zone on a switch to `manage`; and its deletion resets
   nothing. Settings configured outside kflare mark it adopted, and a switch to `manage` takes such settings without an
   adoption policy, as a CRUD kind's does
+- **Rule kinds observed** (#195, `feat/observe-rule-kinds`). The issue's two decisions as proposed: an annotation,
+  `kflare.dev/rule-id`, names a rule kflare did not create (a field would have meant a CRD change for a value that
+  matters only while observing), and settings and rules went in two pull requests. Its plan to take the rule over on a
+  switch to `manage` by writing kflare's ref into it does not hold: the Rulesets API refuses to change a rule's ref
+  (20023, verified live 2026-10-12, which the fake models). Taking it over would mean a new rule and the old one's
+  deletion, which a phase capped at one rule (rate limiting on Free) refuses. So the resource reports `AlreadyExists`,
+  naming the code, until the rule is deleted, and then writes its own. `rulesetRuleDifferences` compares as
+  `rulesetRuleMatches` does but for the ref, naming each differing key of the rule, and each parameter of its action
+  through the generated `fields`
 - **The switch to `manage` adopts through `kflare.dev/adopted`,** which observing sets on a resource whose object is
   not its own (no claim label names it). The alternatives were a new status field on every kind, or inferring it
   from the last `Ready` reason, which an API error between the two would lose. The issue says an observed resource

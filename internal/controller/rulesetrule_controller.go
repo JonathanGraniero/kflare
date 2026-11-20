@@ -8,9 +8,11 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7/rulesets"
@@ -73,6 +75,11 @@ type rulesetRuleKind struct {
 	// resource that gets one checks again every minute instead of failing:
 	// the other rule may be about to go.
 	conflicts map[int]string
+	// fields names, by its path in a rule's JSON (action_parameters.<name>
+	// for a parameter of its action), the spec field that sets each value
+	// the kind's own spec holds: what an observed resource reports differing.
+	// A path it leaves out is named as it stands, as expression is.
+	fields map[string]string
 }
 
 // phase returns the phase obj's rule is in: the kind's only phase, or the one
@@ -112,7 +119,7 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	logger := log.FromContext(ctx)
 
 	obj := r.kind.newObject()
-	if done, result, err := startReconcile(ctx, r.Client, req, obj, false, func() (ctrl.Result, error) {
+	if done, result, err := startReconcile(ctx, r.Client, req, obj, true, func() (ctrl.Result, error) {
 		return r.reconcileDelete(ctx, obj)
 	}); done {
 		return result, err
@@ -136,14 +143,27 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	zoneID, phase := zone.Status.CloudflareMetadata.ZoneID, r.kind.phase(obj)
+	ref := rulesetRuleRef(r.kind.name, obj.GetNamespace(), obj.GetName())
+	if observed, _ := reconciler.Observed(obj); observed {
+		return r.observeOnly(ctx, obj, cfAPI, zoneID, phase, ref)
+	}
+
 	peers, known, err := r.peers(ctx, zoneID, phase)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	ref := rulesetRuleRef(r.kind.name, obj.GetNamespace(), obj.GetName())
 	rule := r.kind.definition(obj)
 	rule.Ref.Value, rule.Ref.Present = ref, true
-	state, err := syncRulesetRule(ctx, cfAPI, zoneID, phase, rule, peers, known)
+	named := obj.GetAnnotations()[reconciler.RuleIDAnnotation]
+	state, err := syncRulesetRule(ctx, cfAPI, zoneID, phase, rule, named, peers, known)
+	if errors.Is(err, errNamedRuleNotOwn) {
+		return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{Reason: reasonAlreadyExists,
+			Message: fmt.Sprintf("Rule %q in zone %q's %s phase, which the annotation %s names, already exists and kflare "+
+				"did not create it. Cloudflare does not let a rule's ref change (code 20023), so kflare cannot take it "+
+				"over in place: delete it in Cloudflare for kflare to write its own, or observe it with %s: %s",
+				named, zone.Name, phase, reconciler.RuleIDAnnotation, reconciler.ManagementPolicyAnnotation,
+				reconciler.ManagementPolicyObserve)})
+	}
 	if reason, ok := r.kind.conflict(err); ok {
 		return notReadyRetryAfter(ctx, r.Client, obj, &conditionError{
 			Reason:  reason,
@@ -185,12 +205,65 @@ func (r *rulesetRuleReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{RequeueAfter: rulesetRuleRecheckInterval}, nil
 }
 
+// observeOnly is reconcile for a resource kflare only observes
+// (reconciler.Observed): it reads the phase's entry point and finds the rule
+// the resource wrote while kflare managed it, by its ref, or else the one the
+// annotation RuleIDAnnotation names. It reports InSync, DriftDetected with the
+// spec fields that differ, never their values, or NotFound. It writes nothing,
+// and does not compare the rule's position: an observed rule sits wherever it
+// is. Status records the ref only for the resource's own rule.
+func (r *rulesetRuleReconciler) observeOnly(ctx context.Context, obj rulesetRuleObject, api RulesetRuleAPI,
+	zoneID string, phase rulesets.Phase, ref string) (ctrl.Result, error) {
+	ruleset, err := zoneRulesets{api: api, zoneID: zoneID}.getEntrypoint(ctx, phase)
+	if err != nil && !cfpkg.IsNotFound(err) {
+		return handleCloudflareError(ctx, r.Client, obj, err)
+	}
+	id := obj.GetAnnotations()[reconciler.RuleIDAnnotation]
+	current, own := ruleset.rule(ref)
+	found := own
+	if !found && id != "" {
+		if i := ruleset.index(id); i >= 0 {
+			current, found = ruleset.rules[i], true
+		}
+	}
+	where := fmt.Sprintf("zone %s's %s phase", zoneID, phase)
+	if !found {
+		message := fmt.Sprintf("No rule kflare wrote for this resource is in %s. To observe a rule kflare did not "+
+			"create, name it with the annotation %s: <its ID>", where, reconciler.RuleIDAnnotation)
+		if id != "" {
+			message = fmt.Sprintf("%s holds no rule with ID %q", upperFirst(where), id)
+		}
+		return observedNotReady(ctx, r.Client, obj, &conditionError{Reason: reasonNotFound,
+			Message: message + "; kflare only observes this resource, and creates none"})
+	}
+	if !own {
+		ref = ""
+	}
+	obj.GetRulesetRuleStatus().CloudflareMetadata = cloudflarev1alpha1.RulesetRuleCloudflareMetadata{
+		ZoneID: zoneID, RulesetID: ruleset.id, RuleID: current.id, Ref: ref, Version: current.version,
+	}
+
+	fields, err := rulesetRuleDifferences(r.kind.definition(obj), current.raw, r.kind.fields)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	what := fmt.Sprintf("Rule %q in %s", current.id, where)
+	if len(fields) > 0 {
+		return observedNotReady(ctx, r.Client, obj, &conditionError{
+			Reason: reasonDriftDetected,
+			Message: fmt.Sprintf("%s differs from the spec in: %s. kflare only observes this resource, and changes "+
+				"nothing in Cloudflare", what, strings.Join(fields, ", ")),
+		})
+	}
+	return readyWithDriftCheck(ctx, r.Client, obj, reasonInSync, what+" matches the spec; kflare only observes it")
+}
+
 // peers lists the rules kflare manages in zoneID and phase: those of every
 // kind writing to the phase, in every namespace, since Zones in different
 // namespaces can point at the same Cloudflare zone. Resources being deleted
-// are left out: their rules are about to go. So are paused resources, whose
-// rules kflare leaves alone: they keep their place, as rules created outside
-// kflare do, rather than being moved by another rule's sync.
+// are left out: their rules are about to go. So are paused and observed
+// resources, whose rules kflare leaves alone: they keep their place, as rules
+// created outside kflare do, rather than being moved by another rule's sync.
 //
 // known holds the refs of the rules of every resource of those kinds that the
 // installation manages, whatever its zone, paused and being deleted ones
@@ -212,7 +285,8 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 		for _, obj := range objs {
 			ref := rulesetRuleRef(kind.name, obj.GetNamespace(), obj.GetName())
 			known[ref] = true
-			if !obj.GetDeletionTimestamp().IsZero() || reconciler.Paused(obj) || kind.phase(obj) != phase {
+			if observed, _ := reconciler.Observed(obj); observed || !obj.GetDeletionTimestamp().IsZero() ||
+				reconciler.Paused(obj) || kind.phase(obj) != phase {
 				continue
 			}
 			spec := obj.GetRulesetRuleSpec()
@@ -244,6 +318,11 @@ func (r *rulesetRuleReconciler) peers(ctx context.Context, zoneID string, phase 
 // reconcileDelete handles the deletion lifecycle: unless the retain policy is
 // set, it deletes the rule from Cloudflare, then removes the finalizer.
 func (r *rulesetRuleReconciler) reconcileDelete(ctx context.Context, obj rulesetRuleObject) (ctrl.Result, error) {
+	// An observed resource leaves its rule, whatever its deletion policy.
+	if observed, _ := reconciler.Observed(obj); observed {
+		_, err := reconciler.RemoveFinalizer(ctx, r.Client, obj)
+		return ctrl.Result{}, err
+	}
 	return deleteUnlessRetained(ctx, r.Client, obj, func() error { return r.deleteCloudflareRule(ctx, obj) })
 }
 

@@ -47,6 +47,10 @@ var managedRulesetKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return managedRulesetDefinition(obj.(*cloudflarev1alpha1.ManagedRuleset))
 	},
+	fields: map[string]string{
+		"action_parameters.id":        "id",
+		"action_parameters.overrides": "overrides",
+	},
 	conflicts: map[int]string{
 		// A zone deploys a managed ruleset at most once, and Cloudflare refuses a
 		// second execute rule for it ("more than one rule is trying to execute the same

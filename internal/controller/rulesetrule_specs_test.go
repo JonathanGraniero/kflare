@@ -116,6 +116,161 @@ func comparableJSONRule(rule string) any {
 	return comparableStoredRule(out)
 }
 
+// ruleSpecEnv is what describeRuleKind's specs share, for specs it leaves to a
+// function of their own. fake returns the spec's fake, which each spec makes
+// anew, and reconcile and peers go through the spec's reconciler.
+type ruleSpecEnv[O rulesetRuleObject] struct {
+	specs        ruleKindSpecs[O]
+	ctx          context.Context
+	kind, ns     string
+	fake         func() *fakeRulesetAPI
+	reconcile    func(name string) (ctrl.Result, error)
+	peers        func(phase rulesets.Phase) ([]rulesetRulePeer, map[string]bool, error)
+	object       func(name, spec string) O
+	get          func(name string) O
+	create       func(obj client.Object)
+	createSynced func(name, spec string) O
+	readyOf      func(name string) metav1.Condition
+}
+
+// describeRuleObserve covers observe mode (reconciler.Observed) for a rule
+// kind: a rule kflare did not create, named by its ID, and the rule a resource
+// wrote; what an observed resource reports, that it writes and moves nothing,
+// and what a switch to manage takes over.
+func describeRuleObserve[O rulesetRuleObject](e ruleSpecEnv[O]) {
+	specs, ctx := e.specs, e.ctx
+	sample := specs.samples[0]
+	ref := func(name string) string { return rulesetRuleRef(e.kind, e.ns, name) }
+	// seedOutside gives the zone the sample's rule, written outside kflare,
+	// and returns its ID.
+	seedOutside := func() string {
+		GinkgoHelper()
+		e.fake().seedIn(sample.phase, specs.kind.definition(e.object("outside", sample.spec)))
+		return e.fake().entrypointIn(sample.phase).rules[0].id()
+	}
+	// withAnnotations creates a resource named name with the sample's spec,
+	// annotations and the finalizer, and reconciles it.
+	withAnnotations := func(name string, annotations map[string]string) (ctrl.Result, error) {
+		GinkgoHelper()
+		obj := e.object(name, sample.spec)
+		obj.SetFinalizers([]string{reconciler.Finalizer})
+		obj.SetAnnotations(annotations)
+		e.create(obj)
+		return e.reconcile(name)
+	}
+	// respec gives the resource name spec, keeping its annotations.
+	respec := func(name, spec string) {
+		GinkgoHelper()
+		current := e.get(name)
+		updated := e.object(name, spec)
+		updated.SetResourceVersion(current.GetResourceVersion())
+		updated.SetFinalizers(current.GetFinalizers())
+		updated.SetAnnotations(current.GetAnnotations())
+		Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+	}
+	observeByID := func(id string) map[string]string {
+		return map[string]string{reconciler.ManagementPolicyAnnotation: reconciler.ManagementPolicyObserve,
+			reconciler.RuleIDAnnotation: id}
+	}
+
+	Describe("observing", func() {
+		It("observes a rule kflare did not create, named by its ID: InSync, then DriftDetected, writing nothing",
+			func() {
+				id := seedOutside()
+				before := e.fake().entrypointIn(sample.phase).rules[0].clone()
+				_, err := withAnnotations("observed", observeByID(id))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.readyOf("observed").Status).To(Equal(metav1.ConditionTrue), e.readyOf("observed").Message)
+				Expect(e.readyOf("observed").Reason).To(Equal(reasonInSync))
+				metadata := e.get("observed").GetRulesetRuleStatus().CloudflareMetadata
+				Expect(metadata.RuleID).To(Equal(id))
+				Expect(metadata.ZoneID).To(Equal(rulesTestZone))
+				Expect(metadata.Ref).To(BeEmpty(), "the rule holds no ref of this resource's")
+				Expect(e.get("observed").GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+
+				for _, change := range specs.changes {
+					if change.sample != 0 {
+						continue
+					}
+					respec("observed", change.spec)
+					_, err = e.reconcile("observed")
+					Expect(err).NotTo(HaveOccurred())
+					ready := e.readyOf("observed")
+					Expect(ready.Reason).To(Equal(reasonDriftDetected), change.what)
+					Expect(changedSpecFields(sample.spec, change.spec)).To(ContainElements(differingFields(ready.Message)),
+						"%s: the message names spec fields the change sets otherwise", change.what)
+				}
+				Expect(e.fake().writes).To(BeZero())
+				Expect(e.fake().entrypointIn(sample.phase).rules).To(Equal([]fakeRule{before}))
+			})
+
+		It("reports NotFound without a rule of its own or a rule ID, and for an ID the phase lacks", func() {
+			_, err := withAnnotations("without-id", maps.Clone(observeAnnotation))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.readyOf("without-id").Reason).To(Equal(reasonNotFound))
+			Expect(e.readyOf("without-id").Message).To(ContainSubstring(reconciler.RuleIDAnnotation))
+
+			seedOutside()
+			_, err = withAnnotations("missing", observeByID("no-such-rule"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.readyOf("missing").Reason).To(Equal(reasonNotFound))
+			Expect(e.readyOf("missing").Message).To(ContainSubstring(`"no-such-rule"`))
+			Expect(e.fake().writes).To(BeZero())
+		})
+
+		It("observes the rule it wrote once switched to observe: writes nothing, takes no place among the rules it "+
+			"orders, and leaves the rule when deleted", func() {
+			e.createSynced("written", sample.spec)
+			writes := e.fake().writes
+			setManagementPolicy(ctx, e.get("written"), reconciler.ManagementPolicyObserve)
+			respec("written", specs.changes[slices.IndexFunc(specs.changes,
+				func(c ruleSpecCase) bool { return c.sample == 0 })].spec)
+			_, err := e.reconcile("written")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.readyOf("written").Reason).To(Equal(reasonDriftDetected))
+			Expect(e.get("written").GetRulesetRuleStatus().CloudflareMetadata.Ref).To(Equal(ref("written")))
+			Expect(e.get("written").GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+			Expect(e.fake().writes).To(Equal(writes))
+
+			peers, known, err := e.peers(sample.phase)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(peers).To(BeEmpty(), "an observed resource's rule is not ordered")
+			Expect(known).To(HaveKey(ref("written")), "it is still this installation's rule")
+
+			Expect(k8sClient.Delete(ctx, e.get("written"))).To(Succeed())
+			_, err = e.reconcile("written")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "written", Namespace: e.ns},
+				specs.newObject()))).To(BeTrue())
+			_, kept := e.fake().entrypointIn(sample.phase).rule(ref("written"))
+			Expect(kept).To(BeTrue())
+			Expect(e.fake().writes).To(Equal(writes))
+		})
+
+		It("leaves a rule it names but did not create to its owner once switched to manage, and writes its own once "+
+			"that rule is gone", func() {
+			id := seedOutside()
+			_, err := withAnnotations("named", observeByID(id))
+			Expect(err).NotTo(HaveOccurred())
+			setManagementPolicy(ctx, e.get("named"), reconciler.ManagementPolicyManage)
+			result, err := e.reconcile("named")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
+			Expect(e.readyOf("named").Reason).To(Equal(reasonAlreadyExists))
+			Expect(e.readyOf("named").Message).To(ContainSubstring("20023"))
+			Expect(e.fake().writes).To(BeZero(), "no second rule")
+
+			By("writing its own rule once the one it names is gone")
+			e.fake().entrypointIn(sample.phase).rules = nil
+			_, err = e.reconcile("named")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.readyOf("named").Reason).To(Equal("Synced"))
+			_, own := e.fake().entrypointIn(sample.phase).rule(ref("named"))
+			Expect(own).To(BeTrue())
+		})
+	})
+}
+
 func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 	// The kind as its API type names it, which the specs expect refs and
 	// objects to carry; one spec checks that the rule kind goes by it too.
@@ -743,27 +898,17 @@ func describeRuleKind[O rulesetRuleObject](specs ruleKindSpecs[O]) bool {
 			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("paused-deleted"), specs.newObject()))).To(BeTrue())
 		})
 
-		It("reports ObserveNotSupported for an observed resource, writes nothing, and leaves its rule when it is deleted",
-			func() {
-				sample := specs.samples[0]
-				createSynced("observed", sample.spec)
-				setManagementPolicy(ctx, get("observed"), reconciler.ManagementPolicyObserve)
-				for _, deleted := range []bool{false, true} {
-					if deleted {
-						Expect(k8sClient.Delete(ctx, get("observed"))).To(Succeed())
-					}
-					before := storedRule(sample.phase, "observed")
-					result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key("observed")})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(result).To(BeZero())
-					Expect(storedRule(sample.phase, "observed")).To(Equal(before))
-					if !deleted {
-						Expect(readyOf("observed").Status).To(Equal(metav1.ConditionFalse))
-						Expect(readyOf("observed").Reason).To(Equal(reasonObserveNotSupported))
-					}
-				}
-				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("observed"), specs.newObject()))).To(BeTrue())
-			})
+		describeRuleObserve(ruleSpecEnv[O]{
+			specs: specs, ctx: ctx, kind: kind, ns: ns,
+			fake: func() *fakeRulesetAPI { return fake },
+			reconcile: func(name string) (ctrl.Result, error) {
+				return r.Reconcile(ctx, reconcile.Request{NamespacedName: key(name)})
+			},
+			peers: func(phase rulesets.Phase) ([]rulesetRulePeer, map[string]bool, error) {
+				return r.rules().peers(ctx, rulesTestZone, phase)
+			},
+			object: object, get: get, create: create, createSynced: createSynced, readyOf: readyOf,
+		})
 
 		It("adds no finalizer to a resource created paused", func() {
 			obj := object("created-paused", specs.samples[0].spec)

@@ -252,8 +252,14 @@ the two cannot disagree. A kind whose hooks compare an object themselves (`crudH
 with `differences` hooks too, as `Zone` and `DNSRecord` have; a step after the sync that corrects what a read of the
 object does not show names its fields through `syncedDifferences`, as an IPList's items do. `WorkerScript` compares
 only the hash of what kflare uploaded last, which says nothing of a Worker kflare did not upload, so it reports
-`ObserveNotSupported` without a call to Cloudflare, as the rule kinds do. A rule kind finds its rule by the ref kflare
-stores in it, so observing a rule kflare did not create first needs a way to name it.
+`ObserveNotSupported` without a call to Cloudflare.
+
+A rule kind's resource observes the rule it wrote, found by its ref, or a rule kflare did not create, named by its ID
+with the annotation `kflare.dev/rule-id`. It reports the spec fields that differ (`rulesetRuleKind.fields`, which
+kflare-gen writes for the action's parameters) and never compares or changes the rule's position: observed resources
+are left out of the order kflare keeps among its rules. Cloudflare refuses to change a rule's ref (code 20023), so a
+switch to `manage` cannot take over a rule kflare did not create: the resource reports `AlreadyExists` while that rule
+exists, and writes its own once it is deleted.
 
 A settings kind's resource is observed by reading its zone's settings and naming the spec fields whose settings
 differ (`settingsKind.fields`, which kflare-gen writes). It never configures the zone: it is left out when the resource

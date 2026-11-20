@@ -606,6 +606,9 @@ kinds:
 - **Settings fields** (`feat/observe-settings-kinds`, #195): a settings kind's descriptor gains `fields`, the spec
   field (JSON name) of each setting its params hold at the top, by API name (`emitSettingsKindTail`), which the shared
   settings reconciler names when it observes a resource whose settings differ
+- **Rule fields** (`feat/observe-rule-kinds`, #195): a rule kind's descriptor gains `fields`, the spec field of each
+  value of a rule's JSON whose path is not the field's own name: a parameter of its action under `action_parameters.`
+  (`emitRuleFieldPaths`); the action and a rule's own fields (`logging`) sit at its root under their names
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

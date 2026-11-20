@@ -853,8 +853,10 @@ The issue's decisions went as it proposed: the annotation `kflare.dev/management
   `matches` derives from it; `TunnelConfiguration` and `IPList` (its items) name their own fields
 - [x] The settings kinds (#195, `feat/observe-settings-kinds`): the shared settings reconciler's `observeOnly` and a
   generated `fields` map; an observed resource never becomes its zone's owner, and resets nothing
-- [ ] Left: the rule kinds (a way to name a rule kflare did not create, #195), and `WorkerScript` once it reads a
-  Worker back (#134)
+- [x] The rule kinds (#195, `feat/observe-rule-kinds`): by their ref, or by `kflare.dev/rule-id`; a generated
+  `fields` map for the action's parameters; observed rules are not ordered. A switch to `manage` cannot take over a
+  rule kflare did not create (Cloudflare refuses a ref change, 20023): `AlreadyExists` until it is deleted
+- [ ] Left: `WorkerScript`, once it reads a Worker back (#134)
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first

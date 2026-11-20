@@ -44,6 +44,15 @@ var testManagedRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return testManagedRuleDefinition(obj.(*cloudflarev1alpha1.TestManagedRule))
 	},
+	fields: map[string]string{
+		"action_parameters.id":        "id",
+		"action_parameters.overrides": "overrides",
+		"action_parameters.phase":     "phase",
+		"action_parameters.phases":    "phases",
+		"action_parameters.products":  "products",
+		"action_parameters.ruleset":   "ruleset",
+		"action_parameters.rulesets":  "rulesets",
+	},
 }
 
 func (r *TestManagedRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

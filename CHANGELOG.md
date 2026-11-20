@@ -60,13 +60,17 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **A resource annotated `kflare.dev/management-policy: observe` is only observed**
   ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
   in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
-  updates or deletes the object, and deleting the resource leaves it. Every kind supports it but `WorkerScript` and
-  the rule kinds ([#191](https://github.com/JonathanGraniero/kflare/issues/191),
-  [#195](https://github.com/JonathanGraniero/kflare/issues/195)): a resource of those
+  updates or deletes the object, and deleting the resource leaves it. Every kind supports it but `WorkerScript`
+  ([#191](https://github.com/JonathanGraniero/kflare/issues/191),
+  [#195](https://github.com/JonathanGraniero/kflare/issues/195)): a resource of it
   reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. A `DNSRecord` whose `tunnelRef` names an
   observed `Tunnel` is observed too, and an `IPList` compares its items. Removing the annotation
   manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
   [Observing without writing](docs/deploy.md#observing-without-writing).
+- **A rule kflare did not create can be observed** with the annotation `kflare.dev/rule-id: <the rule's ID>` on a
+  rule kind's resource ([#195](https://github.com/JonathanGraniero/kflare/issues/195)). Switching it to `manage`
+  reports `AlreadyExists` until that rule is deleted: Cloudflare does not let a rule's ref change, so kflare cannot
+  take it over in place.
 - **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
   token.
 - New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you

@@ -80,6 +80,11 @@ const (
 	// ManagementPolicyObserve finds the Cloudflare resource and reports how
 	// it differs from the spec, and never creates, updates or deletes one.
 	ManagementPolicyObserve = "observe"
+
+	// RuleIDAnnotation names, by its ID, the rule in a zone's Rulesets phase
+	// that a rule kind's resource observes or adopts: a rule kflare did not
+	// create holds no ref of kflare's to find it by.
+	RuleIDAnnotation = "kflare.dev/rule-id"
 )
 
 // Adopted reports whether kflare adopted obj's Cloudflare resource.

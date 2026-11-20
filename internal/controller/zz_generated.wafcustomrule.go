@@ -48,6 +48,13 @@ var wafCustomRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return wafCustomRuleDefinition(obj.(*cloudflarev1alpha1.WAFCustomRule))
 	},
+	fields: map[string]string{
+		"action_parameters.response": "response",
+		"action_parameters.phase":    "phase",
+		"action_parameters.phases":   "phases",
+		"action_parameters.products": "products",
+		"action_parameters.ruleset":  "ruleset",
+	},
 }
 
 func (r *WAFCustomRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

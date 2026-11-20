@@ -12,6 +12,7 @@ import (
 	"go/format"
 	"go/types"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -299,6 +300,7 @@ func emitRuleController(k *ruleKind, header string) ([]byte, error) {
 	f.printf("newList: func() %s.ObjectList { return &%s.%sList{} },\n", client, api, k.name)
 	f.printf("definition: func(obj rulesetRuleObject) %s.RulesetNewParamsRule {\n", rs)
 	f.printf("return %sDefinition(obj.(*%s.%s))\n},\n", k.varName, api, k.name)
+	emitRuleFieldPaths(f, k)
 	if len(k.conflicts) > 0 {
 		f.printf("conflicts: map[int]string{\n")
 		for _, c := range k.conflicts {
@@ -581,6 +583,31 @@ func specJSON(value map[string]any) (string, error) {
 // emitRuleKindTest returns the Go source of a rule kind's envtest table: its
 // samples with the phase and rule each asks for, and the edits of them, which
 // the shared rule kind specs run (rulesetrule_specs_test.go).
+// emitRuleFieldPaths writes a rule kind's fields: the spec field that sets each
+// value of a rule's JSON, by its path there, for the fields of its spec whose
+// path is not their own name. The action and a rule's own fields (logging) sit
+// at its root, and a parameter of its action under action_parameters.
+func emitRuleFieldPaths(f *goFile, k *ruleKind) {
+	var paths [][2]string
+	for _, field := range k.params.fields {
+		path := "action_parameters." + field.apiName
+		if field.apiName == ruleAction || slices.Contains(k.ruleFields, field) {
+			path = field.apiName
+		}
+		if field.apiName != "" && path != field.jsonName {
+			paths = append(paths, [2]string{path, field.jsonName})
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	f.printf("fields: map[string]string{\n")
+	for _, p := range paths {
+		f.printf("%q: %q,\n", p[0], p[1])
+	}
+	f.printf("},\n")
+}
+
 func emitRuleKindTest(k *ruleKind, header string) ([]byte, error) {
 	f := newGoFile()
 	api, client := f.api(), f.use(clientPackage, "client")

@@ -47,6 +47,9 @@ var redirectRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return redirectRuleDefinition(obj.(*cloudflarev1alpha1.RedirectRule))
 	},
+	fields: map[string]string{
+		"action_parameters.from_value": "fromValue",
+	},
 }
 
 func (r *RedirectRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
