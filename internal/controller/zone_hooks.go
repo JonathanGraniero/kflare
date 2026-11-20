@@ -81,8 +81,11 @@ var zoneKind = crudResourceKind[*cloudflarev1alpha1.Zone, ZoneAPI, zoneObject, z
 	observe:        observeZone,
 
 	id: func(current *cf.Zone) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.Zone, current *cf.Zone, _ map[string]string) bool {
-		return current.Type == desiredZoneType(obj)
+	differences: func(obj *cloudflarev1alpha1.Zone, current *cf.Zone, _ map[string]string) []string {
+		if current.Type != desiredZoneType(obj) {
+			return []string{"type"}
+		}
+		return nil
 	},
 	listedID:  func(listed *cf.Zone) string { return listed.ID },
 	listedKey: func(listed *cf.Zone) string { return listed.Name },

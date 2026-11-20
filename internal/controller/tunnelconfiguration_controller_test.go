@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -582,6 +583,55 @@ var _ = Describe("TunnelConfiguration Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fake.calls).To(Equal([]string{"Get"}))
 			expectReady(configKey, metav1.ConditionFalse, "NotFound")
+		})
+
+		It("observes a tunnel's configuration, naming what differs, writes nothing and leaves it when deleted", func() {
+			readyEnv(observeAnnotation)
+			fake := &fakeTunnelConfigurationAPI{getResult: configuredOutside}
+			r := reconcilerWithFakeTunnelConfigurationAPI(fake)
+			message := func() string {
+				return meta.FindStatusCondition(getConfig().Status.Conditions, cloudflarev1alpha1.ConditionReady).Message
+			}
+			_, err := reconcileConfig(r, configKey)
+			Expect(err).NotTo(HaveOccurred())
+			expectReady(configKey, metav1.ConditionFalse, reasonDriftDetected)
+			Expect(message()).To(ContainSubstring("differs from the spec in: ingress."))
+			Expect(getConfig().Status.CloudflareMetadata.TunnelID).To(Equal(fakeTunnelID))
+			Expect(getConfig().Annotations).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+
+			By("naming defaultService when only the catch-all rule differs")
+			fake.getResult = storedTunnelConfig{TunnelID: fakeTunnelID,
+				Config: tunnelConfigJSON{Ingress: expectedRules("http_status:503")}}
+			_, err = reconcileConfig(r, configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(message()).To(ContainSubstring("differs from the spec in: defaultService."))
+
+			By("naming both when nothing but the catch-all rule is configured")
+			fake.getResult = storedTunnelConfig{TunnelID: fakeTunnelID,
+				Config: tunnelConfigJSON{Ingress: []ingressRuleJSON{{Service: "http_status:503"}}}}
+			_, err = reconcileConfig(r, configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(message()).To(ContainSubstring("differs from the spec in: ingress, defaultService."))
+
+			By("naming both when the tunnel holds no rule at all")
+			fake.getResult = storedTunnelConfig{TunnelID: fakeTunnelID}
+			_, err = reconcileConfig(r, configKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(message()).To(ContainSubstring("differs from the spec in: ingress, defaultService."))
+
+			By("reporting InSync once the configuration is the spec's")
+			fake.getResult = storedTunnelConfig{TunnelID: fakeTunnelID,
+				Config: tunnelConfigJSON{Ingress: expectedRules("http_status:404")}}
+			_, err = reconcileConfig(r, configKey)
+			Expect(err).NotTo(HaveOccurred())
+			expectReady(configKey, metav1.ConditionTrue, reasonInSync)
+
+			By("leaving the configuration when the resource is deleted")
+			startDeletion()
+			_, err = reconcileConfig(r, configKey)
+			Expect(err).NotTo(HaveOccurred())
+			expectConfigGone()
+			Expect(fake.calls).NotTo(ContainElement("Update"), "an observed configuration is never written")
 		})
 
 		It("marks the configuration it is about to write, and finds it on the next reconcile as its own", func() {

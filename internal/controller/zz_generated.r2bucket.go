@@ -91,8 +91,12 @@ var r2BucketKind = crudResourceKind[*cloudflarev1alpha1.R2Bucket, R2BucketAPI, r
 	},
 
 	id: func(current *r2.Bucket) string { return current.Name },
-	matches: func(obj *cloudflarev1alpha1.R2Bucket, current *r2.Bucket, _ map[string]string) bool {
-		return (obj.Spec.StorageClass == "" || string(current.StorageClass) == obj.Spec.StorageClass)
+	differences: func(obj *cloudflarev1alpha1.R2Bucket, current *r2.Bucket, _ map[string]string) []string {
+		var fields []string
+		if obj.Spec.StorageClass != "" && string(current.StorageClass) != obj.Spec.StorageClass {
+			fields = append(fields, "storageClass")
+		}
+		return fields
 	},
 
 	get: func(ctx context.Context, api R2BucketAPI, obj *cloudflarev1alpha1.R2Bucket,

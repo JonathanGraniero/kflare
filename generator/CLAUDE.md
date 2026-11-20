@@ -597,6 +597,12 @@ kinds:
   - The e2e suite's `enabledTransforms` reads the lists through `AsUnion`
   - The release notes list `Rulesets.New` and `Rules.New`, `Edit` and `Delete` as returning unions; in the Go module
     their signatures are v7.13.1's (read in both), and `RulesetRuleAPI` compiles against them unchanged
+- **Differences** (`feat/observe-crud-kinds`, 2026-11-20, #191): the descriptor's `differences` replaces `matches`.
+  `comparisons` gives each compared field's test both ways, named by the field's JSON name; `differences` lists the
+  fields whose test fails, and the runtime's `matches` is that list being empty, so observing and managing compare
+  the same fields. `matchesExpr` joins the same tests for the envtest table's checks. Hand-written descriptors
+  (`Zone`, `TunnelConfiguration`) write `differences` too; `WorkerScript`'s hash comparison moved to its hooks'
+  `matches`, which leaves it unobservable
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

@@ -88,9 +88,9 @@ var tunnelConfigurationKind = crudResourceKind[*cloudflarev1alpha1.TunnelConfigu
 	},
 
 	id: func(current *tunnelConfigurationObject) string { return current.TunnelID },
-	matches: func(obj *cloudflarev1alpha1.TunnelConfiguration, current *tunnelConfigurationObject,
-		_ map[string]string) bool {
-		return tunnelConfigurationMatches(desiredTunnelConfiguration(obj), current.Config)
+	differences: func(obj *cloudflarev1alpha1.TunnelConfiguration, current *tunnelConfigurationObject,
+		_ map[string]string) []string {
+		return tunnelConfigurationDifferences(obj, current.Config)
 	},
 
 	get: func(ctx context.Context, api TunnelConfigurationAPI, _ *cloudflarev1alpha1.TunnelConfiguration,
@@ -342,6 +342,34 @@ func tunnelConfigurationMatches(desired tunnelConfig,
 		return false
 	}
 	return reflect.DeepEqual(withoutZeros(want), withoutZeros(got))
+}
+
+// tunnelConfigurationDifferences names what of the spec actual differs in,
+// compared as tunnelConfigurationMatches compares: defaultService for the
+// catch-all rule, and ingress for the rules before it, or for anything else
+// the configuration holds.
+func tunnelConfigurationDifferences(tc *cloudflarev1alpha1.TunnelConfiguration,
+	actual zero_trust.TunnelCloudflaredConfigurationGetResponseConfig) []string {
+	desired := desiredTunnelConfiguration(tc)
+	if tunnelConfigurationMatches(desired, actual) {
+		return nil
+	}
+	sent, err := desired.MarshalJSON()
+	var want, got map[string]any
+	if err != nil || json.Unmarshal(sent, &want) != nil || json.Unmarshal([]byte(actual.JSON.RawJSON()), &got) != nil {
+		return []string{"ingress"}
+	}
+	wantRules, _ := withoutZeros(want["ingress"]).([]any)
+	gotRules, _ := withoutZeros(got["ingress"]).([]any)
+	var fields []string
+	last := len(wantRules) - 1
+	if len(gotRules) == 0 || !reflect.DeepEqual(wantRules[last], gotRules[len(gotRules)-1]) {
+		fields = append(fields, "defaultService")
+	}
+	if len(gotRules) == 0 || !reflect.DeepEqual(wantRules[:last], gotRules[:len(gotRules)-1]) || len(fields) == 0 {
+		fields = append([]string{"ingress"}, fields...)
+	}
+	return fields
 }
 
 // withoutZeros drops the nulls, false, 0 and "", and the objects and arrays

@@ -19,7 +19,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -82,38 +81,9 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 				Expect(e.get().GetFinalizers()).To(ContainElement(reconciler.Finalizer))
 			})
 
-		if k.hooks.differences == nil {
-			for _, how := range []string{"annotation", "installation"} {
-				It("reports ObserveNotSupported, calls Cloudflare for nothing and leaves the "+k.noun+
-					" of a deleted resource, observed by its "+how, func() {
-					id := e.synced(nil)
-					calls := len(e.store.parentIDs)
-					if how == "installation" {
-						observeEverything()
-					} else {
-						setManagementPolicy(ctx, e.get(), reconciler.ManagementPolicyObserve)
-					}
-					result, err := e.reconcileIt()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(result).To(BeZero())
-					Expect(e.ready().Status).To(Equal(metav1.ConditionFalse))
-					Expect(e.ready().Reason).To(Equal(reasonObserveNotSupported))
-
-					recorder := events.NewFakeRecorder(10)
-					SetEventRecorder(recorder)
-					DeferCleanup(func() { SetEventRecorder(nil) })
-					Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
-					_, err = e.reconcileIt()
-					Expect(err).NotTo(HaveOccurred())
-					expectGone()
-					Expect(e.store.objects).To(HaveKey(id))
-					Expect(e.store.parentIDs).To(HaveLen(calls), "an observed resource called Cloudflare")
-					Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+reasonObserveNotSupported),
-						ContainSubstring("stays in Cloudflare"))))
-				})
-			}
-			return
-		}
+		It("can be observed: its comparison names what differs", func() {
+			Expect(k.observable()).To(BeTrue())
+		})
 
 		// observe creates an observed resource, changed by edit if set, and
 		// the sample's object, and reconciles the resource.
@@ -128,6 +98,22 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 			}
 			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 			id := e.seed("existing", k.key(obj))
+			_, err := e.reconcileIt()
+			Expect(err).NotTo(HaveOccurred())
+			return id
+		}
+		// observeDiffering observes an object that differs from the spec in
+		// change's field. An observed resource finds its object by its key, so
+		// a changed key differs only from the object its status names already.
+		observeDiffering := func(change crudSpecEdit[O]) string {
+			GinkgoHelper()
+			if change.field != t.keyField {
+				return observe(change.edit)
+			}
+			id := observe(nil)
+			obj := e.get()
+			change.edit(obj)
+			Expect(k8sClient.Update(ctx, obj)).To(Succeed())
 			_, err := e.reconcileIt()
 			Expect(err).NotTo(HaveOccurred())
 			return id
@@ -162,7 +148,7 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 		for _, change := range t.changes {
 			It("reports DriftDetected, naming "+change.field+", after "+change.what+", and leaves the "+k.noun+" as it is",
 				func() {
-					id := observe(change.edit)
+					id := observeDiffering(change)
 					before := e.store.objects[id]
 					result, err := e.reconcileIt()
 					Expect(err).NotTo(HaveOccurred())
@@ -176,20 +162,26 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 				})
 		}
 
-		It("reads a "+k.noun+" that is missing or differs again at the drift check, not every minute", func() {
-			turnOnDriftChecks()
-			id := observe(t.changes[0].edit)
-			result, err := e.reconcileIt()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
-			Expect(result.RequeueAfter).To(BeNumerically("~", driftCheckTestInterval, driftCheckTestSpread))
+		// The specs below need an object that differs in a field the kind
+		// changes in place: a kind without one has nothing to drift.
+		hasChanges := len(t.changes) > 0
 
-			delete(e.store.objects, id)
-			result, err = e.reconcileIt()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(e.ready().Reason).To(Equal(reasonNotFound))
-			Expect(result.RequeueAfter).To(BeNumerically("~", driftCheckTestInterval, driftCheckTestSpread))
-		})
+		if hasChanges {
+			It("reads a "+k.noun+" that is missing or differs again at the drift check, not every minute", func() {
+				turnOnDriftChecks()
+				id := observeDiffering(t.changes[0])
+				result, err := e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
+				Expect(result.RequeueAfter).To(BeNumerically("~", driftCheckTestInterval, driftCheckTestSpread))
+
+				delete(e.store.objects, id)
+				result, err = e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.ready().Reason).To(Equal(reasonNotFound))
+				Expect(result.RequeueAfter).To(BeNumerically("~", driftCheckTestInterval, driftCheckTestSpread))
+			})
+		}
 
 		It("keeps a "+k.noun+" it was creating its own: not marked adopted", func() {
 			e.createParent(true)
@@ -208,10 +200,10 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 			Expect(e.get().GetAnnotations()).To(HaveKey(reconciler.CreatingAnnotation))
 		})
 
-		if !k.sharedObjects {
+		if !k.sharedObjects && hasChanges {
 			It("reports "+k.conflictReason+" once switched to manage, for a "+k.noun+" another "+k.name+
 				" has claimed, and leaves it to that one", func() {
-				id := observe(t.changes[len(t.changes)-1].edit)
+				id := observeDiffering(t.changes[len(t.changes)-1])
 				Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
 				other := t.newResource(e.otherKey, e.parentName)
 				other.SetFinalizers([]string{reconciler.Finalizer})
@@ -316,7 +308,11 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 				setManagementPolicy(ctx, e.get(), reconciler.ManagementPolicyObserve)
 				_, err := e.reconcileIt()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
+				reason := reasonDriftDetected
+				if len(t.changes) == 0 {
+					reason = reasonInSync
+				}
+				Expect(e.ready().Reason).To(Equal(reason))
 				Expect(e.get().GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation), "kflare created the object")
 
 				Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
@@ -327,27 +323,29 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 				Expect(e.store.writes).To(Equal(writes))
 			})
 
-		It("corrects the "+k.noun+" once switched to manage, as one it adopted: kept when the resource is deleted",
-			func() {
-				id := observe(t.changes[len(t.changes)-1].edit)
-				Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
+		if hasChanges {
+			It("corrects the "+k.noun+" once switched to manage, as one it adopted: kept when the resource is deleted",
+				func() {
+					id := observeDiffering(t.changes[len(t.changes)-1])
+					Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
 
-				setManagementPolicy(ctx, e.get(), reconciler.ManagementPolicyManage)
-				_, err := e.reconcileIt()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(e.store.writes).To(Equal(1))
-				object := e.store.objects[id]
-				Expect(e.matches(e.get(), &object)).To(BeTrue(), "the object is what the spec asks for")
-				Expect(e.ready().Reason).To(Equal("Synced"))
-				Expect(e.get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
-				Expect(e.get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+					setManagementPolicy(ctx, e.get(), reconciler.ManagementPolicyManage)
+					_, err := e.reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(e.store.writes).To(Equal(1))
+					object := e.store.objects[id]
+					Expect(e.matches(e.get(), &object)).To(BeTrue(), "the object is what the spec asks for")
+					Expect(e.ready().Reason).To(Equal("Synced"))
+					Expect(e.get().GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+					Expect(e.get().GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
 
-				Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
-				_, err = e.reconcileIt()
-				Expect(err).NotTo(HaveOccurred())
-				expectGone()
-				Expect(e.store.objects).To(HaveKey(id))
-			})
+					Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+					_, err = e.reconcileIt()
+					Expect(err).NotTo(HaveOccurred())
+					expectGone()
+					Expect(e.store.objects).To(HaveKey(id))
+				})
+		}
 
 		It("observes every resource when the installation does, one whose policy is manage included", func() {
 			observeEverything()

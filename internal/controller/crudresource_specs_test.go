@@ -1635,6 +1635,21 @@ func describeCRUDReferences[O conditionedObject, A any, R any, L any](e *crudSpe
 				Expect(e.store.writes).To(Equal(writes + 1))
 			})
 
+			It("names "+ref.field+" once observed and pointed at another "+ref.kind+", and writes nothing", func() {
+				e.synced(nil)
+				setManagementPolicy(ctx, e.get(), reconciler.ManagementPolicyObserve)
+				e.createReferenced(ref, target, accountName, true)
+				obj := e.get()
+				ref.set(obj, target)
+				Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+				writes := e.store.writes
+				_, err := e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
+				Expect(e.ready().Message).To(ContainSubstring("differs from the spec in: " + ref.field + "."))
+				Expect(e.store.writes).To(Equal(writes))
+			})
+
 			if ref.optional {
 				It("creates the "+k.noun+" without what its "+ref.field+" gives while it is unset", func() {
 					e.createParent(true)

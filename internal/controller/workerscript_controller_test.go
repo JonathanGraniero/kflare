@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
@@ -522,6 +523,31 @@ var _ = Describe("WorkerScript Controller", func() {
 			Expect(fake.calls).To(Equal([]string{"ListWorkers"}))
 			expectReady(metav1.ConditionFalse, "AlreadyExists")
 			Expect(getWorker().Status.CloudflareMetadata.ModifiedOn).To(BeEmpty())
+		})
+
+		It("reports ObserveNotSupported for an observed WorkerScript, and calls Cloudflare for nothing", func() {
+			// What it compares is the hash of its own last upload, which says
+			// nothing of a Worker kflare did not upload.
+			readyEnv(observeAnnotation)
+			fake := syncedFake()
+			fake.workers = otherWorker
+			result, err := reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeZero())
+			Expect(fake.calls).To(BeEmpty())
+			expectReady(metav1.ConditionFalse, reasonObserveNotSupported)
+
+			By("leaving the Worker, with a Warning Event, when deleted")
+			recorder := events.NewFakeRecorder(10)
+			SetEventRecorder(recorder)
+			DeferCleanup(func() { SetEventRecorder(nil) })
+			startDeletion()
+			_, err = reconcileWorker(reconcilerWithFakeWorkerScriptAPI(fake))
+			Expect(err).NotTo(HaveOccurred())
+			expectWorkerGone()
+			Expect(fake.calls).To(BeEmpty())
+			Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+reasonObserveNotSupported),
+				ContainSubstring("stays in Cloudflare"))))
 		})
 
 		It("replaces a Worker with its name with the adopt policy, and records the adoption", func() {

@@ -83,8 +83,12 @@ var testIPListKind = crudResourceKind[*cloudflarev1alpha1.TestIPList, TestIPList
 	},
 
 	id: func(current *rules.ListGetResponse) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.TestIPList, current *rules.ListGetResponse, _ map[string]string) bool {
-		return (obj.Spec.Description == "" || current.Description == obj.Spec.Description)
+	differences: func(obj *cloudflarev1alpha1.TestIPList, current *rules.ListGetResponse, _ map[string]string) []string {
+		var fields []string
+		if obj.Spec.Description != "" && current.Description != obj.Spec.Description {
+			fields = append(fields, "description")
+		}
+		return fields
 	},
 	listedID:  func(listed *rules.ListsList) string { return listed.ID },
 	listedKey: func(listed *rules.ListsList) string { return listed.Name },

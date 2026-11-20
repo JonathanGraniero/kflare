@@ -298,6 +298,23 @@ var _ = Describe("DNSRecord hooks", func() {
 			Expect(store.writes).To(Equal(1))
 		})
 
+		It("names what its hooks compare once observed, the ttl among them, and writes nothing", func() {
+			createRecord(key, nil)
+			sync()
+			setManagementPolicy(ctx, getRecord(), reconciler.ManagementPolicyObserve)
+			id := getRecord().Status.CloudflareMetadata.RecordID
+			object := store.objects[id]
+			object.TTL = 300
+			store.objects[id] = object
+			writes := store.writes
+			_, err := reconcileRecord()
+			Expect(err).NotTo(HaveOccurred())
+			ready := meta.FindStatusCondition(getRecord().Status.Conditions, cloudflarev1alpha1.ConditionReady)
+			Expect(ready.Reason).To(Equal(reasonDriftDetected))
+			Expect(ready.Message).To(ContainSubstring("differs from the spec in: ttl."))
+			Expect(store.writes).To(Equal(writes))
+		})
+
 		It("corrects the content", func() {
 			expectCorrected(nil, func(o *dns.RecordResponse) { o.Content = "203.0.113.1" })
 			Expect(current().Content).To(Equal("192.0.2.1"))

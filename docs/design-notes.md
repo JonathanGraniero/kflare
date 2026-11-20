@@ -2133,7 +2133,16 @@ to be started without answering them, so each went as the issue proposed.
   TunnelConfiguration. The CRUD reconciler refuses such a kind itself, after `startReconcile`
 - **Under `--observe-only`, a record with a `tunnelRef` waits** (`TunnelNotReady`): its Tunnel reports
   `ObserveNotSupported`, and a Tunnel never reconciled has no ID to compare the record's content with. It goes once
-  `Tunnel` can be observed
+  `Tunnel` can be observed: it went with #191 (below)
+- **Every CRUD kind observed** (#191, `feat/observe-crud-kinds`): kflare-gen writes `differences` where it wrote
+  `matches`, one comparison per field it compares, named by its JSON name, and the shared loop's `matches` is
+  `len(differences) == 0`. A kind is observable unless its hooks replace the comparison (`crudHooks.matches`) without
+  `differences`. `TunnelConfiguration` names `defaultService` for its catch-all rule and `ingress` for the rest;
+  `IPList` adds `items` through `syncedDifferences`, which lists them (a call the hook's object does not answer) and
+  records how many there are. `WorkerScript` stays out: its comparison is the hash of what kflare uploaded last and
+  Cloudflare's modification time, which say nothing of a Worker kflare did not upload, and reading a Worker's script
+  and bindings back is a v0 call #134 is removing. A key edited on an observed resource differs only from the object
+  its status names already: one with the new key from the start finds its object by that key, and matches
 - **The switch to `manage` adopts through `kflare.dev/adopted`,** which observing sets on a resource whose object is
   not its own (no claim label names it). The alternatives were a new status field on every kind, or inferring it
   from the last `Ready` reason, which an API error between the two would lose. The issue says an observed resource

@@ -116,14 +116,15 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	statusID func(O) string
 	observe  func(O, *R)
 
-	// id returns an object's ID, and matches whether the object is what a
-	// resource's spec asks for, given what its references give (refs).
+	// id returns an object's ID, and differences the spec fields whose value
+	// the object does not hold, given what the resource's references give
+	// (refs): none when the object is what the spec asks for (matches).
 	// listedID and listedKey return the ID and the key of an object a page of
 	// the list shows.
-	id        func(*R) string
-	matches   func(obj O, current *R, refs map[string]string) bool
-	listedID  func(*L) string
-	listedKey func(*L) string
+	id          func(*R) string
+	differences func(obj O, current *R, refs map[string]string) []string
+	listedID    func(*L) string
+	listedKey   func(*L) string
 
 	// The kind's calls to Cloudflare for the resource obj, in the account or
 	// zone parentID; obj gives the object's address, and refs the values its
@@ -152,6 +153,19 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 
 	// hooks are what the kind does beyond the shared loop.
 	hooks crudHooks[O, A, R]
+}
+
+// matches reports whether current is what obj's spec asks for: no field
+// differs.
+func (k crudResourceKind[O, A, R, L]) matches(obj O, current *R, refs map[string]string) bool {
+	return len(k.differences(obj, current, refs)) == 0
+}
+
+// observable reports whether a resource of the kind can be observed
+// (observeOnly): unless its hooks compare an object themselves, the kind's
+// differences say what differs.
+func (k crudResourceKind[O, A, R, L]) observable() bool {
+	return k.hooks.matches == nil || k.hooks.differences != nil
 }
 
 // crudHooks are a kind's hooks: hand-written functions, in its <kind>_hooks.go,
@@ -191,7 +205,8 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// to match the spec, and a kind may hold back a change the spec never
 	// spelled out, as a DNSRecord does with a proxied record.
 	refuseAdoption func(obj O, found *R, refs map[string]string) *conditionError
-	// matches replaces the comparison of the object with the spec.
+	// matches replaces the comparison of the object with the spec. A kind
+	// with it can be observed only with differences too.
 	matches func(obj O, current *R, refs map[string]string) bool
 	// sourceChanged reports that what the resource's calls send changed since
 	// its last write, its spec staying the same, as a Worker's code does in a
@@ -217,10 +232,13 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// beforeDelete runs before the object is deleted from Cloudflare, with the
 	// retain policy unset. An object that is already gone is no failure.
 	beforeDelete func(ctx context.Context, api A, obj O, parentID, id string) error
-	// differences names the spec fields whose value the object does not hold,
-	// the ones the kind's synced hook would correct included. A kind with it
-	// can be observed (observeOnly): the others report ObserveNotSupported.
+	// differences replaces the kind's differences when observing
+	// (observeOnly): the spec fields whose value the object does not hold, the
+	// ones the kind's synced hook would correct included.
 	differences func(obj O, current *R, refs map[string]string) []string
+	// syncedDifferences adds the spec fields synced would correct that only a
+	// call to Cloudflare tells, as an IPList's items.
+	syncedDifferences func(ctx context.Context, api A, obj O, parentID string, current *R) ([]string, error)
 	// watch adds the kind's own watches.
 	watch func(b *builder.Builder, c client.Client) *builder.Builder
 }
@@ -285,7 +303,7 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 		return result, err
 	}
 	// startReconcile refused an unknown policy.
-	if observed, _ := reconciler.Observed(obj); observed && r.kind.hooks.differences == nil {
+	if observed, _ := reconciler.Observed(obj); observed && !r.kind.observable() {
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, reasonObserveNotSupported, observeNotSupportedMessage)
 	}
 
@@ -656,7 +674,19 @@ func (r *crudResourceReconciler[O, A, R, L]) observeOnly(ctx context.Context, ob
 		*k.statusZoneID(obj) = parentID
 	}
 	k.observe(obj, current)
-	if fields := k.hooks.differences(obj, current, refs); len(fields) > 0 {
+	differences := k.differences
+	if k.hooks.differences != nil {
+		differences = k.hooks.differences
+	}
+	fields := differences(obj, current, refs)
+	if k.hooks.syncedDifferences != nil {
+		more, err := k.hooks.syncedDifferences(ctx, api, obj, parentID, current)
+		if err != nil {
+			return handleCloudflareError(ctx, r.Client, obj, err)
+		}
+		fields = append(fields, more...)
+	}
+	if len(fields) > 0 {
 		return observedNotReady(ctx, r.Client, obj, &conditionError{
 			Reason: reasonDriftDetected,
 			Message: fmt.Sprintf("%s differs from the spec in: %s. kflare only observes this resource, and changes "+
@@ -1003,7 +1033,7 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 		}
 	}
 
-	if observed && r.kind.hooks.differences == nil {
+	if observed && !r.kind.observable() {
 		recordWarning(obj, reasonObserveNotSupported, "Delete", observeNotSupportedMessage+
 			"; its Cloudflare object stays in Cloudflare")
 	}

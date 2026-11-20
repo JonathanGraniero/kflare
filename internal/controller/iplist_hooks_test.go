@@ -323,6 +323,38 @@ var _ = Describe("IPList hooks", func() {
 		Expect(stored()).To(ConsistOf("192.0.2.1 front door", "198.51.100.0/24"))
 	})
 
+	It("observes a list's items: DriftDetected naming them until Cloudflare holds the spec's, and replaces none", func() {
+		store.objects["existing"] = rules.ListGetResponse{ID: "existing", Name: "office_ips", Kind: "ip",
+			Description: "office"}
+		items.items["existing"] = []rules.ListItemListResponse{{IP: "10.0.0.1"}}
+		createList(nil)
+		list := getList()
+		list.Annotations = observeAnnotation
+		Expect(k8sClient.Update(ctx, list)).To(Succeed())
+
+		_, err := reconcileList()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(condition().Reason).To(Equal(reasonDriftDetected))
+		Expect(condition().Message).To(ContainSubstring("differs from the spec in: items."))
+		Expect(getList().Status.CloudflareMetadata.NumItems).To(Equal(int32(1)))
+		Expect(items.replaces).To(BeZero())
+
+		By("reporting InSync once Cloudflare holds the spec's items, in any order")
+		items.items["existing"] = []rules.ListItemListResponse{{IP: "198.51.100.0/24"},
+			{IP: "192.0.2.1", Comment: "front door"}}
+		_, err = reconcileList()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(condition().Reason).To(Equal(reasonInSync))
+		Expect(getList().Status.CloudflareMetadata.NumItems).To(Equal(int32(2)))
+
+		By("reporting a failed read of the items")
+		items.itemsErr = errors.New("unavailable")
+		_, err = reconcileList()
+		Expect(err).To(MatchError("unavailable"))
+		Expect(condition().Reason).To(Equal("APIError"))
+		Expect(items.replaces).To(BeZero())
+	})
+
 	It("does not adopt a list of another kind that holds the name", func() {
 		store.objects["redirects"] = rules.ListGetResponse{ID: "redirects", Name: "office_ips", Kind: "redirect"}
 		createList(nil)

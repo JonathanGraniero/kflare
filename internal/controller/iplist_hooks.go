@@ -88,9 +88,26 @@ func (s *ipListService) Operation(ctx context.Context, accountID, operationID st
 var ipListHooks = crudHooks[*cloudflarev1alpha1.IPList, IPListAPI, rules.ListGetResponse]{
 	refuse: refuseListOfOtherKind,
 	// Whether a replacement is running is in status (operationID).
-	readsStatus: true,
-	synced:      syncIPListItems,
-	watch:       watchRulesUsingLists,
+	readsStatus:       true,
+	synced:            syncIPListItems,
+	syncedDifferences: ipListItemDifferences,
+	watch:             watchRulesUsingLists,
+}
+
+// ipListItemDifferences names items when an observed list's items in
+// Cloudflare are not the spec's, compared as syncIPListItems compares them, and
+// records how many it holds.
+func ipListItemDifferences(ctx context.Context, api IPListAPI, ipList *cloudflarev1alpha1.IPList, accountID string,
+	current *rules.ListGetResponse) ([]string, error) {
+	items, err := api.ListItems(ctx, accountID, current.ID)
+	if err != nil {
+		return nil, err
+	}
+	ipList.Status.CloudflareMetadata.NumItems = int32(len(items))
+	if !ipListItemsMatch(ipList.Spec.Items, items) {
+		return []string{"items"}, nil
+	}
+	return nil, nil
 }
 
 // refuseListOfOtherKind refuses a list that holds an IPList's name in its

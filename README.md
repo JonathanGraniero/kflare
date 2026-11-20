@@ -133,7 +133,8 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
   kflare leaves its Cloudflare object alone until the annotation is removed (from v0.2.1).
 - **A resource can be observed before it is managed**, with `kflare.dev/management-policy: observe`: kflare writes
   nothing, and reports the fields in which Cloudflare differs from the manifest, for moving to kflare without
-  surprises (`Zone` and `DNSRecord` so far). The chart's `observeOnly` runs a whole installation read-only.
+  surprises (every kind but `WorkerScript` and the rule and settings kinds so far). The chart's `observeOnly` runs a
+  whole installation read-only.
 - **Credentials stay in Secrets** that you can manage with External Secrets Operator or Sealed Secrets. A rotated token
   is picked up straight away, and each account shows when its token expires and is checked again every hour. Only
   cluster administrators can create a `CloudflareAccount`, and each can

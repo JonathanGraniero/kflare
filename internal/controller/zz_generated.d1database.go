@@ -87,10 +87,10 @@ var d1DatabaseKind = crudResourceKind[*cloudflarev1alpha1.D1Database, D1Database
 		obj.Status.CloudflareMetadata.Version = current.Version
 	},
 
-	id:        func(current *d1.D1) string { return current.UUID },
-	matches:   func(*cloudflarev1alpha1.D1Database, *d1.D1, map[string]string) bool { return true },
-	listedID:  func(listed *d1.DatabaseListResponse) string { return listed.UUID },
-	listedKey: func(listed *d1.DatabaseListResponse) string { return listed.Name },
+	id:          func(current *d1.D1) string { return current.UUID },
+	differences: func(*cloudflarev1alpha1.D1Database, *d1.D1, map[string]string) []string { return nil },
+	listedID:    func(listed *d1.DatabaseListResponse) string { return listed.UUID },
+	listedKey:   func(listed *d1.DatabaseListResponse) string { return listed.Name },
 
 	get: func(ctx context.Context, api D1DatabaseAPI, _ *cloudflarev1alpha1.D1Database,
 		parentID, id string) (*d1.D1, error) {

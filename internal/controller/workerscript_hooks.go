@@ -105,10 +105,6 @@ var workerScriptKind = crudResourceKind[*cloudflarev1alpha1.WorkerScript, Worker
 	},
 
 	id: func(current *workerScriptObject) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.WorkerScript, current *workerScriptObject, refs map[string]string) bool {
-		return current.uploaded || refs[workerHashValue] == obj.Status.AppliedHash &&
-			formatModifiedOn(current.ModifiedOn) == obj.Status.CloudflareMetadata.ModifiedOn
-	},
 
 	get: func(ctx context.Context, api WorkerScriptAPI, _ *cloudflarev1alpha1.WorkerScript, accountID,
 		id string) (*workerScriptObject, error) {
@@ -131,6 +127,14 @@ var workerScriptKind = crudResourceKind[*cloudflarev1alpha1.WorkerScript, Worker
 	},
 
 	hooks: crudHooks[*cloudflarev1alpha1.WorkerScript, WorkerScriptAPI, workerScriptObject]{
+		// What kflare uploaded last, not what the Worker holds: the hash of the
+		// script and bindings it sent. So a Worker kflare did not upload cannot
+		// be observed (no differences) until kflare reads a Worker's script and
+		// bindings back, which needs its move onto cloudflare-go v7 (#134).
+		matches: func(obj *cloudflarev1alpha1.WorkerScript, current *workerScriptObject, refs map[string]string) bool {
+			return current.uploaded || refs[workerHashValue] == obj.Status.AppliedHash &&
+				formatModifiedOn(current.ModifiedOn) == obj.Status.CloudflareMetadata.ModifiedOn
+		},
 		resolve: resolveWorkerUpload,
 		gone:    func(current *workerScriptObject) bool { return current.ID == "" },
 		sourceChanged: func(obj *cloudflarev1alpha1.WorkerScript, refs map[string]string) bool {

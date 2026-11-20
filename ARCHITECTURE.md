@@ -246,10 +246,14 @@ installation started with `--observe-only` (the chart's `observeOnly`), whatever
 `manage`, is everything else this document describes. Any other value reports `InvalidManagementPolicy`: kflare then
 makes no Cloudflare call for the resource, and does not finish deleting it, as nobody said what to do with its object.
 
-The shared CRUD reconciler observes the kinds that can name the spec fields an object differs in (`crudHooks`'
-`differences`): `Zone` and `DNSRecord` so far. A resource of another kind, the rule and settings kinds included,
-reports `ObserveNotSupported` without a call to Cloudflare. A rule kind finds its rule by the ref kflare stores in it,
-so observing a rule kflare did not create first needs a way to name it.
+The shared CRUD reconciler observes every kind that can name the spec fields an object differs in: kflare-gen writes
+each generated kind's `differences` from the fields it compares, and a kind's `matches` is that list being empty, so
+the two cannot disagree. A kind whose hooks compare an object themselves (`crudHooks`' `matches`) can be observed only
+with `differences` hooks too, as `Zone` and `DNSRecord` have; a step after the sync that corrects what a read of the
+object does not show names its fields through `syncedDifferences`, as an IPList's items do. `WorkerScript` compares
+only the hash of what kflare uploaded last, which says nothing of a Worker kflare did not upload, so it reports
+`ObserveNotSupported` without a call to Cloudflare, as the rule and settings kinds do. A rule kind finds its rule by
+the ref kflare stores in it, so observing a rule kflare did not create first needs a way to name it.
 
 - **What it reads.** The object its status names, or else the parent's object with its key, found as the `adopt`
   policy finds it (a DNSRecord: the record holding its content, or the only record of its name and type). It takes no
@@ -261,9 +265,9 @@ so observing a rule kflare did not create first needs a way to name it.
   with most resources differing, and reading each every minute would spend the token's budget.
 - **Its Zone and references.** A Zone that reports `DriftDetected` still serves the observed resources that name it:
   the zone is there, and reading it changes nothing. A managed resource waits (`ZoneNotReady`), as for any Zone that
-  is not `Ready`, so nothing writes to a zone whose Zone was never adopted. A resource that references one of a kind
-  kflare cannot observe yet, as a DNSRecord's `tunnelRef` does, waits for it (`TunnelNotReady`) while that one reports
-  `ObserveNotSupported`.
+  is not `Ready`, so nothing writes to a zone whose Zone was never adopted. A resource that references one that is
+  not `Ready`, as a DNSRecord's `tunnelRef` may, waits for it (`TunnelNotReady`), an observed Tunnel that differs
+  from its spec included: the record's content is the tunnel's ID.
 - **What it never does.** Create, update or delete an object, or run a kind's step after the sync (a Zone's plan is
   compared instead).
 - **Deletion.** The object stays, whatever the deletion policy, and nothing is handed to a successor. A resource
