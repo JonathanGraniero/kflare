@@ -303,6 +303,10 @@ type SettingsByIDFixtureReconciler struct {
 	// API token. Defaults to defaultSettingsByIDFixtureAPI; tests inject a
 	// fake.
 	NewSettingsByIDFixtureAPI func(token string) (SettingsByIDFixtureAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=settingsbyidfixtures,verbs=get;list;watch;create;update;patch;delete
@@ -376,6 +380,7 @@ func (r *SettingsByIDFixtureReconciler) Reconcile(ctx context.Context, req ctrl.
 // once the Zone is ready, and the deletion of SettingsByIDFixtures, so another
 // one takes over the zone's zone settings at once.
 func (r *SettingsByIDFixtureReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.settings().setup(mgr, r)
 }
 
@@ -386,7 +391,11 @@ func (r *SettingsByIDFixtureReconciler) settings() *settingsReconciler[SettingsB
 	if newAPI == nil {
 		newAPI = defaultSettingsByIDFixtureAPI
 	}
-	return &settingsReconciler[SettingsByIDFixtureAPI]{Client: r.Client, kind: settingsByIDFixtureKind, newAPI: newAPI}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
+	return &settingsReconciler[SettingsByIDFixtureAPI]{Client: r.Client, apiReader: apiReader, kind: settingsByIDFixtureKind, newAPI: newAPI}
 }
 
 // defaultSettingsByIDFixtureAPI is the production factory: cloudflare-go v7's

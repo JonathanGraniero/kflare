@@ -111,6 +111,17 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **A smaller cache.** The controller caches the Secrets of the namespaces it may use, not the whole cluster's, so
   Helm's release Secrets elsewhere no longer count toward its memory (deploy.md's Scaling and resources).
 
+### Fixes
+
+- **An `IPList` no longer starts a second replacement of its items** while Cloudflare is still applying the first,
+  which a reconcile could do when the controller's cache had not yet seen the status that records the running one
+  ([#190](https://github.com/JonathanGraniero/kflare/issues/190)).
+- **A `ManagedTransform` with `kflare.dev/adoption-policy: adopt-or-create` no longer marks itself adopted** for the
+  settings it wrote itself, which a reconcile could do on the same lag. A resource marked so kept its settings when it
+  was deleted, rather than reset them. One you created with `adopt-or-create` in a zone nobody had configured, and
+  that carries `kflare.dev/adopted: "true"`, may be one: annotate it `kflare.dev/deletion-policy: delete` to have its
+  settings reset when it goes ([#190](https://github.com/JonathanGraniero/kflare/issues/190)).
+
 ### Known limitations
 
 v0.5.0's, and one more. [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains the others.

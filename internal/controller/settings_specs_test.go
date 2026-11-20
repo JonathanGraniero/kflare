@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -411,6 +412,17 @@ func (s *fakeSettingsStore) expectUnconfigured(id, unconfigured string) {
 // Cloudflare error code.
 func settingsTestError(status, code int) error {
 	return v7APIError(http.MethodPatch, "zones/zone/settings", status, code, "refused")
+}
+
+// delayCreating is a cache transform that holds back, by delay, each event of
+// a resource marked creating, as a cache that falls behind does.
+func delayCreating(delay time.Duration) func(event any) (any, error) {
+	return func(event any) (any, error) {
+		if obj, ok := event.(client.Object); ok && obj.GetAnnotations()[reconciler.CreatingAnnotation] != "" {
+			time.Sleep(delay)
+		}
+		return event, nil
+	}
 }
 
 func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]) bool {
@@ -1562,6 +1574,44 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			stopManager()
 		})
 
+		It("keeps the settings it wrote for its own when its manager's cache is behind its writes", func() {
+			// The cache learns late of each change that marks the resource
+			// creating, so a reconcile that its Zone queues meanwhile reads the
+			// resource as it was before it wrote the settings. From that copy,
+			// what it wrote looks configured outside kflare, and adopt-or-create
+			// would mark it adopted: deleting it would then keep the settings
+			// rather than reset them.
+			withFinalizer("stale", specs.samples[0].spec,
+				map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate})
+			startManagerWithCache(ctx, cache.Options{ByObject: map[client.Object]cache.ByObject{
+				specs.newObject(): {Transform: delayCreating(1500 * time.Millisecond)},
+			}}, func(mgr manager.Manager) error {
+				return specs.newReconciler(mgr.GetClient(), func(string) (A, error) { return specs.newFake(fake), nil }).
+					SetupWithManager(mgr)
+			})
+			Eventually(func() string {
+				return get("stale").GetSettingsStatus().CloudflareMetadata.ZoneID
+			}).WithTimeout(10*time.Second).Should(Equal(zoneID), "the settings are written and recorded")
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, key(zoneName), zone)).To(Succeed())
+			patch := client.MergeFrom(zone.DeepCopy())
+			zone.SetAnnotations(map[string]string{"example.com/touched": "true"})
+			Expect(k8sClient.Patch(ctx, zone, patch)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				obj := specs.newObject()
+				g.Expect(k8sClient.Get(ctx, key("stale"), obj)).To(Succeed())
+				g.Expect(obj.GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
+				condition := meta.FindStatusCondition(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
+				g.Expect(condition).NotTo(BeNil())
+				g.Expect(condition.Reason).To(Equal("Synced"))
+			}).WithTimeout(10 * time.Second).Should(Succeed())
+			// Marking it adopted on a late cache would come later: hold it.
+			Consistently(func() map[string]string { return get("stale").GetAnnotations() }).
+				WithTimeout(2*time.Second).ShouldNot(HaveKey(reconciler.AdoptedAnnotation),
+				"the resource created its settings, so they go with it")
+		})
+
 		It("reconciles the resources of a Zone when it changes", func() {
 			create(object("for-zone", specs.samples[0].spec))
 			other := object("other-zone", specs.samples[0].spec)
@@ -1598,17 +1648,22 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			}
 		})
 
-		It("registers with a manager, and falls back to the production client", func() {
-			mgr, err := manager.New(cfg, manager.Options{
-				Controller: config.Controller{SkipNameValidation: new(true)},
+		It("registers with a manager, whose API reader reads past its cache, and falls back to the production client",
+			func() {
+				mgr, err := manager.New(cfg, manager.Options{
+					Controller: config.Controller{SkipNameValidation: new(true)},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				registered := specs.newReconciler(mgr.GetClient(), nil)
+				Expect(registered.SetupWithManager(mgr)).To(Succeed())
+				Expect(registered.settings().apiReader).To(BeIdenticalTo(mgr.GetAPIReader()))
+				unregistered := specs.newReconciler(k8sClient, nil)
+				Expect(unregistered.settings().apiReader).To(BeIdenticalTo(k8sClient), "without a manager, the client")
+				_, err = unregistered.settings().newAPI("")
+				Expect(err).To(HaveOccurred(), "the production client rejects an empty token")
+				_, err = specs.defaultAPI("")
+				Expect(err).To(HaveOccurred())
 			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(specs.newReconciler(mgr.GetClient(), nil).SetupWithManager(mgr)).To(Succeed())
-			_, err = specs.newReconciler(k8sClient, nil).settings().newAPI("")
-			Expect(err).To(HaveOccurred(), "the production client rejects an empty token")
-			_, err = specs.defaultAPI("")
-			Expect(err).To(HaveOccurred())
-		})
 
 		It("is named after its API type", func() {
 			gvk, err := apiutil.GVKForObject(specs.newObject(), k8sClient.Scheme())

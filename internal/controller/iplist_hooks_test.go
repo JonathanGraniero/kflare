@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -415,6 +416,43 @@ var _ = Describe("IPList hooks", func() {
 		Eventually(func() bool {
 			return apierrors.IsNotFound(k8sClient.Get(ctx, key, &cloudflarev1alpha1.IPList{}))
 		}, 10*time.Second).Should(BeTrue(), "well before the minute a retry takes")
+	})
+
+	It("starts no second replacement on a cached read from before the status that records the first", func() {
+		createList(nil)
+		syncList()
+		// Cloudflare is still replacing the items for the rest of the spec.
+		items.polls = 100
+		list := getList()
+		list.Spec.Items = append(list.Spec.Items, cloudflarev1alpha1.IPListItem{IP: "203.0.113.7"})
+		Expect(k8sClient.Update(ctx, list)).To(Succeed())
+		stale := getList()
+		_, err := reconcileList()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getList().Status.CloudflareMetadata.OperationID).NotTo(BeEmpty())
+		Expect(items.replaces).To(Equal(2))
+
+		// A manager's cache can give the next reconcile the list as it was
+		// before that status write: no replacement running, and items that
+		// are not the spec's yet. The API server has the status.
+		base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+		Expect(err).NotTo(HaveOccurred())
+		cached := interceptor.NewClient(base, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, at client.ObjectKey, obj client.Object,
+				opts ...client.GetOption) error {
+				if at == key {
+					stale.DeepCopyInto(obj.(*cloudflarev1alpha1.IPList))
+					return nil
+				}
+				return c.Get(ctx, at, obj, opts...)
+			},
+		})
+		behind := &IPListReconciler{Client: cached, Scheme: k8sClient.Scheme(), NewIPListAPI: r.NewIPListAPI,
+			apiReader: k8sClient}
+		result, err := behind.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.IsZero()).To(BeTrue(), "the watch event of the status write reconciles it again")
+		Expect(items.replaces).To(Equal(2), "the replacement running is the only one")
 	})
 
 	It("reads items through the production client's services", func() {

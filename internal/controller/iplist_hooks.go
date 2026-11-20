@@ -87,8 +87,10 @@ func (s *ipListService) Operation(ctx context.Context, accountID, operationID st
 // Cloudflare from deleting it.
 var ipListHooks = crudHooks[*cloudflarev1alpha1.IPList, IPListAPI, rules.ListGetResponse]{
 	refuse: refuseListOfOtherKind,
-	synced: syncIPListItems,
-	watch:  watchRulesUsingLists,
+	// Whether a replacement is running is in status (operationID).
+	readsStatus: true,
+	synced:      syncIPListItems,
+	watch:       watchRulesUsingLists,
 }
 
 // refuseListOfOtherKind refuses a list that holds an IPList's name in its

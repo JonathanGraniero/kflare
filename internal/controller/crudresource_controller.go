@@ -202,7 +202,12 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// It does what the service's calls cannot, such as an IPList's items. Set
 	// stop to end the reconcile with what it returns, rather than report the
 	// resource ready.
-	synced func(ctx context.Context, c client.Client, api A, obj O, parentID string, current *R) (result ctrl.Result,
+	// readsStatus says that synced decides from what status records, as an
+	// IPList's running operation: it then runs only once the cache holds the
+	// resource's last write (upToDate), at the cost of a read of the API
+	// server on each reconcile.
+	readsStatus bool
+	synced      func(ctx context.Context, c client.Client, api A, obj O, parentID string, current *R) (result ctrl.Result,
 		stop bool, err error)
 	// describes replaces the comparison of two resources' keys that tells
 	// whether other describes the object obj manages, and so takes it over when
@@ -517,7 +522,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 			return ctrl.Result{}, err
 		}
 		defer release()
-		if fresh, err := r.upToDate(ctx, obj); !fresh || err != nil {
+		if fresh, err := upToDate(ctx, r.apiReader, obj, k.newObject()); !fresh || err != nil {
 			return ctrl.Result{}, err
 		}
 		found, adopted, done, result, err := r.findOrCreate(ctx, obj, accountID, parentID, refs, api)
@@ -542,7 +547,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 		matches = k.hooks.matches
 	}
 	if !matches(obj, current, refs) {
-		if fresh, err := r.upToDate(ctx, obj); !fresh || err != nil {
+		if fresh, err := upToDate(ctx, r.apiReader, obj, k.newObject()); !fresh || err != nil {
 			return ctrl.Result{}, err
 		}
 		updated, err := k.update(ctx, api, obj, parentID, k.id(current), refs)
@@ -560,12 +565,28 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 		*k.statusZoneID(obj) = parentID
 	}
 	k.observe(obj, current)
-	if k.hooks.synced != nil {
-		if result, stop, err := k.hooks.synced(ctx, r.Client, api, obj, parentID, current); stop {
-			return result, err
-		}
+	if result, stop, err := r.synced(ctx, api, obj, parentID, current); stop {
+		return result, err
 	}
 	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
+}
+
+// synced runs the kind's synced hook, if it has one, once the object is as
+// the spec asks: only once the cache holds the resource's last write, when the
+// hook decides from status (readsStatus). stop ends the reconcile with result
+// and err, as the hook's does.
+func (r *crudResourceReconciler[O, A, R, L]) synced(ctx context.Context, api A, obj O, parentID string,
+	current *R) (result ctrl.Result, stop bool, err error) {
+	k := r.kind
+	if k.hooks.synced == nil {
+		return ctrl.Result{}, false, nil
+	}
+	if k.hooks.readsStatus {
+		if fresh, err := upToDate(ctx, r.apiReader, obj, k.newObject()); !fresh || err != nil {
+			return ctrl.Result{}, true, err
+		}
+	}
+	return k.hooks.synced(ctx, r.Client, api, obj, parentID, current)
 }
 
 // observeOnly is sync for a resource kflare only observes
@@ -660,14 +681,15 @@ func observedNotReady(ctx context.Context, c client.StatusClient, obj conditione
 }
 
 // upToDate reports whether obj, as the cache gives it, is the version the API
-// server holds. sync asks before writing to Cloudflare: a reconcile queued by
-// the previous one's writes may read the resource before its last status
-// write reached the cache, and would create, adopt or upload again. When the
-// cache is behind, the reconcile stops; the watch event that catches the
-// cache up reconciles the resource again.
-func (r *crudResourceReconciler[O, A, R, L]) upToDate(ctx context.Context, obj O) (bool, error) {
-	current := r.kind.newObject()
-	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+// server holds, reading that through apiReader into current, a new object of
+// obj's kind. The shared reconcilers ask before they write to Cloudflare on
+// what the resource records: a reconcile queued by the previous one's writes
+// may read the resource before its last status write reached the cache, and
+// would create, adopt or upload again. When the cache is behind, the reconcile
+// stops; the watch event that catches the cache up reconciles the resource
+// again.
+func upToDate(ctx context.Context, apiReader client.Reader, obj, current client.Object) (bool, error) {
+	if err := apiReader.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
 	if current.GetResourceVersion() != obj.GetResourceVersion() {

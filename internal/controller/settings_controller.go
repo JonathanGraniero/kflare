@@ -103,8 +103,11 @@ type settingsKind[A any] struct {
 // kind's exported reconciler delegates to one.
 type settingsReconciler[A any] struct {
 	client.Client
-	kind   settingsKind[A]
-	newAPI func(token string) (A, error)
+	// apiReader reads from the API server, past the manager's cache, which
+	// Client reads from (see upToDate).
+	apiReader client.Reader
+	kind      settingsKind[A]
+	newAPI    func(token string) (A, error)
 }
 
 func (r *settingsReconciler[A]) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -174,6 +177,12 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, ac
 	recorded := obj.GetSettingsStatus().CloudflareMetadata.ZoneID == zoneID
 	adopting := false
 	if !recorded {
+		// A read from before this resource recorded the zone, or marked it
+		// creating, would take the settings it wrote for configured outside
+		// kflare, and adopt them.
+		if fresh, err := upToDate(ctx, r.apiReader, obj, k.newObject()); !fresh || err != nil {
+			return ctrl.Result{}, err
+		}
 		configured, err := settingsConfigured([]byte(current), k.unconfigured)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reading the %s of zone %s: %w", k.noun, zoneID, err)

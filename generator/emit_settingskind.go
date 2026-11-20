@@ -101,7 +101,11 @@ func emitSettingsController(k *settingsKind, header string) ([]byte, error) {
 		f.use("k8s.io/apimachinery/pkg/runtime", "runtime"))
 	comment(&f.Builder, "\t", wrapIndented(fmt.Sprintf("New%s constructs %s from a raw API token. Defaults to "+
 		"default%s; tests inject a fake.", api, article(api), api)))
-	f.printf("\tNew%s func(token string) (%s, error)\n}\n\n", api, api)
+	f.printf("\tNew%s func(token string) (%s, error)\n\n", api, api)
+	comment(&f.Builder, "\t", wrapIndented("apiReader reads from the API server, past the manager's cache: "+
+		"SetupWithManager sets the manager's. Without one, Client reads, as in tests that reconcile without a "+
+		"manager."))
+	f.printf("\tapiReader %s.Reader\n}\n\n", client)
 	writeRBACMarkers(f, rbacMarkers(k.plural, true))
 
 	var err error
@@ -120,14 +124,16 @@ func emitSettingsController(k *settingsKind, header string) ([]byte, error) {
 	comment(&f.Builder, "", wrap(fmt.Sprintf("SetupWithManager registers %sReconciler with the manager. It watches "+
 		"Zones, so %s waiting for its Zone is reconciled once the Zone is ready, and the deletion of %s, so "+
 		"another one takes over the zone's %s at once.", name, article(name), pluralOf(name), k.noun)))
-	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nreturn r.settings().setup(mgr, r)\n}\n\n",
-		name, ctrl)
+	f.printf("func (r *%sReconciler) SetupWithManager(mgr %s.Manager) error {\nr.apiReader = mgr.GetAPIReader()\n"+
+		"return r.settings().setup(mgr, r)\n}\n\n", name, ctrl)
 	settings := fmt.Sprintf("settingsReconciler[%s]", api)
 	comment(&f.Builder, "", wrap(fmt.Sprintf("settings returns the shared settings reconciler for %s, with the "+
-		"injected factory or the production one.", pluralOf(name))))
+		"injected factory or the production one, and the manager's API reader or the client.", pluralOf(name))))
 	f.printf("func (r *%sReconciler) settings() *%s {\n", name, settings)
 	f.printf("newAPI := r.New%s\nif newAPI == nil {\nnewAPI = default%s\n}\n", api, api)
-	f.printf("return &%s{Client: r.Client, kind: %sKind, newAPI: newAPI}\n}\n\n", settings, k.varName)
+	f.printf("apiReader := r.apiReader\nif apiReader == nil {\napiReader = r.Client\n}\n")
+	f.printf("return &%s{\nClient: r.Client, apiReader: apiReader, kind: %sKind, newAPI: newAPI,\n}\n}\n\n", settings,
+		k.varName)
 
 	comment(&f.Builder, "", wrap(fmt.Sprintf("default%s is the production factory: cloudflare-go v7's %s, built "+
 		"from cfpkg.New's options for the token.", api, service)))

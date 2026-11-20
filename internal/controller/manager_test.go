@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -26,16 +27,30 @@ func startManager(ctx context.Context, setup func(mgr manager.Manager) error) {
 	startScopedManager(ctx, cfg, WatchScope{}, setup)
 }
 
+// startManagerWithCache is startManager with a cache set by opts, such as one
+// whose Transform delays some events, as a cache that falls behind does.
+func startManagerWithCache(ctx context.Context, opts cache.Options, setup func(mgr manager.Manager) error) {
+	GinkgoHelper()
+	runManager(ctx, cfg, WatchScope{}, opts, setup)
+}
+
 // startScopedManager runs, for the rest of the spec, a manager of an
 // installation scoped by scope, as cmd/main.go sets one up, which calls the API
 // server as the user of restConfig, with what setup registers.
 func startScopedManager(ctx context.Context, restConfig *rest.Config, scope WatchScope,
 	setup func(mgr manager.Manager) error) {
 	GinkgoHelper()
+	runManager(ctx, restConfig, scope, scope.CacheOptions(scheme.Scheme), setup)
+}
+
+// runManager runs a manager for the rest of the spec, with the cache opts sets.
+func runManager(ctx context.Context, restConfig *rest.Config, scope WatchScope, opts cache.Options,
+	setup func(mgr manager.Manager) error) {
+	GinkgoHelper()
 	mgr, err := manager.New(restConfig, manager.Options{
 		Controller:  config.Controller{SkipNameValidation: new(true)},
 		Metrics:     metricsserver.Options{BindAddress: "0"},
-		Cache:       scope.CacheOptions(scheme.Scheme),
+		Cache:       opts,
 		BaseContext: func() context.Context { return WithWatchScope(context.Background(), scope) },
 	})
 	Expect(err).NotTo(HaveOccurred())

@@ -563,7 +563,16 @@ kinds:
   with one key and `adopt-or-create` in a manager whose cache learns of the kind's events 150 ms late
   (`cache.ByObject.Transform`): from the cache both ended up `Synced` and claiming the object, for all 7 kinds. Still
   cached reads after kflare's own writes, from #132: IPList's `synced` hook (its operation ID) and the settings
-  reconciler's `recorded`
+  reconciler's `recorded`, both closed by #190 (below)
+- **The last stale reads** (`fix/stale-reads-iplist-settings`, #190): a CRUD kind's hooks say `readsStatus` when
+  `synced` decides from status (IPList), and `upToDate`, now a function of the reader, runs before it; the reconciler
+  kflare-gen writes for a settings kind holds an `apiReader` as a CRUD kind's does (`emitSettingsController`), and the
+  shared settings reconciler checks before it decides from `recorded`, only while status records another zone or none.
+  Specs: IPList reconciled from a copy older than its last status write starts no second replacement; each settings
+  kind's, in a manager whose cache learns 1.5 s late of each event marking it `creating`, keeps the settings it wrote
+  when its Zone queues a reconcile meanwhile. Both fail without their check. A delayed `Transform` did not reproduce
+  IPList's: on client-go 0.37 the cache already held the status write while the transform still slept on it, so its
+  spec serves the stale copy through an interceptor, as `reconcileStale` does
 - **A zone's kind used from another namespace** (`feat/zone-allowed-references`, 2026-11-12, for #78): an entry's
   `zoneHostname` names the field that holds the hostname a resource's object takes in its zone (`field`; `routePattern`
   for a Worker route's pattern, whose hostname comes before its path; `reason`). The field must be a required string

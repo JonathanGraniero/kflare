@@ -37,6 +37,11 @@ type TestDNSSECReconciler struct {
 	// NewTestDNSSECAPI constructs a TestDNSSECAPI from a raw API token.
 	// Defaults to defaultTestDNSSECAPI; tests inject a fake.
 	NewTestDNSSECAPI func(token string) (TestDNSSECAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=testdnssecs,verbs=get;list;watch;create;update;patch;delete
@@ -96,17 +101,25 @@ func (r *TestDNSSECReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // ready, and the deletion of TestDNSSECs, so another one takes over the zone's
 // DNSSEC at once.
 func (r *TestDNSSECReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.settings().setup(mgr, r)
 }
 
 // settings returns the shared settings reconciler for TestDNSSECs, with the
-// injected factory or the production one.
+// injected factory or the production one, and the manager's API reader or the
+// client.
 func (r *TestDNSSECReconciler) settings() *settingsReconciler[TestDNSSECAPI] {
 	newAPI := r.NewTestDNSSECAPI
 	if newAPI == nil {
 		newAPI = defaultTestDNSSECAPI
 	}
-	return &settingsReconciler[TestDNSSECAPI]{Client: r.Client, kind: testDNSSECKind, newAPI: newAPI}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
+	return &settingsReconciler[TestDNSSECAPI]{
+		Client: r.Client, apiReader: apiReader, kind: testDNSSECKind, newAPI: newAPI,
+	}
 }
 
 // defaultTestDNSSECAPI is the production factory: cloudflare-go v7's

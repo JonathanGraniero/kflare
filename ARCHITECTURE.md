@@ -326,8 +326,13 @@ last. So before the shared CRUD reconciler finds, adopts or creates an object, a
 resource from the API server too (`upToDate`). If that copy is newer, or the resource is gone, it stops, and the watch
 event that brings the cache up to date reconciles the resource again. Otherwise a reconcile that read no ID would find
 the object it had just created and write it again, or, with `adopt-or-create`, take it for one to adopt, and a
-WorkerScript that read its previous hash would upload its Worker a second time. A status write from a stale read fails
-on its resource version and is retried, so it needs no such check.
+WorkerScript that read its previous hash would upload its Worker a second time. The same check comes before a kind's
+step after the sync when that step decides from status (`readsStatus`): an IPList that read no running replacement
+would replace its items a second time while Cloudflare is still applying the first. A settings kind checks before it
+decides from its status whether the settings are its own: a read from before it recorded the zone would take the
+settings it just wrote for configured outside kflare, and, with `adopt-or-create`, mark itself adopted, so that
+deleting it would keep them rather than reset them. A status write from a stale read fails on its resource version and
+is retried, so it needs no such check.
 
 The claims of other resources are read from the API server as well (`claimant`). Two resources with one key take turns
 (`lockObjectKey`), and the second looks for claims a moment after the first wrote its own: from a cache that did not
