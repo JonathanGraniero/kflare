@@ -107,6 +107,14 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **A smaller cache.** The controller caches the Secrets of the namespaces it may use, not the whole cluster's, so
   Helm's release Secrets elsewhere no longer count toward its memory (deploy.md's Scaling and resources).
 
+### Known limitations
+
+v0.5.0's, and one more. [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains the others.
+
+- **`R2Bucket` is not tested live** since 2026-11-17, when the test account's R2 subscription ended: it is tested
+  against envtest only, and its live specs come back once the account has R2 again
+  ([#193](https://github.com/JonathanGraniero/kflare/issues/193)).
+
 ## v0.5.0 (alpha)
 
 The ninth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. A `Zone` can now

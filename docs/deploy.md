@@ -65,7 +65,8 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 These are enough on their own: in October 2026 a token holding only them (with Zone · Zone · Read, and without Billing)
 ran kflare's full live test suite against an existing zone, and again before v0.2.0 with `ManagedTransform`'s row,
 which came later. kflare also asks Cloudflare about the token itself, its status and expiry, which takes no permission:
-in November 2026 a token holding only Account Settings Read was verified, active, disabled and expired.
+in November 2026 a token holding only Account Settings Read was verified, active, disabled and expired. `R2Bucket`'s
+row has not been checked live since 2026-11-17, when the test account's R2 subscription ended.
 Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's overview page.
 
 ## 2. Install the chart
