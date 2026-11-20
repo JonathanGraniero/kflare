@@ -217,12 +217,20 @@ func emitSettingsKindHead(f *goFile, k *settingsKind) {
 }
 
 // emitSettingsKindTail writes the end of a settingsKind: the shape of its
-// settings and the values of a zone nobody has configured.
+// settings, the values of a zone nobody has configured, and the spec field that
+// sets each setting, by its API name.
 func emitSettingsKindTail(f *goFile, k *settingsKind) {
 	f.printf("shape: %s,\n", settingsShapeLiteral(k))
 	f.printf("unconfigured: []settingsValue{\n")
 	for _, u := range k.unconfigured {
 		f.printf("{path: %q, value: %s},\n", u.path, jsonValueLiteral(u.value))
+	}
+	f.printf("},\n")
+	f.printf("fields: map[string]string{\n")
+	for _, field := range k.params.fields {
+		if field.apiName != "" {
+			f.printf("%q: %q,\n", field.apiName, field.jsonName)
+		}
 	}
 	f.printf("},\n}\n\n")
 }

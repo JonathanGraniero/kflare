@@ -851,8 +851,10 @@ The issue's decisions went as it proposed: the annotation `kflare.dev/management
   kinds' shared specs
 - [x] Every CRUD kind but `WorkerScript` (#191, `feat/observe-crud-kinds`): kflare-gen generates `differences`, and
   `matches` derives from it; `TunnelConfiguration` and `IPList` (its items) name their own fields
-- [ ] Left: the rule kinds (a way to name a rule kflare did not create) and the settings kinds (#195), and
-  `WorkerScript` once it reads a Worker back (#134)
+- [x] The settings kinds (#195, `feat/observe-settings-kinds`): the shared settings reconciler's `observeOnly` and a
+  generated `fields` map; an observed resource never becomes its zone's owner, and resets nothing
+- [ ] Left: the rule kinds (a way to name a rule kflare did not create, #195), and `WorkerScript` once it reads a
+  Worker back (#134)
 
 ### Next wave (proposed 2026-10-17)
 **Status:** 🚧 The user picked `ManagedTransform` on 2026-10-22, generated: capability 1 below was built first

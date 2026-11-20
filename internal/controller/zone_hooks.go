@@ -22,6 +22,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 //+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords;workerroutes;wafcustomrules;ratelimitrules;managedrulesets,verbs=get;list;watch
@@ -239,8 +240,8 @@ func readyZone(ctx context.Context, c client.Reader, obj client.Object, name str
 	if condErr := getReference(ctx, c, key, zone, what, "ZoneNotFound"); condErr != nil {
 		return nil, condErr
 	}
-	// The kinds that call this cannot be observed (startReconcile).
-	if !isZoneReady(zone, false) {
+	observed, _ := reconciler.Observed(obj)
+	if !isZoneReady(zone, observed) {
 		return nil, &conditionError{Reason: "ZoneNotReady", Message: what + " is not ready"}
 	}
 	return zone, nil

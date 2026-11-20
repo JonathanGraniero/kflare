@@ -90,6 +90,12 @@ var testDNSSECKind = settingsKind[TestDNSSECAPI]{
 	unconfigured: []settingsValue{
 		{path: "status", value: "disabled"},
 	},
+	fields: map[string]string{
+		"dnssec_multi_signer": "dnssecMultiSigner",
+		"dnssec_presigned":    "dnssecPresigned",
+		"dnssec_use_nsec3":    "dnssecUseNsec3",
+		"status":              "status",
+	},
 }
 
 func (r *TestDNSSECReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -603,6 +603,9 @@ kinds:
   the same fields. `matchesExpr` joins the same tests for the envtest table's checks. Hand-written descriptors
   (`Zone`, `TunnelConfiguration`) write `differences` too; `WorkerScript`'s hash comparison moved to its hooks'
   `matches`, which leaves it unobservable
+- **Settings fields** (`feat/observe-settings-kinds`, #195): a settings kind's descriptor gains `fields`, the spec
+  field (JSON name) of each setting its params hold at the top, by API name (`emitSettingsKindTail`), which the shared
+  settings reconciler names when it observes a resource whose settings differ
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

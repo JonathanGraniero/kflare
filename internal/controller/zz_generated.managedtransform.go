@@ -104,6 +104,10 @@ var managedTransformKind = settingsKind[ManagedTransformAPI]{
 		{path: "managed_request_headers[].enabled", value: false},
 		{path: "managed_response_headers[].enabled", value: false},
 	},
+	fields: map[string]string{
+		"managed_request_headers":  "managedRequestHeaders",
+		"managed_response_headers": "managedResponseHeaders",
+	},
 }
 
 func (r *ManagedTransformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

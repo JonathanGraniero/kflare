@@ -175,6 +175,7 @@ var settingsFixtureKind = settingsKind[SettingsFixtureAPI]{
 		{path: "scope", value: "incoming"},
 		{path: "type", value: "cloudflare"},
 	},
+	fields: map[string]string{"scope": "scope", "type": "type"},
 }
 
 func (r *SettingsFixtureReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

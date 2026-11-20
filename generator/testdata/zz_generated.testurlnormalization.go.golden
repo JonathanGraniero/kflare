@@ -96,6 +96,10 @@ var testURLNormalizationKind = settingsKind[TestURLNormalizationAPI]{
 		{path: "scope", value: "incoming"},
 		{path: "type", value: "cloudflare"},
 	},
+	fields: map[string]string{
+		"scope": "scope",
+		"type":  "type",
+	},
 }
 
 func (r *TestURLNormalizationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

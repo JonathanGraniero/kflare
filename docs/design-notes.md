@@ -2143,6 +2143,12 @@ to be started without answering them, so each went as the issue proposed.
   Cloudflare's modification time, which say nothing of a Worker kflare did not upload, and reading a Worker's script
   and bindings back is a v0 call #134 is removing. A key edited on an observed resource differs only from the object
   its status names already: one with the new key from the start finds its object by that key, and matches
+- **Settings kinds observed** (#195, `feat/observe-settings-kinds`): the shared settings reconciler reads the settings
+  and names, through the generated `fields` (API name to spec field), the top-level settings `differing` finds. An
+  observed resource is left out of `owner`, so it never configures the zone nor keeps a managed resource from it; it
+  records no zone in status, which would otherwise give it the zone on a switch to `manage`; and its deletion resets
+  nothing. Settings configured outside kflare mark it adopted, and a switch to `manage` takes such settings without an
+  adoption policy, as a CRUD kind's does
 - **The switch to `manage` adopts through `kflare.dev/adopted`,** which observing sets on a resource whose object is
   not its own (no claim label names it). The alternatives were a new status field on every kind, or inferring it
   from the last `Ready` reason, which an API error between the two would lose. The issue says an observed resource

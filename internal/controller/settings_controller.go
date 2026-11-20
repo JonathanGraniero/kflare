@@ -7,8 +7,10 @@ SPDX-License-Identifier: MIT
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -97,6 +99,9 @@ type settingsKind[A any] struct {
 	// new zone's, or one reset.
 	shape        settingsShape
 	unconfigured []settingsValue
+	// fields names, by its API name, the spec field that sets each setting
+	// desired holds at its top: what an observed resource reports differing.
+	fields map[string]string
 }
 
 // settingsReconciler reconciles the resources of one settings kind. Each
@@ -112,7 +117,7 @@ type settingsReconciler[A any] struct {
 
 func (r *settingsReconciler[A]) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	obj := r.kind.newObject()
-	if done, result, err := startReconcile(ctx, r.Client, req, obj, false, func() (ctrl.Result, error) {
+	if done, result, err := startReconcile(ctx, r.Client, req, obj, true, func() (ctrl.Result, error) {
 		return r.reconcileDelete(ctx, obj)
 	}); done {
 		return result, err
@@ -123,10 +128,14 @@ func (r *settingsReconciler[A]) reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, condErr.Reason, condErr.Message)
 	}
 
+	zoneID := zone.Status.CloudflareMetadata.ZoneID
+	if observed, _ := reconciler.Observed(obj); observed {
+		return r.observeOnly(ctx, obj, zone, zoneID)
+	}
+
 	// Only one resource of the kind configures a zone's settings. Another
 	// forgets the zone and any write it was about to make, so that it checks
 	// the settings again before it writes them, once it is the one.
-	zoneID := zone.Status.CloudflareMetadata.ZoneID
 	owner, err := r.owner(ctx, obj, zoneID)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -197,12 +206,16 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, ac
 				return ctrl.Result{}, err
 			}
 		case !creating(obj, zoneID):
-			elsewhere, err := watchScopeFrom(ctx).accountsElsewhere(ctx, r.Client, accountID)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			if condErr := mayAdopt(obj, what, elsewhere); condErr != nil {
-				return notReadyRetryAfter(ctx, r.Client, obj, condErr)
+			// A resource that observed them first took them for adopted then:
+			// switching it to manage adopts them, as adopt does.
+			if !reconciler.Adopted(obj) {
+				elsewhere, err := watchScopeFrom(ctx).accountsElsewhere(ctx, r.Client, accountID)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				if condErr := mayAdopt(obj, what, elsewhere); condErr != nil {
+					return notReadyRetryAfter(ctx, r.Client, obj, condErr)
+				}
 			}
 			adopting = true
 			logger.Info("Adopted the existing configuration of the "+k.noun, "zoneID", zoneID)
@@ -254,6 +267,69 @@ func (r *settingsReconciler[A]) sync(ctx context.Context, obj settingsObject, ac
 		fmt.Sprintf("The configuration of the %s is synced with Cloudflare", k.noun))
 }
 
+// observeOnly is reconcile for a resource kflare only observes
+// (reconciler.Observed): it reads the zone's settings and reports InSync, or
+// DriftDetected with the spec fields whose settings differ, never their
+// values. It writes nothing to Cloudflare, records no zone in status and takes
+// no part in choosing the resource that configures the zone (owner). Settings
+// configured outside kflare mark it adopted, so that a later switch to manage
+// takes them over and keeps them on deletion, as adopting does; settings it
+// configured itself stay its own.
+func (r *settingsReconciler[A]) observeOnly(ctx context.Context, obj settingsObject,
+	zone *cloudflarev1alpha1.Zone, zoneID string) (ctrl.Result, error) {
+	k := r.kind
+	account, token, credErr := resolveAccountToken(ctx, r.Client, obj.GetNamespace(), zone.Spec.AccountRef.Name, true)
+	if credErr != nil {
+		return notReadyRetryAfter(ctx, r.Client, obj, credErr)
+	}
+	if wait := admit(account, token, obj); wait > 0 {
+		return rateLimited(ctx, r.Client, obj, wait)
+	}
+	api, err := r.newAPI(token)
+	if err != nil {
+		return invalidToken(ctx, r.Client, obj, err)
+	}
+	current, err := k.read(ctx, api, zoneID, obj)
+	if err != nil {
+		return handleCloudflareError(ctx, r.Client, obj, err)
+	}
+
+	recorded := obj.GetSettingsStatus().CloudflareMetadata.ZoneID == zoneID
+	if !recorded && !creating(obj, zoneID) {
+		configured, err := settingsConfigured([]byte(current), k.unconfigured)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reading the %s of zone %s: %w", k.noun, zoneID, err)
+		}
+		if configured {
+			if err := markAdopted(ctx, r.Client, obj); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	desired, err := k.desired(obj)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	differing, err := k.shape.differing(desired, []byte(current))
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("comparing the %s of zone %s: %w", k.noun, zoneID, err)
+	}
+	what := fmt.Sprintf("The configuration of the %s of zone %s", k.noun, zoneID)
+	if len(differing) > 0 {
+		fields := make([]string, 0, len(differing))
+		for _, name := range differing {
+			fields = append(fields, cmp.Or(k.fields[name], name))
+		}
+		return observedNotReady(ctx, r.Client, obj, &conditionError{
+			Reason: reasonDriftDetected,
+			Message: fmt.Sprintf("%s differs from the spec in: %s. kflare only observes this resource, and changes "+
+				"nothing in Cloudflare", what, strings.Join(fields, ", ")),
+		})
+	}
+	return readyWithDriftCheck(ctx, r.Client, obj, reasonInSync, what+" matches the spec; kflare only observes it")
+}
+
 // owner returns the resource of the kind that configures the settings of
 // zoneID, obj or another, of those whose Zones point at the zone, in any
 // namespace, since Zones in different namespaces can point at the same
@@ -273,7 +349,10 @@ func (r *settingsReconciler[A]) owner(ctx context.Context, obj settingsObject, z
 	for _, other := range others {
 		// The list's copy of obj may be older than obj, which is the one to go
 		// by.
-		if client.ObjectKeyFromObject(other) == client.ObjectKeyFromObject(obj) ||
+		// An observed resource configures nothing: it never becomes the owner,
+		// nor keeps another from becoming it.
+		if observed, err := reconciler.Observed(other); observed || err != nil ||
+			client.ObjectKeyFromObject(other) == client.ObjectKeyFromObject(obj) ||
 			!settingsPrecede(other, owner, zoneID) {
 			continue
 		}
@@ -323,6 +402,12 @@ func settingsOlder(a, b client.Object) bool {
 // retained (the retain policy, or settings this resource adopted), it resets
 // them, then removes the finalizer.
 func (r *settingsReconciler[A]) reconcileDelete(ctx context.Context, obj settingsObject) (ctrl.Result, error) {
+	// An observed resource leaves the settings as they are, whatever its
+	// deletion policy.
+	if observed, _ := reconciler.Observed(obj); observed {
+		_, err := reconciler.RemoveFinalizer(ctx, r.Client, obj)
+		return ctrl.Result{}, err
+	}
 	return deleteUnlessRetained(ctx, r.Client, obj, func() error { return r.resetSettings(ctx, obj) })
 }
 

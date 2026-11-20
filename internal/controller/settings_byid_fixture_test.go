@@ -369,6 +369,12 @@ var settingsByIDFixtureKind = settingsKind[SettingsByIDFixtureAPI]{
 		{path: "security_header.strict_transport_security.preload", value: false},
 		{path: "ssl_automatic_mode", value: "auto"},
 	},
+	fields: map[string]string{
+		"always_use_https":  "alwaysUseHTTPS",
+		"browser_cache_ttl": "browserCacheTTL",
+		"security_header":   "securityHeader",
+		"ssl":               "ssl",
+	},
 }
 
 func (r *SettingsByIDFixtureReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

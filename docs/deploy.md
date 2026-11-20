@@ -1767,8 +1767,9 @@ token's budget. Deleting an observed resource leaves its object in Cloudflare, w
 
 An observed Zone whose zone differs from its spec still serves the records kflare observes. A record kflare manages
 waits (`ZoneNotReady`) until its Zone is `InSync` or managed. A DNSRecord whose `tunnelRef` names an observed Tunnel
-is observed once that Tunnel is `InSync`. Every kind can be observed but `WorkerScript` and the rule and settings
-kinds, which report `ObserveNotSupported`, and kflare makes no Cloudflare call for them.
+is observed once that Tunnel is `InSync`. Every kind can be observed but `WorkerScript` and the rule kinds, which
+report `ObserveNotSupported`, and kflare makes no Cloudflare call for them. An observed settings resource never
+configures its zone's settings, and does not keep a managed one from configuring them.
 
 **Moving to kflare** from the dashboard, Terraform or another tool, without a manifest's mistake reaching production:
 
@@ -1916,7 +1917,7 @@ kubectl -n kflare logs -l app.kubernetes.io/name=kflare --prefix --tail=-1   # t
 | `InvalidAdoptionPolicy` | `kflare.dev/adoption-policy` holds a value other than `adopt` and `adopt-or-create` | Fix or remove the annotation |
 | `DriftDetected` | kflare only observes the resource, and its Cloudflare object differs from the spec in the fields the message names | Change the manifest, or the object, until they match ([Observing without writing](#observing-without-writing)) |
 | `NotFound` (an observed resource) | kflare only observes the resource, and Cloudflare holds no object with its name | Check the name; an observed resource creates nothing |
-| `ObserveNotSupported` | kflare only observes the resource, by its `kflare.dev/management-policy` annotation or the chart's `observeOnly`, and cannot observe its kind yet: `WorkerScript`, and the rule and settings kinds. It makes no Cloudflare call for it | Remove the annotation to manage the resource, or leave it until the kind is supported |
+| `ObserveNotSupported` | kflare only observes the resource, by its `kflare.dev/management-policy` annotation or the chart's `observeOnly`, and cannot observe its kind yet: `WorkerScript` and the rule kinds. It makes no Cloudflare call for it | Remove the annotation to manage the resource, or leave it until the kind is supported |
 | `InvalidManagementPolicy` | `kflare.dev/management-policy` holds a value other than `observe` and `manage`. kflare makes no Cloudflare call for the resource, and does not finish deleting it | Fix or remove the annotation |
 | `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern in the same Cloudflare zone | Keep one WorkerRoute per pattern. After a rename, the new resource reports it until the old one is deleted ([Renaming a resource](#renaming-a-resource)) |
 | `TerminalError` (WorkerRoute) | A message with `Route pattern must include zone name` (10022): the pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |
