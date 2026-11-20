@@ -1185,7 +1185,8 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
     upgrade, as the migration its notes describe, and only checked to reconcile
   - E2E: the job `Upgrade from the last release (Kubernetes v1.37.0)` on pull requests and pushes; Live E2E: a step
     after the suite in the live job, as a job of its own would join the `e2e-cloudflare` group, which keeps one pending
-    job and cancels the one before. Tag release waits for every E2E job, so a release is tagged only once it passes.
+    job and cancels the one before. Tag release waits for every job of CI, E2E and Live E2E, a cancelled one counting as
+    failed (#188; from the move to `live-e2e.yml` until then it did not wait for Live E2E).
     Not required by `protect main` at first, the user's call; required since 2026-11-06, at the user's request
   - Checked on an envtest API server (1.34.1, no pods): v0.4.2's chart from GHCR takes the suite's values, the 21
     resources apply to its CRDs with strict validation, and after `helm upgrade` the served CRDs are
