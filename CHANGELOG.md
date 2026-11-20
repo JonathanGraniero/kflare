@@ -129,6 +129,15 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   that carries `kflare.dev/adopted: "true"`, may be one: annotate it `kflare.dev/deletion-policy: delete` to have its
   settings reset when it goes ([#190](https://github.com/JonathanGraniero/kflare/issues/190)).
 
+### Security
+
+- **kflare no longer deletes another resource's object for a resource that names it only by its claim label**
+  ([#189](https://github.com/JonathanGraniero/kflare/issues/189)). A resource whose status recorded no object was
+  deleted with the object its claim label (`kflare.dev/<kind>-id`) named, and anyone who may create a resource can
+  write that label: someone allowed one namespace could have kflare delete a KV namespace, an R2 bucket or a tunnel
+  that a resource in another namespace manages, through the same Cloudflare account. kflare now leaves such an object,
+  with a Warning Event, when another resource claims it.
+
 ### Known limitations
 
 v0.5.0's, and one more. [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains the others.

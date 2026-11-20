@@ -1425,6 +1425,45 @@ func describeCRUDHandOff[O conditionedObject, A any, R any, L any](e *crudSpecEn
 			Expect(getAt(elsewhere).GetLabels()).NotTo(HaveKey(k.claimLabel))
 		})
 
+		if !e.zoned {
+			It("deletes no "+k.noun+" another resource claims when a resource in another namespace, whose status "+
+				"records none, names it by its claim label", func() {
+				id := e.synced(nil)
+				elsewhere := types.NamespacedName{Name: otherKey.Name, Namespace: "claim-elsewhere"}
+				err := k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: elsewhere.Namespace}})
+				Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
+				named := t.newResource(elsewhere, e.parentName)
+				named.SetFinalizers([]string{reconciler.Finalizer})
+				named.SetLabels(map[string]string{k.claimLabel: id})
+				Expect(k8sClient.Create(ctx, named)).To(Succeed())
+				DeferCleanup(forceDelete, ctx, client.Object(k.newObject()), elsewhere)
+				recorder := events.NewFakeRecorder(10)
+				SetEventRecorder(recorder)
+				DeferCleanup(func() { SetEventRecorder(nil) })
+
+				Expect(k8sClient.Delete(ctx, getAt(elsewhere))).To(Succeed())
+				reconcileAt(elsewhere)
+				Expect(gone(elsewhere)).To(BeTrue(), "its deletion goes through")
+				Expect(e.store.objects).To(HaveKey(id), "the object of the resource that claims it stays")
+				Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning "+k.conflictReason),
+					ContainSubstring(key.String()))))
+				Expect(getAt(key).GetLabels()).To(HaveKeyWithValue(k.claimLabel, id))
+			})
+
+			It("deletes its "+k.noun+", which its status records, though a resource in another namespace names it by "+
+				"its claim label", func() {
+				id := e.synced(nil)
+				elsewhere := types.NamespacedName{Name: otherKey.Name, Namespace: "claim-elsewhere"}
+				err := k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: elsewhere.Namespace}})
+				Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
+				named := t.newResource(elsewhere, e.parentName)
+				named.SetLabels(map[string]string{k.claimLabel: id})
+				Expect(k8sClient.Create(ctx, named)).To(Succeed())
+				DeferCleanup(forceDelete, ctx, client.Object(k.newObject()), elsewhere)
+				expectDeleted(id)
+			})
+		}
+
 		It("creates its "+k.noun+" at once when the resource in another namespace that managed one with its "+
 			t.keyField+" is deleted, which it watches", func() {
 			e.synced(nil)

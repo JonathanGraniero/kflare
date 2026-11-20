@@ -62,6 +62,11 @@ does. Two things follow from the Zone being the grant:
   does not allow. An object a resource finds, adopts or creates is found by its spec's hostname, which the Zone
   already allowed
 
+The same goes for any resource being deleted whose status names no object: a reconcile that failed before it wrote
+status leaves the object in the claim label alone, and so may a person. kflare deletes that object only when no other
+resource claims it, and otherwise leaves it with a Warning Event of the kind's conflict reason, so that someone who
+may edit resources in one namespace cannot have kflare delete an object a resource elsewhere manages.
+
 Such a resource follows its Zone, in whichever namespace, and its own namespace's labels through watches. A Zone being
 deleted waits for the resources in other namespaces that it allows, as for those in its own; one it does not allow has
 no call to make through it, and does not hold it back, which any namespace could otherwise do to any Zone.
@@ -897,7 +902,8 @@ a token Secret in a namespace where the installation may no longer use Secrets, 
   resource still never takes over what another installation created: it reports `AlreadyExists`, naming the
   `CloudflareAccount` the other may use. With the annotation, though, two installations can each manage one object or
   one zone's settings, and each orders only its own rules in a phase, with a Warning Event (`OtherKflareRules`) where
-  their rules share one. Overlapping scopes are not detected: both installations reconcile what both select.
+  their rules share one. Overlapping scopes are not detected: both installations reconcile what both select, which
+  through one Cloudflare account still makes one object.
 - **Two kinds are pinned to the legacy SDK.** Zone and WorkerScript call cloudflare-go v0.119, the newest of the v0
   line; every other kind uses the generated SDK, v7. A limitation comes from v0.119: a WorkerScript binds only R2
   buckets in the default jurisdiction (`R2BucketJurisdictionUnsupported` otherwise): the SDK's Worker R2 binding has
