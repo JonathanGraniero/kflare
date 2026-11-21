@@ -2122,8 +2122,10 @@ to be started without answering them, so each went as the issue proposed.
 - **The switch to `manage` checks for a claim first** (the review, 2026-11-17). An observed resource records an
   object another resource may manage, as the live spec's does, and `sync` claimed whatever status named: two
   resources then owned one record. With a status ID it does not claim, a resource holds its key and asks `claimant`,
-  as `findOrCreate` does, and reports the conflict reason. Not covered: such a resource keeps the ID in status, so
-  with `kflare.dev/deletion-policy: delete` its deletion would still delete the other's object
+  as `findOrCreate` does, and reports the conflict reason. Such a resource keeps the ID in status, so with
+  `kflare.dev/deletion-policy: delete` its deletion deleted the other's object, until #189's check
+  (`deleteObject`): an object a resource does not claim in both status and label goes only when no other claims it.
+  Once every CRUD kind could be observed (#191), this reached KV namespaces, buckets and tunnels, not just records
 - **Observed resources are read again at the drift check, not every minute** (`observedNotReady`; the review). At a
   migration's start most resources differ, and 500 of them at a read a minute are 2,500 calls per five minutes
   against a budget of 900. Without an interval the minute stays, as nothing else would notice a fix made in

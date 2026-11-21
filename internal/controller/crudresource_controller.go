@@ -1214,19 +1214,20 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 	if r.kind.zoneRef != nil {
 		parentID = from.zoneID
 	}
-	// Without status, the object is the one the claim label names: one a
-	// reconcile claimed before it failed to record it, or one a person
-	// named, which another resource may manage. The label is anyone's to
-	// write, so the object goes only when no other resource claims it.
-	if r.kind.statusID(obj) == "" {
+	// An object the resource does not claim in both status and label may be
+	// another resource's: one only the label names (a reconcile claimed it
+	// before it failed to record it, or a person named it, as the label is
+	// anyone's to write), or one status recorded while kflare only observed it
+	// (observeOnly). It goes only when no other resource claims it.
+	if r.kind.statusID(obj) != id || !ownsID(obj, r.kind.claimLabel, id) {
 		owner, err := r.claimant(ctx, obj, parentID, id)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		if owner != "" {
 			k := r.kind
-			recordWarning(obj, k.conflictReason, "Delete", fmt.Sprintf("%s %s, which this resource's %s label names, "+
-				"is managed by %s %s; its Cloudflare object stays in Cloudflare", k.noun, id, k.claimLabel, k.name, owner))
+			recordWarning(obj, k.conflictReason, "Delete", fmt.Sprintf("%s %s is managed by %s %s, not by this "+
+				"resource; its Cloudflare object stays in Cloudflare", k.noun, id, k.name, owner))
 			return ctrl.Result{}, nil
 		}
 	}

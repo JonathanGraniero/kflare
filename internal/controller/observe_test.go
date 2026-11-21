@@ -200,12 +200,27 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 			Expect(e.get().GetAnnotations()).To(HaveKey(reconciler.CreatingAnnotation))
 		})
 
-		if !k.sharedObjects && hasChanges {
+		if !k.sharedObjects {
 			It("reports "+k.conflictReason+" once switched to manage, for a "+k.noun+" another "+k.name+
-				" has claimed, and leaves it to that one", func() {
-				id := observeDiffering(t.changes[len(t.changes)-1])
-				Expect(e.ready().Reason).To(Equal(reasonDriftDetected))
-				other := t.newResource(e.otherKey, e.parentName)
+				" has claimed, and leaves it to that one, its deletion policy delete included", func() {
+				// A differing object shows that the switch corrects nothing.
+				id, reason := "", reasonInSync
+				if hasChanges {
+					id, reason = observeDiffering(t.changes[len(t.changes)-1]), reasonDriftDetected
+				} else {
+					id = observe(nil)
+				}
+				Expect(e.ready().Reason).To(Equal(reason))
+				// In another namespace where the kind allows it (a zone's resources need their Zone), so that
+				// the deletion below cannot hand the object back to it as a successor.
+				otherKey := e.otherKey
+				if !e.zoned {
+					otherKey = types.NamespacedName{Name: e.otherKey.Name, Namespace: "claim-elsewhere"}
+					err := k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: otherKey.Namespace}})
+					Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
+					DeferCleanup(forceDelete, ctx, client.Object(k.newObject()), otherKey)
+				}
+				other := t.newResource(otherKey, e.parentName)
 				other.SetFinalizers([]string{reconciler.Finalizer})
 				other.SetLabels(map[string]string{k.claimLabel: id})
 				Expect(k8sClient.Create(ctx, other)).To(Succeed())
@@ -215,8 +230,19 @@ func describeCRUDObserve[O conditionedObject, A any, R any, L any](e *crudSpecEn
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.RequeueAfter).To(Equal(credentialsRetryInterval))
 				Expect(e.ready().Reason).To(Equal(k.conflictReason))
-				Expect(e.ready().Message).To(ContainSubstring(e.otherKey.String()))
+				Expect(e.ready().Message).To(ContainSubstring(otherKey.String()))
 				Expect(e.get().GetLabels()).NotTo(HaveKey(k.claimLabel))
+				Expect(e.store.writes).To(BeZero())
+
+				// Status still records the other's object, which this resource never claimed.
+				obj := e.get()
+				obj.GetAnnotations()[reconciler.DeletionPolicyAnnotation] = reconciler.DeletionPolicyDelete
+				Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+				Expect(k8sClient.Delete(ctx, e.get())).To(Succeed())
+				_, err = e.reconcileIt()
+				Expect(err).NotTo(HaveOccurred())
+				expectGone()
+				Expect(e.store.objects).To(HaveKey(id))
 				Expect(e.store.writes).To(BeZero())
 			})
 		}
