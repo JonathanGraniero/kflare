@@ -106,7 +106,7 @@ The chart installs:
   release namespace; with `watchNamespaces`, a Role in each of those namespaces holds what the ClusterRole would on
   them, Secrets included (see [Scoping an installation](#scoping-an-installation))
 - a `kflare-metrics-reader` ClusterRole for whoever scrapes the metrics (see [Monitoring](#monitoring))
-- a HorizontalPodAutoscaler, from 1 to 10 replicas (see [Scaling and resources](#scaling-and-resources))
+- a HorizontalPodAutoscaler, from 2 to 3 replicas (see [Scaling and resources](#scaling-and-resources))
 - a PodDisruptionBudget, when the Deployment can run more than one replica
 - `view`/`edit` aggregation roles (see [Security model](#security-model))
 - optionally, a ServiceMonitor and a NetworkPolicy (see [Running in production](#running-in-production))
@@ -617,7 +617,8 @@ resource type "kflare"`; the next one works.
 To expose a Service on your domain through a Cloudflare Tunnel, see
 [`examples/expose-a-service`](../examples/expose-a-service). It puts the pieces together: a Zone, a Tunnel, its
 TunnelConfiguration, a DNSRecord whose `tunnelRef` points the hostname at the tunnel, and a `cloudflared` Deployment
-that connects it.
+that connects it. kflare writes the tunnel's token Secret in the example's namespace, `kflare-example`, so list it in
+`secretNamespaces`.
 
 Things to know before pointing kflare at existing infrastructure:
 

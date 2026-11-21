@@ -1133,6 +1133,13 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
   - Left, for the user: the merge, which releases it (Tag release). `release-0.4` is not cut yet: cut it from the
     v0.4.3 tag (CONTRIBUTING.md, "Patch releases from a release branch") before v0.4 stops being the latest minor's
     only fix path, and close #157
+- [ ] v0.6.0's pre-merge checks (`docs/release-v0.6.0`), the user's version, off `f57118b`: `main` holds #181 to
+  #208 and #205 since v0.5.0. Done on the branch:
+  - `make crd-compat`: no breaking change to the CRDs since v0.5.0 (`TunnelConfiguration` gains optional fields)
+  - The README's quickstart lists `kflare-example` in `secretNamespaces`: #182 left a default install without Secrets
+    there, so the example's Tunnel would report `SecretNamespaceNotAllowed`. Live E2E runs the example that way
+  - `make helm`, `make helm-lint`, `go test ./hack/...` and `go run ./hack/releasenotes` pass
+  - Left, for the user: the merge, which releases it (Tag release)
 - [ ] Releases from the merge (`ci/release-on-merge`), the user's request on 2026-11-04: a release took a maintainer's
   tag, a draft's notes and #84's checks by hand. `tag-release.yml` runs on a push to `main` that changes `Chart.yaml`,
   and releases only when that push changed the version (a later CRD change also touches the file). It checks the
@@ -1312,7 +1319,7 @@ Cross-cutting, from ARCHITECTURE.md's known limitations:
 > settings controller. `kflare-gen` generates all of them from v7, but for those three, whose fields and calls stay
 > hand-written while it writes their types and wiring ([Generate every kind](#generate-every-kind)). Next:
 > [Launch readiness](#launch-readiness) (Phase 3), L1 to L7 in order; L1 is done but for one rerun, L2 to L6 are done:
-> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.4.3 is the latest release (v0.5.0 is prepared in `docs/release-v0.5.0`).
+> v0.1.0 is released and on ArtifactHub; L7 is on hold. v0.5.0 is the latest release (v0.6.0 is prepared in `docs/release-v0.6.0`).
 > The [Next wave](#next-wave-proposed-2026-10-17) has started: `ManagedTransform`, the first settings kind, is
 > generated and verified live.
 > deploy.md's permissions are verified on their own for every kind (ManagedTransform since v0.2.0's live run). Zero

@@ -17,6 +17,9 @@
 
 - kflare installed, and a `CloudflareAccount` named `my-account` reporting `READY=True`, as in the
   [deploy guide](../../docs/deploy.md), sections 2 and 3
+- The namespace `kflare-example` created before kflare is installed, and listed in the chart's `secretNamespaces`
+  (`--set 'secretNamespaces={kflare-example}'`): kflare writes the tunnel's token Secret there, and uses Secrets only
+  in its own namespace and those listed. On an installation with `watchNamespaces`, list it there instead
 - A domain on that Cloudflare account
 - The account's API token holding, at least: Zone · Zone · Read and Zone · DNS · Edit on the domain, and
   Account · Cloudflare Tunnel · Edit (see the deploy guide's

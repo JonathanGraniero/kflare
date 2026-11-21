@@ -10,7 +10,37 @@ upgrade, and one to a CRD names each kind it changes, which CI checks (`make crd
 under "Upgrading from" the release before, and a deprecation is under "Deprecated", with the earliest release that may
 remove it. Releases up to v0.4.2 describe their breaking changes in their opening paragraph and "Upgrading from".
 
-## Unreleased
+## v0.6.0 (alpha)
+
+The tenth alpha release of kflare: the API is still `v1alpha1`, and it needs Kubernetes 1.34 or newer. A resource can
+now be observed without kflare writing to Cloudflare, the chart checks every resource against Cloudflare every hour,
+runs a standby, and ships alerts and a dashboard, and kflare keeps its Secrets to the namespaces you list.
+**Manifests written for v0.5.0 apply unchanged, but some Helm values need changes**: read the breaking changes below,
+and [Upgrading from v0.5.0](#upgrading-from-v050).
+
+```sh
+helm upgrade kflare oci://ghcr.io/jonathangraniero/charts/kflare --version 0.6.0 -n kflare-system \
+  --values kflare-values.yaml
+```
+
+Use the namespace you installed into (v0.5.0's docs said `kflare-system`). The image is
+`ghcr.io/jonathangraniero/kflare:0.6.0`, for `linux/amd64` and `linux/arm64`. The deploy guide's
+[Verifying a release](docs/deploy.md#verifying-a-release) checks both signatures before you install. To install kflare
+for the first time, follow the [README's quickstart](README.md#quickstart-expose-a-service-through-a-cloudflare-tunnel),
+which now lists the example's namespace in `secretNamespaces`.
+
+### Upgrading from v0.5.0
+
+No manifest changes, and `make crd-compat` finds no breaking change to the CRDs: `TunnelConfiguration`'s gains optional
+fields. If you manage the CRDs yourself (`crds.enabled=false`), apply `config/crd/bases` first. Before you upgrade:
+
+1. List the namespaces of your token Secrets, Tunnels and WorkerScripts with secret bindings in `secretNamespaces`, or
+   set `rbac.clusterWideSecrets: true` (the first breaking change below). Installations with `watchNamespaces` skip
+   this.
+2. An installation in `default` sets `allowDefaultNamespace: true`.
+3. Values that set `autoscaling.minReplicas` above 3 set `autoscaling.maxReplicas` too.
+4. Set `driftCheckInterval: ""` if a change made outside kflare must not be reverted within the hour.
+5. Copy the deploy guide's Argo CD and Flux health checks again if you use them: they know the new reasons.
 
 ### Breaking changes
 

@@ -30,9 +30,14 @@ Note your account ID, shown on the account's overview page.
 
 **2. Install kflare.**
 
+kflare writes Secrets only in its own namespace and those listed in `secretNamespaces`. The example in step 4 runs
+in `kflare-example`, where kflare writes the tunnel's token, so create it first and list it:
+
 ```sh
+kubectl create namespace kflare-example
 helm install kflare oci://ghcr.io/jonathangraniero/charts/kflare \
-  --version 0.5.0 --namespace kflare --create-namespace
+  --version 0.6.0 --namespace kflare --create-namespace \
+  --set 'secretNamespaces={kflare-example}'
 kubectl -n kflare rollout status deployment/kflare
 ```
 
@@ -62,7 +67,7 @@ your existing domain, a `Tunnel`, its `TunnelConfiguration`, a `DNSRecord` point
 tunnel, and a `cloudflared` Deployment that connects it. Apply it with your domain in place of `example.com`:
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.5.0/examples/expose-a-service/expose-a-service.yaml \
+curl -sSL https://raw.githubusercontent.com/JonathanGraniero/kflare/v0.6.0/examples/expose-a-service/expose-a-service.yaml \
   | sed 's/example\.com/your-domain.com/g' | kubectl apply -f -
 
 kubectl -n kflare-example wait --for=condition=Ready dnsrecords.kflare.dev/hello --timeout=5m
