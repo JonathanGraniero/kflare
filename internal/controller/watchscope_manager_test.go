@@ -22,11 +22,13 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -414,6 +416,101 @@ var _ = Describe("Installations scoped to some namespaces or a label selector", 
 				g.Expect(kvsB.objects()).To(BeZero())
 			}, timeout, interval).Should(Succeed())
 		})
+
+	It("lets two installations whose selectors overlap reconcile a resource both select to one object, and delete it",
+		func() {
+			// Installations A and B watch the same namespaces, A by team and B by
+			// tier, and call one Cloudflare account. Overlapping scopes are not
+			// detected: both reconcile what both select.
+			const home, shared = "scope-overlap-home", "scope-overlap-shared"
+			for _, namespace := range []string{home, shared} {
+				createNamespace(namespace)
+			}
+			both := map[string]string{"team": "a", "tier": "web"}
+			createAccount("scope-overlap", both, home)
+			kv := types.NamespacedName{Name: "kv-both", Namespace: shared}
+			createKV(kv, both, "scope-overlap")
+
+			kvs := newScopedKV()
+			for user, selector := range map[string]string{"kflare-overlap-a": "team=a", "kflare-overlap-b": "tier=web"} {
+				config := installationUser(ctx, user, home, shared)
+				reader, err := client.New(config, client.Options{Scheme: scheme.Scheme})
+				Expect(err).NotTo(HaveOccurred())
+				startScopedManager(ctx, config, mustWatchScope(home+","+shared, selector, reader),
+					setupInstallation("One account", kvs))
+			}
+			expectReady(&cloudflarev1alpha1.KVNamespace{}, kv, "Synced")
+			Consistently(kvs.objects, 2*time.Second, interval).Should(Equal(1), "one KV namespace, not one each")
+
+			Expect(k8sClient.Delete(ctx, &cloudflarev1alpha1.KVNamespace{ObjectMeta: metav1.ObjectMeta{
+				Name: kv.Name, Namespace: kv.Namespace}})).To(Succeed())
+			Eventually(kvs.objects, timeout, interval).Should(BeZero())
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8sClient.Get(ctx, kv, &cloudflarev1alpha1.KVNamespace{}))
+			}, timeout, interval).Should(BeTrue())
+		})
+
+	It("leaves, with a Warning Event, the object of a resource relabelled into an installation that cannot use its "+
+		"account, and lets the first installation delete it once labelled back", func() {
+		const homeA, homeB, shared = "scope-move-a", "scope-move-b", "scope-move-shared"
+		for _, namespace := range []string{homeA, homeB, shared} {
+			createNamespace(namespace)
+		}
+		a, b := map[string]string{instanceLabel: "a"}, map[string]string{instanceLabel: "b"}
+		createAccount("scope-move-a", a, homeA)
+		kv := types.NamespacedName{Name: "kv-moved", Namespace: shared}
+		createKV(kv, a, "scope-move-a")
+		recorder := events.NewFakeRecorder(100)
+		SetEventRecorder(recorder)
+		DeferCleanup(func() { SetEventRecorder(nil) })
+
+		kvs := newScopedKV()
+		for user, scope := range map[string][2]string{"kflare-move-a": {homeA, "a"}, "kflare-move-b": {homeB, "b"}} {
+			config := installationUser(ctx, user, scope[0], shared)
+			reader, err := client.New(config, client.Options{Scheme: scheme.Scheme})
+			Expect(err).NotTo(HaveOccurred())
+			startScopedManager(ctx, config, mustWatchScope(scope[0]+","+shared, instanceLabel+"="+scope[1], reader),
+				setupInstallation("Installation "+scope[1], kvs))
+		}
+		expectReady(&cloudflarev1alpha1.KVNamespace{}, kv, "Synced")
+		Expect(kvs.objects()).To(Equal(1))
+
+		relabel := func(labels map[string]string) {
+			GinkgoHelper()
+			obj := &cloudflarev1alpha1.KVNamespace{}
+			Expect(k8sClient.Get(ctx, kv, obj)).To(Succeed())
+			patch := client.MergeFrom(obj.DeepCopy())
+			obj.SetLabels(labels)
+			Expect(k8sClient.Patch(ctx, obj, patch)).To(Succeed())
+		}
+		By("reporting NotWatched from B, which cannot use A's account")
+		relabel(b)
+		expectReady(&cloudflarev1alpha1.KVNamespace{}, kv, reasonNotWatched)
+
+		By("deleting it from A once labelled back")
+		relabel(a)
+		expectReady(&cloudflarev1alpha1.KVNamespace{}, kv, "Synced")
+		Expect(k8sClient.Delete(ctx, &cloudflarev1alpha1.KVNamespace{ObjectMeta: metav1.ObjectMeta{
+			Name: kv.Name, Namespace: kv.Namespace}})).To(Succeed())
+		Eventually(kvs.objects, timeout, interval).Should(BeZero())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, kv, &cloudflarev1alpha1.KVNamespace{}))
+		}, timeout, interval).Should(BeTrue())
+
+		By("leaving it, with a Warning Event, when deleted while B holds it")
+		createKV(kv, a, "scope-move-a")
+		expectReady(&cloudflarev1alpha1.KVNamespace{}, kv, "Synced")
+		relabel(b)
+		expectReady(&cloudflarev1alpha1.KVNamespace{}, kv, reasonNotWatched)
+		Expect(k8sClient.Delete(ctx, &cloudflarev1alpha1.KVNamespace{ObjectMeta: metav1.ObjectMeta{
+			Name: kv.Name, Namespace: kv.Namespace}})).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, kv, &cloudflarev1alpha1.KVNamespace{}))
+		}, timeout, interval).Should(BeTrue())
+		Expect(kvs.objects()).To(Equal(1), "B leaves the KV namespace in Cloudflare")
+		Eventually(recorder.Events, timeout, interval).Should(Receive(And(ContainSubstring("Warning "+reasonNotWatched),
+			ContainSubstring("stays in Cloudflare"))))
+	})
 
 	It("names, in AlreadyExists, the account through which another installation may manage an object of the "+
 		"same Cloudflare account, with only the chart's namespaced RBAC", func() {

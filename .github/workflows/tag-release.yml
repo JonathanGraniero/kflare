@@ -1,9 +1,9 @@
 name: Tag release
 
 # Releases a merge to main that bumps the chart's version: once every job of
-# CI and E2E has passed on the merge commit, this tags it vX.Y.Z and starts
-# the Release workflow on the tag, which publishes and signs the image and the
-# chart, then the GitHub release. A push that leaves the version as it was
+# CI, E2E and Live E2E has passed on the merge commit, this tags it vX.Y.Z and
+# starts the Release workflow on the tag, which publishes and signs the image
+# and the chart, then the GitHub release. A push that leaves the version as it was
 # releases nothing.
 on:
   push:
@@ -20,13 +20,14 @@ defaults:
 
 jobs:
   check:
-    name: Check the version and wait for CI and E2E
+    name: Check the version and wait for CI, E2E and Live E2E
     runs-on: ubuntu-latest
-    # E2E takes about 25 minutes, and its jobs can queue behind others'.
-    timeout-minutes: 120
+    # The live job may wait for another run's (90 minutes at most) before its
+    # own 90 minutes.
+    timeout-minutes: 210
     permissions:
       contents: read
-      # Reads the jobs of CI's and E2E's runs.
+      # Reads the jobs of CI's, E2E's and Live E2E's runs.
       actions: read
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -82,18 +83,19 @@ jobs:
         if: steps.version.outputs.tag
         run: go run ./hack/releasenotes > /dev/null
 
-      # Every job of CI's and E2E's runs on this commit must pass, or be
-      # skipped. Jobs rather than runs: a run can stay in progress a while
-      # after its last job is done.
-      - name: Wait for CI and E2E
+      # Every job of CI's, E2E's and Live E2E's runs on this commit must pass,
+      # or be skipped. Jobs rather than runs: a run can stay in progress a while
+      # after its last job is done. A cancelled job has not passed: a newer
+      # push's live run takes this one's place in the queue and cancels it.
+      - name: Wait for CI, E2E and Live E2E
         if: steps.version.outputs.tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          deadline=$((SECONDS + 110 * 60))
+          deadline=$((SECONDS + 200 * 60))
           while :; do
             waiting=()
-            for workflow in ci.yml e2e.yml; do
+            for workflow in ci.yml e2e.yml live-e2e.yml; do
               run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push" \
                 --jq '.workflow_runs[0].id // empty')"
               jobs=""
@@ -101,11 +103,11 @@ jobs:
                 jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" \
                   --jq '.jobs[] | [.status, .conclusion // "", .name] | @tsv')"
               fi
-              failed="$(awk -F '\t' '$1 == "completed" && $2 != "success" && $2 != "skipped" {print $3}' <<< "$jobs" |
-                paste -s -d , -)"
+              failed="$(awk -F '\t' '$1 == "completed" && $2 != "success" && $2 != "skipped" {print $3 ": " $2}' \
+                <<< "$jobs" | paste -s -d , -)"
               if [ -n "$failed" ]; then
                 echo "::error::$workflow did not pass on this commit ($failed), so it is not tagged." \
-                  "Rerun the failed jobs, then this workflow."
+                  "Rerun the jobs that failed or were cancelled, then this workflow."
                 exit 1
               fi
               if [ -z "$jobs" ] || awk -F '\t' '$1 != "completed" {found = 1} END {exit !found}' <<< "$jobs"; then
@@ -116,7 +118,7 @@ jobs:
               fi
             done
             if [ "${#waiting[@]}" -eq 0 ]; then
-              echo "CI and E2E passed on $GITHUB_SHA."
+              echo "CI, E2E and Live E2E passed on $GITHUB_SHA."
               break
             fi
             if [ "$SECONDS" -ge "$deadline" ]; then

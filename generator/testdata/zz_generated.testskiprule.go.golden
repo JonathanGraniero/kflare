@@ -44,6 +44,13 @@ var testSkipRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return testSkipRuleDefinition(obj.(*cloudflarev1alpha1.TestSkipRule))
 	},
+	fields: map[string]string{
+		"action_parameters.phase":    "phase",
+		"action_parameters.phases":   "phases",
+		"action_parameters.products": "products",
+		"action_parameters.ruleset":  "ruleset",
+		"action_parameters.rulesets": "rulesets",
+	},
 }
 
 func (r *TestSkipRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

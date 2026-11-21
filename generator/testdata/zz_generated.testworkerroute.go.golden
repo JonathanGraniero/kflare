@@ -90,9 +90,15 @@ var testWorkerRouteKind = crudResourceKind[*cloudflarev1alpha1.TestWorkerRoute, 
 	},
 
 	id: func(current *workers.RouteGetResponse) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.TestWorkerRoute, current *workers.RouteGetResponse, refs map[string]string) bool {
-		return current.Pattern == obj.Spec.Pattern &&
-			current.Script == refs["workerScriptRef"]
+	differences: func(obj *cloudflarev1alpha1.TestWorkerRoute, current *workers.RouteGetResponse, refs map[string]string) []string {
+		var fields []string
+		if current.Pattern != obj.Spec.Pattern {
+			fields = append(fields, "pattern")
+		}
+		if current.Script != refs["workerScriptRef"] {
+			fields = append(fields, "workerScriptRef")
+		}
+		return fields
 	},
 	listedID:  func(listed *workers.RouteListResponse) string { return listed.ID },
 	listedKey: func(listed *workers.RouteListResponse) string { return listed.Pattern },

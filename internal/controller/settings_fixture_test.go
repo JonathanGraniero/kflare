@@ -131,6 +131,10 @@ type SettingsFixtureReconciler struct {
 	// NewSettingsFixtureAPI constructs a SettingsFixtureAPI from a raw API
 	// token. Defaults to defaultSettingsFixtureAPI; the specs inject a fake.
 	NewSettingsFixtureAPI func(token string) (SettingsFixtureAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads.
+	apiReader client.Reader
 }
 
 // settingsFixtureKind describes SettingsFixtures to the shared settings
@@ -171,6 +175,7 @@ var settingsFixtureKind = settingsKind[SettingsFixtureAPI]{
 		{path: "scope", value: "incoming"},
 		{path: "type", value: "cloudflare"},
 	},
+	fields: map[string]string{"scope": "scope", "type": "type"},
 }
 
 func (r *SettingsFixtureReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -178,6 +183,7 @@ func (r *SettingsFixtureReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 func (r *SettingsFixtureReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.settings().setup(mgr, r)
 }
 
@@ -186,7 +192,11 @@ func (r *SettingsFixtureReconciler) settings() *settingsReconciler[SettingsFixtu
 	if newAPI == nil {
 		newAPI = defaultSettingsFixtureAPI
 	}
-	return &settingsReconciler[SettingsFixtureAPI]{Client: r.Client, kind: settingsFixtureKind, newAPI: newAPI}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
+	return &settingsReconciler[SettingsFixtureAPI]{Client: r.Client, apiReader: apiReader, kind: settingsFixtureKind, newAPI: newAPI}
 }
 
 func defaultSettingsFixtureAPI(token string) (SettingsFixtureAPI, error) {

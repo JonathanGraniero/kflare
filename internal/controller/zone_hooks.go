@@ -22,6 +22,7 @@ import (
 
 	cloudflarev1alpha1 "github.com/JonathanGraniero/kflare/api/v1alpha1"
 	cfpkg "github.com/JonathanGraniero/kflare/pkg/cloudflare"
+	"github.com/JonathanGraniero/kflare/pkg/reconciler"
 )
 
 //+kubebuilder:rbac:groups=kflare.dev,resources=dnsrecords;workerroutes;wafcustomrules;ratelimitrules;managedrulesets,verbs=get;list;watch
@@ -81,8 +82,11 @@ var zoneKind = crudResourceKind[*cloudflarev1alpha1.Zone, ZoneAPI, zoneObject, z
 	observe:        observeZone,
 
 	id: func(current *cf.Zone) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.Zone, current *cf.Zone, _ map[string]string) bool {
-		return current.Type == desiredZoneType(obj)
+	differences: func(obj *cloudflarev1alpha1.Zone, current *cf.Zone, _ map[string]string) []string {
+		if current.Type != desiredZoneType(obj) {
+			return []string{"type"}
+		}
+		return nil
 	},
 	listedID:  func(listed *cf.Zone) string { return listed.ID },
 	listedKey: func(listed *cf.Zone) string { return listed.Name },
@@ -236,8 +240,8 @@ func readyZone(ctx context.Context, c client.Reader, obj client.Object, name str
 	if condErr := getReference(ctx, c, key, zone, what, "ZoneNotFound"); condErr != nil {
 		return nil, condErr
 	}
-	// The kinds that call this cannot be observed (startReconcile).
-	if !isZoneReady(zone, false) {
+	observed, _ := reconciler.Observed(obj)
+	if !isZoneReady(zone, observed) {
 		return nil, &conditionError{Reason: "ZoneNotReady", Message: what + " is not ready"}
 	}
 	return zone, nil

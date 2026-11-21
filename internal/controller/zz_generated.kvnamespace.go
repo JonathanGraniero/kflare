@@ -91,8 +91,12 @@ var kvNamespaceKind = crudResourceKind[*cloudflarev1alpha1.KVNamespace, KVNamesp
 	},
 
 	id: func(current *kv.Namespace) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.KVNamespace, current *kv.Namespace, _ map[string]string) bool {
-		return current.Title == obj.Spec.Title
+	differences: func(obj *cloudflarev1alpha1.KVNamespace, current *kv.Namespace, _ map[string]string) []string {
+		var fields []string
+		if current.Title != obj.Spec.Title {
+			fields = append(fields, "title")
+		}
+		return fields
 	},
 	listedID:  func(listed *kv.Namespace) string { return listed.ID },
 	listedKey: func(listed *kv.Namespace) string { return listed.Title },

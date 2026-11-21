@@ -95,7 +95,7 @@ rather than creating it.
 | `WorkerScript` | A Worker, from inline code or a ConfigMap, with its bindings | Account · Workers Scripts · Edit | [worker](config/samples/cloudflare_v1alpha1_workerscript.yaml) |
 | `WorkerRoute` | A route from a URL pattern to a Worker | Zone · Workers Routes · Edit | [route](config/samples/cloudflare_v1alpha1_workerroute.yaml) |
 | `KVNamespace` | A Workers KV namespace | Account · Workers KV Storage · Edit | [namespace](config/samples/cloudflare_v1alpha1_kvnamespace.yaml) |
-| `R2Bucket` | An R2 bucket (kflare never deletes its objects) | Account · Workers R2 Storage · Edit | [bucket](config/samples/cloudflare_v1alpha1_r2bucket.yaml) |
+| `R2Bucket` | An R2 bucket (kflare never deletes its objects); envtest only since 2026-11-17, not tested live | Account · Workers R2 Storage · Edit | [bucket](config/samples/cloudflare_v1alpha1_r2bucket.yaml) |
 | `D1Database` | A D1 database | Account · D1 · Edit | [database](config/samples/cloudflare_v1alpha1_d1database.yaml) |
 | `WAFCustomRule` | One WAF custom rule in a zone | Zone · Zone WAF · Edit | [rules](config/samples/cloudflare_v1alpha1_wafcustomrule.yaml) |
 | `RateLimitRule` | One rate limiting rule in a zone | Zone · Zone WAF · Edit | [rule](config/samples/cloudflare_v1alpha1_ratelimitrule.yaml) |
@@ -133,7 +133,8 @@ The [deploy guide](docs/deploy.md) covers installing and operating kflare. In sh
   kflare leaves its Cloudflare object alone until the annotation is removed (from v0.2.1).
 - **A resource can be observed before it is managed**, with `kflare.dev/management-policy: observe`: kflare writes
   nothing, and reports the fields in which Cloudflare differs from the manifest, for moving to kflare without
-  surprises (`Zone` and `DNSRecord` so far). The chart's `observeOnly` runs a whole installation read-only.
+  surprises (every kind but `WorkerScript` so far). The chart's `observeOnly` runs a
+  whole installation read-only.
 - **Credentials stay in Secrets** that you can manage with External Secrets Operator or Sealed Secrets. A rotated token
   is picked up straight away, and each account shows when its token expires and is checked again every hour. Only
   cluster administrators can create a `CloudflareAccount`, and each can
@@ -167,7 +168,9 @@ the WAF and the Rules products.
 kflare is developed with AI assistance (Claude Code). What keeps it honest:
 
 - **A live end-to-end suite** runs every resource kind against a real Cloudflare account on the Free plan, in GitHub
-  Actions, and checks Cloudflare's copy after each step. Its token holds nothing beyond the permissions above.
+  Actions, and checks Cloudflare's copy after each step. Its token holds nothing beyond the permissions above. The
+  exception is `R2Bucket`: since 2026-11-17 the test account has no R2 subscription, so it is tested against envtest
+  only ([#193](https://github.com/JonathanGraniero/kflare/issues/193)).
 - **Mutation testing** on the controllers: deliberate bugs, which the tests must catch.
 - **Fuzz tests** on the code that reads input kflare does not control: the metrics endpoint's authentication and the
   reading of Cloudflare's errors.

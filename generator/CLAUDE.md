@@ -563,7 +563,16 @@ kinds:
   with one key and `adopt-or-create` in a manager whose cache learns of the kind's events 150 ms late
   (`cache.ByObject.Transform`): from the cache both ended up `Synced` and claiming the object, for all 7 kinds. Still
   cached reads after kflare's own writes, from #132: IPList's `synced` hook (its operation ID) and the settings
-  reconciler's `recorded`
+  reconciler's `recorded`, both closed by #190 (below)
+- **The last stale reads** (`fix/stale-reads-iplist-settings`, #190): a CRUD kind's hooks say `readsStatus` when
+  `synced` decides from status (IPList), and `upToDate`, now a function of the reader, runs before it; the reconciler
+  kflare-gen writes for a settings kind holds an `apiReader` as a CRUD kind's does (`emitSettingsController`), and the
+  shared settings reconciler checks before it decides from `recorded`, only while status records another zone or none.
+  Specs: IPList reconciled from a copy older than its last status write starts no second replacement; each settings
+  kind's, in a manager whose cache learns 1.5 s late of each event marking it `creating`, keeps the settings it wrote
+  when its Zone queues a reconcile meanwhile. Both fail without their check. A delayed `Transform` did not reproduce
+  IPList's: on client-go 0.37 the cache already held the status write while the transform still slept on it, so its
+  spec serves the stale copy through an interceptor, as `reconcileStale` does
 - **A zone's kind used from another namespace** (`feat/zone-allowed-references`, 2026-11-12, for #78): an entry's
   `zoneHostname` names the field that holds the hostname a resource's object takes in its zone (`field`; `routePattern`
   for a Worker route's pattern, whose hostname comes before its path; `reason`). The field must be a required string
@@ -588,6 +597,18 @@ kinds:
   - The e2e suite's `enabledTransforms` reads the lists through `AsUnion`
   - The release notes list `Rulesets.New` and `Rules.New`, `Edit` and `Delete` as returning unions; in the Go module
     their signatures are v7.13.1's (read in both), and `RulesetRuleAPI` compiles against them unchanged
+- **Differences** (`feat/observe-crud-kinds`, 2026-11-20, #191): the descriptor's `differences` replaces `matches`.
+  `comparisons` gives each compared field's test both ways, named by the field's JSON name; `differences` lists the
+  fields whose test fails, and the runtime's `matches` is that list being empty, so observing and managing compare
+  the same fields. `matchesExpr` joins the same tests for the envtest table's checks. Hand-written descriptors
+  (`Zone`, `TunnelConfiguration`) write `differences` too; `WorkerScript`'s hash comparison moved to its hooks'
+  `matches`, which leaves it unobservable
+- **Settings fields** (`feat/observe-settings-kinds`, #195): a settings kind's descriptor gains `fields`, the spec
+  field (JSON name) of each setting its params hold at the top, by API name (`emitSettingsKindTail`), which the shared
+  settings reconciler names when it observes a resource whose settings differ
+- **Rule fields** (`feat/observe-rule-kinds`, #195): a rule kind's descriptor gains `fields`, the spec field of each
+  value of a rule's JSON whose path is not the field's own name: a parameter of its action under `action_parameters.`
+  (`emitRuleFieldPaths`); the action and a rule's own fields (`logging`) sit at its root under their names
 - **Later:** the capabilities the next kinds need, in [Next wave](../CLAUDE.md#next-wave-proposed-2026-10-17):
   services without `New`, and secrets. Also generated live e2e specs, and deploy.md
   permission rows from `x-api-token-group` (API names, while deploy.md uses the dashboard's labels; and the field is

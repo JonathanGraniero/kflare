@@ -47,6 +47,9 @@ var originRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return originRuleDefinition(obj.(*cloudflarev1alpha1.OriginRule))
 	},
+	fields: map[string]string{
+		"action_parameters.origin": "origin",
+	},
 }
 
 func (r *OriginRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

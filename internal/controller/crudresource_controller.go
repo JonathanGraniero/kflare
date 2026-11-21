@@ -116,14 +116,15 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 	statusID func(O) string
 	observe  func(O, *R)
 
-	// id returns an object's ID, and matches whether the object is what a
-	// resource's spec asks for, given what its references give (refs).
+	// id returns an object's ID, and differences the spec fields whose value
+	// the object does not hold, given what the resource's references give
+	// (refs): none when the object is what the spec asks for (matches).
 	// listedID and listedKey return the ID and the key of an object a page of
 	// the list shows.
-	id        func(*R) string
-	matches   func(obj O, current *R, refs map[string]string) bool
-	listedID  func(*L) string
-	listedKey func(*L) string
+	id          func(*R) string
+	differences func(obj O, current *R, refs map[string]string) []string
+	listedID    func(*L) string
+	listedKey   func(*L) string
 
 	// The kind's calls to Cloudflare for the resource obj, in the account or
 	// zone parentID; obj gives the object's address, and refs the values its
@@ -152,6 +153,19 @@ type crudResourceKind[O conditionedObject, A any, R any, L any] struct {
 
 	// hooks are what the kind does beyond the shared loop.
 	hooks crudHooks[O, A, R]
+}
+
+// matches reports whether current is what obj's spec asks for: no field
+// differs.
+func (k crudResourceKind[O, A, R, L]) matches(obj O, current *R, refs map[string]string) bool {
+	return len(k.differences(obj, current, refs)) == 0
+}
+
+// observable reports whether a resource of the kind can be observed
+// (observeOnly): unless its hooks compare an object themselves, the kind's
+// differences say what differs.
+func (k crudResourceKind[O, A, R, L]) observable() bool {
+	return k.hooks.matches == nil || k.hooks.differences != nil
 }
 
 // crudHooks are a kind's hooks: hand-written functions, in its <kind>_hooks.go,
@@ -191,7 +205,8 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// to match the spec, and a kind may hold back a change the spec never
 	// spelled out, as a DNSRecord does with a proxied record.
 	refuseAdoption func(obj O, found *R, refs map[string]string) *conditionError
-	// matches replaces the comparison of the object with the spec.
+	// matches replaces the comparison of the object with the spec. A kind
+	// with it can be observed only with differences too.
 	matches func(obj O, current *R, refs map[string]string) bool
 	// sourceChanged reports that what the resource's calls send changed since
 	// its last write, its spec staying the same, as a Worker's code does in a
@@ -202,7 +217,12 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// It does what the service's calls cannot, such as an IPList's items. Set
 	// stop to end the reconcile with what it returns, rather than report the
 	// resource ready.
-	synced func(ctx context.Context, c client.Client, api A, obj O, parentID string, current *R) (result ctrl.Result,
+	// readsStatus says that synced decides from what status records, as an
+	// IPList's running operation: it then runs only once the cache holds the
+	// resource's last write (upToDate), at the cost of a read of the API
+	// server on each reconcile.
+	readsStatus bool
+	synced      func(ctx context.Context, c client.Client, api A, obj O, parentID string, current *R) (result ctrl.Result,
 		stop bool, err error)
 	// describes replaces the comparison of two resources' keys that tells
 	// whether other describes the object obj manages, and so takes it over when
@@ -212,10 +232,13 @@ type crudHooks[O conditionedObject, A any, R any] struct {
 	// beforeDelete runs before the object is deleted from Cloudflare, with the
 	// retain policy unset. An object that is already gone is no failure.
 	beforeDelete func(ctx context.Context, api A, obj O, parentID, id string) error
-	// differences names the spec fields whose value the object does not hold,
-	// the ones the kind's synced hook would correct included. A kind with it
-	// can be observed (observeOnly): the others report ObserveNotSupported.
+	// differences replaces the kind's differences when observing
+	// (observeOnly): the spec fields whose value the object does not hold, the
+	// ones the kind's synced hook would correct included.
 	differences func(obj O, current *R, refs map[string]string) []string
+	// syncedDifferences adds the spec fields synced would correct that only a
+	// call to Cloudflare tells, as an IPList's items.
+	syncedDifferences func(ctx context.Context, api A, obj O, parentID string, current *R) ([]string, error)
 	// watch adds the kind's own watches.
 	watch func(b *builder.Builder, c client.Client) *builder.Builder
 }
@@ -280,7 +303,7 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcile(ctx context.Context, req 
 		return result, err
 	}
 	// startReconcile refused an unknown policy.
-	if observed, _ := reconciler.Observed(obj); observed && r.kind.hooks.differences == nil {
+	if observed, _ := reconciler.Observed(obj); observed && !r.kind.observable() {
 		return ctrl.Result{}, updateNotReady(ctx, r.Client, obj, reasonObserveNotSupported, observeNotSupportedMessage)
 	}
 
@@ -517,7 +540,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 			return ctrl.Result{}, err
 		}
 		defer release()
-		if fresh, err := r.upToDate(ctx, obj); !fresh || err != nil {
+		if fresh, err := upToDate(ctx, r.apiReader, obj, k.newObject()); !fresh || err != nil {
 			return ctrl.Result{}, err
 		}
 		found, adopted, done, result, err := r.findOrCreate(ctx, obj, accountID, parentID, refs, api)
@@ -542,7 +565,7 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 		matches = k.hooks.matches
 	}
 	if !matches(obj, current, refs) {
-		if fresh, err := r.upToDate(ctx, obj); !fresh || err != nil {
+		if fresh, err := upToDate(ctx, r.apiReader, obj, k.newObject()); !fresh || err != nil {
 			return ctrl.Result{}, err
 		}
 		updated, err := k.update(ctx, api, obj, parentID, k.id(current), refs)
@@ -560,12 +583,28 @@ func (r *crudResourceReconciler[O, A, R, L]) sync(ctx context.Context, obj O, ac
 		*k.statusZoneID(obj) = parentID
 	}
 	k.observe(obj, current)
-	if k.hooks.synced != nil {
-		if result, stop, err := k.hooks.synced(ctx, r.Client, api, obj, parentID, current); stop {
-			return result, err
-		}
+	if result, stop, err := r.synced(ctx, api, obj, parentID, current); stop {
+		return result, err
 	}
 	return readyWithDriftCheck(ctx, r.Client, obj, "Synced", k.noun+" is synced with Cloudflare")
+}
+
+// synced runs the kind's synced hook, if it has one, once the object is as
+// the spec asks: only once the cache holds the resource's last write, when the
+// hook decides from status (readsStatus). stop ends the reconcile with result
+// and err, as the hook's does.
+func (r *crudResourceReconciler[O, A, R, L]) synced(ctx context.Context, api A, obj O, parentID string,
+	current *R) (result ctrl.Result, stop bool, err error) {
+	k := r.kind
+	if k.hooks.synced == nil {
+		return ctrl.Result{}, false, nil
+	}
+	if k.hooks.readsStatus {
+		if fresh, err := upToDate(ctx, r.apiReader, obj, k.newObject()); !fresh || err != nil {
+			return ctrl.Result{}, true, err
+		}
+	}
+	return k.hooks.synced(ctx, r.Client, api, obj, parentID, current)
 }
 
 // observeOnly is sync for a resource kflare only observes
@@ -635,7 +674,19 @@ func (r *crudResourceReconciler[O, A, R, L]) observeOnly(ctx context.Context, ob
 		*k.statusZoneID(obj) = parentID
 	}
 	k.observe(obj, current)
-	if fields := k.hooks.differences(obj, current, refs); len(fields) > 0 {
+	differences := k.differences
+	if k.hooks.differences != nil {
+		differences = k.hooks.differences
+	}
+	fields := differences(obj, current, refs)
+	if k.hooks.syncedDifferences != nil {
+		more, err := k.hooks.syncedDifferences(ctx, api, obj, parentID, current)
+		if err != nil {
+			return handleCloudflareError(ctx, r.Client, obj, err)
+		}
+		fields = append(fields, more...)
+	}
+	if len(fields) > 0 {
 		return observedNotReady(ctx, r.Client, obj, &conditionError{
 			Reason: reasonDriftDetected,
 			Message: fmt.Sprintf("%s differs from the spec in: %s. kflare only observes this resource, and changes "+
@@ -660,14 +711,15 @@ func observedNotReady(ctx context.Context, c client.StatusClient, obj conditione
 }
 
 // upToDate reports whether obj, as the cache gives it, is the version the API
-// server holds. sync asks before writing to Cloudflare: a reconcile queued by
-// the previous one's writes may read the resource before its last status
-// write reached the cache, and would create, adopt or upload again. When the
-// cache is behind, the reconcile stops; the watch event that catches the
-// cache up reconciles the resource again.
-func (r *crudResourceReconciler[O, A, R, L]) upToDate(ctx context.Context, obj O) (bool, error) {
-	current := r.kind.newObject()
-	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+// server holds, reading that through apiReader into current, a new object of
+// obj's kind. The shared reconcilers ask before they write to Cloudflare on
+// what the resource records: a reconcile queued by the previous one's writes
+// may read the resource before its last status write reached the cache, and
+// would create, adopt or upload again. When the cache is behind, the reconcile
+// stops; the watch event that catches the cache up reconciles the resource
+// again.
+func upToDate(ctx context.Context, apiReader client.Reader, obj, current client.Object) (bool, error) {
+	if err := apiReader.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
 	if current.GetResourceVersion() != obj.GetResourceVersion() {
@@ -981,7 +1033,7 @@ func (r *crudResourceReconciler[O, A, R, L]) reconcileDelete(ctx context.Context
 		}
 	}
 
-	if observed && r.kind.hooks.differences == nil {
+	if observed && !r.kind.observable() {
 		recordWarning(obj, reasonObserveNotSupported, "Delete", observeNotSupportedMessage+
 			"; its Cloudflare object stays in Cloudflare")
 	}
@@ -1161,6 +1213,23 @@ func (r *crudResourceReconciler[O, A, R, L]) deleteObject(ctx context.Context, o
 	parentID := account.Spec.AccountID
 	if r.kind.zoneRef != nil {
 		parentID = from.zoneID
+	}
+	// An object the resource does not claim in both status and label may be
+	// another resource's: one only the label names (a reconcile claimed it
+	// before it failed to record it, or a person named it, as the label is
+	// anyone's to write), or one status recorded while kflare only observed it
+	// (observeOnly). It goes only when no other resource claims it.
+	if r.kind.statusID(obj) != id || !ownsID(obj, r.kind.claimLabel, id) {
+		owner, err := r.claimant(ctx, obj, parentID, id)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if owner != "" {
+			k := r.kind
+			recordWarning(obj, k.conflictReason, "Delete", fmt.Sprintf("%s %s is managed by %s %s, not by this "+
+				"resource; its Cloudflare object stays in Cloudflare", k.noun, id, k.name, owner))
+			return ctrl.Result{}, nil
+		}
 	}
 	if from.sharedZone != nil {
 		current, err := r.kind.get(ctx, api, obj, parentID, id)

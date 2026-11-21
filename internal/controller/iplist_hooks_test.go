@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -322,6 +323,38 @@ var _ = Describe("IPList hooks", func() {
 		Expect(stored()).To(ConsistOf("192.0.2.1 front door", "198.51.100.0/24"))
 	})
 
+	It("observes a list's items: DriftDetected naming them until Cloudflare holds the spec's, and replaces none", func() {
+		store.objects["existing"] = rules.ListGetResponse{ID: "existing", Name: "office_ips", Kind: "ip",
+			Description: "office"}
+		items.items["existing"] = []rules.ListItemListResponse{{IP: "10.0.0.1"}}
+		createList(nil)
+		list := getList()
+		list.Annotations = observeAnnotation
+		Expect(k8sClient.Update(ctx, list)).To(Succeed())
+
+		_, err := reconcileList()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(condition().Reason).To(Equal(reasonDriftDetected))
+		Expect(condition().Message).To(ContainSubstring("differs from the spec in: items."))
+		Expect(getList().Status.CloudflareMetadata.NumItems).To(Equal(int32(1)))
+		Expect(items.replaces).To(BeZero())
+
+		By("reporting InSync once Cloudflare holds the spec's items, in any order")
+		items.items["existing"] = []rules.ListItemListResponse{{IP: "198.51.100.0/24"},
+			{IP: "192.0.2.1", Comment: "front door"}}
+		_, err = reconcileList()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(condition().Reason).To(Equal(reasonInSync))
+		Expect(getList().Status.CloudflareMetadata.NumItems).To(Equal(int32(2)))
+
+		By("reporting a failed read of the items")
+		items.itemsErr = errors.New("unavailable")
+		_, err = reconcileList()
+		Expect(err).To(MatchError("unavailable"))
+		Expect(condition().Reason).To(Equal("APIError"))
+		Expect(items.replaces).To(BeZero())
+	})
+
 	It("does not adopt a list of another kind that holds the name", func() {
 		store.objects["redirects"] = rules.ListGetResponse{ID: "redirects", Name: "office_ips", Kind: "redirect"}
 		createList(nil)
@@ -415,6 +448,43 @@ var _ = Describe("IPList hooks", func() {
 		Eventually(func() bool {
 			return apierrors.IsNotFound(k8sClient.Get(ctx, key, &cloudflarev1alpha1.IPList{}))
 		}, 10*time.Second).Should(BeTrue(), "well before the minute a retry takes")
+	})
+
+	It("starts no second replacement on a cached read from before the status that records the first", func() {
+		createList(nil)
+		syncList()
+		// Cloudflare is still replacing the items for the rest of the spec.
+		items.polls = 100
+		list := getList()
+		list.Spec.Items = append(list.Spec.Items, cloudflarev1alpha1.IPListItem{IP: "203.0.113.7"})
+		Expect(k8sClient.Update(ctx, list)).To(Succeed())
+		stale := getList()
+		_, err := reconcileList()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getList().Status.CloudflareMetadata.OperationID).NotTo(BeEmpty())
+		Expect(items.replaces).To(Equal(2))
+
+		// A manager's cache can give the next reconcile the list as it was
+		// before that status write: no replacement running, and items that
+		// are not the spec's yet. The API server has the status.
+		base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+		Expect(err).NotTo(HaveOccurred())
+		cached := interceptor.NewClient(base, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, at client.ObjectKey, obj client.Object,
+				opts ...client.GetOption) error {
+				if at == key {
+					stale.DeepCopyInto(obj.(*cloudflarev1alpha1.IPList))
+					return nil
+				}
+				return c.Get(ctx, at, obj, opts...)
+			},
+		})
+		behind := &IPListReconciler{Client: cached, Scheme: k8sClient.Scheme(), NewIPListAPI: r.NewIPListAPI,
+			apiReader: k8sClient}
+		result, err := behind.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.IsZero()).To(BeTrue(), "the watch event of the status write reconciles it again")
+		Expect(items.replaces).To(Equal(2), "the replacement running is the only one")
 	})
 
 	It("reads items through the production client's services", func() {

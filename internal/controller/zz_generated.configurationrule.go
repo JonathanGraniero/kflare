@@ -48,6 +48,27 @@ var configurationRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return configurationRuleDefinition(obj.(*cloudflarev1alpha1.ConfigurationRule))
 	},
+	fields: map[string]string{
+		"action_parameters.automatic_https_rewrites":  "automaticHTTPSRewrites",
+		"action_parameters.bic":                       "bic",
+		"action_parameters.content_converter":         "contentConverter",
+		"action_parameters.disable_rum":               "disableRUM",
+		"action_parameters.disable_zaraz":             "disableZaraz",
+		"action_parameters.email_obfuscation":         "emailObfuscation",
+		"action_parameters.fonts":                     "fonts",
+		"action_parameters.hotlink_protection":        "hotlinkProtection",
+		"action_parameters.opportunistic_encryption":  "opportunisticEncryption",
+		"action_parameters.polish":                    "polish",
+		"action_parameters.redirects_for_ai_training": "redirectsForAITraining",
+		"action_parameters.request_body_buffering":    "requestBodyBuffering",
+		"action_parameters.response_body_buffering":   "responseBodyBuffering",
+		"action_parameters.rocket_loader":             "rocketLoader",
+		"action_parameters.security_level":            "securityLevel",
+		"action_parameters.server_side_excludes":      "serverSideExcludes",
+		"action_parameters.ssl":                       "ssl",
+		"action_parameters.webmcp_enabled":            "webmcpEnabled",
+		"action_parameters.webmcp_packs":              "webmcpPacks",
+	},
 }
 
 func (r *ConfigurationRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

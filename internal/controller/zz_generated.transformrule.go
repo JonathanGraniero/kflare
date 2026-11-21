@@ -57,6 +57,10 @@ var transformRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return transformRuleDefinition(obj.(*cloudflarev1alpha1.TransformRule))
 	},
+	fields: map[string]string{
+		"action_parameters.headers": "headers",
+		"action_parameters.uri":     "uri",
+	},
 }
 
 func (r *TransformRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

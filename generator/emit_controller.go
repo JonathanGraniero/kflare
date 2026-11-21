@@ -261,15 +261,8 @@ func emitController(c *controller, header string) ([]byte, error) {
 	f.printf("},\n\n")
 
 	f.printf("id: func(current *%s) string { return current.%s },\n", object, c.id.goName)
-	matches, usesRefs, err := matchesExpr(f, c, false)
-	if err != nil {
+	if err := emitDifferences(f, c, obj, object); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
-	}
-	if matches == "" {
-		f.printf("matches: func(%s, *%s, map[string]string) bool { return true },\n", obj, object)
-	} else {
-		f.printf("matches: func(obj %s, current *%s, %s map[string]string) bool {\nreturn %s\n},\n", obj, object,
-			refsParam(usesRefs), matches)
 	}
 	if c.list != nil {
 		listedID, err := f.convert("listed."+c.listedID.goName, c.listedID.typ, types.Typ[types.String])
@@ -705,14 +698,41 @@ func objParam(statements []string) string {
 	return "obj"
 }
 
-// matchesExpr returns the expression that reports whether the object current
-// is what obj's spec asks for: every field Update can change matches, or with
-// all set, every field the object reports. A field the spec leaves unset is
-// not compared, Cloudflare keeping its value, unless it is clearable. A reference is always compared
-// with the value it gives, in refs: an unset one gives none. "" when no field
-// is compared. It also reports whether the expression reads refs.
-func matchesExpr(f *goFile, c *controller, all bool) (string, bool, error) {
-	var terms []string
+// emitDifferences writes a CRUD kind's differences: the fields of the object
+// current, by their JSON names, whose value is not what obj's spec asks for,
+// of those Update can change (comparisons).
+func emitDifferences(f *goFile, c *controller, obj, object string) error {
+	compared, usesRefs, err := comparisons(f, c, false)
+	if err != nil {
+		return err
+	}
+	if len(compared) == 0 {
+		f.printf("differences: func(%s, *%s, map[string]string) []string { return nil },\n", obj, object)
+		return nil
+	}
+	f.printf("differences: func(obj %s, current *%s, %s map[string]string) []string {\nvar fields []string\n", obj,
+		object, refsParam(usesRefs))
+	for _, cmp := range compared {
+		f.printf("if %s {\nfields = append(fields, %q)\n}\n", cmp.differs, cmp.field)
+	}
+	f.printf("return fields\n},\n")
+	return nil
+}
+
+// comparison tests one field of an object against the spec: matches is true
+// when the object holds what the spec asks for, and differs its negation.
+type comparison struct {
+	field, matches, differs string
+}
+
+// comparisons returns the comparisons that tell whether the object current is
+// what obj's spec asks for: of every field Update can change, or with all set,
+// of every field the object reports, each named by its spec field. A field the
+// spec leaves unset is not compared, Cloudflare keeping its value, unless it
+// is clearable. A reference is always compared with the value it gives, in
+// refs: an unset one gives none. It also reports whether they read refs.
+func comparisons(f *goFile, c *controller, all bool) ([]comparison, bool, error) {
+	var out []comparison
 	usesRefs := false
 	for _, af := range c.fields {
 		if af.object == nil || (af.update == nil && !all) {
@@ -720,20 +740,41 @@ func matchesExpr(f *goFile, c *controller, all bool) (string, bool, error) {
 		}
 		current, err := f.convert("current."+af.object.goName, af.object.typ, specType(af.field))
 		if err != nil {
-			return "", false, fmt.Errorf("comparing %s: %w", af.apiName, err)
+			return nil, false, fmt.Errorf("comparing %s: %w", af.apiName, err)
 		}
 		spec := "obj.Spec." + af.goName
+		cmp := comparison{field: af.jsonName}
 		switch {
 		case af.ref != nil:
-			terms = append(terms, fmt.Sprintf("%s == %s", current, refValue(af)))
+			cmp.matches = fmt.Sprintf("%s == %s", current, refValue(af))
+			cmp.differs = fmt.Sprintf("%s != %s", current, refValue(af))
 			usesRefs = true
 		case !af.optional || af.clearable:
-			terms = append(terms, fmt.Sprintf("%s == %s", current, spec))
+			cmp.matches = fmt.Sprintf("%s == %s", current, spec)
+			cmp.differs = fmt.Sprintf("%s != %s", current, spec)
 		case strings.HasPrefix(af.goType, "*"):
-			terms = append(terms, fmt.Sprintf("(%s == nil || %s == *%s)", spec, current, spec))
+			cmp.matches = fmt.Sprintf("(%s == nil || %s == *%s)", spec, current, spec)
+			cmp.differs = fmt.Sprintf("%s != nil && %s != *%s", spec, current, spec)
 		default:
-			terms = append(terms, fmt.Sprintf("(%s == \"\" || %s == %s)", spec, current, spec))
+			cmp.matches = fmt.Sprintf("(%s == \"\" || %s == %s)", spec, current, spec)
+			cmp.differs = fmt.Sprintf("%s != \"\" && %s != %s", spec, current, spec)
 		}
+		out = append(out, cmp)
+	}
+	return out, usesRefs, nil
+}
+
+// matchesExpr returns the expression that reports whether the object current
+// is what obj's spec asks for, joining comparisons' (see there for all), ""
+// when no field is compared, and whether it reads refs.
+func matchesExpr(f *goFile, c *controller, all bool) (string, bool, error) {
+	compared, usesRefs, err := comparisons(f, c, all)
+	if err != nil {
+		return "", false, err
+	}
+	terms := make([]string, 0, len(compared))
+	for _, cmp := range compared {
+		terms = append(terms, cmp.matches)
 	}
 	return strings.Join(terms, " &&\n"), usesRefs, nil
 }

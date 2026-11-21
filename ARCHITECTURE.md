@@ -62,6 +62,13 @@ does. Two things follow from the Zone being the grant:
   does not allow. An object a resource finds, adopts or creates is found by its spec's hostname, which the Zone
   already allowed
 
+The same goes for any resource being deleted that does not claim, in both its status and its claim label, the object
+it would delete: a reconcile that failed before it wrote status leaves the object in the claim label alone, and so may
+a person, and an observed resource switched to `manage` keeps in status an object another resource manages (see
+[Observing a resource](#observing-a-resource)). kflare deletes that object only when no other resource claims it, and
+otherwise leaves it with a Warning Event of the kind's conflict reason, so that someone who may edit resources in one
+namespace cannot have kflare delete an object a resource elsewhere manages.
+
 Such a resource follows its Zone, in whichever namespace, and its own namespace's labels through watches. A Zone being
 deleted waits for the resources in other namespaces that it allows, as for those in its own; one it does not allow has
 no call to make through it, and does not hold it back, which any namespace could otherwise do to any Zone.
@@ -246,10 +253,26 @@ installation started with `--observe-only` (the chart's `observeOnly`), whatever
 `manage`, is everything else this document describes. Any other value reports `InvalidManagementPolicy`: kflare then
 makes no Cloudflare call for the resource, and does not finish deleting it, as nobody said what to do with its object.
 
-The shared CRUD reconciler observes the kinds that can name the spec fields an object differs in (`crudHooks`'
-`differences`): `Zone` and `DNSRecord` so far. A resource of another kind, the rule and settings kinds included,
-reports `ObserveNotSupported` without a call to Cloudflare. A rule kind finds its rule by the ref kflare stores in it,
-so observing a rule kflare did not create first needs a way to name it.
+The shared CRUD reconciler observes every kind that can name the spec fields an object differs in: kflare-gen writes
+each generated kind's `differences` from the fields it compares, and a kind's `matches` is that list being empty, so
+the two cannot disagree. A kind whose hooks compare an object themselves (`crudHooks`' `matches`) can be observed only
+with `differences` hooks too, as `Zone` and `DNSRecord` have; a step after the sync that corrects what a read of the
+object does not show names its fields through `syncedDifferences`, as an IPList's items do. `WorkerScript` compares
+only the hash of what kflare uploaded last, which says nothing of a Worker kflare did not upload, so it reports
+`ObserveNotSupported` without a call to Cloudflare.
+
+A rule kind's resource observes the rule it wrote, found by its ref, or a rule kflare did not create, named by its ID
+with the annotation `kflare.dev/rule-id`. It reports the spec fields that differ (`rulesetRuleKind.fields`, which
+kflare-gen writes for the action's parameters) and never compares or changes the rule's position: observed resources
+are left out of the order kflare keeps among its rules. Cloudflare refuses to change a rule's ref (code 20023), so a
+switch to `manage` cannot take over a rule kflare did not create: the resource reports `AlreadyExists` while that rule
+exists, and writes its own once it is deleted.
+
+A settings kind's resource is observed by reading its zone's settings and naming the spec fields whose settings
+differ (`settingsKind.fields`, which kflare-gen writes). It never configures the zone: it is left out when the resource
+that configures the zone is chosen, records no zone in status, and resets nothing when it is deleted. Settings
+configured outside kflare mark it adopted, so that a switch to `manage` takes them over without an adoption policy and
+keeps them on deletion; settings it configured itself before it was observed stay its own.
 
 - **What it reads.** The object its status names, or else the parent's object with its key, found as the `adopt`
   policy finds it (a DNSRecord: the record holding its content, or the only record of its name and type). It takes no
@@ -261,9 +284,9 @@ so observing a rule kflare did not create first needs a way to name it.
   with most resources differing, and reading each every minute would spend the token's budget.
 - **Its Zone and references.** A Zone that reports `DriftDetected` still serves the observed resources that name it:
   the zone is there, and reading it changes nothing. A managed resource waits (`ZoneNotReady`), as for any Zone that
-  is not `Ready`, so nothing writes to a zone whose Zone was never adopted. A resource that references one of a kind
-  kflare cannot observe yet, as a DNSRecord's `tunnelRef` does, waits for it (`TunnelNotReady`) while that one reports
-  `ObserveNotSupported`.
+  is not `Ready`, so nothing writes to a zone whose Zone was never adopted. A resource that references one that is
+  not `Ready`, as a DNSRecord's `tunnelRef` may, waits for it (`TunnelNotReady`), an observed Tunnel that differs
+  from its spec included: the record's content is the tunnel's ID.
 - **What it never does.** Create, update or delete an object, or run a kind's step after the sync (a Zone's plan is
   compared instead).
 - **Deletion.** The object stays, whatever the deletion policy, and nothing is handed to a successor. A resource
@@ -272,7 +295,8 @@ so observing a rule kflare did not create first needs a way to name it.
   policy is `manage`, the resource reads the object by the ID in status, claims it and corrects it, with no adoption
   policy asked for, and keeps it on deletion as an adopted object (see [Deletion](#deletion)). It first holds its key
   and looks for another resource's claim on the object, as a resource that adopts does: if one manages it, the
-  resource reports the kind's conflict reason and claims nothing. A resource that created its object and is then
+  resource reports the kind's conflict reason and claims nothing, and its deletion leaves the object, whatever its
+  deletion policy. A resource that created its object and is then
   observed is not marked, nor is one observed while it was creating its object (`kflare.dev/creating`), so the
   object is still deleted with it once it is managed again.
 
@@ -326,8 +350,13 @@ last. So before the shared CRUD reconciler finds, adopts or creates an object, a
 resource from the API server too (`upToDate`). If that copy is newer, or the resource is gone, it stops, and the watch
 event that brings the cache up to date reconciles the resource again. Otherwise a reconcile that read no ID would find
 the object it had just created and write it again, or, with `adopt-or-create`, take it for one to adopt, and a
-WorkerScript that read its previous hash would upload its Worker a second time. A status write from a stale read fails
-on its resource version and is retried, so it needs no such check.
+WorkerScript that read its previous hash would upload its Worker a second time. The same check comes before a kind's
+step after the sync when that step decides from status (`readsStatus`): an IPList that read no running replacement
+would replace its items a second time while Cloudflare is still applying the first. A settings kind checks before it
+decides from its status whether the settings are its own: a read from before it recorded the zone would take the
+settings it just wrote for configured outside kflare, and, with `adopt-or-create`, mark itself adopted, so that
+deleting it would keep them rather than reset them. A status write from a stale read fails on its resource version and
+is retried, so it needs no such check.
 
 The claims of other resources are read from the API server as well (`claimant`). Two resources with one key take turns
 (`lockObjectKey`), and the second looks for claims a moment after the first wrote its own: from a cache that did not
@@ -876,7 +905,8 @@ a token Secret in a namespace where the installation may no longer use Secrets, 
   resource still never takes over what another installation created: it reports `AlreadyExists`, naming the
   `CloudflareAccount` the other may use. With the annotation, though, two installations can each manage one object or
   one zone's settings, and each orders only its own rules in a phase, with a Warning Event (`OtherKflareRules`) where
-  their rules share one. Overlapping scopes are not detected: both installations reconcile what both select.
+  their rules share one. Overlapping scopes are not detected: both installations reconcile what both select, which
+  through one Cloudflare account still makes one object.
 - **Two kinds are pinned to the legacy SDK.** Zone and WorkerScript call cloudflare-go v0.119, the newest of the v0
   line; every other kind uses the generated SDK, v7. A limitation comes from v0.119: a WorkerScript binds only R2
   buckets in the default jurisdiction (`R2BucketJurisdictionUnsupported` otherwise): the SDK's Worker R2 binding has

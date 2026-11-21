@@ -44,6 +44,9 @@ var testRateLimitRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return testRateLimitRuleDefinition(obj.(*cloudflarev1alpha1.TestRateLimitRule))
 	},
+	fields: map[string]string{
+		"action_parameters.response": "response",
+	},
 }
 
 func (r *TestRateLimitRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

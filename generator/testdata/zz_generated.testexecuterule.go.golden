@@ -43,6 +43,11 @@ var testExecuteRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return testExecuteRuleDefinition(obj.(*cloudflarev1alpha1.TestExecuteRule))
 	},
+	fields: map[string]string{
+		"action_parameters.id":           "id",
+		"action_parameters.matched_data": "matchedData",
+		"action_parameters.overrides":    "overrides",
+	},
 	conflicts: map[int]string{
 		// Cloudflare refuses a second execute rule for a managed ruleset the phase
 		// already runs.

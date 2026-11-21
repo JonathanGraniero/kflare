@@ -271,9 +271,9 @@ release's section to [CHANGELOG.md](CHANGELOG.md) and runs `make helm`. The vers
 change, a patch release otherwise. Unreleased's "Breaking changes" stay under that heading in the release's section,
 where the CRD check finds them until the tag exists. Merging it releases that version:
 
-1. The `Tag release` workflow waits for every job of CI and E2E on the merge commit, then tags it `vX.Y.Z` and starts
-   the `Release` workflow on the tag. It releases only a merge that changes the version, to one newer than every tag,
-   and stops before tagging if `appVersion` differs or CHANGELOG.md has no section for it
+1. The `Tag release` workflow waits for every job of CI, E2E and Live E2E on the merge commit, then tags it `vX.Y.Z`
+   and starts the `Release` workflow on the tag. It releases only a merge that changes the version, to one newer than
+   every tag, and stops before tagging if `appVersion` differs or CHANGELOG.md has no section for it
 2. `Release` publishes the image (`linux/amd64` and `linux/arm64`, with an SBOM and provenance for each) and the chart
    to `ghcr.io`, signs both with cosign, keyless, and drafts the GitHub release with the SBOMs and the section as its
    notes (`hack/releasenotes`)
@@ -285,11 +285,12 @@ to the one it continues, since a release page shows every line break. Artifact H
 plain text, but for those under "Upgrading ..." and "Known limitations": write each change as one bullet (a list
 nested in it joins its text), whose links Artifact Hub lists below it.
 
-If a job of CI or E2E fails on the merge commit, nothing is tagged: rerun the failed jobs, then rerun `Tag release`. A
-`vX.Y.Z` tag pushed by hand starts `Release` too, as does running it on a tag from the Actions tab. `Release` refuses a
-tag that does not match `Chart.yaml`, a release that is published already, and a tag on a commit that is in the history
-of neither `main` nor its minor release's branch, or on `main` but older than the newest version; rerun after a failed
-step, it goes on with its draft.
+If a job of CI, E2E or Live E2E fails on the merge commit, or is cancelled, nothing is tagged: rerun it, then rerun
+`Tag release`. Live E2E keeps one run waiting behind the one running, so a push right after the version bump can cancel
+the bump's live run. A `vX.Y.Z` tag pushed by hand starts `Release` too, as does running it on a tag from the Actions
+tab. `Release` refuses a tag that does not match `Chart.yaml`, a release that is published already, and a tag on a
+commit that is in the history of neither `main` nor its minor release's branch, or on `main` but older than the newest
+version; rerun after a failed step, it goes on with its draft.
 
 CI tests the oldest and the newest Kubernetes minor kflare supports
 ([Kubernetes versions](docs/versioning.md#kubernetes-versions)). Supporting a new one changes CI's newest envtest
@@ -329,8 +330,8 @@ once CI's, E2E's and the dependency review's checks pass on a branch up to date 
 3. **Prepare the release** as for `main`, in a pull request against `release-0.4`: the next patch version in
    `Chart.yaml`, its section in CHANGELOG.md above the branch's last release's, and `make helm`. The `Live E2E`
    workflow runs the live suite on it
-4. **Tag its merge commit** by hand, once every job of CI and E2E has passed on it: `Tag release` releases only merges
-   to `main`.
+4. **Tag its merge commit** by hand, once every job of CI, E2E and Live E2E has passed on it: `Tag release` releases
+   only merges to `main`.
 
    ```sh
    git fetch origin release-0.4

@@ -48,6 +48,9 @@ var rateLimitRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return rateLimitRuleDefinition(obj.(*cloudflarev1alpha1.RateLimitRule))
 	},
+	fields: map[string]string{
+		"action_parameters.response": "response",
+	},
 }
 
 func (r *RateLimitRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

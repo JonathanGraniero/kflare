@@ -65,7 +65,8 @@ Create an API token in the Cloudflare dashboard (**My Profile → API Tokens**, 
 These are enough on their own: in October 2026 a token holding only them (with Zone · Zone · Read, and without Billing)
 ran kflare's full live test suite against an existing zone, and again before v0.2.0 with `ManagedTransform`'s row,
 which came later. kflare also asks Cloudflare about the token itself, its status and expiry, which takes no permission:
-in November 2026 a token holding only Account Settings Read was verified, active, disabled and expired.
+in November 2026 a token holding only Account Settings Read was verified, active, disabled and expired. `R2Bucket`'s
+row has not been checked live since 2026-11-17, when the test account's R2 subscription ended.
 Scope zone permissions to the zones kflare should manage. Note the account ID, shown on the account's overview page.
 
 ## 2. Install the chart
@@ -706,15 +707,24 @@ A values file for a production cluster usually sets:
 # High availability: one replica is active, and the standby the chart keeps by
 # default (autoscaling.minReplicas: 2) waits on the leader lease and takes over
 # within about 20 seconds (once the lease's 15 have run out) if it goes. A
-# PodDisruptionBudget lets a node drain evict one pod at a time. Spread the two
-# over nodes, so that one node's loss leaves a pod:
+# PodDisruptionBudget lets a node drain evict one pod at a time, and the chart
+# spreads the pods over nodes (topologySpreadDefault). Your own constraints
+# replace that spread, so one over zones keeps the nodes' too:
 topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: kflare
+    matchLabelKeys: [pod-template-hash]
   - maxSkew: 1
     topologyKey: kubernetes.io/hostname
     whenUnsatisfiable: ScheduleAnyway
     labelSelector:
       matchLabels:
         app.kubernetes.io/name: kflare
+    matchLabelKeys: [pod-template-hash]
 
 # Prometheus Operator scraping, over HTTPS with Prometheus' own ServiceAccount
 # token (see Monitoring).
@@ -922,8 +932,10 @@ crds:
   reconcile the resources they share for a few seconds. To keep one leader throughout, set `leaderElectionID` to
   `a634e97e.kflare.dev`.
 - **Their scopes must not overlap.** Installations that share namespaces need selectors that no labels match both:
-  kflare cannot tell, and both would reconcile what both select. An installation without `watchNamespaces` or
-  `watchSelector` manages everything, so it cannot share a cluster with another.
+  kflare cannot tell, and both reconcile what both select. With one Cloudflare account behind both, that still makes
+  one object, which either deletes with the resource, but each writes the resource's status and calls Cloudflare for
+  it. An installation without `watchNamespaces` or `watchSelector` manages everything, so it cannot share a cluster
+  with another.
 - **Each keeps its own rate limit budgets.** Installations whose accounts use the same token, or tokens of one
   Cloudflare user, share Cloudflare's limit for it: split `cloudflareRateLimit` between them (see
   [Cloudflare's API rate limit](#cloudflares-api-rate-limit)), or give each installation its own account API token.
@@ -936,9 +948,10 @@ crds:
   does not manage records a Warning Event with reason `OtherKflareRules`. Give each installation its own zones.
 - **A resource moves to another installation with its finalizer**, when its labels change, or the installations'
   scopes do: the installation that now selects it carries on, its deletion included. One that no installation selects
-  keeps its finalizer, so deleting it waits until one does. Move a parent, a `Zone` or a `Tunnel`, together with what uses it: a
-  resource being deleted whose parent is outside its installation's scope is released, its Cloudflare object left as
-  it is, with a Warning Event with reason `NotWatched`.
+  keeps its finalizer, so deleting it waits until one does. Move a parent, a `Zone` or a `Tunnel`, together with what
+  uses it, and the `CloudflareAccount` too: a resource being deleted whose account or parent is outside its
+  installation's scope is released, its Cloudflare object left as it is, with a Warning Event with reason
+  `NotWatched`. Label it back into the installation that can use its account to have the object deleted with it.
 - **Metrics are each installation's own**: `kflare_resources` counts what it manages.
 
 ## Security model
@@ -1208,6 +1221,11 @@ so that average is the leader's use divided by the number of pods.
 - **It needs the metrics API**, which metrics-server provides. Without it, `kubectl get hpa` shows the target as
   `<unknown>`, the Deployment keeps `autoscaling.minReplicas` replicas, and Argo CD reports the autoscaler Degraded
   (see [With Argo CD or Flux](#with-argo-cd-or-flux)).
+- **The pods go on different nodes** where the cluster has them: while there can be more than one replica and
+  `topologySpreadConstraints` is empty, the chart spreads them over nodes with `whenUnsatisfiable: ScheduleAnyway`,
+  so that a node's loss does not take the standby with the leader, and a one-node cluster still runs both.
+  `topologySpreadDefault: false` turns it off. A spread over zones (`topology.kubernetes.io/zone`) is yours to add,
+  as in [Configuration](#configuration): many clusters have one zone, where a hard zone rule leaves a pod pending.
 - **To run a single pod**, as a small or a test cluster may, set `autoscaling.minReplicas: 1`, or
   `autoscaling.enabled: false`, with which `replicaCount` (1) sets the replicas again: it is ignored while
   autoscaling is on.
@@ -1727,7 +1745,7 @@ either: the resource keeps its finalizer until the annotation is removed, so `ku
 ### Observing without writing
 
 kflare can watch a Cloudflare object and only report how it differs from a resource's spec, without creating,
-changing or deleting anything. `Zone` and `DNSRecord` support it so far. Annotate the resource:
+changing or deleting anything (the kinds that support it are below). Annotate the resource:
 
 ```yaml
 metadata:
@@ -1751,25 +1769,31 @@ an interval for more than a few hundred observed resources, since a read every m
 token's budget. Deleting an observed resource leaves its object in Cloudflare, whatever its deletion policy.
 
 An observed Zone whose zone differs from its spec still serves the records kflare observes. A record kflare manages
-waits (`ZoneNotReady`) until its Zone is `InSync` or managed. A resource of another kind reports
-`ObserveNotSupported`, and kflare makes no Cloudflare call for it; a DNSRecord whose `tunnelRef` names a Tunnel in
-that state waits for it (`TunnelNotReady`), so records that point at a Tunnel cannot be observed yet.
+waits (`ZoneNotReady`) until its Zone is `InSync` or managed. A DNSRecord whose `tunnelRef` names an observed Tunnel
+is observed once that Tunnel is `InSync`. Every kind can be observed but `WorkerScript`, which reports
+`ObserveNotSupported`, and kflare makes no Cloudflare call for it. A rule kind's resource observes a rule kflare did
+not create once the annotation `kflare.dev/rule-id` names the rule's ID (the dashboard shows it, as does
+`GET /zones/{zone_id}/rulesets/phases/{phase}/entrypoint`). Switching it to `manage` waits, with `AlreadyExists`,
+until that rule is deleted: Cloudflare does not let a rule change hands in place. An observed settings resource never
+configures its zone's settings, and does not keep a managed one from configuring them.
 
 **Moving to kflare** from the dashboard, Terraform or another tool, without a manifest's mistake reaching production:
 
 1. Write the manifests with the annotation, and apply them
-2. Read the differences: `kubectl get zones,dnsrecords -A`, and `kubectl describe` for the fields
+2. Read the differences: `kubectl get kflare -A`, and `kubectl describe` for the fields
 3. Fix the manifests until every resource is `InSync`
 4. Remove the annotation, or set it to `manage`. kflare then manages the object as one it adopted, with no
    `adoption-policy` needed: it changes nothing while the object matches, corrects it from then on, and keeps it when
    the resource is deleted unless `kflare.dev/deletion-policy: delete` says otherwise. If another resource already
-   manages the object, this one reports `NameConflict` and leaves it alone. Switch a Zone before its records: a
-   managed record waits for a Zone that still reports `DriftDetected`
+   manages the object, this one reports its kind's conflict reason, such as `NameConflict`, and leaves it alone,
+   when deleted too. Switch a Zone before its records: a managed record waits for a Zone that still reports
+   `DriftDetected`
 
 **Auditing** that Cloudflare matches git: install a release with `observeOnly: true`. It observes every resource,
 whatever its annotation says, and never writes to Cloudflare, so its API token needs only the read permissions of the
-kinds it observes (Zone Read and DNS Read). Do not point it at resources another release manages: give it its own
-namespaces or labels ([Scoping an installation](#scoping-an-installation)), since both would write the same status.
+kinds it observes: Read where [step 1](#1-create-a-cloudflare-api-token) says Edit (no live run has used such a token
+yet). Do not point it at resources another release manages: give it its own namespaces or labels
+([Scoping an installation](#scoping-an-installation)), since both would write the same status.
 
 ### Moving to a new cluster
 
@@ -1900,7 +1924,7 @@ kubectl -n kflare logs -l app.kubernetes.io/name=kflare --prefix --tail=-1   # t
 | `InvalidAdoptionPolicy` | `kflare.dev/adoption-policy` holds a value other than `adopt` and `adopt-or-create` | Fix or remove the annotation |
 | `DriftDetected` | kflare only observes the resource, and its Cloudflare object differs from the spec in the fields the message names | Change the manifest, or the object, until they match ([Observing without writing](#observing-without-writing)) |
 | `NotFound` (an observed resource) | kflare only observes the resource, and Cloudflare holds no object with its name | Check the name; an observed resource creates nothing |
-| `ObserveNotSupported` | kflare only observes the resource, by its `kflare.dev/management-policy` annotation or the chart's `observeOnly`, and cannot observe its kind yet: only `Zone` and `DNSRecord`. It makes no Cloudflare call for it | Remove the annotation to manage the resource, or leave it until the kind is supported |
+| `ObserveNotSupported` | kflare only observes the resource, by its `kflare.dev/management-policy` annotation or the chart's `observeOnly`, and cannot observe its kind yet: `WorkerScript`. It makes no Cloudflare call for it | Remove the annotation to manage the resource, or leave it until the kind is supported |
 | `InvalidManagementPolicy` | `kflare.dev/management-policy` holds a value other than `observe` and `manage`. kflare makes no Cloudflare call for the resource, and does not finish deleting it | Fix or remove the annotation |
 | `PatternConflict` | Another `WorkerRoute` already manages a route with this pattern in the same Cloudflare zone | Keep one WorkerRoute per pattern. After a rename, the new resource reports it until the old one is deleted ([Renaming a resource](#renaming-a-resource)) |
 | `TerminalError` (WorkerRoute) | A message with `Route pattern must include zone name` (10022): the pattern's hostname is not in the referenced zone | Fix `spec.pattern` or `spec.zoneRef` |

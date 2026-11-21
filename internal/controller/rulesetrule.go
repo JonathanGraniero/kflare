@@ -12,7 +12,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -207,6 +209,7 @@ func syncRulesetRule(
 	zoneID string,
 	phase rulesets.Phase,
 	rule rulesets.RulesetNewParamsRule,
+	named string,
 	peers []rulesetRulePeer,
 	known map[string]bool,
 ) (rulesetRuleState, error) {
@@ -216,11 +219,11 @@ func syncRulesetRule(
 	}
 	defer release()
 	zone := zoneRulesets{api: api, zoneID: zoneID}
-	ruleset, wrote, err := writeRulesetRule(ctx, zone, phase, rule, peers)
+	ruleset, wrote, err := writeRulesetRule(ctx, zone, phase, rule, named, peers)
 	if cfpkg.IsNotFound(err) {
 		// The rule or its ruleset was deleted between the read and the
 		// write. Read the entry point again, and try once more.
-		ruleset, wrote, err = writeRulesetRule(ctx, zone, phase, rule, peers)
+		ruleset, wrote, err = writeRulesetRule(ctx, zone, phase, rule, named, peers)
 	}
 	if err != nil {
 		return rulesetRuleState{}, err
@@ -242,15 +245,24 @@ func syncRulesetRule(
 	}, nil
 }
 
+// errNamedRuleNotOwn is writeRulesetRule's answer when the phase holds the
+// rule a resource names by its ID (RuleIDAnnotation), which kflare did not
+// create, and none of the resource's own: Cloudflare refuses to change a
+// rule's ref (20023), so kflare cannot take that rule over in place, and a rule
+// of its own would be a second one.
+var errNamedRuleNotOwn = errors.New("the rule the resource names is not its own")
+
 // writeRulesetRule creates or updates rule in the phase's entry point,
 // creating the entry point when the zone has none, and writes nothing when
-// the rule is already as desired. It returns the ruleset as Cloudflare last
-// reported it, and whether it wrote.
+// the rule is already as desired. While the phase holds no rule of its ref
+// but the rule with the ID named, it writes nothing (errNamedRuleNotOwn). It
+// returns the ruleset as Cloudflare last reported it, and whether it wrote.
 func writeRulesetRule(
 	ctx context.Context,
 	zone zoneRulesets,
 	phase rulesets.Phase,
 	rule rulesets.RulesetNewParamsRule,
+	named string,
 	peers []rulesetRulePeer,
 ) (entrypoint, bool, error) {
 	ruleset, err := zone.getEntrypoint(ctx, phase)
@@ -270,6 +282,9 @@ func writeRulesetRule(
 	}
 
 	current, found := ruleset.rule(rule.Ref.Value)
+	if !found && named != "" && ruleset.index(named) >= 0 {
+		return entrypoint{}, false, errNamedRuleNotOwn
+	}
 	switch {
 	case !found:
 		ruleset, err = zone.createRule(ctx, ruleset.id, rule, insertPosition(ruleset, rule.Ref.Value, peers))
@@ -617,6 +632,56 @@ func rulesetRuleMatches(desired rulesets.RulesetNewParamsRule, actual string) bo
 		return false
 	}
 	return reflect.DeepEqual(want, got)
+}
+
+// rulesetRuleDifferences names what of desired, a rule a resource asks for,
+// actual, a rule's JSON as Cloudflare returned it, holds otherwise, compared as
+// rulesetRuleMatches compares them but for the ref: each field the rule's JSON
+// holds, and each parameter of its action, by the spec field fields names for
+// its path, or else as it stands.
+func rulesetRuleDifferences(desired rulesets.RulesetNewParamsRule, actual string,
+	fields map[string]string) ([]string, error) {
+	sent, err := desired.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	want, err := comparableRule(sent)
+	if err != nil {
+		return nil, err
+	}
+	got, err := comparableRule([]byte(actual))
+	if err != nil {
+		return nil, err
+	}
+	delete(want, "ref")
+	delete(got, "ref")
+	var names []string
+	for _, key := range slices.Sorted(maps.Keys(union(want, got))) {
+		if key != "action_parameters" {
+			if !reflect.DeepEqual(want[key], got[key]) {
+				names = append(names, cmp.Or(fields[key], key))
+			}
+			continue
+		}
+		wantParams, _ := want[key].(map[string]any)
+		gotParams, _ := got[key].(map[string]any)
+		for _, param := range slices.Sorted(maps.Keys(union(wantParams, gotParams))) {
+			if !reflect.DeepEqual(wantParams[param], gotParams[param]) {
+				names = append(names, cmp.Or(fields[key+"."+param], param))
+			}
+		}
+	}
+	return names, nil
+}
+
+// union returns a map with the keys of a and b.
+func union(a, b map[string]any) map[string]any {
+	out := maps.Clone(a)
+	if out == nil {
+		out = map[string]any{}
+	}
+	maps.Copy(out, b)
+	return out
 }
 
 // comparableRule decodes a rule's JSON into plain values, without the fields

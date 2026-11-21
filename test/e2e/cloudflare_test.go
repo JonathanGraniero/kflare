@@ -931,6 +931,63 @@ var _ = Describe("Cloudflare", Ordered, Label("cloudflare"), func() {
 		}, e2eTimeout, e2ePoll).Should(Succeed())
 	})
 
+	It("observes a tunnel and a DNS record that points at it, without changing either", func() {
+		if zoneName == "" {
+			Skip("CF_E2E_ZONE is not set")
+		}
+		// A second Tunnel and a second DNSRecord describe the tunnel and the
+		// record the first ones manage, and only observe them. The record finds
+		// its tunnel through the observed Tunnel.
+		observe := map[string]string{"kflare.dev/management-policy": "observe"}
+		recordBefore, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), tunnelRecordID)
+		Expect(err).NotTo(HaveOccurred())
+
+		managedTunnel := &cloudflarev1alpha1.Tunnel{}
+		Expect(k8s.Get(ctx, tunnelKey, managedTunnel)).To(Succeed())
+		observedTunnelKey := client.ObjectKey{Namespace: e2eNamespace, Name: "tunnel-observed"}
+		observedTunnel := &cloudflarev1alpha1.Tunnel{ObjectMeta: objectMeta(observedTunnelKey), Spec: managedTunnel.Spec}
+		observedTunnel.Annotations = observe
+		observedTunnel.Spec.CredentialsSecretRef.Name = "tunnel-observed-token"
+		Expect(k8s.Create(ctx, observedTunnel)).To(Succeed())
+		expectReady(observedTunnelKey, observedTunnel, func() []metav1.Condition { return observedTunnel.Status.Conditions })
+		Expect(meta.FindStatusCondition(observedTunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady).Reason).To(
+			Equal("InSync"))
+		Expect(observedTunnel.Status.CloudflareMetadata.TunnelID).To(Equal(tunnelID))
+		Expect(observedTunnel.Labels).NotTo(HaveKey(cloudflarev1alpha1.TunnelIDLabel), "an observed tunnel is not claimed")
+
+		managedRecord := &cloudflarev1alpha1.DNSRecord{}
+		Expect(k8s.Get(ctx, tunnelRecordKey, managedRecord)).To(Succeed())
+		observedRecordKey := client.ObjectKey{Namespace: e2eNamespace, Name: "tunnel-record-observed"}
+		observedRecord := &cloudflarev1alpha1.DNSRecord{ObjectMeta: objectMeta(observedRecordKey), Spec: managedRecord.Spec}
+		observedRecord.Annotations = observe
+		observedRecord.Spec.TunnelRef = &corev1.LocalObjectReference{Name: observedTunnelKey.Name}
+		Expect(k8s.Create(ctx, observedRecord)).To(Succeed())
+		expectReady(observedRecordKey, observedRecord, func() []metav1.Condition { return observedRecord.Status.Conditions })
+		Expect(meta.FindStatusCondition(observedRecord.Status.Conditions, cloudflarev1alpha1.ConditionReady).Reason).To(
+			Equal("InSync"))
+		Expect(observedRecord.Status.CloudflareMetadata.RecordID).To(Equal(tunnelRecordID))
+
+		By("deleting both, which leaves the tunnel and the record as they were")
+		for _, observed := range []client.Object{observedRecord, observedTunnel} {
+			Expect(k8s.Delete(ctx, observed)).To(Succeed())
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8s.Get(ctx, client.ObjectKeyFromObject(observed), observed))
+			}, e2eTimeout, e2ePoll).Should(BeTrue())
+		}
+		recordAfter, err := cfAPI.GetDNSRecord(ctx, cf.ZoneIdentifier(zoneID), tunnelRecordID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recordAfter.ModifiedOn).To(Equal(recordBefore.ModifiedOn), "Cloudflare kept the record unchanged")
+		cfTunnel, err := cfAPI.GetTunnel(ctx, accountRC, tunnelID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfTunnel.DeletedAt).To(BeNil(), "the tunnel is still there")
+		Expect(apierrors.IsNotFound(k8s.Get(ctx, client.ObjectKey{Namespace: e2eNamespace, Name: "tunnel-observed-token"},
+			&corev1.Secret{}))).To(BeTrue(), "an observed Tunnel writes no token Secret")
+		Expect(k8s.Get(ctx, tunnelRecordKey, managedRecord)).To(Succeed())
+		Expect(meta.IsStatusConditionTrue(managedRecord.Status.Conditions, cloudflarev1alpha1.ConditionReady)).To(BeTrue())
+		Expect(k8s.Get(ctx, tunnelKey, managedTunnel)).To(Succeed())
+		Expect(meta.IsStatusConditionTrue(managedTunnel.Status.Conditions, cloudflarev1alpha1.ConditionReady)).To(BeTrue())
+	})
+
 	It("exposes a Service through a Tunnel with examples/expose-a-service", func() {
 		if zoneName == "" {
 			Skip("CF_E2E_ZONE is not set")

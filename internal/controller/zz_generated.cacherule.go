@@ -48,6 +48,20 @@ var cacheRuleKind = rulesetRuleKind{
 	definition: func(obj rulesetRuleObject) rulesets.RulesetNewParamsRule {
 		return cacheRuleDefinition(obj.(*cloudflarev1alpha1.CacheRule))
 	},
+	fields: map[string]string{
+		"action_parameters.additional_cacheable_ports": "additionalCacheablePorts",
+		"action_parameters.browser_ttl":                "browserTTL",
+		"action_parameters.cache":                      "cache",
+		"action_parameters.cache_key":                  "cacheKey",
+		"action_parameters.cache_reserve":              "cacheReserve",
+		"action_parameters.edge_ttl":                   "edgeTTL",
+		"action_parameters.origin_cache_control":       "originCacheControl",
+		"action_parameters.origin_error_page_passthru": "originErrorPagePassthru",
+		"action_parameters.origin_range_requests":      "originRangeRequests",
+		"action_parameters.respect_strong_etags":       "respectStrongEtags",
+		"action_parameters.serve_stale":                "serveStale",
+		"action_parameters.vary":                       "vary",
+	},
 }
 
 func (r *CacheRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

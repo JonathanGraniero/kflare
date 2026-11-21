@@ -39,6 +39,11 @@ type TestZoneSettingsReconciler struct {
 	// NewTestZoneSettingsAPI constructs a TestZoneSettingsAPI from a raw API
 	// token. Defaults to defaultTestZoneSettingsAPI; tests inject a fake.
 	NewTestZoneSettingsAPI func(token string) (TestZoneSettingsAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=testzonesettings,verbs=get;list;watch;create;update;patch;delete
@@ -101,6 +106,12 @@ var testZoneSettingsKind = settingsKind[TestZoneSettingsAPI]{
 		{path: "security_header.strict_transport_security.preload", value: false},
 		{path: "ssl_automatic_mode", value: "auto"},
 	},
+	fields: map[string]string{
+		"always_use_https":  "alwaysUseHTTPS",
+		"browser_cache_ttl": "browserCacheTTL",
+		"security_header":   "securityHeader",
+		"ssl":               "ssl",
+	},
 }
 
 func (r *TestZoneSettingsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -112,17 +123,25 @@ func (r *TestZoneSettingsReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // the Zone is ready, and the deletion of TestZoneSettings, so another one takes
 // over the zone's zone settings at once.
 func (r *TestZoneSettingsReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.settings().setup(mgr, r)
 }
 
 // settings returns the shared settings reconciler for TestZoneSettings, with
-// the injected factory or the production one.
+// the injected factory or the production one, and the manager's API reader or
+// the client.
 func (r *TestZoneSettingsReconciler) settings() *settingsReconciler[TestZoneSettingsAPI] {
 	newAPI := r.NewTestZoneSettingsAPI
 	if newAPI == nil {
 		newAPI = defaultTestZoneSettingsAPI
 	}
-	return &settingsReconciler[TestZoneSettingsAPI]{Client: r.Client, kind: testZoneSettingsKind, newAPI: newAPI}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
+	return &settingsReconciler[TestZoneSettingsAPI]{
+		Client: r.Client, apiReader: apiReader, kind: testZoneSettingsKind, newAPI: newAPI,
+	}
 }
 
 // defaultTestZoneSettingsAPI is the production factory: cloudflare-go v7's

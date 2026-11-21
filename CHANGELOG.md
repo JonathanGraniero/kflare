@@ -60,10 +60,17 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
 - **A resource annotated `kflare.dev/management-policy: observe` is only observed**
   ([#82](https://github.com/JonathanGraniero/kflare/issues/82)): kflare finds its Cloudflare object by name, records it
   in status and reports `InSync`, `DriftDetected` with the spec fields that differ, or `NotFound`. It never creates,
-  updates or deletes the object, and deleting the resource leaves it. `Zone` and `DNSRecord` support it; a resource of
-  another kind reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. Removing the annotation
+  updates or deletes the object, and deleting the resource leaves it. Every kind supports it but `WorkerScript`
+  ([#191](https://github.com/JonathanGraniero/kflare/issues/191),
+  [#195](https://github.com/JonathanGraniero/kflare/issues/195)): a resource of it
+  reports `ObserveNotSupported`, and kflare makes no Cloudflare call for it. A `DNSRecord` whose `tunnelRef` names an
+  observed `Tunnel` is observed too, and an `IPList` compares its items. Removing the annotation
   manages the object as one kflare adopted. For moving to kflare a manifest at a time: see
   [Observing without writing](docs/deploy.md#observing-without-writing).
+- **A rule kflare did not create can be observed** with the annotation `kflare.dev/rule-id: <the rule's ID>` on a
+  rule kind's resource ([#195](https://github.com/JonathanGraniero/kflare/issues/195)). Switching it to `manage`
+  reports `AlreadyExists` until that rule is deleted: Cloudflare does not let a rule's ref change, so kflare cannot
+  take it over in place.
 - **The chart's `observeOnly`** (`--observe-only`) runs a whole installation that way, for an audit with a read-only
   token.
 - New `Ready` reasons, which the Argo CD and Flux health checks in `docs/deploy.md` now list: copy them again if you
@@ -97,15 +104,47 @@ remove it. Releases up to v0.4.2 describe their breaking changes in their openin
   requests, not capacity: `maxConcurrentReconciles` is what raises throughput. `autoscaling.minReplicas: 1` runs a
   single pod as before. **Values that set `autoscaling.minReplicas` above 3 without `maxReplicas` no longer render**
   ("minReplicas cannot be above maxReplicas"): set `autoscaling.maxReplicas` too. Other values that set either number
-  are unchanged. The two pods can share a node unless `topologySpreadConstraints` spreads them
-  ([Configuration](docs/deploy.md#configuration)), and a node's loss then takes both. With two pods,
-  `kubectl logs deploy/kflare` and a port-forward to the metrics Service reach either: the deploy guide's commands
-  now read every pod's log, and the leader's metrics.
+  are unchanged. With two pods, `kubectl logs deploy/kflare` and a port-forward to the metrics Service reach either:
+  the deploy guide's commands now read every pod's log, and the leader's metrics.
+- **The pods go on different nodes** where the cluster has them
+  ([#192](https://github.com/JonathanGraniero/kflare/issues/192)): while there can be more than one replica and
+  `topologySpreadConstraints` is empty, the chart spreads them over nodes (`kubernetes.io/hostname`,
+  `whenUnsatisfiable: ScheduleAnyway`), so that a node's loss does not take the standby with the leader. A one-node
+  cluster still runs both. Your own `topologySpreadConstraints` replace it, and `topologySpreadDefault: false` turns it
+  off. A spread over zones is yours to add ([Configuration](docs/deploy.md#configuration)).
 - **The docs install into `kflare`** (`--namespace kflare --create-namespace`), not `kflare-system`, and so does
   `config/default`'s kustomization, which still said `cloudflare-operator-system`. An existing installation keeps its
   namespace: `helm upgrade -n kflare-system` works as before.
 - **A smaller cache.** The controller caches the Secrets of the namespaces it may use, not the whole cluster's, so
   Helm's release Secrets elsewhere no longer count toward its memory (deploy.md's Scaling and resources).
+
+### Fixes
+
+- **An `IPList` no longer starts a second replacement of its items** while Cloudflare is still applying the first,
+  which a reconcile could do when the controller's cache had not yet seen the status that records the running one
+  ([#190](https://github.com/JonathanGraniero/kflare/issues/190)).
+- **A `ManagedTransform` with `kflare.dev/adoption-policy: adopt-or-create` no longer marks itself adopted** for the
+  settings it wrote itself, which a reconcile could do on the same lag. A resource marked so kept its settings when it
+  was deleted, rather than reset them. One you created with `adopt-or-create` in a zone nobody had configured, and
+  that carries `kflare.dev/adopted: "true"`, may be one: annotate it `kflare.dev/deletion-policy: delete` to have its
+  settings reset when it goes ([#190](https://github.com/JonathanGraniero/kflare/issues/190)).
+
+### Security
+
+- **kflare no longer deletes another resource's object for a resource that names it only by its claim label**
+  ([#189](https://github.com/JonathanGraniero/kflare/issues/189)). A resource whose status recorded no object was
+  deleted with the object its claim label (`kflare.dev/<kind>-id`) named, and anyone who may create a resource can
+  write that label: someone allowed one namespace could have kflare delete a KV namespace, an R2 bucket or a tunnel
+  that a resource in another namespace manages, through the same Cloudflare account. kflare now leaves such an object,
+  with a Warning Event, when another resource claims it.
+
+### Known limitations
+
+v0.5.0's, and one more. [ARCHITECTURE.md](ARCHITECTURE.md#known-limitations) explains the others.
+
+- **`R2Bucket` is not tested live** since 2026-11-17, when the test account's R2 subscription ended: it is tested
+  against envtest only, and its live specs come back once the account has R2 again
+  ([#193](https://github.com/JonathanGraniero/kflare/issues/193)).
 
 ## v0.5.0 (alpha)
 

@@ -395,8 +395,15 @@ nodeSelector: {}
 tolerations: []
 # -- Affinity for the controller pod.
 affinity: {}
-# -- Topology spread constraints for the controller pod.
+# -- Topology spread constraints for the controller pod. Set, they replace
+# topologySpreadDefault's spread.
 topologySpreadConstraints: []
+# -- While topologySpreadConstraints is empty and there can be more than one
+# replica (autoscaling.maxReplicas, or replicaCount while autoscaling is off),
+# spread the pods over nodes, softly (ScheduleAnyway), so that a node's loss
+# does not take the standby with the leader. A zone spread is yours to add:
+# a hard one leaves a pod pending in a single-zone cluster.
+topologySpreadDefault: true
 
 # -- Extra command-line arguments for the controller.
 extraArgs: []

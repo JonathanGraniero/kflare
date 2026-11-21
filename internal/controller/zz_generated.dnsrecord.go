@@ -95,9 +95,15 @@ var dnsRecordKind = crudResourceKind[*cloudflarev1alpha1.DNSRecord, DNSRecordAPI
 	},
 
 	id: func(current *dns.RecordResponse) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.DNSRecord, current *dns.RecordResponse, _ map[string]string) bool {
-		return current.Comment == obj.Spec.Comment &&
-			(obj.Spec.Content == "" || current.Content == obj.Spec.Content)
+	differences: func(obj *cloudflarev1alpha1.DNSRecord, current *dns.RecordResponse, _ map[string]string) []string {
+		var fields []string
+		if current.Comment != obj.Spec.Comment {
+			fields = append(fields, "comment")
+		}
+		if obj.Spec.Content != "" && current.Content != obj.Spec.Content {
+			fields = append(fields, "content")
+		}
+		return fields
 	},
 	listedID:  func(listed *dns.RecordResponse) string { return listed.ID },
 	listedKey: func(listed *dns.RecordResponse) string { return listed.Name },

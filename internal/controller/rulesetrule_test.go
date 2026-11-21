@@ -645,7 +645,7 @@ var _ = Describe("Ruleset rules", func() {
 		for _, peer := range peers {
 			known[peer.ref] = true
 		}
-		return syncRulesetRule(ctx, api.api(), rulesTestZone, rulesTestPhase, rule, peers, known)
+		return syncRulesetRule(ctx, api.api(), rulesTestZone, rulesTestPhase, rule, "", peers, known)
 	}
 
 	Describe("refs", func() {
@@ -744,13 +744,13 @@ var _ = Describe("Ruleset rules", func() {
 		It("counts the latest version, which Cloudflare records for an execute rule, as set", func() {
 			deploy := executeRule("kflare-managed", freeManagedRulesetID)
 			known := map[string]bool{"kflare-managed": true}
-			_, err := syncRulesetRule(ctx, api.api(), rulesTestZone, managedPhase, deploy, nil, known)
+			_, err := syncRulesetRule(ctx, api.api(), rulesTestZone, managedPhase, deploy, "", nil, known)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(api.entrypointIn(managedPhase).rules[0].jsonOf("action_parameters")).To(
 				MatchJSON(`{"id":"` + freeManagedRulesetID + `","version":"latest"}`))
 			writes := api.writes
 
-			state, err := syncRulesetRule(ctx, api.api(), rulesTestZone, managedPhase, deploy, nil, known)
+			state, err := syncRulesetRule(ctx, api.api(), rulesTestZone, managedPhase, deploy, "", nil, known)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state.wrote).To(BeFalse())
 			Expect(api.writes).To(Equal(writes))
@@ -784,7 +784,7 @@ var _ = Describe("Ruleset rules", func() {
 				Expect(refs(api.entrypoint().rules)).To(Equal([]string{"kflare-other", "someone-else", "kflare-a"}))
 
 				By("leaving out the rules it knows, as a paused resource's, and rules created outside kflare")
-				state, err = syncRulesetRule(ctx, api.api(), rulesTestZone, rulesTestPhase, blockRule("kflare-a", "/a"),
+				state, err = syncRulesetRule(ctx, api.api(), rulesTestZone, rulesTestPhase, blockRule("kflare-a", "/a"), "",
 					nil, map[string]bool{"kflare-a": true, "kflare-other": true})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(state.others).To(BeFalse())
@@ -1029,7 +1029,7 @@ var _ = Describe("Ruleset rules", func() {
 			} {
 				wg.Go(func() {
 					defer GinkgoRecover()
-					_, err := syncRulesetRule(ctx, write.api.api(), write.zoneID, write.phase, blockRule("kflare-a", "/a"),
+					_, err := syncRulesetRule(ctx, write.api.api(), write.zoneID, write.phase, blockRule("kflare-a", "/a"), "",
 						nil, nil)
 					Expect(err).NotTo(HaveOccurred())
 				})
@@ -1046,7 +1046,7 @@ var _ = Describe("Ruleset rules", func() {
 
 			done, cancel := context.WithCancel(ctx)
 			cancel()
-			_, err = syncRulesetRule(done, api.api(), rulesTestZone, rulesTestPhase, blockRule("kflare-a", "/a"), nil, nil)
+			_, err = syncRulesetRule(done, api.api(), rulesTestZone, rulesTestPhase, blockRule("kflare-a", "/a"), "", nil, nil)
 			Expect(err).To(MatchError(context.Canceled))
 			Expect(deleteRulesetRule(done, api.api(), rulesTestZone, rulesTestPhase, "kflare-a", false)).
 				To(MatchError(context.Canceled))

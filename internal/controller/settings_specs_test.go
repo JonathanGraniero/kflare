@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -411,6 +412,202 @@ func (s *fakeSettingsStore) expectUnconfigured(id, unconfigured string) {
 // Cloudflare error code.
 func settingsTestError(status, code int) error {
 	return v7APIError(http.MethodPatch, "zones/zone/settings", status, code, "refused")
+}
+
+// delayCreating is a cache transform that holds back, by delay, each event of
+// a resource marked creating, as a cache that falls behind does.
+func delayCreating(delay time.Duration) func(event any) (any, error) {
+	return func(event any) (any, error) {
+		if obj, ok := event.(client.Object); ok && obj.GetAnnotations()[reconciler.CreatingAnnotation] != "" {
+			time.Sleep(delay)
+		}
+		return event, nil
+	}
+}
+
+// settingsSpecEnv is what describeSettingsKind's specs share, for specs it
+// leaves to a function of their own. fake returns the spec's fake, which each
+// spec makes anew.
+type settingsSpecEnv[O settingsObject, A any] struct {
+	specs              settingsKindSpecs[O, A]
+	ctx                context.Context
+	zoneID, zoneName   string
+	fake               func() *fakeSettingsStore
+	get                func(name string) O
+	ready              func(name string) *metav1.Condition
+	holds              func(settings string) bool
+	withFinalizer      func(name, spec string, annotations map[string]string)
+	createSynced       func(name, spec string) O
+	reconcileOnce      func(name string) (ctrl.Result, error)
+	replaceSpec        func(name, spec string) error
+	deleteAndReconcile func(name string)
+	configuredOutside  func() string
+}
+
+// differingFields returns the fields a DriftDetected message names.
+func differingFields(message string) []string {
+	GinkgoHelper()
+	_, after, found := strings.Cut(message, "differs from the spec in: ")
+	Expect(found).To(BeTrue(), message)
+	names, _, found := strings.Cut(after, ". ")
+	Expect(found).To(BeTrue(), message)
+	return strings.Split(names, ", ")
+}
+
+// changedSpecFields returns the fields at the top of spec that it sets to
+// another value than base does, both specs as JSON, as a table holds them.
+func changedSpecFields(base, spec string) []string {
+	GinkgoHelper()
+	var from, to map[string]any
+	Expect(json.Unmarshal([]byte(base), &from)).To(Succeed())
+	Expect(json.Unmarshal([]byte(spec), &to)).To(Succeed())
+	var fields []string
+	for name, value := range to {
+		if !reflect.DeepEqual(from[name], value) {
+			fields = append(fields, name)
+		}
+	}
+	return fields
+}
+
+// describeSettingsObserve covers observe mode (reconciler.Observed) for a
+// settings kind: what an observed resource reports, that it writes nothing
+// and never configures its zone, and what a switch to or from manage does.
+func describeSettingsObserve[O settingsObject, A any](e settingsSpecEnv[O, A]) {
+	specs, ctx := e.specs, e.ctx
+	sample := specs.samples[0]
+	// seed makes the zone's settings an unconfigured zone's with settings, as
+	// a table holds them, written over them.
+	seed := func(settings string) {
+		GinkgoHelper()
+		var body any
+		Expect(json.Unmarshal([]byte(settings), &body)).To(Succeed())
+		data, err := json.Marshal(e.fake().shape.written(e.fake().unconfigured, body, ""))
+		Expect(err).NotTo(HaveOccurred())
+		e.fake().seed(e.zoneID, string(data))
+	}
+	// observe creates an observed resource named name with spec, and
+	// reconciles it.
+	observe := func(name, spec string) {
+		GinkgoHelper()
+		e.withFinalizer(name, spec, maps.Clone(observeAnnotation))
+		_, err := e.reconcileOnce(name)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	Describe("observing", func() {
+		It("reports InSync when the settings hold the spec's, DriftDetected naming what each change asks otherwise, "+
+			"and writes nothing", func() {
+			seed(sample.settings)
+			observe("observed", sample.spec)
+			Expect(e.ready("observed").Status).To(Equal(metav1.ConditionTrue), e.ready("observed").Message)
+			Expect(e.ready("observed").Reason).To(Equal(reasonInSync))
+
+			for _, change := range specs.changes {
+				base := specs.samples[change.sample]
+				seed(base.settings)
+				Expect(e.replaceSpec("observed", change.spec)).To(Succeed())
+				_, err := e.reconcileOnce("observed")
+				Expect(err).NotTo(HaveOccurred())
+				ready := e.ready("observed")
+				if e.holds(change.settings) {
+					Expect(ready.Reason).To(Equal(reasonInSync), change.what)
+					continue
+				}
+				Expect(ready.Status).To(Equal(metav1.ConditionFalse), change.what)
+				Expect(ready.Reason).To(Equal(reasonDriftDetected), change.what)
+				Expect(changedSpecFields(base.spec, change.spec)).To(ContainElements(differingFields(ready.Message)),
+					"%s: the message names spec fields the change sets otherwise", change.what)
+			}
+			Expect(e.fake().writes).To(BeEmpty())
+			Expect(e.fake().resets).To(BeZero())
+			Expect(e.get("observed").GetSettingsStatus().CloudflareMetadata.ZoneID).To(BeEmpty(),
+				"an observed resource records no zone")
+		})
+
+		It("takes settings configured outside kflare for adopted, and keeps them once switched to manage", func() {
+			e.fake().seed(e.zoneID, e.configuredOutside())
+			observe("observed", sample.spec)
+			Expect(e.get("observed").GetAnnotations()).To(HaveKeyWithValue(reconciler.AdoptedAnnotation, "true"))
+			Expect(e.fake().writes).To(BeEmpty())
+
+			setManagementPolicy(ctx, e.get("observed"), reconciler.ManagementPolicyManage)
+			_, err := e.reconcileOnce("observed")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready("observed").Reason).To(Equal("Synced"), "no adoption policy needed")
+			Expect(e.holds(sample.settings)).To(BeTrue())
+			e.deleteAndReconcile("observed")
+			Expect(e.fake().resets).To(BeZero(), "adopted settings stay")
+		})
+
+		It("takes no part in choosing the resource that configures the zone, however old", func() {
+			// Created within the same second, the two are told apart by name:
+			// the observed one's sorts first, as an older one would.
+			observe("a-observed", sample.spec)
+			e.createSynced("managed", sample.spec)
+			_, err := e.reconcileOnce("a-observed")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready("a-observed").Reason).To(Equal(reasonInSync))
+		})
+
+		It("stops writing settings it configured once switched to observe, keeps them its own, and resets nothing when "+
+			"deleted", func() {
+			e.createSynced("configured", sample.spec)
+			// The next sync drops its creating annotation, which marks the
+			// settings its own until then.
+			_, err := e.reconcileOnce("configured")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.get("configured").GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
+			writes := len(e.fake().writes)
+			setManagementPolicy(ctx, e.get("configured"), reconciler.ManagementPolicyObserve)
+			// Settings it wrote count as configured: they are not taken for
+			// another's.
+			_, err = e.reconcileOnce("configured")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready("configured").Reason).To(Equal(reasonInSync))
+			Expect(e.get("configured").GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+
+			e.fake().seed(e.zoneID, specs.unconfigured)
+			_, err = e.reconcileOnce("configured")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready("configured").Reason).To(Equal(reasonDriftDetected))
+			Expect(e.fake().writes).To(HaveLen(writes))
+			Expect(e.get("configured").GetAnnotations()).NotTo(HaveKey(reconciler.AdoptedAnnotation))
+
+			e.deleteAndReconcile("configured")
+			Expect(e.fake().resets).To(BeZero())
+			Expect(e.fake().writes).To(HaveLen(writes))
+		})
+
+		It("is observed under an observed Zone that differs, where a managed resource waits", func() {
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: e.zoneName, Namespace: "default"}, zone)).To(Succeed())
+			zone.Status.Conditions = []metav1.Condition{{Type: cloudflarev1alpha1.ConditionReady,
+				Status: metav1.ConditionFalse, Reason: reasonDriftDetected, LastTransitionTime: metav1.Now()}}
+			Expect(k8sClient.Status().Update(ctx, zone)).To(Succeed())
+
+			observe("observed", sample.spec)
+			Expect(e.ready("observed").Reason).To(Equal(reasonDriftDetected))
+			e.withFinalizer("managed", sample.spec, nil)
+			_, err := e.reconcileOnce("managed")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready("managed").Reason).To(Equal("ZoneNotReady"))
+		})
+
+		It("observes every resource when the installation does, and reports a failed read", func() {
+			observeEverything()
+			e.withFinalizer("any", sample.spec, nil)
+			_, err := e.reconcileOnce("any")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.ready("any").Reason).To(Equal(reasonDriftDetected))
+			Expect(e.fake().writes).To(BeEmpty())
+
+			e.fake().readErr = errors.New("unavailable")
+			_, err = e.reconcileOnce("any")
+			Expect(err).To(MatchError("unavailable"))
+			Expect(e.ready("any").Reason).To(Equal("APIError"))
+		})
+	})
 }
 
 func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]) bool {
@@ -1004,24 +1201,11 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			Expect(ready(name).Reason).To(Equal(reasonPaused))
 		}
 
-		It("reports ObserveNotSupported for an observed resource, calls Cloudflare for nothing, and leaves its settings "+
-			"when it is deleted", func() {
-			createSynced("observed", specs.samples[0].spec)
-			setManagementPolicy(ctx, get("observed"), reconciler.ManagementPolicyObserve)
-			calls := len(fake.zoneIDs)
-			result, err := reconcileOnce("observed")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.IsZero()).To(BeTrue())
-			Expect(ready("observed").Status).To(Equal(metav1.ConditionFalse))
-			Expect(ready("observed").Reason).To(Equal(reasonObserveNotSupported))
-
-			Expect(k8sClient.Delete(ctx, get("observed"))).To(Succeed())
-			_, err = reconcileOnce("observed")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(fake.zoneIDs).To(HaveLen(calls), "an observed resource called Cloudflare")
-			Expect(holds(specs.samples[0].settings)).To(BeTrue())
-			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key("observed"), specs.newObject()))).To(BeTrue())
-			fake.seed(zoneID, specs.unconfigured)
+		describeSettingsObserve(settingsSpecEnv[O, A]{
+			specs: specs, ctx: ctx, zoneID: zoneID, zoneName: zoneName,
+			fake: func() *fakeSettingsStore { return fake }, get: get, ready: ready, holds: holds,
+			withFinalizer: withFinalizer, createSynced: createSynced, reconcileOnce: reconcileOnce,
+			replaceSpec: replaceSpec, deleteAndReconcile: deleteAndReconcile, configuredOutside: configuredOutside,
 		})
 
 		It("calls Cloudflare for nothing from a namespace its account leaves out, and writes its settings once allowed",
@@ -1562,6 +1746,44 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			stopManager()
 		})
 
+		It("keeps the settings it wrote for its own when its manager's cache is behind its writes", func() {
+			// The cache learns late of each change that marks the resource
+			// creating, so a reconcile that its Zone queues meanwhile reads the
+			// resource as it was before it wrote the settings. From that copy,
+			// what it wrote looks configured outside kflare, and adopt-or-create
+			// would mark it adopted: deleting it would then keep the settings
+			// rather than reset them.
+			withFinalizer("stale", specs.samples[0].spec,
+				map[string]string{reconciler.AdoptionPolicyAnnotation: reconciler.AdoptionPolicyAdoptOrCreate})
+			startManagerWithCache(ctx, cache.Options{ByObject: map[client.Object]cache.ByObject{
+				specs.newObject(): {Transform: delayCreating(1500 * time.Millisecond)},
+			}}, func(mgr manager.Manager) error {
+				return specs.newReconciler(mgr.GetClient(), func(string) (A, error) { return specs.newFake(fake), nil }).
+					SetupWithManager(mgr)
+			})
+			Eventually(func() string {
+				return get("stale").GetSettingsStatus().CloudflareMetadata.ZoneID
+			}).WithTimeout(10*time.Second).Should(Equal(zoneID), "the settings are written and recorded")
+			zone := &cloudflarev1alpha1.Zone{}
+			Expect(k8sClient.Get(ctx, key(zoneName), zone)).To(Succeed())
+			patch := client.MergeFrom(zone.DeepCopy())
+			zone.SetAnnotations(map[string]string{"example.com/touched": "true"})
+			Expect(k8sClient.Patch(ctx, zone, patch)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				obj := specs.newObject()
+				g.Expect(k8sClient.Get(ctx, key("stale"), obj)).To(Succeed())
+				g.Expect(obj.GetAnnotations()).NotTo(HaveKey(reconciler.CreatingAnnotation))
+				condition := meta.FindStatusCondition(obj.GetConditions(), cloudflarev1alpha1.ConditionReady)
+				g.Expect(condition).NotTo(BeNil())
+				g.Expect(condition.Reason).To(Equal("Synced"))
+			}).WithTimeout(10 * time.Second).Should(Succeed())
+			// Marking it adopted on a late cache would come later: hold it.
+			Consistently(func() map[string]string { return get("stale").GetAnnotations() }).
+				WithTimeout(2*time.Second).ShouldNot(HaveKey(reconciler.AdoptedAnnotation),
+				"the resource created its settings, so they go with it")
+		})
+
 		It("reconciles the resources of a Zone when it changes", func() {
 			create(object("for-zone", specs.samples[0].spec))
 			other := object("other-zone", specs.samples[0].spec)
@@ -1598,17 +1820,22 @@ func describeSettingsKind[O settingsObject, A any](specs settingsKindSpecs[O, A]
 			}
 		})
 
-		It("registers with a manager, and falls back to the production client", func() {
-			mgr, err := manager.New(cfg, manager.Options{
-				Controller: config.Controller{SkipNameValidation: new(true)},
+		It("registers with a manager, whose API reader reads past its cache, and falls back to the production client",
+			func() {
+				mgr, err := manager.New(cfg, manager.Options{
+					Controller: config.Controller{SkipNameValidation: new(true)},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				registered := specs.newReconciler(mgr.GetClient(), nil)
+				Expect(registered.SetupWithManager(mgr)).To(Succeed())
+				Expect(registered.settings().apiReader).To(BeIdenticalTo(mgr.GetAPIReader()))
+				unregistered := specs.newReconciler(k8sClient, nil)
+				Expect(unregistered.settings().apiReader).To(BeIdenticalTo(k8sClient), "without a manager, the client")
+				_, err = unregistered.settings().newAPI("")
+				Expect(err).To(HaveOccurred(), "the production client rejects an empty token")
+				_, err = specs.defaultAPI("")
+				Expect(err).To(HaveOccurred())
 			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(specs.newReconciler(mgr.GetClient(), nil).SetupWithManager(mgr)).To(Succeed())
-			_, err = specs.newReconciler(k8sClient, nil).settings().newAPI("")
-			Expect(err).To(HaveOccurred(), "the production client rejects an empty token")
-			_, err = specs.defaultAPI("")
-			Expect(err).To(HaveOccurred())
-		})
 
 		It("is named after its API type", func() {
 			gvk, err := apiutil.GVKForObject(specs.newObject(), k8sClient.Scheme())

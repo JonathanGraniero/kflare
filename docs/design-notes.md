@@ -2122,8 +2122,10 @@ to be started without answering them, so each went as the issue proposed.
 - **The switch to `manage` checks for a claim first** (the review, 2026-11-17). An observed resource records an
   object another resource may manage, as the live spec's does, and `sync` claimed whatever status named: two
   resources then owned one record. With a status ID it does not claim, a resource holds its key and asks `claimant`,
-  as `findOrCreate` does, and reports the conflict reason. Not covered: such a resource keeps the ID in status, so
-  with `kflare.dev/deletion-policy: delete` its deletion would still delete the other's object
+  as `findOrCreate` does, and reports the conflict reason. Such a resource keeps the ID in status, so with
+  `kflare.dev/deletion-policy: delete` its deletion deleted the other's object, until #189's check
+  (`deleteObject`): an object a resource does not claim in both status and label goes only when no other claims it.
+  Once every CRUD kind could be observed (#191), this reached KV namespaces, buckets and tunnels, not just records
 - **Observed resources are read again at the drift check, not every minute** (`observedNotReady`; the review). At a
   migration's start most resources differ, and 500 of them at a read a minute are 2,500 calls per five minutes
   against a budget of 900. Without an interval the minute stays, as nothing else would notice a fix made in
@@ -2133,7 +2135,31 @@ to be started without answering them, so each went as the issue proposed.
   TunnelConfiguration. The CRUD reconciler refuses such a kind itself, after `startReconcile`
 - **Under `--observe-only`, a record with a `tunnelRef` waits** (`TunnelNotReady`): its Tunnel reports
   `ObserveNotSupported`, and a Tunnel never reconciled has no ID to compare the record's content with. It goes once
-  `Tunnel` can be observed
+  `Tunnel` can be observed: it went with #191 (below)
+- **Every CRUD kind observed** (#191, `feat/observe-crud-kinds`): kflare-gen writes `differences` where it wrote
+  `matches`, one comparison per field it compares, named by its JSON name, and the shared loop's `matches` is
+  `len(differences) == 0`. A kind is observable unless its hooks replace the comparison (`crudHooks.matches`) without
+  `differences`. `TunnelConfiguration` names `defaultService` for its catch-all rule and `ingress` for the rest;
+  `IPList` adds `items` through `syncedDifferences`, which lists them (a call the hook's object does not answer) and
+  records how many there are. `WorkerScript` stays out: its comparison is the hash of what kflare uploaded last and
+  Cloudflare's modification time, which say nothing of a Worker kflare did not upload, and reading a Worker's script
+  and bindings back is a v0 call #134 is removing. A key edited on an observed resource differs only from the object
+  its status names already: one with the new key from the start finds its object by that key, and matches
+- **Settings kinds observed** (#195, `feat/observe-settings-kinds`): the shared settings reconciler reads the settings
+  and names, through the generated `fields` (API name to spec field), the top-level settings `differing` finds. An
+  observed resource is left out of `owner`, so it never configures the zone nor keeps a managed resource from it; it
+  records no zone in status, which would otherwise give it the zone on a switch to `manage`; and its deletion resets
+  nothing. Settings configured outside kflare mark it adopted, and a switch to `manage` takes such settings without an
+  adoption policy, as a CRUD kind's does
+- **Rule kinds observed** (#195, `feat/observe-rule-kinds`). The issue's two decisions as proposed: an annotation,
+  `kflare.dev/rule-id`, names a rule kflare did not create (a field would have meant a CRD change for a value that
+  matters only while observing), and settings and rules went in two pull requests. Its plan to take the rule over on a
+  switch to `manage` by writing kflare's ref into it does not hold: the Rulesets API refuses to change a rule's ref
+  (20023, verified live 2026-10-12, which the fake models). Taking it over would mean a new rule and the old one's
+  deletion, which a phase capped at one rule (rate limiting on Free) refuses. So the resource reports `AlreadyExists`,
+  naming the code, until the rule is deleted, and then writes its own. `rulesetRuleDifferences` compares as
+  `rulesetRuleMatches` does but for the ref, naming each differing key of the rule, and each parameter of its action
+  through the generated `fields`
 - **The switch to `manage` adopts through `kflare.dev/adopted`,** which observing sets on a resource whose object is
   not its own (no claim label names it). The alternatives were a new status field on every kind, or inferring it
   from the last `Ready` reason, which an API error between the two would lose. The issue says an observed resource

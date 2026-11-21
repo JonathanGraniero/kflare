@@ -99,8 +99,12 @@ var tunnelKind = crudResourceKind[*cloudflarev1alpha1.Tunnel, TunnelAPI, shared.
 	},
 
 	id: func(current *shared.CloudflareTunnel) string { return current.ID },
-	matches: func(obj *cloudflarev1alpha1.Tunnel, current *shared.CloudflareTunnel, _ map[string]string) bool {
-		return current.Name == obj.Spec.Name
+	differences: func(obj *cloudflarev1alpha1.Tunnel, current *shared.CloudflareTunnel, _ map[string]string) []string {
+		var fields []string
+		if current.Name != obj.Spec.Name {
+			fields = append(fields, "name")
+		}
+		return fields
 	},
 	listedID:  func(listed *shared.CloudflareTunnel) string { return listed.ID },
 	listedKey: func(listed *shared.CloudflareTunnel) string { return listed.Name },

@@ -203,7 +203,20 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.topologySpreadConstraints }}
+      {{- $replicas := ternary .Values.autoscaling.maxReplicas .Values.replicaCount .Values.autoscaling.enabled }}
+      {{- if .Values.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- toYaml . | nindent 8 }}
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+      {{- else if and .Values.topologySpreadDefault (gt (int $replicas) 1) }}
+      # Soft, so that a one-node cluster still runs every replica.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "kflare.selectorLabels" . | nindent 14 }}
+          # Counts only the new ReplicaSet's pods during a rolling update.
+          matchLabelKeys:
+            - pod-template-hash
       {{- end }}

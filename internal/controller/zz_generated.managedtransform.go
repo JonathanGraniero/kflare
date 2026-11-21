@@ -45,6 +45,11 @@ type ManagedTransformReconciler struct {
 	// NewManagedTransformAPI constructs a ManagedTransformAPI from a raw API
 	// token. Defaults to defaultManagedTransformAPI; tests inject a fake.
 	NewManagedTransformAPI func(token string) (ManagedTransformAPI, error)
+
+	// apiReader reads from the API server, past the manager's cache:
+	// SetupWithManager sets the manager's. Without one, Client reads, as in
+	// tests that reconcile without a manager.
+	apiReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=kflare.dev,resources=managedtransforms,verbs=get;list;watch;create;update;patch;delete
@@ -99,6 +104,10 @@ var managedTransformKind = settingsKind[ManagedTransformAPI]{
 		{path: "managed_request_headers[].enabled", value: false},
 		{path: "managed_response_headers[].enabled", value: false},
 	},
+	fields: map[string]string{
+		"managed_request_headers":  "managedRequestHeaders",
+		"managed_response_headers": "managedResponseHeaders",
+	},
 }
 
 func (r *ManagedTransformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -110,17 +119,25 @@ func (r *ManagedTransformReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // the Zone is ready, and the deletion of ManagedTransforms, so another one
 // takes over the zone's managed transforms at once.
 func (r *ManagedTransformReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return r.settings().setup(mgr, r)
 }
 
 // settings returns the shared settings reconciler for ManagedTransforms, with
-// the injected factory or the production one.
+// the injected factory or the production one, and the manager's API reader or
+// the client.
 func (r *ManagedTransformReconciler) settings() *settingsReconciler[ManagedTransformAPI] {
 	newAPI := r.NewManagedTransformAPI
 	if newAPI == nil {
 		newAPI = defaultManagedTransformAPI
 	}
-	return &settingsReconciler[ManagedTransformAPI]{Client: r.Client, kind: managedTransformKind, newAPI: newAPI}
+	apiReader := r.apiReader
+	if apiReader == nil {
+		apiReader = r.Client
+	}
+	return &settingsReconciler[ManagedTransformAPI]{
+		Client: r.Client, apiReader: apiReader, kind: managedTransformKind, newAPI: newAPI,
+	}
 }
 
 // defaultManagedTransformAPI is the production factory: cloudflare-go v7's
