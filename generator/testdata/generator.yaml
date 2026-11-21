@@ -463,6 +463,7 @@ settingsKinds:
       always_online: Not in the test kind.
       automatic_https_rewrites: Not in the test kind.
       automatic_platform_optimization: Not in the test kind.
+      avif: Not in the test kind.
       brotli: Not in the test kind.
       browser_check: Not in the test kind.
       cache_level: Not in the test kind.
