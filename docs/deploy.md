@@ -1742,7 +1742,7 @@ either: the resource keeps its finalizer until the annotation is removed, so `ku
 ### Observing without writing
 
 kflare can watch a Cloudflare object and only report how it differs from a resource's spec, without creating,
-changing or deleting anything. `Zone` and `DNSRecord` support it so far. Annotate the resource:
+changing or deleting anything (the kinds that support it are below). Annotate the resource:
 
 ```yaml
 metadata:
@@ -1773,18 +1773,19 @@ kinds, which report `ObserveNotSupported`, and kflare makes no Cloudflare call f
 **Moving to kflare** from the dashboard, Terraform or another tool, without a manifest's mistake reaching production:
 
 1. Write the manifests with the annotation, and apply them
-2. Read the differences: `kubectl get zones,dnsrecords -A`, and `kubectl describe` for the fields
+2. Read the differences: `kubectl get kflare -A`, and `kubectl describe` for the fields
 3. Fix the manifests until every resource is `InSync`
 4. Remove the annotation, or set it to `manage`. kflare then manages the object as one it adopted, with no
    `adoption-policy` needed: it changes nothing while the object matches, corrects it from then on, and keeps it when
    the resource is deleted unless `kflare.dev/deletion-policy: delete` says otherwise. If another resource already
-   manages the object, this one reports `NameConflict` and leaves it alone. Switch a Zone before its records: a
-   managed record waits for a Zone that still reports `DriftDetected`
+   manages the object, this one reports its kind's conflict reason, such as `NameConflict`, and leaves it alone.
+   Switch a Zone before its records: a managed record waits for a Zone that still reports `DriftDetected`
 
 **Auditing** that Cloudflare matches git: install a release with `observeOnly: true`. It observes every resource,
 whatever its annotation says, and never writes to Cloudflare, so its API token needs only the read permissions of the
-kinds it observes (Zone Read and DNS Read). Do not point it at resources another release manages: give it its own
-namespaces or labels ([Scoping an installation](#scoping-an-installation)), since both would write the same status.
+kinds it observes: Read where [step 1](#1-create-a-cloudflare-api-token) says Edit (no live run has used such a token
+yet). Do not point it at resources another release manages: give it its own namespaces or labels
+([Scoping an installation](#scoping-an-installation)), since both would write the same status.
 
 ### Moving to a new cluster
 
