@@ -57,11 +57,13 @@ hands its Cloudflare object to the new resource instead of deleting and recreati
 Argo CD deletes the old resource first (see [Renaming a resource](docs/deploy.md#renaming-a-resource)).
 
 Merged for the next release (see CHANGELOG.md's Unreleased, which lists its breaking changes): kflare reads Secrets
-only in its release namespace and the namespaces the chart's `secretNamespaces` lists. A `Zone` or a `DNSRecord` can
-be observed without kflare writing to Cloudflare, to check manifests against what is already there before handing it
-over (see [Observing without writing](docs/deploy.md#observing-without-writing)). The chart can install Prometheus
-alerts, each with a runbook, and a Grafana dashboard (see
-[Alerts and a dashboard](docs/deploy.md#alerts-and-a-dashboard)).
+only in its release namespace and the namespaces the chart's `secretNamespaces` lists. Every kind but `WorkerScript`
+can be observed without kflare writing to Cloudflare, to check manifests against what is already there before handing
+it over, a rule kflare did not create included (see
+[Observing without writing](docs/deploy.md#observing-without-writing)). The chart keeps a standby, on another node
+from the leader where the cluster has one, and can install Prometheus alerts, each with a runbook, and a Grafana
+dashboard (see [Alerts and a dashboard](docs/deploy.md#alerts-and-a-dashboard)). A release is tagged only once the
+live suite has passed on its commit.
 
 ## Next
 
@@ -69,22 +71,13 @@ alerts, each with a runbook, and a Grafana dashboard (see
 
 Before more resource kinds, the work that decides whether kflare can be trusted with production objects:
 
-- **Releases only after the live suite passes**: since the live suite moved to a workflow of its own, a release no
-  longer waits for it ([#188](https://github.com/JonathanGraniero/kflare/issues/188))
-- **Observe every kind**, so that a move from Terraform or the dashboard can start with any resource, not just zones
-  and records: the generated CRUD kinds ([#191](https://github.com/JonathanGraniero/kflare/issues/191)), then the
-  settings and rule kinds ([#195](https://github.com/JonathanGraniero/kflare/issues/195))
-- **The last reads from a cache that is behind**: an IP list's bulk operation and a settings kind's owner
-  ([#190](https://github.com/JonathanGraniero/kflare/issues/190))
-- **Installations that overlap**: tests where two installations meet, or where someone relabels a resource or a
-  namespace to cross from one to the other, then a warning when two scopes overlap
+- **Installations that overlap**: tests where someone relabels a namespace to cross from one installation to the
+  other, and where two releases share a leader election ID, then a warning when two scopes overlap
   ([#189](https://github.com/JonathanGraniero/kflare/issues/189))
-- **A standby by default**, on another node from the leader
-  ([#185](https://github.com/JonathanGraniero/kflare/pull/185),
-  [#192](https://github.com/JonathanGraniero/kflare/issues/192))
 - **One Cloudflare SDK**: `Zone` and `WorkerScript` still call the older one
-  ([#134](https://github.com/JonathanGraniero/kflare/issues/134)), and `WorkerScript`'s binding field names need a
-  decision before any kind can become `v1beta1` ([#194](https://github.com/JonathanGraniero/kflare/issues/194))
+  ([#134](https://github.com/JonathanGraniero/kflare/issues/134)), which also keeps `WorkerScript` from being
+  observed, as kflare cannot read a Worker back yet. `WorkerScript`'s binding field names need a decision before any
+  kind can become `v1beta1` ([#194](https://github.com/JonathanGraniero/kflare/issues/194))
 
 ### More resource kinds
 

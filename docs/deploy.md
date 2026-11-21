@@ -1785,8 +1785,9 @@ configures its zone's settings, and does not keep a managed one from configuring
 4. Remove the annotation, or set it to `manage`. kflare then manages the object as one it adopted, with no
    `adoption-policy` needed: it changes nothing while the object matches, corrects it from then on, and keeps it when
    the resource is deleted unless `kflare.dev/deletion-policy: delete` says otherwise. If another resource already
-   manages the object, this one reports its kind's conflict reason, such as `NameConflict`, and leaves it alone.
-   Switch a Zone before its records: a managed record waits for a Zone that still reports `DriftDetected`
+   manages the object, this one reports its kind's conflict reason, such as `NameConflict`, and leaves it alone,
+   when deleted too. Switch a Zone before its records: a managed record waits for a Zone that still reports
+   `DriftDetected`
 
 **Auditing** that Cloudflare matches git: install a release with `observeOnly: true`. It observes every resource,
 whatever its annotation says, and never writes to Cloudflare, so its API token needs only the read permissions of the
